@@ -1,7 +1,7 @@
 {
-  "name": "music-sched",
-  "version": "1.2.1",
-  "description": "Music lesson timetabling app",
+  "name": "matt-moras-music-tuition",
+  "version": "1.7.1",
+  "description": "Music lesson timetabling app for Matt Moras",
   "main": "electron.js",
   "homepage": "./",
   "scripts": {
@@ -11,12 +11,18 @@
     "electron": "ELECTRON_DEV=1 electron .",
     "electron:start": "concurrently -k \"npm start\" \"wait-on http://localhost:3000 && npm run electron\"",
     "electron:build": "npm run build && electron-builder --mac",
-    "electron:build:dmg": "npm run build && electron-builder --mac dmg"
+    "electron:build:dmg": "npm run build && electron-builder --mac dmg",
+    "release": "npm run build && electron-builder --mac --publish always"
   },
   "build": {
-    "appId": "au.edu.musictimetabling",
-    "productName": "Music Timetabling",
-    "copyright": "Copyright \u00a9 2026",
+    "appId": "au.mattmoras.musictuition",
+    "productName": "Matt Moras - Music Tuition",
+    "copyright": "Copyright © 2026",
+    "publish": {
+      "provider": "github",
+      "owner": "mattmoras-musictuition",
+      "repo": "Music-Lesson-App-Releases"
+    },
     "mac": {
       "category": "public.app-category.education",
       "icon": "public/icon.icns",
