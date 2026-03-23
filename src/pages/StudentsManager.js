@@ -4,8 +4,8 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { colors, INSTRUMENTS, instruments_colors } from "../constants";
-import { uid, getInstColor, getInitials } from "../utils/helpers";
-import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
+import { uid, getInstColor, getInitials, openCompose } from "../utils/helpers";
+import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 

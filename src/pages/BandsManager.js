@@ -210,7 +210,7 @@ export function BandsManager({ bands, setBands, schools, students, teachers, tal
             const memberStudents = (band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean);
             const displayNames = memberStudents.map(s => bandDisplayName(s, memberStudents));
             return (
-              <Card key={band.id} style={{ borderLeft: `4px solid ${BAND_COLOR}`, padding: "14px 16px" }}>
+              <Card key={band.id} onClick={() => editBand(band)} style={{ borderLeft: `4px solid ${BAND_COLOR}`, padding: "14px 16px", cursor: "pointer" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
@@ -229,14 +229,13 @@ export function BandsManager({ bands, setBands, schools, students, teachers, tal
                     {(band.links || []).filter(l => l.url).length > 0 && (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         {band.links.filter(l => l.url).map(l => (
-                          <a key={l.id} href={l.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: colors.sidebarActive, textDecoration: "none", padding: "2px 8px", borderRadius: 6, border: `1px solid ${colors.border}`, background: colors.bg }}>🔗 {l.category}</a>
+                          <a key={l.id} href={l.url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ fontSize: 11, color: colors.sidebarActive, textDecoration: "none", padding: "2px 8px", borderRadius: 6, border: `1px solid ${colors.border}`, background: colors.bg }}>🔗 {l.category}</a>
                         ))}
                       </div>
                     )}
                   </div>
                   <div style={{ display: "flex", gap: 6, marginLeft: 12, flexShrink: 0 }}>
-                    <button onClick={() => editBand(band)} style={{ padding: "5px 12px", background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 7, fontSize: 12, cursor: "pointer", fontFamily: "inherit", color: colors.text }}>✏️ Edit</button>
-                    <button onClick={() => deleteBand(band.id)} style={{ padding: "5px 12px", background: "none", border: `1px solid ${colors.border}`, borderRadius: 7, fontSize: 12, cursor: "pointer", fontFamily: "inherit", color: colors.danger }}>×</button>
+                    <button onClick={e => { e.stopPropagation(); deleteBand(band.id); }} style={{ padding: "5px 12px", background: "none", border: `1px solid ${colors.border}`, borderRadius: 7, fontSize: 12, cursor: "pointer", fontFamily: "inherit", color: colors.danger }}>×</button>
                   </div>
                 </div>
               </Card>

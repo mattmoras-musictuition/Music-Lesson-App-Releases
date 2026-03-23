@@ -44,6 +44,81 @@ export async function anthropicFetch(url, options) {
   return fetch(url, options);
 }
 
+// Stream a chat request — words appear as they're generated rather than all at once.
+// Works in both Electron (IPC channel) and browser dev mode (native ReadableStream).
+// callbacks: { onChunk(text), onEnd(usage|null), onError(message, isAuthError) }
+export function anthropicStreamChat(url, options, { onChunk, onEnd, onError }) {
+  // ── Helper: parse raw SSE lines into events ──────────────────────────────
+  function parseLine(line, inputTokensRef) {
+    if (!line.startsWith("data: ")) return;
+    const raw = line.slice(6).trim();
+    if (!raw || raw === "[DONE]") return;
+    try {
+      const evt = JSON.parse(raw);
+      if (evt.type === "message_start") {
+        inputTokensRef.value = evt.message?.usage?.input_tokens || 0;
+      } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+        onChunk(evt.delta.text);
+      } else if (evt.type === "message_delta" && evt.usage) {
+        onEnd({ input_tokens: inputTokensRef.value, output_tokens: evt.usage.output_tokens || 0 });
+      }
+    } catch {}
+  }
+
+  if (window.electronAPI?.anthropicStream) {
+    // ── Electron path: IPC streaming channel ────────────────────────────────
+    const streamId = Math.random().toString(36).slice(2) + Date.now();
+    const inputTokensRef = { value: 0 };
+    let buffer = "";
+
+    window.electronAPI.anthropicStreamListen(
+      streamId,
+      (rawChunk) => {
+        buffer += rawChunk;
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // keep any incomplete line
+        for (const line of lines) parseLine(line, inputTokensRef);
+      },
+      () => { onEnd(null); },
+      (message, status) => {
+        const isAuth = status === 401 || status === 403;
+        onError(message, isAuth);
+      }
+    );
+
+    window.electronAPI.anthropicStream(
+      streamId, url, options.method || "POST", options.headers || {}, options.body || ""
+    );
+  } else {
+    // ── Browser/dev path: native fetch with ReadableStream ───────────────────
+    (async () => {
+      try {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          const isAuth = response.status === 401 || response.status === 403;
+          onError(data.error?.message || `HTTP ${response.status}`, isAuth);
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        const inputTokensRef = { value: 0 };
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { onEnd(null); break; }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) parseLine(line, inputTokensRef);
+        }
+      } catch(e) {
+        onError(e.message, false);
+      }
+    })();
+  }
+}
+
 // ── Lazy CDN library loaders ─────────────────────────────────────────────────
 
 let Papa = null;

@@ -4,7 +4,9 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { colors, DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
-import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr } from "../utils/helpers";
+import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import { loadData, saveData } from "../utils/backup";
+import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printMasterTimetable, printWeeklyTimetable } from "../data/weeklyTimetableGenerator";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";

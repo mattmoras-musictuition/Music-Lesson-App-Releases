@@ -8,6 +8,10 @@ import { Btn } from "../components/ui/SharedUI";
 
 export function GmailSettingsCard({ notify, cardStyle, gmailStatus, setGmailStatus }) {
   const [gmailLoading, setGmailLoading] = React.useState(false);
+  // Local override so the UI reflects connect/disconnect immediately without
+  // waiting for the prop to propagate down from the parent
+  const [localConnected, setLocalConnected] = React.useState(null);
+  const isConnected = localConnected !== null ? localConnected : gmailStatus?.connected;
   const [suppressPatterns, setSuppressPatterns] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-email-suppress") || "[]"); } catch { return []; } });
 
   // Reset loading state on mount — guards against stuck state from a previous
@@ -31,8 +35,9 @@ export function GmailSettingsCard({ notify, cardStyle, gmailStatus, setGmailStat
       const result = await window.electronAPI.gmailOAuthConnect();
       const status = await window.electronAPI.gmailGetStatus();
       setGmailStatus(status);
-      if (result.ok) notify("Gmail connected ✓");
-      else if (result.error !== "Window closed") notify("Connection failed: " + result.error, "danger");
+      setLocalConnected(!!status?.connected);
+      if (status?.connected) notify("Gmail connected ✓");
+      else if (result?.error && result.error !== "Window closed") notify("Connection failed: " + result.error, "danger");
     } catch (e) {
       notify("Connection failed: " + (e?.message || String(e)), "danger");
     } finally {
@@ -42,6 +47,7 @@ export function GmailSettingsCard({ notify, cardStyle, gmailStatus, setGmailStat
   const disconnect = async () => {
     try {
       await window.electronAPI.gmailDisconnect();
+      setLocalConnected(false);
       setGmailStatus({ connected: false });
       notify("Gmail disconnected");
     } catch (e) {
@@ -61,12 +67,12 @@ export function GmailSettingsCard({ notify, cardStyle, gmailStatus, setGmailStat
         <div>
           <div style={{ fontWeight: 600, fontSize: 14 }}>✉ Gmail</div>
           <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>
-            {gmailStatus?.connected
+            {isConnected
               ? <span style={{ color: colors.success, fontWeight: 500 }}>● Connected — emails send directly from the app</span>
               : "Not connected — click Connect to authorise once"}
           </div>
         </div>
-        {gmailStatus?.connected
+        {isConnected
           ? <Btn variant="secondary" onClick={disconnect} style={{ fontSize: 12 }}>Disconnect</Btn>
           : <Btn onClick={connect} disabled={gmailLoading} style={{ fontSize: 12 }}>{gmailLoading ? "Connecting…" : "Connect Gmail"}</Btn>}
       </div>

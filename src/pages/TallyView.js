@@ -4,8 +4,10 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { colors, DAYS, TALLY_REASONS } from "../constants";
-import { uid, toLocalDateStr, melbourneNow, melbourneToday, getTermWeekLabel, to12h, timeToMin, getInstColor, getSchoolAcronym, _getMondayOf } from "../utils/helpers";
+import { uid, toLocalDateStr, melbourneNow, melbourneToday, getTermWeekLabel, to12h, timeToMin, getInstColor, getSchoolAcronym, _getMondayOf, getParentEmails, openCompose } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey, getTermWeeksList } from "../utils/tallyHelpers";
+import { getEmailTemplates, resolveTemplate, preferredFirstName } from "../utils/emailTemplates";
+import { ExportIcon } from "../components/ExportDialog";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function TallyView({ timetable, schools, students, teachers, interruptions, tallyEntries, setTallyEntries, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
@@ -714,17 +716,6 @@ export function TallyView({ timetable, schools, students, teachers, interruption
               </div>
             </div>
 
-            {/* Clear / Cancel */}
-            <div style={{ display: "flex", gap: 8 }}>
-              {entryMap[editCell.key] && (
-                <button onClick={clearEntry} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#FEF2F2", color: "#DC2626", fontWeight: 600, fontSize: 13, border: "1px solid #FECACA", cursor: "pointer", fontFamily: "inherit" }}>
-                  Clear entry
-                </button>
-              )}
-              <button onClick={() => setEditCell(null)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-                Cancel
-              </button>
-            </div>
             {/* Email parent — shown when entry is a recorded missed lesson for an individual student */}
             {(() => {
               const current = entryMap[editCell.key];
@@ -767,6 +758,17 @@ export function TallyView({ timetable, schools, students, teachers, interruption
                 </button>
               );
             })()}
+            {/* Clear / Cancel */}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {entryMap[editCell.key] && (
+                <button onClick={clearEntry} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#FEF2F2", color: "#DC2626", fontWeight: 600, fontSize: 13, border: "1px solid #FECACA", cursor: "pointer", fontFamily: "inherit" }}>
+                  Clear entry
+                </button>
+              )}
+              <button onClick={() => setEditCell(null)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -147,6 +147,9 @@ export function getTermWeekLabel(dateStr, termBreaks) {
 export const groupDisplayName = (l) =>
   l.groupName || l.studentNames?.map(n => n.split(" ")[0]).join(", ") || l.studentName || "Group";
 
+export const bandDisplayName = (lesson, members) =>
+  lesson.bandName || lesson.groupName || (members && members.length > 0 ? members.map(m => m.name.split(" ")[0]).join(", ") : null) || "Band";
+
 // Derive the current teacher name for a lesson from live student/teacher data.
 // Falls back to stored teacherName if no instrument match found.
 export const getLiveTeacherName = (lesson, students, teachers) => {

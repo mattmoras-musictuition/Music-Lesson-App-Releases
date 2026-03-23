@@ -6,13 +6,33 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { colors, STORAGE_KEYS, APP_VERSION, DATA_VERSION } from "../constants";
 import { uid, melbourneToday, toLocalDateStr } from "../utils/helpers";
 import { migrateData, loadData, saveData } from "../utils/backup";
+import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function SettingsManager({ apiKey, setApiKey, schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, tallyEntries, contacts, bands, masterBreaks, resources, onRestore, onBackup, notify, resetKey, updateInfo, noUpdateFlash, setNoUpdateFlash, updateProgress, APP_VERSION, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, claudeBudget, setClaudeBudget, tokenUsage, claudePersonalContext, setClaudePersonalContext, claudeMemory, setClaudeMemory }) {
+export function SettingsManager({ apiKey, setApiKey, schools, students, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, tallyEntries, contacts, bands, masterBreaks, resources, onRestore, onBackup, notify, resetKey, updateInfo, noUpdateFlash, setNoUpdateFlash, updateProgress, APP_VERSION, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, claudeBudget, setClaudeBudget, tokenUsage, claudePersonalContext, setClaudePersonalContext, claudeMemory, setClaudeMemory }) {
   const fileRef = useRef(null);
   const [gmailStatus, setGmailStatus] = React.useState(null);
   const [backupDone, setBackupDone] = React.useState(false);
+  const [fetchingTermDates, setFetchingTermDates] = React.useState(false);
+
+  // Timezone setting
+  const [timezone, setTimezoneState] = React.useState(() => localStorage.getItem("mt-timezone") || "Australia/Melbourne");
+  const saveTimezone = (tz) => { setTimezoneState(tz); try { localStorage.setItem("mt-timezone", tz); } catch {} };
+
+  const TIMEZONES = [
+    { value: "Australia/Melbourne", label: "Melbourne / Sydney (AEDT)" },
+    { value: "Australia/Brisbane",  label: "Brisbane (AEST, no DST)" },
+    { value: "Australia/Adelaide",  label: "Adelaide (ACDT)" },
+    { value: "Australia/Perth",     label: "Perth (AWST)" },
+    { value: "Australia/Darwin",    label: "Darwin (ACST)" },
+    { value: "Australia/Hobart",    label: "Hobart (AEDT)" },
+    { value: "Pacific/Auckland",    label: "Auckland (NZDT)" },
+    { value: "Asia/Singapore",      label: "Singapore (SGT)" },
+    { value: "Europe/London",       label: "London (GMT/BST)" },
+    { value: "America/New_York",    label: "New York (ET)" },
+    { value: "America/Los_Angeles", label: "Los Angeles (PT)" },
+  ];
   React.useEffect(() => {
     if (window.electronAPI?.gmailGetStatus) window.electronAPI.gmailGetStatus().then(s => setGmailStatus(s));
   }, []);
@@ -55,6 +75,46 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, teachers
     try { localStorage.removeItem("mt-api-key"); localStorage.removeItem("mt-last-autobak-time"); } catch(e) {}
     notify("All data cleared — reloading…");
     setTimeout(() => window.location.reload(), 1200);
+  };
+
+  // ── Fetch Term Dates ──────────────────────────────────────
+  const fetchTermDatesAndHolidays = async () => {
+    setFetchingTermDates(true);
+    try {
+      const yr = new Date().getFullYear();
+      const response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: getAnthropicHeaders(),
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: [{ role: "user", content:
+            `Search for Victorian (Australia) school term dates for ${yr} and ${yr+1}, plus all Victorian public holidays for those years.\n\nReturn ONLY a JSON array, no other text, no markdown backticks. Each entry:\n- date: "YYYY-MM-DD"\n- endDate: "YYYY-MM-DD" (same as date for single-day events; full break span for term breaks)\n- title: descriptive name\n- type: "public_holiday" or "term_break"\n\nFor term breaks, use the full holiday period between terms. Return the JSON array only.`
+          }]
+        })
+      });
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      const data  = await response.json();
+      const text  = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
+      const clean = text.replace(/```json|```/g, "").trim();
+      const match = clean.match(/\[[\s\S]*\]/);
+      let entries;
+      try { entries = match ? JSON.parse(match[0]) : JSON.parse(clean); }
+      catch { const last = clean.lastIndexOf("}"); if (last > 0) { let rec = clean.slice(0, last+1); if (!rec.trim().endsWith("]")) rec += "]"; if (!rec.trim().startsWith("[")) rec = "[" + rec; entries = JSON.parse(rec); } else throw new Error("Could not parse response"); }
+      if (!Array.isArray(entries) || !entries.length) { notify("Could not find term dates. Try again later.", "warning"); return; }
+      const today = new Date().toISOString().slice(0, 10);
+      const existing = new Set(interruptions.map(i => `${i.date}|${i.title}`));
+      const newEntries = entries
+        .map(e => ({ id: uid(), schoolId: "all", date: e.date||"", endDate: e.endDate||e.date||"", title: e.title||"", type: e.type||"public_holiday", affectsClasses: "all", startTime: "", endTime: "", notes: "", source: "auto-fetched" }))
+        .filter(e => e.date && !existing.has(`${e.date}|${e.title}`) && (e.endDate||e.date) >= today);
+      if (!newEntries.length) { notify("Term dates and holidays are already up to date!", "success"); return; }
+      setInterruptions(prev => [...prev, ...newEntries]);
+      const termCount = newEntries.filter(e => e.type === "term_break").length;
+      const holCount  = newEntries.filter(e => e.type === "public_holiday").length;
+      notify(`Added ${termCount} term break${termCount !== 1 ? "s" : ""} and ${holCount} public holiday${holCount !== 1 ? "s" : ""}. These now appear on the Calendar.`);
+    } catch (err) {
+      notify("Failed to fetch term dates: " + err.message, "danger");
+    }
+    setFetchingTermDates(false);
   };
 
   // Collapsible sections
@@ -299,6 +359,18 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, teachers
             {/* ── Gmail ── */}
             {window.electronAPI?.gmailGetStatus && <GmailSettingsCard notify={notify} cardStyle={cardStyle} gmailStatus={gmailStatus} setGmailStatus={setGmailStatus} />}
 
+            {/* ── Timezone ── */}
+            <div style={cardStyle}>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>🕐 Timezone</div>
+              <div style={{ fontSize: 12, color: colors.textLight, marginBottom: 10 }}>
+                Used by the Calendar to highlight today's date and determine the current day for auto-tally. Defaults to Melbourne.
+              </div>
+              <select value={timezone} onChange={e => saveTimezone(e.target.value)}
+                style={{ padding: "8px 12px", border: `1.5px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", appearance: "none", width: "100%", boxSizing: "border-box" }}>
+                {TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+              </select>
+            </div>
+
             <div style={{ ...cardStyle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>Version {APP_VERSION}</div>
@@ -325,18 +397,33 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, teachers
         {/* ── TERM MANAGEMENT ── */}
         <div style={{ marginBottom: 24 }}>
           <SectionBanner sectionKey="term" label="Term Management"
-            sub="End-of-term actions for resetting and archiving data between terms." />
+            sub="Fetch Victorian term dates and public holidays for the Calendar, and end-of-term actions." />
 
           {openSections.term && (
-            <div style={{ ...cardStyle, opacity: 0.6, pointerEvents: "none" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: colors.text }}>Finalise Term 1</div>
-                  <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>Archive tally data, reset weekly adjustments, and prepare for Term 2. Coming soon.</div>
+            <>
+              <div style={cardStyle}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>🗓 Fetch Term Dates & Public Holidays</div>
+                    <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>
+                      Uses AI web search to fetch Victorian school term dates and public holidays for this year and next, then adds them to your Calendar. Safe to re-run — duplicates are skipped.
+                    </div>
+                  </div>
+                  <Btn onClick={fetchTermDatesAndHolidays} disabled={fetchingTermDates} style={{ flexShrink: 0 }}>
+                    {fetchingTermDates ? "Fetching…" : "Fetch now"}
+                  </Btn>
                 </div>
-                <Btn variant="secondary" disabled>Finalise Term →</Btn>
               </div>
-            </div>
+              <div style={{ ...cardStyle, opacity: 0.6, pointerEvents: "none" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14, color: colors.text }}>Finalise Term</div>
+                    <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>Archive tally data, reset weekly adjustments, and prepare for the next term. Coming soon.</div>
+                  </div>
+                  <Btn variant="secondary" disabled>Finalise Term →</Btn>
+                </div>
+              </div>
+            </>
           )}
         </div>
 

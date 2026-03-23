@@ -3,12 +3,13 @@
 // ============================================================
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, STORAGE_KEYS, instruments_colors } from "../constants";
-import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, groupDisplayName } from "../utils/helpers";
-import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "../utils/tallyHelpers";
+import { colors, DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, TALLY_REASONS, BAND_COLOR } from "../constants";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import { loadData, saveData, saveStudents } from "../utils/backup";
+import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks, isDayPast6pm } from "../utils/tallyHelpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
-import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable } from "../data/weeklyTimetableGenerator";
+import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { ExportIcon } from "../components/ExportDialog";
@@ -2924,7 +2925,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ fontWeight: 600, fontSize: 14, color: colors.white }}>Claude</div>
             </div>
             <div style={{ padding: "14px 18px" }}>
-            {!_anthropicApiKey && !(typeof localStorage !== "undefined" && localStorage.getItem("mt-api-key")) && (
+            {!(typeof localStorage !== "undefined" && localStorage.getItem("mt-api-key")) && (
               <div style={{ marginBottom: 10, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, color: "#92400E", display: "flex", alignItems: "center", gap: 8 }}>
                 <span>🔑</span>
                 <span>Add your <strong>API key</strong> (via the key icon in the sidebar) to enable AI-powered adjustment parsing.</span>

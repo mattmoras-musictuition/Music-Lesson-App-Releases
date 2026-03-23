@@ -80,6 +80,33 @@ contextBridge.exposeInMainWorld("electronAPI", {
   anthropicFetch: (url, method, headers, body) =>
     ipcRenderer.invoke("anthropic-fetch", { url, method, headers, body }),
 
+  // ── Anthropic Streaming (pushes SSE chunks back as they arrive) ────────────
+  // Start a streaming request — chunks arrive via anthropicStreamListen callbacks
+  anthropicStream: (streamId, url, method, headers, body) =>
+    ipcRenderer.send("anthropic-stream", { streamId, url, method, headers, body }),
+
+  // Register chunk/end/error handlers for a specific streamId — returns a cleanup fn
+  anthropicStreamListen: (streamId, onChunk, onEnd, onError) => {
+    const chunkHandler = (_e, data) => {
+      if (data.streamId === streamId) onChunk(data.chunk);
+    };
+    const endHandler = (_e, data) => {
+      if (data.streamId === streamId) { cleanup(); onEnd(); }
+    };
+    const errorHandler = (_e, data) => {
+      if (data.streamId === streamId) { cleanup(); onError(data.error, data.status); }
+    };
+    function cleanup() {
+      ipcRenderer.removeListener("anthropic-stream-chunk", chunkHandler);
+      ipcRenderer.removeListener("anthropic-stream-end", endHandler);
+      ipcRenderer.removeListener("anthropic-stream-error", errorHandler);
+    }
+    ipcRenderer.on("anthropic-stream-chunk", chunkHandler);
+    ipcRenderer.on("anthropic-stream-end", endHandler);
+    ipcRenderer.on("anthropic-stream-error", errorHandler);
+    return cleanup;
+  },
+
   // True when running inside Electron (false in browser)
   isElectron: true,
 });

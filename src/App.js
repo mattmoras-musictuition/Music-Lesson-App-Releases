@@ -14,7 +14,8 @@ import { colors, DAYS, STORAGE_KEYS, APP_VERSION, DATA_VERSION, TIMEZONE, HEADER
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf } from "./utils/helpers";
 import { computeTermWeekNum, computeAutoTallyDay, computeExtraTicks } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
-import { anthropicFetch, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
+import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
+import { parseSpecialistNotes, parseStudentNotes } from "./utils/claudeNotes";
 
 // ── Data generators ─────────────────────────────────────────
 import { generateMasterTimetable, compactTimetable, scheduleReadyGroups } from "./data/timetableGenerator";
@@ -36,7 +37,7 @@ import { BandsManager } from "./pages/BandsManager";
 import { PendingManager } from "./pages/PendingManager";
 import { ResourcesManager } from "./pages/ResourcesManager";
 import { SpecialistManager } from "./pages/SpecialistManager";
-import { InterruptionsManager } from "./pages/InterruptionsManager";
+import { CalendarManager } from "./pages/CalendarManager";
 import { StudentsManager } from "./pages/StudentsManager";
 import { TimetableView } from "./pages/TimetableView";
 import { WeeklyAdjustments } from "./pages/WeeklyAdjustments";
@@ -90,13 +91,13 @@ export default function MusicTimetableApp() {
   // Save scroll position for the given page into its viewState
   const saveScrollForPage = (pg) => {
     const st = mainScrollRef.current?.scrollTop || 0;
-    const map = { timetable: setTtViewState, weekly: setWeeklyViewState, students: setStudentsViewState, schools: setSchoolsViewState, teachers: setTeachersViewState, groups: setGroupsViewState, tally: setTallyViewState, specialists: setSpecialistsViewState, interruptions: setInterruptionsViewState, dashboard: setDashboardViewState, contacts: setContactsViewState, resources: setResourcesViewState, settings: setSettingsViewState };
+    const map = { timetable: setTtViewState, weekly: setWeeklyViewState, students: setStudentsViewState, schools: setSchoolsViewState, teachers: setTeachersViewState, groups: setGroupsViewState, tally: setTallyViewState, specialists: setSpecialistsViewState, calendar: setInterruptionsViewState, dashboard: setDashboardViewState, contacts: setContactsViewState, resources: setResourcesViewState, settings: setSettingsViewState };
     if (map[pg]) map[pg](prev => ({ ...prev, scrollTop: st }));
   };
 
   // Restore scroll position for the given page from its viewState
   const getScrollForPage = (pg) => {
-    const map = { timetable: ttViewState, weekly: weeklyViewState, students: studentsViewState, schools: schoolsViewState, teachers: teachersViewState, groups: groupsViewState, tally: tallyViewState, specialists: specialistsViewState, interruptions: interruptionsViewState, dashboard: dashboardViewState, contacts: contactsViewState, resources: resourcesViewState, settings: settingsViewState };
+    const map = { timetable: ttViewState, weekly: weeklyViewState, students: studentsViewState, schools: schoolsViewState, teachers: teachersViewState, groups: groupsViewState, tally: tallyViewState, specialists: specialistsViewState, calendar: interruptionsViewState, dashboard: dashboardViewState, contacts: contactsViewState, resources: resourcesViewState, settings: settingsViewState };
     return (map[pg] || {}).scrollTop || 0;
   };
 
@@ -110,7 +111,7 @@ export default function MusicTimetableApp() {
       groups: () => setGroupsViewState({ filterSchool: "", scrollTop: 0 }),
       tally: () => setTallyViewState({ selectedSchool: "all", groupBy: "day_school", scrollTop: 0 }),
       specialists: () => setSpecialistsViewState({ filterSchool: "", filterClass: "", filterDay: "", filterSubject: "", scrollTop: 0 }),
-      interruptions: () => setInterruptionsViewState({ filterSchool: "", filterType: "", scrollTop: 0 }),
+      calendar: () => setInterruptionsViewState({ filterSchool: "", filterType: "", scrollTop: 0 }),
       dashboard: () => setDashboardViewState({ scrollTop: 0 }),
       contacts: () => setContactsViewState({ scrollTop: 0 }),
       resources: () => setResourcesViewState({ scrollTop: 0 }),
@@ -375,7 +376,7 @@ export default function MusicTimetableApp() {
   const claudeDragCounter = useRef(0);
   useEffect(() => {
     const onEnter = (e) => {
-      if (e.dataTransfer?.types?.includes("Files")) {
+      if (e.dataTransfer?.types?.includes("Files") || window._pendingAttachmentDrag) {
         claudeDragCounter.current += 1;
         setClaudeDragOver(true);
       }
@@ -384,14 +385,16 @@ export default function MusicTimetableApp() {
       claudeDragCounter.current = Math.max(0, claudeDragCounter.current - 1);
       if (claudeDragCounter.current === 0) setClaudeDragOver(false);
     };
-    const onDrop = () => { claudeDragCounter.current = 0; setClaudeDragOver(false); };
+    const onReset = () => { claudeDragCounter.current = 0; setClaudeDragOver(false); };
     window.addEventListener("dragenter", onEnter);
     window.addEventListener("dragleave", onLeave);
-    window.addEventListener("drop", onDrop);
+    window.addEventListener("drop", onReset);
+    window.addEventListener("dragend", onReset);
     return () => {
       window.removeEventListener("dragenter", onEnter);
       window.removeEventListener("dragleave", onLeave);
-      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("drop", onReset);
+      window.removeEventListener("dragend", onReset);
     };
   }, []);
 
@@ -1004,6 +1007,7 @@ export default function MusicTimetableApp() {
     const weekNum = computeTermWeekNum(todayStr, termBreaks);
     const activeStudents = students.filter(s => s.status === "active");
     const pendingStudents = students.filter(s => s.status === "pending" || s.status === "trial");
+    const allLessons = timetable?.lessons || [];
 
     const lines = [];
 
@@ -1039,25 +1043,183 @@ export default function MusicTimetableApp() {
     teachers.forEach(t => lines.push(`- ${t.name}${t.email ? ` <${t.email}>` : ""}`));
     lines.push("");
 
-    // ── Student summary ──
-    lines.push("## Students");
-    lines.push(`${activeStudents.length} active students, ${pendingStudents.length} pending/trial.`);
+    // ── Full student roster (always — not tab-gated) ──
+    lines.push("## All Active Students");
+    activeStudents.forEach(s => {
+      const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
+      const instrs = (s.instruments || []).map(i => {
+        const teacher = teachers.find(t => t.id === i.teacherId);
+        return `${i.name}${teacher ? ` with ${teacher.name}` : ""}`;
+      }).join(", ");
+      const studentLessons = allLessons.filter(l => l.studentId === s.id);
+      const schedule = studentLessons.length > 0
+        ? studentLessons.map(l => `${l.day} ${l.start}`).join(", ")
+        : "unscheduled";
+      lines.push(`  - ${s.name}${school ? ` — ${school}` : ""}${s.className ? `, ${s.className}` : ""}${instrs ? ` (${instrs})` : ""} [${schedule}]`);
+    });
+    lines.push("");
+
+    // ── Pending / trial students with setup details ──
     if (pendingStudents.length > 0) {
-      lines.push(`Pending/trial: ${pendingStudents.map(s => s.name).join(", ")}`);
+      lines.push("## Pending / Trial Students");
+      lines.push("(Trial students have a one-off lesson booked in a specific week. They auto-promote to Pending status after their trial lesson day at 6pm. Pending students are waiting to be added to the regular timetable.)");
+      pendingStudents.forEach(s => {
+        const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
+        const instrs = (s.instruments || []).map(i => {
+          const teacher = teachers.find(t => t.id === i.teacherId);
+          return `${i.name}${teacher ? ` with ${teacher.name}` : " (no teacher assigned)"}`;
+        }).join(", ");
+
+        // For trial students, check weeklyTimetables for their trial lesson
+        // (trial lessons are stored per-week, not in the master timetable)
+        let scheduleNote;
+        if (s.status === "trial") {
+          let trialLesson = null;
+          let trialWeekKey = null;
+          for (const [storageKey, data] of Object.entries(weeklyTimetables || {})) {
+            const lesson = (data.lessons || []).find(l => l.studentId === s.id && l.isTrial);
+            if (lesson) {
+              trialLesson = lesson;
+              trialWeekKey = storageKey.split("|")[0];
+              break;
+            }
+          }
+          scheduleNote = trialLesson
+            ? `trial lesson: ${trialLesson.day} ${trialLesson.start} (week of ${trialWeekKey})`
+            : "trial lesson NOT YET SCHEDULED";
+        } else {
+          const studentLessons = allLessons.filter(l => l.studentId === s.id);
+          scheduleNote = studentLessons.length > 0
+            ? `scheduled: ${studentLessons.map(l => `${l.day} ${l.start}`).join(", ")}`
+            : "NOT YET SCHEDULED";
+        }
+
+        const noteLine = s.notes ? ` — note: ${s.notes}` : "";
+        lines.push(`  - ${s.name} [${s.status.toUpperCase()}]${school ? ` — ${school}` : ""}${s.className ? `, ${s.className}` : ""}${instrs ? ` (${instrs})` : ""} — ${scheduleNote}${noteLine}`);
+      });
+      lines.push("");
+    }
+
+    // ── Students awaiting scheduling (from timetable engine) ──
+    const unscheduledList = timetable?.unscheduled || [];
+    if (unscheduledList.length > 0) {
+      lines.push("## Students Awaiting Scheduling");
+      unscheduledList.forEach(u => {
+        const s = u.student || u;
+        const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
+        lines.push(`  - ${s.name}${school ? ` — ${school}` : ""} (${u.instrument || "unknown instrument"})`);
+      });
+      lines.push("");
+    }
+
+    // ── Full master timetable (always — not tab-gated) ──
+    lines.push("## Master Timetable");
+    if (allLessons.length === 0) {
+      lines.push("No lessons scheduled yet.");
+    } else {
+      const bySchool = {};
+      allLessons.forEach(l => {
+        const sn = schools.find(s => s.id === l.schoolId)?.name || l.schoolId;
+        if (!bySchool[sn]) bySchool[sn] = [];
+        bySchool[sn].push(l);
+      });
+      Object.entries(bySchool).forEach(([sn, ls]) => {
+        lines.push(`${sn}:`);
+        const byDay = {};
+        ls.forEach(l => { if (!byDay[l.day]) byDay[l.day] = []; byDay[l.day].push(l); });
+        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].forEach(day => {
+          if (byDay[day]) {
+            byDay[day].sort((a, b) => (a.start || "").localeCompare(b.start || ""));
+            byDay[day].forEach(l => {
+              let who;
+              if (l.isGroup) {
+                const grp = groups.find(g => g.id === l.groupId);
+                const members = grp ? (grp.studentIds || []).map(sid => students.find(s => s.id === sid)?.name).filter(Boolean).join(", ") : "";
+                who = l.groupName || "Group";
+                if (members) who += ` [members: ${members}]`;
+              } else {
+                who = l.studentName;
+              }
+              lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument}) ${String.fromCharCode(8212)} ${l.teacherName}`);
+            });
+          }
+        });
+      });
     }
     lines.push("");
 
-    // ── This week's tally (always included — most commonly asked about) ──
-    const monday = _getMondayOf(now);
-    const weekKey = toLocalDateStr(monday);
-    const thisWeekEntries = tallyEntries.filter(e => e.weekKey === weekKey);
-    const missedThisWeek = thisWeekEntries.filter(e => e.status === "missed");
-    const completedThisWeek = thisWeekEntries.filter(e => e.status === "completed");
-    lines.push("## This Week's Tally");
-    lines.push(`Week of ${weekKey}: ${completedThisWeek.length} completed, ${missedThisWeek.length} missed.`);
-    if (missedThisWeek.length > 0) {
-      lines.push("Missed this week:");
-      missedThisWeek.forEach(e => lines.push(`  - ${e.studentName} (${e.instrument}) at ${schools.find(s => s.id === e.schoolId)?.name || e.schoolId}, ${e.day}${e.makeupEligible && !e.madeUp ? " — catch-up owed" : e.madeUp ? " — caught up" : ""}`));
+    // ── Groups (always — not tab-gated) ──
+    if (groups.length > 0) {
+      lines.push("## Groups");
+      groups.forEach(g => {
+        const school = schools.find(s => s.id === g.schoolId)?.name || "";
+        const teacher = teachers.find(t => t.id === g.teacherId)?.name || "";
+        const memberNames = (g.studentIds || []).map(sid => students.find(s => s.id === sid)?.name).filter(Boolean).join(", ");
+        const status = g.status || "forming";
+        lines.push(`  - ${g.name}${school ? ` — ${school}` : ""}${teacher ? `, teacher: ${teacher}` : ""}, instrument: ${g.instrument || "unknown"}, status: ${status}`);
+        if (memberNames) lines.push(`    members: ${memberNames}`);
+      });
+      lines.push("");
+    }
+
+    // ── Specialist timetable (always — not tab-gated) ──
+    if (specialists.length > 0) {
+      lines.push("## Specialist Timetable");
+      lines.push("(These are the regular recurring specialist classes per school. When a student's music lesson overlaps with one of these, a purple tag appears on their lesson card.)");
+      const bySchool = {};
+      specialists.forEach(sp => {
+        const schoolName = schools.find(s => s.id === sp.schoolId)?.name || sp.schoolId;
+        if (!bySchool[schoolName]) bySchool[schoolName] = [];
+        bySchool[schoolName].push(sp);
+      });
+      Object.entries(bySchool).forEach(([schoolName, entries]) => {
+        lines.push(`${schoolName}:`);
+        const byClass = {};
+        entries.forEach(sp => {
+          if (!byClass[sp.className]) byClass[sp.className] = [];
+          byClass[sp.className].push(sp);
+        });
+        Object.entries(byClass).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).forEach(([className, slots]) => {
+          const slotStrs = slots
+            .sort((a, b) => ["Monday","Tuesday","Wednesday","Thursday","Friday"].indexOf(a.day) - ["Monday","Tuesday","Wednesday","Thursday","Friday"].indexOf(b.day) || a.start.localeCompare(b.start))
+            .map(sp => `${sp.day} ${sp.start}–${sp.end} ${sp.subject}`)
+            .join(", ");
+          lines.push(`  Class ${className}: ${slotStrs}`);
+        });
+      });
+      lines.push("");
+    }
+
+    // ── Contacts with emails (always — not tab-gated) ──
+    if (contacts.length > 0) {
+      lines.push("## Contacts");
+      contacts.forEach(c => {
+        const student = students.find(s => s.id === c.studentId);
+        const link = student ? ` (${student.name}'s contact)` : "";
+        const phone = c.phone ? `, ph: ${c.phone}` : "";
+        lines.push(`  - ${c.name}${link}: ${c.email || "no email"}${phone}`);
+      });
+      lines.push("");
+    }
+
+    // ── Recent tally — last 3 weeks (always — not tab-gated) ──
+    const recentWeekKeys = [...new Set(tallyEntries.map(e => e.weekKey).filter(Boolean))]
+      .sort().reverse().slice(0, 3);
+    lines.push("## Recent Tally (last 3 weeks)");
+    if (recentWeekKeys.length === 0) {
+      lines.push("No tally entries recorded yet.");
+    } else {
+      recentWeekKeys.forEach(wk => {
+        const wkEntries = tallyEntries.filter(e => e.weekKey === wk);
+        const completed = wkEntries.filter(e => e.status === "completed");
+        const missed = wkEntries.filter(e => e.status === "missed");
+        const label = wkEntries[0]?.weekLabel || wk;
+        lines.push(`${label}: ${completed.length} completed, ${missed.length} missed`);
+        missed.forEach(e => {
+          const school = schools.find(s => s.id === e.schoolId)?.name || "";
+          lines.push(`  - ${e.studentName} (${e.instrument})${school ? ` at ${school}` : ""}, ${e.day}${e.makeupEligible && !e.madeUp ? " — catch-up owed" : e.madeUp ? " — caught up" : ""}${e.reason ? `, reason: ${e.reason}` : ""}`);
+        });
+      });
     }
     lines.push("");
 
@@ -1082,76 +1244,6 @@ export default function MusicTimetableApp() {
       lines.push("");
     }
 
-    // ── Tab-specific context ──
-    if (currentPage === "timetable" || currentPage === "weekly") {
-      const lessons = timetable?.lessons || [];
-      const bySchool = {};
-      lessons.forEach(l => {
-        const sn = schools.find(s => s.id === l.schoolId)?.name || l.schoolId;
-        if (!bySchool[sn]) bySchool[sn] = [];
-        bySchool[sn].push(l);
-      });
-      lines.push("## Master Timetable Summary");
-      Object.entries(bySchool).forEach(([sn, ls]) => {
-        const byDay = {};
-        ls.forEach(l => { if (!byDay[l.day]) byDay[l.day] = []; byDay[l.day].push(l); });
-        lines.push(`${sn}:`);
-        ["Monday","Tuesday","Wednesday","Thursday","Friday"].forEach(day => {
-          if (byDay[day]) lines.push(`  ${day}: ${byDay[day].map(l => l.isGroup ? (l.groupName || "Group") : (l.studentName || "Student")).join(", ")}`);
-        });
-      });
-      lines.push("");
-    }
-
-    if (currentPage === "students") {
-      lines.push("## All Active Students");
-      activeStudents.forEach(s => {
-        const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
-        const instrs = (s.instruments || []).map(i => i.name).filter(Boolean).join(", ");
-        lines.push(`  - ${s.name}${school ? ` — ${school}` : ""}${s.className ? `, ${s.className}` : ""}${instrs ? ` (${instrs})` : ""}${s.status === "trial" ? " [TRIAL]" : ""}`);
-      });
-      lines.push("");
-    }
-
-    if (currentPage === "tally") {
-      // Last 4 weeks of tally detail
-      lines.push("## Recent Tally (last 4 weeks)");
-      const recentMissed = tallyEntries
-        .filter(e => e.status === "missed")
-        .sort((a, b) => (b.weekKey || "").localeCompare(a.weekKey || ""))
-        .slice(0, 40);
-      if (recentMissed.length === 0) {
-        lines.push("No recent missed lessons.");
-      } else {
-        recentMissed.forEach(e => lines.push(`  - ${e.studentName} (${e.instrument}), ${e.weekLabel || e.weekKey}, ${e.day}${e.makeupEligible && !e.madeUp ? " — catch-up owed" : e.madeUp ? " — caught up" : " — no catch-up"}${e.reason ? `, reason: ${e.reason}` : ""}`));
-      }
-      lines.push("");
-    }
-
-    if (currentPage === "interruptions") {
-      lines.push("## All Upcoming Interruptions");
-      const upcoming = interruptions
-        .filter(i => i.type !== "term_break" && i.date >= todayStr)
-        .sort((a, b) => a.date.localeCompare(b.date));
-      if (upcoming.length === 0) {
-        lines.push("No upcoming interruptions recorded.");
-      } else {
-        upcoming.forEach(i => {
-          const school = schools.find(s => s.id === i.schoolId)?.name || "";
-          lines.push(`  - ${i.date}: ${i.title}${school ? ` (${school})` : ""}${i.affectsClasses && i.affectsClasses !== "all" ? ` — ${i.affectsClasses}` : ""}`);
-        });
-      }
-      lines.push("");
-    }
-
-    if (currentPage === "contacts") {
-      lines.push("## Contacts");
-      lines.push(`${contacts.length} contacts total.`);
-      const noEmail = contacts.filter(c => !c.email);
-      if (noEmail.length > 0) lines.push(`${noEmail.length} contacts missing an email address.`);
-      lines.push("");
-    }
-
     // ── Behavioural instructions ──
     lines.push("## Instructions");
     lines.push("- Be concise and practical. This is a working tool, not a chat app.");
@@ -1160,6 +1252,19 @@ export default function MusicTimetableApp() {
     lines.push("- Format responses with short paragraphs or brief bullet points. Avoid long prose.");
     lines.push("- If asked to draft an email, keep it friendly, professional, and brief.");
     lines.push("- Dates are in Melbourne, Australia time (AEDT/AEST).");
+    lines.push("");
+    lines.push("## Specialist Timetable Overrides");
+    lines.push("When the user shares an image or description of an adjusted specialist timetable, follow this process exactly:");
+    lines.push("1. Identify the school and the affected weeks from the image and the user's description.");
+    lines.push("2. If anything is unclear or ambiguous — a class name, a time, a subject — stop and ask the user to clarify before continuing. Do not guess.");
+    lines.push("3. Once you have enough information, compare the adjusted timetable against the regular specialist schedule shown above.");
+    lines.push("4. Produce a dry-run report in this format:");
+    lines.push("   - Plain English summary: school name, affected weeks, reason (e.g. Swimming carnival, NAPLAN).");
+    lines.push("   - Per-class diff: for each change, state what the regular schedule has vs what the adjusted timetable shows. Use plain language: 'Class 3A — Tuesday 9:00–9:50 changes from PE/Sport → Swimming', 'Class 5/6B — Wednesday slot removed', 'Class Prep A — Friday 2:00–2:50 Swimming added (not in regular schedule)'.");
+    lines.push("   - Affected students: list any students whose current music lessons overlap with changed slots. State the student name, class, day and time.");
+    lines.push("5. End with: 'Let me know when you've checked these and I'll be ready for the next one.' Do not offer to apply changes.");
+    lines.push("The data structure you are proposing changes to is called weekSpecialistOverrides, keyed by weekKey|schoolId (e.g. '2025-05-12|school-id'). Each entry has a reason string and an entries array of { className, day, start, end, subject }. These override the regular specialist schedule for that week only — only classes/days mentioned are overridden, the rest fall back to the regular schedule.");
+    lines.push("This is a DRY RUN ONLY phase. You describe what would change. You do not apply changes.");
 
     return lines.join("\n");
   };
@@ -1275,154 +1380,13 @@ export default function MusicTimetableApp() {
 
     if (studentsWithNotes.length > 0 || specialistsWithNotes.length > 0) {
       setGenerating(true);
-      notify(`Parsing scheduling notes...`);
+      notify("Parsing scheduling notes...");
       try {
-        // Build specialist context (always included for reference)
-        const specContext = specialists.length > 0
-          ? `\nSpecialist timetable entries (with notes where relevant):\n${specialists
-              .filter(s => s.notes && s.notes.trim())
-              .map(s => `- ${s.className} ${s.day} ${s.start}–${s.end} ${s.subject}${s.notes ? ` [notes: "${s.notes}"]` : ""}`)
-              .join("\n") || "(no specialist entries have notes)"}`
-          : "";
-
-        const specialistSubjects = [...new Set(specialists.map(s => s.subject))].join(", ");
-
-        // --- Parse specialist notes ---
-        if (specialistsWithNotes.length > 0) {
-          const specPayload = specialistsWithNotes.map(s => ({
-            id: s.id, className: s.className, day: s.day,
-            start: s.start, end: s.end, subject: s.subject, notes: s.notes
-          }));
-
-          const specResponse = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: getAnthropicHeaders(),
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 2000,
-              messages: [{
-                role: "user",
-                content: `Parse these specialist class entry notes into scheduling hints.
-
-Specialist entries with notes:
-${JSON.stringify(specPayload, null, 2)}
-
-For each entry, extract:
-- id: the entry's id (pass through exactly)
-- partialAvailability: true if the notes suggest this class does NOT run every week (e.g. "alternating weeks", "weeks 4 and 5 only", "fortnightly", "even weeks", "not every week"). false if it runs every week or unclear.
-- extraInfo: any other scheduling-relevant info as a short string
-
-Rules:
-- "alternating weeks", "fortnightly", "every other week", "odd/even weeks" = partialAvailability: true
-- "weeks X and Y only", "term 2 only" = partialAvailability: true
-- If notes are just descriptive with no scheduling impact, set partialAvailability: false
-
-Respond ONLY with a JSON array of {id, partialAvailability, extraInfo}. No other text, no markdown.`
-              }]
-            })
-          });
-
-          if (specResponse.ok) {
-            const specData = await specResponse.json();
-            const specText = specData.content?.filter(c => c.type === "text").map(c => c.text).join("") || "";
-            const specCleaned = specText.replace(/```json|```/g, "").trim();
-            try {
-              const specHints = JSON.parse(specCleaned);
-              if (Array.isArray(specHints)) {
-                const specHintsMap = {};
-                for (const h of specHints) { specHintsMap[h.id] = h; }
-                enrichedSpecialists = specialists.map(s => {
-                  const h = specHintsMap[s.id];
-                  if (h) return { ...s, _partial: h.partialAvailability || false };
-                  return s;
-                });
-              }
-            } catch(e) { /* ignore */ }
-          }
-        }
-
-        // --- Parse student notes ---
-        if (studentsWithNotes.length > 0) {
-          const notesPayload = studentsWithNotes.map(s => ({
-            id: s.id, name: s.name, className: s.className,
-            school: schools.find(sc => sc.id === s.schoolId)?.name || "",
-            notes: s.notes
-          }));
-
-          const response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: getAnthropicHeaders(),
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 4000,
-              messages: [{
-                role: "user",
-                content: `Parse these student notes into scheduling hints. Each student may have preferences, constraints, or availability info in their notes.
-
-Students:
-${JSON.stringify(notesPayload, null, 2)}
-
-Known specialist subjects at these schools: ${specialistSubjects}
-School days: Monday, Tuesday, Wednesday, Thursday, Friday
-School hours: typically 8:30am–3:30pm
-${specContext}
-
-For each student, extract:
-- preferredDays: array of day names they prefer (e.g. ["Friday"]). Use this for soft preferences like "prefers Friday", "would like Monday"
-- avoidDays: array of day names to avoid entirely
-- avoidTimes: array of {day, start (HH:MM), end (HH:MM)} time blocks to avoid (e.g. OT sessions, appointments)
-- requiredTimes: array of {day, start (HH:MM), instrument (optional)} — ONLY for notes that specify a CONCRETE day AND time for the lesson (e.g. "lesson at 10am Thursday", "scheduled for 2:30 on Wednesday", "music lesson Tuesday 11:00"). Both day AND time must be present in the note. NEVER put day-only preferences here. If the note specifies WHICH instrument goes at which time (e.g. "Guitar 8:30 Thursday, Piano 9:00 Thursday"), include the instrument name in the "instrument" field.
-- preferredTimes: array of {day, start (HH:MM)} — for softer time preferences that aren't strict requirements (e.g. "ideally around 11am", "morning preferred"). Can have just a start without a day if only time-of-day is mentioned.
-- allowedSpecialists: array of specialist subject names during which the student CAN be scheduled (e.g. if notes say "Can be scheduled during French", return ["LOTE"])
-- extraNotes: any other scheduling-relevant info as a short string, or empty string
-
-Rules:
-- Only include fields where the notes give clear info — use empty arrays and empty strings for unknowns
-- Convert 12-hour times to 24-hour format. IMPORTANT: School hours are 8:30am–3:30pm, so times like "1:10", "1:30", "2:00", "3:00" etc. always mean PM (13:10, 13:30, 14:00, 15:00). Times "4:00", "4:30", "5:00", "5:30", "6:00" are AFTER school and mean PM (16:00, 16:30, 17:00, 17:30, 18:00). Only times 7, 8, 9, 10, 11 could be AM. A time like "4:00" ALWAYS means 16:00, never 04:00.
-- For avoid times, estimate a 30-minute window if no end time given
-- Map language names (French, Japanese, Italian etc.) to "LOTE" for allowedSpecialists
-- Map sport/PE references to "PE/Sport"
-- If notes say things like "Can miss Art", that means Art is an allowedSpecialist
-- Consider the specialist timetable context above when interpreting notes about specific classes or times
-- CRITICAL: requiredTimes is ONLY for notes that explicitly state BOTH a specific day AND a specific time. "Prefers Friday" = preferredDays. "Lesson on Friday at 10am" = requiredTimes. "Morning if possible" = preferredTimes. If in doubt, use preferredDays or preferredTimes, NOT requiredTimes.
-- If a student learns multiple instruments and the notes specify multiple times (e.g. "8:30 and 9:00 on Thursday"), include ALL the times as separate requiredTimes entries — they will be assigned to each instrument in order.
-- If notes say lessons should be "back-to-back" on a specific day with a starting time, generate requiredTimes for consecutive 30-minute slots on that day.
-
-Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, requiredTimes, preferredTimes, allowedSpecialists, extraNotes}. requiredTimes entries should be {day, start} or {day, start, instrument} if the note specifies which instrument. No other text, no markdown.`
-              }]
-            })
-          });
-
-          if (!response.ok) {
-            const errText = await response.text();
-            if (logError) logError("Notes parse API error " + response.status, errText.slice(0, 200));
-          }
-          if (response.ok) {
-            const data = await response.json();
-            const text = data.content?.filter(c => c.type === "text").map(c => c.text).join("") || "";
-            const cleaned = text.replace(/```json|```/g, "").trim();
-            try {
-              const hints = JSON.parse(cleaned);
-              if (Array.isArray(hints)) {
-                const hintsMap = {};
-                for (const h of hints) { hintsMap[h.id] = h; }
-                enrichedStudents = enrichedStudents.map(s => {
-                  const h = hintsMap[s.id];
-                  if (h) return { ...s, _noteHints: h };
-                  return s;
-                });
-              }
-            } catch(e) { /* ignore parse errors, proceed without hints */ }
-          }
-        }
+        enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
+        enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
       } catch (err) {
         console.error("Note parsing error:", err);
-        if (err.message && (err.message.includes("401") || err.message.includes("403") || err.message.includes("API"))) {
-          notify("⚠ AI note parsing failed — check your API key in settings", "warning");
-        } else {
-          notify("⚠ Note parsing skipped: " + err.message, "warning");
-        }
-        // Continue without hints
+        notify("⚠ Note parsing skipped: " + err.message, "warning");
       }
       setGenerating(false);
     }
@@ -1536,66 +1500,11 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
       setGenerating(true);
       notify(`Parsing notes for ${schoolName}...`);
       try {
-        const specContext = specialists.length > 0
-          ? `\nSpecialist timetable entries (with notes where relevant):\n${specialists
-              .filter(s => s.notes && s.notes.trim())
-              .map(s => `- ${s.className} ${s.day} ${s.start}–${s.end} ${s.subject}${s.notes ? ` [notes: "${s.notes}"]` : ""}`)
-              .join("\n") || "(no specialist entries have notes)"}`
-          : "";
-        const specialistSubjects = [...new Set(specialists.map(s => s.subject))].join(", ");
-
-        if (specialistsWithNotes.length > 0) {
-          const specPayload = specialistsWithNotes.map(s => ({
-            id: s.id, className: s.className, day: s.day,
-            start: s.start, end: s.end, subject: s.subject, notes: s.notes
-          }));
-          const specResponse = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: getAnthropicHeaders(),
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514", max_tokens: 2000,
-              messages: [{ role: "user", content: `Parse these specialist class notes for scheduling relevance.\n\nEntries:\n${JSON.stringify(specPayload, null, 2)}\n\nFor each entry, determine:\n- partialAvailability: true if the class doesn't run every week (e.g. "alternating weeks", "fortnightly", "even weeks", "weeks 4 and 5 only", "term 2 only")\n- extraInfo: any other scheduling-relevant info as a short string\n\nRespond ONLY with a JSON array of {id, partialAvailability, extraInfo}. No other text.` }]
-            })
-          });
-          if (specResponse.ok) {
-            const data = await specResponse.json();
-            const text = data.content?.filter(c => c.type === "text").map(c => c.text).join("") || "";
-            try {
-              const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-              if (Array.isArray(parsed)) {
-                const map = {}; for (const p of parsed) map[p.id] = p;
-                enrichedSpecialists = specialists.map(s => map[s.id] ? { ...s, _partial: map[s.id].partialAvailability } : s);
-              }
-            } catch(e) {}
-          }
-        }
-
-        if (studentsWithNotes.length > 0) {
-          const notesPayload = studentsWithNotes.map(s => ({
-            id: s.id, name: s.name, className: s.className,
-            school: schools.find(sc => sc.id === s.schoolId)?.name || "", notes: s.notes
-          }));
-          const response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: getAnthropicHeaders(),
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514", max_tokens: 4000,
-              messages: [{ role: "user", content: `Parse these student notes into scheduling hints.\n\nStudents:\n${JSON.stringify(notesPayload, null, 2)}\n\nKnown specialist subjects: ${specialistSubjects}\nSchool days: Monday-Friday\nSchool hours: typically 8:30am–3:30pm\n${specContext}\n\nFor each student, extract:\n- preferredDays: array of day names they prefer\n- avoidDays: array of day names to avoid entirely\n- avoidTimes: array of {day, start (HH:MM), end (HH:MM)} time blocks to avoid\n- requiredTimes: array of {day, start (HH:MM)} — ONLY for notes with BOTH a specific day AND time\n- preferredTimes: array of {day, start (HH:MM)} — softer time preferences\n- allowedSpecialists: array of specialist subject names during which the student CAN be scheduled\n- extraNotes: any other scheduling-relevant info\n\nRules:\n- Only include fields where notes give clear info\n- Convert 12-hour to 24-hour format. School hours are 8:30am-3:30pm so times like 1:10, 1:30, 2:00 always mean PM (13:10, 13:30, 14:00)\n- For avoid times, estimate 30-min window if no end given\n- Map languages to "LOTE", sport/PE to "PE/Sport"\n- requiredTimes ONLY for explicit day+time. "Prefers Friday" = preferredDays, NOT requiredTimes\n- Multiple required times for multi-instrument students map to instruments in order\n\nRespond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, requiredTimes, preferredTimes, allowedSpecialists, extraNotes}. No other text.` }]
-            })
-          });
-          if (response.ok) {
-            const data = await response.json();
-            const text = data.content?.filter(c => c.type === "text").map(c => c.text).join("") || "";
-            try {
-              const hints = JSON.parse(text.replace(/```json|```/g, "").trim());
-              if (Array.isArray(hints)) {
-                const hintsMap = {}; for (const h of hints) hintsMap[h.id] = h;
-                enrichedStudents = enrichedStudents.map(s => hintsMap[s.id] ? { ...s, _noteHints: hintsMap[s.id] } : s);
-              }
-            } catch(e) {}
-          }
-        }
-      } catch (err) { console.error("Note parsing error:", err); }
+        enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
+        enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
+      } catch (err) {
+        console.error("Note parsing error:", err);
+      }
       setGenerating(false);
     }
 
@@ -2117,7 +2026,7 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
             { id: "pending", icon: "⏳", label: "Waiting List" },
             { id: "bands", icon: "🎸", label: "Bands" },
             { id: "specialists", icon: "🎨", label: "Specialist Classes" },
-            { id: "interruptions", icon: "🚧", label: "Interruptions" },
+            { id: "calendar", icon: "📅", label: "Calendar" },
             { id: "schools", icon: "🏫", label: "Schools" },
             { id: "teachers", icon: "🎵", label: "Teachers" },
             { id: "contacts", icon: "📇", label: "Contacts" },
@@ -2216,24 +2125,53 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
               setClaudeLoading(true);
               const systemPrompt = buildClaudeSystemPrompt(page);
               const history = [...claudeMessages.map(m => ({ role: m.role, content: m.content })), { role: "user", content: userContent }];
-              anthropicFetch("https://api.anthropic.com/v1/messages", {
-                method: "POST", headers: getAnthropicHeaders(),
-                body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 2048, system: systemPrompt, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: history })
-              }).then(r => r.json()).then(data => {
-                if (data.error) {
-                  const isAuth = data.error.type === "authentication_error" || data.error.type === "permission_error";
-                  setApiStatus(isAuth ? "error" : "ok");
-                  setClaudeMessages(prev => [...prev, { role: "assistant", content: `API error: ${data.error.message}` }]);
-                } else {
-                  setApiStatus("ok");
-                  const reply = (data.content || []).map(c => c.text || "").join("");
-                  if (data.usage) recordUsage("claude-sonnet-4-20250514", data.usage.input_tokens || 0, data.usage.output_tokens || 0);
-                  setClaudeMessages(prev => [...prev, { role: "assistant", content: reply || "Sorry, I couldn't get a response." }]);
+              let isFirstChunk = true;
+              anthropicStreamChat(
+                "https://api.anthropic.com/v1/messages",
+                {
+                  method: "POST", headers: getAnthropicHeaders(),
+                  body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4096, stream: true, system: systemPrompt, tools: [{ type: "web_search_20250305", name: "web_search" }], messages: history })
+                },
+                {
+                  onChunk: (text) => {
+                    if (isFirstChunk) {
+                      isFirstChunk = false;
+                      setClaudeLoading(false);
+                      // Add the assistant message with the first chunk — dots disappear, text takes over
+                      setClaudeMessages(prev => [...prev, { role: "assistant", content: text, streaming: true }]);
+                    } else {
+                      setClaudeMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (!last || last.role !== "assistant") return prev;
+                        return [...prev.slice(0, -1), { ...last, content: last.content + text }];
+                      });
+                    }
+                  },
+                  onEnd: (usage) => {
+                    if (usage) recordUsage("claude-sonnet-4-20250514", usage.input_tokens || 0, usage.output_tokens || 0);
+                    setApiStatus("ok");
+                    setClaudeLoading(false);
+                    // Remove streaming flag so message is treated as complete
+                    setClaudeMessages(prev => {
+                      const last = prev[prev.length - 1];
+                      if (!last || last.role !== "assistant") return prev;
+                      const content = last.content || "Sorry, I couldn't get a response.";
+                      return [...prev.slice(0, -1), { role: "assistant", content }];
+                    });
+                  },
+                  onError: (message, isAuth) => {
+                    setApiStatus(isAuth ? "error" : "ok");
+                    setClaudeLoading(false);
+                    setClaudeMessages(prev => {
+                      const last = prev[prev.length - 1];
+                      if (last?.role === "assistant" && last.streaming) {
+                        return [...prev.slice(0, -1), { role: "assistant", content: isAuth ? "API key error — check Settings." : `Something went wrong: ${message}` }];
+                      }
+                      return [...prev, { role: "assistant", content: isAuth ? "API key error — check Settings." : "Something went wrong. Check your API key in Settings." }];
+                    });
+                  },
                 }
-              }).catch(() => {
-                setApiStatus("error");
-                setClaudeMessages(prev => [...prev, { role: "assistant", content: "Something went wrong. Check your API key in Settings." }]);
-              }).finally(() => setClaudeLoading(false));
+              );
             };
             const canSend = (claudeInput.trim() || claudeAttachment) && !claudeLoading;
             return (
@@ -2292,33 +2230,57 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
                     <button
                       title="Attach image or PDF"
                       onClick={() => claudeFileInputRef.current?.click()}
+                      onDragEnter={e => { e.preventDefault(); setClaudeDragOver(true); }}
                       onDragOver={e => { e.preventDefault(); setClaudeDragOver(true); }}
-                      onDragLeave={() => setClaudeDragOver(false)}
+                      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setClaudeDragOver(false); }}
                       onDrop={e => {
                         e.preventDefault(); setClaudeDragOver(false);
                         // Check for email attachment drag first
                         if (window._pendingAttachmentDrag) {
+                          // Guard against double-fire (two overlapping drop targets)
+                          if (window._claudeAttachFetching) return;
+                          window._claudeAttachFetching = true;
+
                           const { att, messageId } = window._pendingAttachmentDrag;
                           window._pendingAttachmentDrag = null;
                           if (window.electronAPI?.gmailFetchAttachment) {
                             const mimeType = att.mimeType || "application/octet-stream";
                             const kind = mimeType.startsWith("image/") ? "image" : "pdf";
-                            if (kind !== "image" && mimeType !== "application/pdf") { notify("Claude can read images and PDFs only.", "warning"); return; }
+                            if (kind !== "image" && mimeType !== "application/pdf") {
+                              notify("Claude can read images and PDFs only.", "warning");
+                              window._claudeAttachFetching = false;
+                              return;
+                            }
                             window.electronAPI.gmailFetchAttachment(messageId, att.attachmentId)
                               .then(r => {
-                                if (r.ok) { setClaudeAttachment({ filename: att.filename, base64: r.base64, mediaType: mimeType, kind }); setClaudePanelOpen(true); }
-                                else notify("Could not load attachment: " + r.error, "danger");
-                              });
+                                setClaudeDragOver(false);
+                                if (r.ok) {
+                                  setClaudeAttachment({ filename: att.filename, base64: r.base64, mediaType: mimeType, kind });
+                                  setClaudePanelOpen(true);
+                                } else {
+                                  const retryMatch = (r.error || "").match(/Retry after ([^\s]+)/);
+                                  if (retryMatch) {
+                                    const retryTime = new Date(retryMatch[1]).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" });
+                                    notify(`Gmail rate limit — try again after ${retryTime}`, "warning", 8000);
+                                  } else {
+                                    notify("Could not load attachment: " + r.error, "danger");
+                                  }
+                                }
+                              })
+                              .catch(err => { console.error("[Claude drop] fetch error", err); setClaudeDragOver(false); })
+                              .finally(() => { window._claudeAttachFetching = false; });
+                          } else {
+                            window._claudeAttachFetching = false;
                           }
                           return;
                         }
                         const f = e.dataTransfer.files?.[0]; if (f) readClaudeFile(f);
                       }}
-                      style={{ flex: 1, height: 32, border: `1px solid ${claudeDragOver ? colors.accent : claudeAttachment ? colors.accent : "rgba(255,255,255,0.12)"}`, borderRadius: 7, background: claudeDragOver ? colors.accent + "33" : claudeAttachment ? colors.accent + "22" : "rgba(255,255,255,0.05)", color: claudeDragOver ? colors.accent : claudeAttachment ? colors.accent : "rgba(255,255,255,0.7)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
+                      style={{ flex: 1, height: 32, border: `1px solid ${claudeDragOver ? colors.accent : "rgba(255,255,255,0.12)"}`, borderRadius: 7, background: claudeDragOver ? colors.accent + "33" : "rgba(255,255,255,0.05)", color: claudeDragOver ? colors.accent : "rgba(255,255,255,0.7)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
                       onMouseEnter={e => { if (!claudeAttachment && !claudeDragOver) { e.currentTarget.style.background = colors.sidebarActive; e.currentTarget.style.color = colors.white; } }}
                       onMouseLeave={e => { if (!claudeAttachment && !claudeDragOver) { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; } }}
                     >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: "none" }}>
                         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                       </svg>
                     </button>
@@ -2520,7 +2482,7 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
                               ? <>
                                   {m.content.replace("__SCAN_REVIEW__", "").trimEnd()}
                                   <button
-                                    onClick={() => { setPage("interruptions"); setClaudePanelOpen(false); setClaudeNewsletterOpen(false); }}
+                                    onClick={() => { setPage("calendar"); setClaudePanelOpen(false); setClaudeNewsletterOpen(false); }}
                                     style={{ display: "block", marginTop: 10, padding: "6px 14px", background: colors.accent, color: colors.white, border: "none", borderRadius: 6, fontSize: 12, fontFamily: "inherit", cursor: "pointer", fontWeight: 600 }}
                                   >Review &amp; Import →</button>
                                 </>
@@ -2703,11 +2665,11 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
             return null;
           })()}
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} teachers={teachers} specialists={specialists} interruptions={interruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} />
+          <Dashboard schools={schools} students={students} teachers={teachers} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
-          {page === "interruptions" && <InterruptionsManager interruptions={interruptions} setInterruptions={setInterruptions} schools={schools} specialists={specialists} notify={notify} resetKey={resetKey} viewState={interruptionsViewState} setViewState={setInterruptionsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} scanPreview={scanPreview} setScanPreview={setScanPreview} />}
+          {page === "calendar" && <CalendarManager interruptions={interruptions} setInterruptions={setInterruptions} schools={schools} specialists={specialists} notify={notify} resetKey={resetKey} viewState={interruptionsViewState} setViewState={setInterruptionsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} scanPreview={scanPreview} setScanPreview={setScanPreview} />}
           {page === "students" && <StudentsManager students={students} setStudents={setStudents} schools={schools} teachers={teachers} specialists={specialists} notify={notify} focusStudentId={focusStudentId} onClearFocus={() => setFocusStudentId(null)} returnPage={focusReturnPage} onReturn={() => { if (focusReturnPage) { setPage(focusReturnPage); setFocusReturnPage(null); } }} resetKey={resetKey} viewState={studentsViewState} setViewState={setStudentsViewState} newStudentPrefill={newStudentPrefill} onClearNewStudentPrefill={() => setNewStudentPrefill(null)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "pending" && <PendingManager students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("pending"); setPage("students"); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
@@ -2855,7 +2817,7 @@ Respond ONLY with a JSON array of {id, preferredDays, avoidDays, avoidTimes, req
           {page === "settings" && <SettingsManager
             apiKey={apiKey} setApiKey={setApiKey}
             schools={schools} students={students} teachers={teachers} specialists={specialists}
-            interruptions={interruptions} groups={groups} timetable={timetable}
+            interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable}
             weeklyTimetables={weeklyTimetables} tallyEntries={tallyEntries}
             contacts={contacts} bands={bands} masterBreaks={masterBreaks} resources={resources}
             onRestore={handleRestore} onBackup={handleBackup} notify={notify} resetKey={resetKey}

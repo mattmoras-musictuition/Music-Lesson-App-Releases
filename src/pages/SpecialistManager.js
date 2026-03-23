@@ -1,11 +1,12 @@
 // ============================================================
-// SPECIALISTMANAGER — extracted from App.js
+// SpecialistManager.js
 // ============================================================
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS } from "../constants";
-import { uid, timeToMin, toTimeLabel, to12h } from "../utils/helpers";
-import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
+import { colors, DAYS, SLOT_TYPES, SLOT_TYPE_LABELS, HEADER_HEIGHT } from "../constants";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
+import { defaultSlots } from "../utils/backup";
+import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
@@ -1368,6 +1369,3 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
 }
 
 
-// ============================================================
-// INTERRUPTIONS MANAGER
-// ============================================================

@@ -14,6 +14,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, o
   const [toSuggestions, setToSuggestions] = React.useState([]);
   const [suggestionIdx, setSuggestionIdx] = React.useState(-1);
   const [from, setFrom] = React.useState(initial.from || "");
+  const [cc, setCc] = React.useState(initial.cc || []);
+  const [ccInput, setCcInput] = React.useState("");
+  const [bcc, setBcc] = React.useState(initial.bcc || []);
+  const [bccInput, setBccInput] = React.useState("");
+  const [showCc, setShowCc] = React.useState(!!(initial.cc && initial.cc.length));
+  const [showBcc, setShowBcc] = React.useState(!!(initial.bcc && initial.bcc.length));
   const [subject, setSubject] = React.useState(initial.subject || "");
   const [sending, setSending] = React.useState(false);
   const [attachments, setAttachments] = React.useState(initial.attachments || []);
@@ -189,7 +195,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, o
     }
     setSending(true);
     try {
-      const result = await window.electronAPI.gmailSend({ to, from: from || undefined, subject, bodyHtml, attachments: attachments.length > 0 ? attachments : undefined });
+      const result = await window.electronAPI.gmailSend({ to, from: from || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml, attachments: attachments.length > 0 ? attachments : undefined });
       if (result.ok) { try { localStorage.removeItem("mt-compose-draft"); } catch {} notify("Email sent ✓"); onClose(); }
       else notify("Send failed: " + result.error, "danger");
     } catch(e) { notify("Send error: " + e.message, "danger"); }
@@ -300,6 +306,72 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, o
               </>)}
             </div>
           </div>
+
+
+          {/* CC / BCC toggle buttons */}
+          {!showCc && !showBcc && (
+            <div style={{ display: "flex", gap: 6, paddingLeft: 68 }}>
+              <button onMouseDown={() => setShowCc(true)} style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>+ CC</button>
+              <button onMouseDown={() => setShowBcc(true)} style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>+ BCC</button>
+            </div>
+          )}
+          {showCc && !showBcc && (
+            <div style={{ display: "flex", gap: 6, paddingLeft: 68 }}>
+              <button onMouseDown={() => setShowBcc(true)} style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit" }}>+ BCC</button>
+            </div>
+          )}
+
+          {/* CC */}
+          {showCc && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, minWidth: 60, textAlign: "right", paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3 }}>
+                <button onMouseDown={() => { setShowCc(false); setCc([]); setCcInput(""); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 14, lineHeight: 1, padding: 0, fontFamily: "inherit" }}>−</button>
+                CC
+              </label>
+              <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, minHeight: 36, alignItems: "center", background: "transparent" }}>
+                {cc.map(email => (
+                  <span key={email} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, borderRadius: 20, fontSize: 12, color: colors.accentDark, fontWeight: 500 }}>
+                    {email}
+                    <button onClick={() => setCc(prev => prev.filter(e => e !== email))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                  </span>
+                ))}
+                <input value={ccInput} onChange={e => setCcInput(e.target.value)}
+                  onKeyDown={e => {
+                    if ((e.key === "Enter" || e.key === "," || e.key === "Tab") && ccInput.trim()) { e.preventDefault(); const v = ccInput.trim().replace(/,$/, ""); if (v && !cc.includes(v)) setCc(prev => [...prev, v]); setCcInput(""); }
+                    if (e.key === "Backspace" && !ccInput && cc.length > 0) setCc(prev => prev.slice(0, -1));
+                  }}
+                  onBlur={() => { if (ccInput.trim()) { setCc(prev => prev.includes(ccInput.trim()) ? prev : [...prev, ccInput.trim()]); setCcInput(""); }}}
+                  placeholder={cc.length === 0 ? "Add CC\u2026" : ""}
+                  style={{ flex: 1, minWidth: 120, border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: colors.text, background: "transparent", padding: "2px 2px" }} />
+              </div>
+            </div>
+          )}
+
+          {/* BCC */}
+          {showBcc && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, minWidth: 60, textAlign: "right", paddingTop: 8, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3 }}>
+                <button onMouseDown={() => { setShowBcc(false); setBcc([]); setBccInput(""); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 14, lineHeight: 1, padding: 0, fontFamily: "inherit" }}>−</button>
+                BCC
+              </label>
+              <div style={{ flex: 1, display: "flex", flexWrap: "wrap", gap: 4, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, minHeight: 36, alignItems: "center", background: "transparent" }}>
+                {bcc.map(email => (
+                  <span key={email} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, borderRadius: 20, fontSize: 12, color: colors.accentDark, fontWeight: 500 }}>
+                    {email}
+                    <button onClick={() => setBcc(prev => prev.filter(e => e !== email))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                  </span>
+                ))}
+                <input value={bccInput} onChange={e => setBccInput(e.target.value)}
+                  onKeyDown={e => {
+                    if ((e.key === "Enter" || e.key === "," || e.key === "Tab") && bccInput.trim()) { e.preventDefault(); const v = bccInput.trim().replace(/,$/, ""); if (v && !bcc.includes(v)) setBcc(prev => [...prev, v]); setBccInput(""); }
+                    if (e.key === "Backspace" && !bccInput && bcc.length > 0) setBcc(prev => prev.slice(0, -1));
+                  }}
+                  onBlur={() => { if (bccInput.trim()) { setBcc(prev => prev.includes(bccInput.trim()) ? prev : [...prev, bccInput.trim()]); setBccInput(""); }}}
+                  placeholder={bcc.length === 0 ? "Add BCC\u2026" : ""}
+                  style={{ flex: 1, minWidth: 120, border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: colors.text, background: "transparent", padding: "2px 2px" }} />
+              </div>
+            </div>
+          )}
 
           {/* Subject */}
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

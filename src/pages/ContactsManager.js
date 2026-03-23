@@ -4,9 +4,12 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { colors, STORAGE_KEYS } from "../constants";
-import { uid, openCompose, getParentEmails } from "../utils/helpers";
+import { uid, openCompose, openGmailSequential, getParentEmails } from "../utils/helpers";
 import { EmailTemplatesEditor, AiEmailRulesEditor, AiImportContacts } from "./ContactsEditors";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
+
+const CONTACT_ROLES = ["Principal", "Assistant Principal", "Office Manager", "Business Manager", "Classroom Teacher", "Specialist Teacher", "Other"];
+const CLASS_ROLES = ["Classroom Teacher", "Specialist Teacher"];
 
 export function ContactsManager({ contacts, setContacts, schools, students, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, goBack, goForward, historyCursor, pageHistory }) {
   const [section, setSection] = useState("parents"); // "parents" | "school"

@@ -4,15 +4,17 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { colors, DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from "../constants";
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getLiveTeacherName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf } from "../utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getLiveTeacherName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "../utils/tallyHelpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
-import { getUserTemplates, applyMergeCtx } from "../utils/emailTemplates";
+import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
+import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
+import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
 import { ExportDialog } from "../components/ExportDialog";
 
-export function Dashboard({ schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, contacts, bands, resources, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef }) {
+export function Dashboard({ schools, students, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, contacts, bands, resources, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef }) {
   const activeStudents = students.filter(s => s.status === "active");
 
   const [calendarWeekOffset, setCalendarWeekOffset] = useState(0);
@@ -20,7 +22,26 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const [calendarEvents, setCalendarEvents] = useState(() => { try { return JSON.parse(localStorage.getItem("mt-calendar-events") || "[]"); } catch { return []; } });
   const saveCalendarEvents = (evs) => { setCalendarEvents(evs); try { localStorage.setItem("mt-calendar-events", JSON.stringify(evs)); } catch {} };
   const [calEventMenu, setCalEventMenu] = useState(null); // { x, y, date, time, prefill }
-  const [calEventForm, setCalEventForm] = useState(null); // { date, time, title, details, id? }
+  const [calEventForm, setCalEventForm] = useState(null); // rich form: { type, title, startDate, endDate, startTime, endTime, schoolId, affectsClasses, interruptionSubtype, details, id?, sourceStore?, x?, y? }
+  const [expandedDays, setExpandedDays] = useState(new Set()); // Set of date strings with open expanded strips
+
+  const EVENT_TYPE_META = {
+    personal:     { label: "Personal / Admin", bg: "#E8EDF5", border: "#6B82A8", text: "#3B4E6E", dot: "#6B82A8" },
+    performance:  { label: "Performance",      bg: "#EEE9F5", border: "#8B7AAF", text: "#5C4A80", dot: "#8B7AAF" },
+    interruption: { label: "Interruption",     bg: "#F7F0E0", border: "#B8892E", text: "#705218", dot: "#B8892E" },
+    school_event: { label: "School Event",     bg: "#E5EFED", border: "#4D8C82", text: "#245C52", dot: "#4D8C82" },
+  };
+  const INTERRUPTION_SUBTYPES = [
+    { value: "student_free", label: "Student Free Day" },
+    { value: "excursion",    label: "Excursion" },
+    { value: "carnival",     label: "Carnival / Sports" },
+    { value: "swimming",     label: "Swimming" },
+    { value: "assembly",     label: "Assembly" },
+    { value: "camp",         label: "Camp" },
+    { value: "photos",       label: "Photo Day" },
+    { value: "concert",      label: "Concert" },
+    { value: "other",        label: "Other" },
+  ];
 
   // Current week calculation
   const today = melbourneNow();
@@ -143,6 +164,25 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const [bannerTip, setBannerTip] = React.useState(null);
   const [dashPanels, setDashPanels] = React.useState(() => { try { return { emails: false, todo: false, alerts: false, ...JSON.parse(localStorage.getItem(STORAGE_KEYS.dashPanels) || "{}") }; } catch { return { emails: false, todo: false, alerts: false }; } });
   const saveDashPanels = (next) => { setDashPanels(next); try { localStorage.setItem(STORAGE_KEYS.dashPanels, JSON.stringify(next)); } catch {} };
+
+  // ── Reminders ─────────────────────────────────────────────────
+  const [reminders, setReminders] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-reminders") || "[]"); } catch { return []; } });
+  const saveReminders = (r) => { setReminders(r); try { localStorage.setItem("mt-reminders", JSON.stringify(r)); } catch {} };
+  const [remindersOpen, setRemindersOpen] = React.useState(false);
+  const [remindersPanelSize, setRemindersPanelSize] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-reminders-size") || '{"w":300,"h":480}'); } catch { return { w: 300, h: 480 }; } });
+  const saveRemindersPanelSize = (s) => { setRemindersPanelSize(s); try { localStorage.setItem("mt-reminders-size", JSON.stringify(s)); } catch {} };
+  const [remindersDragOver, setRemindersDragOver] = React.useState(false);
+  const [remindersDropTarget, setRemindersDropTarget] = React.useState(false);
+  const [remindersGlobalDrag, setRemindersGlobalDrag] = React.useState(false);
+  const remindersGlobalDragCounter = React.useRef(0);
+  const [remindersMetaModal, setRemindersMetaModal] = React.useState(null);
+  const [remindersMetaForm, setRemindersMetaForm] = React.useState(null);
+  const [remindersInput, setRemindersInput] = React.useState("");
+  const remindersBtnRef = React.useRef(null);
+  const remindersPanelRef = React.useRef(null);
+  const remindersTypeRef = React.useRef(null);
+  const [studentDropOpen, setStudentDropOpen] = React.useState(false);
+  const bannerWrapperRef = React.useRef(null);
   const [splitRatio, setSplitRatio] = React.useState(() => { try { return parseFloat(localStorage.getItem("mt-dash-split-ratio") || "0.5"); } catch { return 0.5; } });
   const panelCardRef = React.useRef(null);
   const panelDividerDragging = React.useRef(false);
@@ -159,6 +199,30 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, []);
+
+  // Re-sync panel position after any render (day strip expand, panel open/close, etc.)
+  // Button is position:absolute in the banner wrapper — pure CSS, no JS needed.
+  React.useLayoutEffect(() => {
+    if (!remindersOpen || !remindersPanelRef.current || !bannerWrapperRef.current) return;
+    const rect = bannerWrapperRef.current.getBoundingClientRect();
+    const sc = document.querySelector("[data-printarea]");
+    if (!sc) return;
+    const cRect = sc.getBoundingClientRect();
+    remindersPanelRef.current.style.top = (rect.top - cRect.top + sc.scrollTop) + "px";
+    remindersPanelRef.current.style.right = (cRect.right - rect.right) + "px";
+  });
+
+  React.useEffect(() => {
+    const onEnter = () => { remindersGlobalDragCounter.current += 1; setRemindersGlobalDrag(true); };
+    const onLeave = () => { remindersGlobalDragCounter.current = Math.max(0, remindersGlobalDragCounter.current - 1); if (remindersGlobalDragCounter.current === 0) setRemindersGlobalDrag(false); };
+    const onReset = () => { remindersGlobalDragCounter.current = 0; setRemindersGlobalDrag(false); setRemindersDragOver(false); setRemindersDropTarget(false); };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onReset);
+    window.addEventListener("dragend", onReset);
+    return () => { window.removeEventListener("dragenter", onEnter); window.removeEventListener("dragleave", onLeave); window.removeEventListener("drop", onReset); window.removeEventListener("dragend", onReset); };
+  }, []);
+
   const [inboxEmails, setInboxEmails] = React.useState(() => { try { const c = JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxCache) || "null"); return Array.isArray(c?.emails) ? c.emails.map(preprocessEmail) : []; } catch { return []; } });
   const [emailFolder, setEmailFolder] = React.useState("inbox"); // "inbox" | "sent"
   const [sentEmails, setSentEmails] = React.useState([]);
@@ -245,6 +309,19 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const [attachmentDragging, setAttachmentDragging] = React.useState(null); // { att, messageId }
   const [alertDragging, setAlertDragging] = React.useState(null); // { text, tag } being dragged from alert chip
   const [alertDropdown, setAlertDropdown] = React.useState(null); // { rect, title, borderColor, items: [{label, dragPayload, chipColor}] }
+  // Wrapper: converts chip's viewport rect to absolute coords in scroll container at hover time,
+  // so the dropdown stays locked to the chip as the page scrolls.
+  const openAlertDropdown = React.useCallback((data) => {
+    if (!data?.rect) { setAlertDropdown(data); return; }
+    const sc = document.querySelector("[data-printarea]");
+    if (!sc) { setAlertDropdown(data); return; }
+    const cRect = sc.getBoundingClientRect();
+    setAlertDropdown({
+      ...data,
+      absLeft: data.rect.left - cRect.left,
+      absBottom: data.rect.bottom - cRect.top + sc.scrollTop,
+    });
+  }, []);
   const alertDropdownTimer = React.useRef(null); // delay timer for hover close
   const [missedContactMenu, setMissedContactMenu] = React.useState(null); // { x, y, item } for Contact all submenu
   const [catchupContactMenu, setCatchupContactMenu] = React.useState(null); // { x, y, item } for catch-up Contact all submenu
@@ -633,10 +710,10 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       const res = await anthropicFetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: getAnthropicHeaders(),
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 500, messages: [{ role: "user", content: prompt }] }),
       });
       const data = await res.json();
-      if (data.usage && recordUsage) recordUsage("claude-sonnet-4-20250514", data.usage.input_tokens || 0, data.usage.output_tokens || 0);
+      if (data.usage && recordUsage) recordUsage("claude-haiku-4-5-20251001", data.usage.input_tokens || 0, data.usage.output_tokens || 0);
       const draft = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("").trim();
       setTriageDraft(prev => ({ ...prev, [email.id]: draft }));
     } catch {}
@@ -969,6 +1046,43 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     return result;
   }, [dropEmailToTodo, classifyEmailFull, contacts, students]);
 
+  // ── Sorted + filtered reminders ───────────────────────────────
+  const sortedReminders = React.useMemo(() => {
+    const todayStr = melbourneToday();
+    // Derive term start from interruptions (same logic used in week label elsewhere)
+    let termStartDate = null;
+    const breaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => (a.date < b.date ? 1 : -1));
+    for (const br of breaks) {
+      const tbEnd = br.endDate || br.date;
+      if (tbEnd < todayStr) {
+        const ts = new Date(tbEnd); ts.setDate(ts.getDate() + 1);
+        while (ts.getDay() === 6 || ts.getDay() === 0) ts.setDate(ts.getDate() + 1);
+        termStartDate = ts; break;
+      }
+    }
+    if (!termStartDate) { const y = new Date().getFullYear(); const s = new Date(y, 0, 27); while (s.getDay() !== 2) s.setDate(s.getDate() + 1); termStartDate = s; }
+
+    const weekToMonday = (wn) => {
+      const d = new Date(termStartDate); d.setDate(d.getDate() + (wn - 1) * 7); return toLocalDateStr(d);
+    };
+    const weekToFriday = (wn) => {
+      const d = new Date(termStartDate); d.setDate(d.getDate() + (wn - 1) * 7 + 4); return toLocalDateStr(d);
+    };
+    const getSortDate = (r) => {
+      if (r.date) return r.date;
+      if (r.week) { const wn = parseInt(r.week); if (!isNaN(wn)) return weekToMonday(wn); }
+      return null;
+    };
+    const active = reminders.filter(r => {
+      const sd = getSortDate(r);
+      if (!sd) return true;
+      if (r.week && !r.date) return weekToFriday(parseInt(r.week)) >= todayStr;
+      return sd >= todayStr;
+    });
+    const undated = active.filter(r => !getSortDate(r));
+    const dated = active.filter(r => !!getSortDate(r)).sort((a, b) => { const da = getSortDate(a), db = getSortDate(b); return da < db ? -1 : da > db ? 1 : 0; });
+    return [...undated, ...dated];
+  }, [reminders, interruptions]);
 
   const fetchInbox = React.useCallback(async (opts = {}) => {
     if (!window.electronAPI) return;
@@ -1045,6 +1159,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         const termBreaksForStrip = interruptions.filter(i => i.type === "term_break");
         const calMonday = new Date(monday);
         calMonday.setDate(calMonday.getDate() + calendarWeekOffset * 7);
+        const calMondayStr = toLocalDateStr(calMonday);
         const fullWeekDays = DAYS.map((d, i) => {
           const date = new Date(calMonday);
           date.setDate(calMonday.getDate() + i);
@@ -1058,12 +1173,17 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         const renderDayCell = (wd) => {
           const isActive = activeDay === wd.day;
           const isToday = wd.date === todayStr;
+          const isExpanded = expandedDays.has(wd.date);
           const isTermBreak = interruptions.some(intr => intr.type === "term_break" && wd.date >= intr.date && wd.date <= (intr.endDate || intr.date));
           const dayInterrupts = interruptions.filter(intr => {
             if (intr.type === "term_break") return false;
             return wd.date >= intr.date && wd.date <= (intr.endDate || intr.date);
           });
-          const dayEvents = calendarEvents.filter(ev => ev.date === wd.date);
+          const dayEvents = calendarEvents.filter(ev => {
+            const start = ev.startDate || ev.date;
+            const end = ev.endDate || start;
+            return start <= wd.date && end >= wd.date;
+          });
           const dayTeacherSchools = [];
           for (const teacher of teachers) {
             for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
@@ -1072,36 +1192,60 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 const dayLessons = timetable ? timetable.lessons.filter(l => l.teacherId === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
                 const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                 const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
-                dayTeacherSchools.push({ teacher, school, firstLesson, lastLesson });
+                dayTeacherSchools.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
               }
             }
           }
           const bySchool = {};
-          for (const { teacher, school, firstLesson, lastLesson } of dayTeacherSchools) {
+          for (const { teacher, school, firstLesson, lastLesson, lessonCount } of dayTeacherSchools) {
             if (!bySchool[school.id]) bySchool[school.id] = { school, teachers: [] };
-            bySchool[school.id].teachers.push({ teacher, firstLesson, lastLesson });
+            bySchool[school.id].teachers.push({ teacher, firstLesson, lastLesson, lessonCount });
           }
           const schoolGroups = Object.values(bySchool);
+          const dayReminders = sortedReminders.filter(r => {
+            const rd = r.date || (() => {
+              if (!r.week) return null;
+              const wn = parseInt(r.week); if (isNaN(wn)) return null;
+              let termStart = null;
+              const breaks = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date < b.date ? 1 : -1);
+              for (const br of breaks) { const tbEnd = br.endDate || br.date; if (tbEnd < wd.date) { const ts = new Date(tbEnd); ts.setDate(ts.getDate()+1); while(ts.getDay()===6||ts.getDay()===0) ts.setDate(ts.getDate()+1); termStart=ts; break; } }
+              if (!termStart) { const y=new Date().getFullYear(); const s=new Date(y,0,27); while(s.getDay()!==2) s.setDate(s.getDate()+1); termStart=s; }
+              const mon = new Date(termStart); mon.setDate(mon.getDate()+(wn-1)*7);
+              const fri = new Date(mon); fri.setDate(fri.getDate()+4);
+              return wd.date >= toLocalDateStr(mon) && wd.date <= toLocalDateStr(fri) ? wd.date : null;
+            })();
+            return rd === wd.date;
+          });
+          const hasDot = dayEvents.length > 0 || dayInterrupts.length > 0;
+          const hasReminderDot = dayReminders.length > 0;
           return (
             <div key={wd.date}
               onMouseEnter={() => setHoveredDay(wd.day)}
               onMouseLeave={() => setHoveredDay(null)}
-              onContextMenu={e => { e.preventDefault(); setCalEventForm({ date: wd.date, time: "", title: "", details: "", x: e.clientX, y: e.clientY }); }}
+              onClick={() => setExpandedDays(prev => { const next = new Set(prev); next.has(wd.date) ? next.delete(wd.date) : next.add(wd.date); return next; })}
+              onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: wd.date, endDate: wd.date, type: "personal", title: "", startTime: "", endTime: "", schoolId: "", affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
               style={{
                 borderRadius: 10,
-                border: "2px solid " + (isActive ? colors.sidebarActive : "transparent"),
-                outline: isActive ? "none" : "1px solid " + colors.border,
+                borderTop: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
+                borderRight: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
+                borderBottom: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
+                borderLeft: wd.isNextWeek ? `4px solid ${colors.textMuted}` : `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
+                outline: (isActive || wd.isNextWeek) ? "none" : `1px solid ${colors.border}`,
                 outlineOffset: -1,
-                borderLeft: wd.isNextWeek ? `4px solid ${colors.textMuted}` : isActive ? `2px solid ${colors.sidebarActive}` : undefined,
-                background: isTermBreak ? "#F5F0FF" : isActive ? "#E8EDF5" : colors.white,
+                background: isTermBreak ? "#F5F0FF" : isExpanded ? "#E8EDF5" : isActive ? "#E8EDF5" : colors.white,
                 padding: "10px 10px",
-                minHeight: 90, // ~1.5x the previous ~60px effective height
-                transition: "border-color 0.15s, background 0.15s", cursor: "default",
+                minHeight: 90,
+                transition: "border-color 0.15s, background 0.15s",
+                cursor: "pointer",
                 display: "flex", flexDirection: "column",
               }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? colors.sidebarActive : colors.textLight, textTransform: "uppercase", letterSpacing: "0.05em" }}>{wd.day.slice(0, 3)}</span>
-                <span style={{ fontSize: 11, color: isActive ? colors.sidebarActive : colors.textMuted }}>{wd.dayNum}{isToday ? " ●" : ""}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  {hasDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: dayInterrupts.length > 0 ? EVENT_TYPE_META.interruption.dot : (dayEvents[0]?.type ? (EVENT_TYPE_META[dayEvents[0].type]?.dot || EVENT_TYPE_META.personal.dot) : EVENT_TYPE_META.personal.dot), display: "inline-block", flexShrink: 0 }} />}
+                  {hasReminderDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: colors.accent, display: "inline-block", flexShrink: 0 }} />}
+                  <span style={{ fontSize: 11, color: isActive ? colors.sidebarActive : colors.textMuted }}>{wd.dayNum}{isToday ? " ●" : ""}</span>
+                </div>
               </div>
               {isTermBreak ? (
                 <div style={{ fontSize: 9, fontWeight: 700, color: colors.warning, letterSpacing: "0.03em" }}>School Holidays</div>
@@ -1116,11 +1260,14 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                   )}
                   {dayEvents.length > 0 && (
                     <div style={{ marginBottom: 4 }}>
-                      {dayEvents.map(ev => (
-                        <div key={ev.id} style={{ fontSize: 9, background: colors.accentLight, color: colors.accentDark, borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {ev.time ? ev.time + " " : ""}{ev.title}
-                        </div>
-                      ))}
+                      {dayEvents.map(ev => {
+                        const tm = EVENT_TYPE_META[ev.type] || EVENT_TYPE_META.personal;
+                        return (
+                          <div key={ev.id} style={{ fontSize: 9, background: tm.bg, color: tm.text, borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {(ev.startTime || ev.time) ? (ev.startTime || ev.time) + " " : ""}{ev.title}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                   {schoolGroups.length === 0 ? (
@@ -1150,12 +1297,59 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           );
         };
 
+        // Build expanded strip data for each open day, in date order
+        const expandedStripData = stripDays
+          .filter(wd => expandedDays.has(wd.date))
+          .map(wd => {
+            const isTermBreak = interruptions.some(intr => intr.type === "term_break" && wd.date >= intr.date && wd.date <= (intr.endDate || intr.date));
+            const dayInterrupts = interruptions.filter(intr => {
+              if (intr.type === "term_break") return false;
+              return wd.date >= intr.date && wd.date <= (intr.endDate || intr.date);
+            });
+            const dayEvents = calendarEvents.filter(ev => {
+              const start = ev.startDate || ev.date;
+              const end = ev.endDate || start;
+              return start <= wd.date && end >= wd.date;
+            });
+            const teacherSchoolsData = [];
+            for (const teacher of teachers) {
+              for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
+                const school = schools.find(s => s.id === avail.schoolId);
+                if (school) {
+                  const dayLessons = timetable ? timetable.lessons.filter(l => l.teacherId === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+                  const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
+                  const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
+                  teacherSchoolsData.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
+                }
+              }
+            }
+            const bySchool = {};
+            for (const ts of teacherSchoolsData) {
+              if (!bySchool[ts.school.id]) bySchool[ts.school.id] = { school: ts.school, teachers: [] };
+              bySchool[ts.school.id].teachers.push(ts);
+            }
+            const schoolGroups = Object.values(bySchool);
+            const weeklyStatus = {};
+            for (const sg of schoolGroups) {
+              const key = `${calMondayStr}|${sg.school.id}`;
+              weeklyStatus[sg.school.id] = !!weeklyTimetables[key];
+            }
+            const schoolIdsOnDay = new Set(schoolGroups.map(sg => sg.school.id));
+            const pendingTrialOnDay = students.filter(s =>
+              (s.status === "pending" || s.status === "trial") && schoolIdsOnDay.has(s.schoolId)
+            );
+            return { ...wd, isTermBreak, dayInterrupts, dayEvents, schoolGroups, weeklyStatus, pendingTrialOnDay };
+          });
+
+        const linkStyle = { color: colors.accentDark, fontWeight: 600, textDecoration: "underline", cursor: "pointer", fontSize: 12 };
+        const sectionLabel = { fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 };
+
         return (
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 0 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(" + stripDays.length + ", 1fr)", gap: 6, marginBottom: 10 }}>
               {stripDays.map(wd => renderDayCell(wd))}
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 4, marginBottom: 2 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 4, marginBottom: expandedStripData.length > 0 ? 10 : 16 }}>
               <button onClick={() => setCalendarWeekOffset(o => o - 1)}
                 style={{ background: "none", border: "none", cursor: "pointer", color: colors.sidebarActive, fontWeight: 700, fontSize: 18, padding: "0 4px", lineHeight: 1 }}>‹</button>
               <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, letterSpacing: "0.05em" }}>
@@ -1164,6 +1358,178 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               <button onClick={() => setCalendarWeekOffset(o => o + 1)}
                 style={{ background: "none", border: "none", cursor: "pointer", color: colors.sidebarActive, fontWeight: 700, fontSize: 18, padding: "0 4px", lineHeight: 1 }}>›</button>
             </div>
+
+            {/* ── Expanded day strips ── */}
+            {expandedStripData.map(sd => (
+              <div key={sd.date} style={{ marginBottom: 10, background: colors.white, border: `1px solid ${colors.border}`, borderLeft: `4px solid ${colors.sidebarActive}`, borderRadius: 10, padding: "14px 18px" }}
+                onContextMenu={e => { e.preventDefault(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "personal", title: "", startTime: "", endTime: "", schoolId: "", affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}>
+                {/* Strip header */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: sd.isTermBreak ? 8 : 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontWeight: 700, fontSize: 15, color: colors.sidebarActive }}>{sd.day}</span>
+                    <span style={{ fontSize: 13, color: colors.textLight }}>{sd.dayNum} {new Date(sd.date + "T00:00:00").toLocaleDateString("en-AU", { month: "short" })}</span>
+                    {sd.date === todayStr && <span style={{ fontSize: 10, fontWeight: 700, background: colors.sidebarActive, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Today</span>}
+                    {sd.isNextWeek && <span style={{ fontSize: 10, fontWeight: 700, background: colors.textMuted, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Next week</span>}
+                  </div>
+                  <button onClick={e => { e.stopPropagation(); setExpandedDays(prev => { const next = new Set(prev); next.delete(sd.date); return next; }); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>✕</button>
+                </div>
+
+                {sd.isTermBreak ? (
+                  <div style={{ fontSize: 13, color: colors.warning, fontWeight: 600 }}>School Holidays</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+                    {/* Calendar events */}
+                    {sd.dayEvents.length > 0 && (
+                      <div>
+                        <div style={sectionLabel}>Events</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          {sd.dayEvents.map(ev => {
+                            const tm = EVENT_TYPE_META[ev.type] || EVENT_TYPE_META.personal;
+                            return (
+                              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: tm.bg, borderRadius: 7, border: `1px solid ${tm.border}40` }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: tm.text, background: `${tm.border}22`, padding: "1px 6px", borderRadius: 4, flexShrink: 0 }}>{tm.label}</span>
+                                {(ev.startTime || ev.time) && <span style={{ fontSize: 11, color: tm.text, fontWeight: 600, flexShrink: 0 }}>{ev.startTime || ev.time}{ev.endTime ? `–${ev.endTime}` : ""}</span>}
+                                <span style={{ fontSize: 13, color: tm.text, fontWeight: 600, flex: 1 }}>{ev.title}</span>
+                                {ev.details && <span style={{ fontSize: 11, color: tm.text, opacity: 0.7, flex: 1 }}>{ev.details}</span>}
+                                <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: ev.id, sourceStore: "calendar", type: ev.type || "personal", title: ev.title, startDate: ev.startDate || ev.date, endDate: ev.endDate || ev.startDate || ev.date, startTime: ev.startTime || ev.time || "", endTime: ev.endTime || "", schoolId: ev.schoolId || "", affectsClasses: ev.affectsClasses || "all", interruptionSubtype: ev.interruptionSubtype || "other", details: ev.details || "", x: null, y: null }); }}
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 12, opacity: 0.5, padding: "0 2px", flexShrink: 0 }} title="Edit">✎</button>
+                                <button onClick={e => { e.stopPropagation(); saveCalendarEvents(calendarEvents.filter(ce => ce.id !== ev.id)); }}
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 13, opacity: 0.5, padding: 0, flexShrink: 0 }} title="Delete">✕</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Interruptions */}
+                    {sd.dayInterrupts.length > 0 && (
+                      <div>
+                        <div style={sectionLabel}>Interruptions</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          {sd.dayInterrupts.map((intr, i) => {
+                            const tm = EVENT_TYPE_META.interruption;
+                            const isCalSource = intr.source === "calendar";
+                            return (
+                              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: tm.bg, borderRadius: 7, border: `1px solid ${tm.border}40` }}>
+                                <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>
+                                  <span onClick={() => onNavigate("interruptions")} style={linkStyle}>{intr.title}</span>
+                                  {intr.affectsClasses && intr.affectsClasses !== "all" && (
+                                    <span style={{ fontSize: 11, color: tm.text, fontWeight: 400, marginLeft: 6 }}>({intr.affectsClasses})</span>
+                                  )}
+                                  {intr.schoolId && (
+                                    <span style={{ fontSize: 11, color: tm.text, opacity: 0.6, marginLeft: 6 }}>{schools.find(s => s.id === intr.schoolId)?.name || ""}</span>
+                                  )}
+                                </span>
+                                {isCalSource && (
+                                  <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: intr.id, sourceStore: "interruptions", type: "interruption", title: intr.title, startDate: intr.date, endDate: intr.endDate || intr.date, startTime: intr.startTime || "", endTime: intr.endTime || "", schoolId: intr.schoolId || "", affectsClasses: intr.affectsClasses || "all", interruptionSubtype: intr.type || "other", details: intr.notes || "", x: null, y: null }); }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 12, opacity: 0.5, padding: "0 2px", flexShrink: 0 }} title="Edit">✎</button>
+                                )}
+                                {isCalSource && (
+                                  <button onClick={e => { e.stopPropagation(); setInterruptions(prev => prev.filter(ii => ii.id !== intr.id)); }}
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 13, opacity: 0.5, padding: 0, flexShrink: 0 }} title="Delete">✕</button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Teacher/school schedule */}
+                    {sd.schoolGroups.length === 0 ? (
+                      <div style={{ fontSize: 13, color: colors.textLight, fontStyle: "italic" }}>No lessons scheduled</div>
+                    ) : (
+                      <div>
+                        <div style={sectionLabel}>Schedule</div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          {sd.schoolGroups.map(gs => (
+                            <div key={gs.school.id}
+                              onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "interruption", title: "", startTime: "", endTime: "", schoolId: gs.school.id, affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
+                              style={{ padding: "8px 14px", background: "#F5F3EF", borderRadius: 8, border: `1px solid ${colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu" }}>
+                              <div style={{ fontWeight: 600, marginBottom: 6, color: colors.text }}>🏫 {gs.school.name}</div>
+                              {gs.teachers.map(t => (
+                                <div key={t.teacher.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: teacherColorMap[t.teacher.id], borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>
+                                    {t.teacher.name.split(" ")[0]}
+                                  </span>
+                                  {t.firstLesson && t.lastLesson && (
+                                    <span style={{ fontSize: 11, color: colors.textMuted }}>{toTimeLabel(t.firstLesson.start)}–{toTimeLabel(t.lastLesson.end)}</span>
+                                  )}
+                                  {t.lessonCount > 0 && (
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: colors.text }}>({t.lessonCount})</span>
+                                  )}
+                                </div>
+                              ))}
+                              <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${colors.borderLight}` }}>
+                                <span onClick={() => onNavigate("weekly")} style={{ ...linkStyle, fontSize: 11 }}>
+                                  Weekly: {sd.weeklyStatus[gs.school.id] ? "✓ generated" : "not yet generated"}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Pending / trial students at schools on this day */}
+                    {sd.pendingTrialOnDay.length > 0 && (
+                      <div>
+                        <div style={sectionLabel}>Pending & Trial</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {sd.pendingTrialOnDay.map(s => (
+                            <span key={s.id} onClick={() => onNavigate("pending")}
+                              style={{ fontSize: 11, fontWeight: 600, color: colors.sidebarActive, background: colors.blueLight, padding: "3px 10px", borderRadius: 10, cursor: "pointer", border: `1px solid ${colors.sidebarActive}40` }}>
+                              {s.name} <span style={{ opacity: 0.6, fontWeight: 400 }}>({s.status})</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* ── Term progress bar ── */}
+            {(() => {
+              const termBreaksForDash = interruptions.filter(i => i.type === "term_break");
+              const currentLabel = getTermWeekLabel(effectiveTodayStr, termBreaksForDash);
+              const currentWeekNum = parseInt((currentLabel.match(/\d+/) || ["1"])[0], 10);
+              let termStart = null, termEnd = null;
+              const sorted = [...termBreaksForDash].sort((a, b) => a.date.localeCompare(b.date));
+              for (const tb of sorted) {
+                const tbEnd = new Date((tb.endDate || tb.date) + "T00:00:00");
+                if (tbEnd < today) {
+                  const ts = new Date(tbEnd); ts.setDate(ts.getDate() + 1); termStart = ts;
+                } else if (!termEnd) {
+                  termEnd = new Date(tb.date + "T00:00:00");
+                }
+              }
+              if (!termStart) { const y = today.getFullYear(); const s = new Date(y, 0, 27); while (s.getDay() !== 2) s.setDate(s.getDate() + 1); termStart = s; }
+              let totalWeeks = currentWeekNum;
+              if (termEnd) {
+                const lastSchoolDay = new Date(termEnd); lastSchoolDay.setDate(lastSchoolDay.getDate() - 1);
+                const lastLabel = getTermWeekLabel(toLocalDateStr(lastSchoolDay), termBreaksForDash);
+                const lastNum = parseInt((lastLabel.match(/\d+/) || ["0"])[0], 10);
+                if (lastNum > 0) totalWeeks = lastNum;
+              }
+              const progress = totalWeeks > 0 ? Math.min(1, (currentWeekNum - 0.5) / totalWeeks) : 0;
+              return (
+                <div style={{ marginTop: expandedStripData.length > 0 ? 6 : 0, marginBottom: 20 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: "0.06em" }}>Term Progress</span>
+                    <span style={{ fontSize: 12, color: colors.textMuted }}>{currentLabel}{totalWeeks > currentWeekNum ? " of " + totalWeeks : ""}</span>
+                  </div>
+                  <div style={{ height: 7, background: colors.borderLight, borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: (progress * 100) + "%", background: colors.sidebarActive, borderRadius: 4, transition: "width 0.4s ease" }} />
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}
@@ -1435,7 +1801,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               );
               return (
                 <div
-                  style={{ position: "fixed", left: rect.left, top: rect.bottom + 6, zIndex: 9990, background: colors.white, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
+                  style={{ position: "absolute", left: alertDropdown.absLeft, top: (alertDropdown.absBottom || 0) + 6, zIndex: 49, background: colors.white, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
                   onMouseEnter={() => clearTimeout(alertDropdownTimer.current)}
                   onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}>
                   {title && <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, marginBottom: 2, letterSpacing: "0.04em" }}>{title}</div>}
@@ -1578,7 +1944,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
             })()}
             {emailGroupContactMenu && <div onClick={() => setEmailGroupContactMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 9994 }} />}
             {/* ── Unified banner: alerts card behind, pill floating, banner on top ── */}
-            <div style={{ position: "relative", marginBottom: 20, overflow: "hidden", borderRadius: 12 }}>
+            <div ref={bannerWrapperRef} style={{ position: "relative", marginBottom: 20 }}>
+              <div style={{ position: "relative", overflow: "hidden", borderRadius: 12 }}>
 
               {/* Alerts card — 1.5× banner height, always behind (zIndex 0) */}
               {(() => {
@@ -1596,12 +1963,12 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 return (
                   <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: alertsH, zIndex: 0,
                     background: "rgba(196,84,84,0.08)", border: `2px solid ${colors.danger}`, borderRadius: 12 }}>
-                    <div style={{ padding: "0 12px 0 104px", display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none" }}>
+                    <div style={{ padding: "0 12px 0 104px", display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: "linear-gradient(to right, transparent 90px, black 102px, black calc(100% - 112px), transparent calc(100% - 100px))", WebkitMaskImage: "linear-gradient(to right, transparent 90px, black 102px, black calc(100% - 112px), transparent calc(100% - 100px))" }}>
                       {/* Red — blockers + urgent */}
                       {unassignedCount > 0 && !isAlertDismissed("alert-unassigned") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${(s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (setStudentsViewState) setStudentsViewState(prev => ({ ...prev, filter: { ...prev.filter, hasWarning: "any" } })); onNavigate("students"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const instrs = (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: colors.danger }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const instrs = (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: colors.danger }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unassignedCount} unassigned</span>
@@ -1611,7 +1978,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {unschedCount > 0 && !isAlertDismissed("alert-unscheduled") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Schedule ${unschedCount} unscheduled student${unschedCount !== 1 ? "s" : ""} in timetable`, tag: "admin", groupType: "alert-unscheduled", adminItems: unschedEntries.map(u => ({ text: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}` })) })} onDragEnd={() => setAlertDragging(null)}
                           onClick={() => { const f = unschedEntries[0]; if (f && setSharedSchool) setSharedSchool(f.student.schoolId); onNavigate("timetable"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "UNSCHEDULED", borderColor: colors.danger, items: unschedEntries.map(u => ({ label: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}`, chipColor: colors.danger })) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNSCHEDULED", borderColor: colors.danger, items: unschedEntries.map(u => ({ label: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}`, chipColor: colors.danger })) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unschedCount} unscheduled</span>
@@ -1621,7 +1988,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Complete profiles for ${incompleteStudents.length} student${incompleteStudents.length !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-incomplete", adminItems: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { text: `${s.name} — missing ${missing}` }; }) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => onNavigate("students")}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "INCOMPLETE PROFILES", borderColor: colors.danger, items: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { label: `${s.name} — missing ${missing}`, chipColor: colors.danger }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "INCOMPLETE PROFILES", borderColor: colors.danger, items: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { label: `${s.name} — missing ${missing}`, chipColor: colors.danger }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{incompleteStudents.length} incomplete profile{incompleteStudents.length !== 1 ? "s" : ""}</span>
@@ -1632,7 +1999,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {responseRequiredRed.length > 0 && !isAlertDismissed("alert-response-red") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredRed.length} overdue email${responseRequiredRed.length !== 1 ? "s" : ""} requiring response`, tag: "email", groupType: "alert-response-red", responseEmails: responseRequiredRed })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const senderEmail = em.from?.includes("<") ? em.from.match(/<(.+)>/)?.[1] || "" : em.from || ""; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const senderEmail = em.from?.includes("<") ? em.from.match(/<(.+)>/)?.[1] || "" : em.from || ""; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>↩ {responseRequiredRed.length} response overdue</span>
@@ -1650,7 +2017,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                             draggable
                             onDragStart={() => { clearTimeout(alertDropdownTimer.current); setAlertDragging({ text: "Contact all re: missed lessons", tag: "lesson", groupType: "alert-missed-week", missedLessons: missedWithParents }); }}
                             onDragEnd={() => { setAlertDragging(null); setAlertDropdown(null); }}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "MISSED THIS WEEK", borderColor: colors.danger, items: missedWithParents.map(m => ({ label: `${m.studentName} — ${m.count}`, chipColor: colors.danger, dragPayload: { text: `Contact ${(m.parentName || "parent").split(" ")[0]} re: ${(m.studentName || "").split(" ")[0]}'s ${m.count === 1 ? "missed lesson" : `${m.count} missed lessons`}`, tag: "lesson", groupType: `alert-missed-student-${m.studentId}`, missedLesson: m } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "MISSED THIS WEEK", borderColor: colors.danger, items: missedWithParents.map(m => ({ label: `${m.studentName} — ${m.count}`, chipColor: colors.danger, dragPayload: { text: `Contact ${(m.parentName || "parent").split(" ")[0]} re: ${(m.studentName || "").split(" ")[0]}'s ${m.count === 1 ? "missed lesson" : `${m.count} missed lessons`}`, tag: "lesson", groupType: `alert-missed-student-${m.studentId}`, missedLesson: m } })) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                             style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.danger, fontWeight: 700 }}>{missedThisWeek.length} missed this week</span>
@@ -1662,7 +2029,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {responseRequiredYellow.length > 0 && !isAlertDismissed("alert-response-yellow") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredYellow.length} email${responseRequiredYellow.length !== 1 ? "s" : ""} awaiting response`, tag: "email", groupType: "alert-response-yellow", responseEmails: responseRequiredYellow })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.warning, items: responseRequiredYellow.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.amberDark, chipBg: colors.amberLight, chipBorder: colors.warning, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.warning, items: responseRequiredYellow.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.amberDark, chipBg: colors.amberLight, chipBorder: colors.warning, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: colors.amberLight, border: `1px solid ${colors.warning}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.amberDark, fontWeight: 700 }}>↩ {responseRequiredYellow.length} response pending</span>
@@ -1679,7 +2046,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Arrange ${catchupTotal} catch-up${catchupTotal !== 1 ? "s" : ""} owed`, tag: "lesson", groupType: "alert-catchup", catchupStudents })} onDragEnd={() => setAlertDragging(null)}
                           onClick={() => onNavigate("weekly")}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); const bySchool = {}; for (const s of catchupStudents) { const school = schools.find(sc => sc.id === s.schoolId); const key = school?.name || "Other"; if (!bySchool[key]) bySchool[key] = []; bySchool[key].push(s); } const sections = Object.entries(bySchool).map(([schoolName, sts]) => { const schoolStudents = sts; const schoolDragPayload = { text: `Arrange catch-ups — ${schoolName}`, tag: "lesson", groupType: `alert-catchup-school-${schoolName}`, catchupStudents: schoolStudents }; return { heading: schoolName, headingDragPayload: schoolDragPayload, items: sts.map(s => ({ label: `${s.studentName} — ${s.instrument || ""} (${s.count})`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: colors.accent, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s catch-up${s.count !== 1 ? "s" : ""}`, tag: "lesson", groupType: `alert-catchup-student-${s.studentId}-${s.instrument}`, catchupLesson: s } })) }; }); setAlertDropdown({ rect: r, title: "CATCH-UPS OWED", borderColor: colors.accent, sections }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); const bySchool = {}; for (const s of catchupStudents) { const school = schools.find(sc => sc.id === s.schoolId); const key = school?.name || "Other"; if (!bySchool[key]) bySchool[key] = []; bySchool[key].push(s); } const sections = Object.entries(bySchool).map(([schoolName, sts]) => { const schoolStudents = sts; const schoolDragPayload = { text: `Arrange catch-ups — ${schoolName}`, tag: "lesson", groupType: `alert-catchup-school-${schoolName}`, catchupStudents: schoolStudents }; return { heading: schoolName, headingDragPayload: schoolDragPayload, items: sts.map(s => ({ label: `${s.studentName} — ${s.instrument || ""} (${s.count})`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: colors.accent, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s catch-up${s.count !== 1 ? "s" : ""}`, tag: "lesson", groupType: `alert-catchup-student-${s.studentId}-${s.instrument}`, catchupLesson: s } })) }; }); openAlertDropdown({ rect: r, title: "CATCH-UPS OWED", borderColor: colors.accent, sections }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.accentDark, fontWeight: 700 }}>{catchupTotal} catch-up{catchupTotal !== 1 ? "s" : ""} owed</span>
@@ -1740,7 +2107,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                               <div draggable
                                 onDragStart={() => setAlertDragging(multiIntrPayload(publicHols, "Public Holidays"))}
                                 onDragEnd={() => { setAlertDragging(null); }}
-                                onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "PUBLIC HOLIDAYS", borderColor: colors.danger, items: publicHols.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.danger, chipBg: "#FEF2F2", chipBorder: colors.danger, dragPayload: singleIntrPayload(i) })) }); }}
+                                onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PUBLIC HOLIDAYS", borderColor: colors.danger, items: publicHols.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.danger, chipBg: "#FEF2F2", chipBorder: colors.danger, dragPayload: singleIntrPayload(i) })) }); }}
                                 onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                                 style={chipStyle("#FEF2F2", colors.danger, colors.danger)}>
                                 <span style={{ color: colors.danger, fontWeight: 700 }}>📅 Public Holidays — {publicHols.length}</span>
@@ -1767,7 +2134,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                 <div key={schoolId} draggable
                                   onDragStart={() => setAlertDragging(multiIntrPayload(intrs, acronym))}
                                   onDragEnd={() => { setAlertDragging(null); }}
-                                  onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: `${acronym} INTERRUPTIONS`, borderColor: colors.accentDark, items: intrs.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: `${colors.accentDark}60`, dragPayload: singleIntrPayload(i) })) }); }}
+                                  onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: `${acronym} INTERRUPTIONS`, borderColor: colors.accentDark, items: intrs.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: `${colors.accentDark}60`, dragPayload: singleIntrPayload(i) })) }); }}
                                   onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                                   style={chipStyle("#FEF2F2", colors.accentDark, colors.accentDark)}>
                                   <span style={{ color: colors.accentDark, fontWeight: 700 }}>🚧 {acronym} — {intrs.length} events</span>
@@ -1782,7 +2149,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredBlue.length} email${responseRequiredBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>↩ {responseRequiredBlue.length} question{responseRequiredBlue.length !== 1 ? "s" : ""} today</span>
@@ -1795,7 +2162,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           onDragStart={() => setAlertDragging({ text: `Review ${lessonChangeEmails.length} lesson change request${lessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: lessonChangeEmails })}
                           onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set(["parent"])); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.warning, items: lessonChangeEmails.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: colors.warning, chipBg: "#FFF7ED", chipBorder: `${colors.warning}60`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.warning, items: lessonChangeEmails.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: colors.warning, chipBg: "#FFF7ED", chipBorder: `${colors.warning}60`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: "#FFF7ED", border: `1px solid ${colors.warning}60`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.amberDark, fontWeight: 700 }}>🔄 {lessonChangeEmails.length} lesson change{lessonChangeEmails.length !== 1 ? "s" : ""}</span>
@@ -1812,7 +2179,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${pendingOnly} pending student${pendingOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-pending", pendingOrTrialStudents: pendingStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "PENDING STUDENTS", borderColor: `${colors.sidebarActive}80`, items: pendingStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s pending enrolment (${s.instrument})`, tag: "admin", groupType: `alert-pending-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PENDING STUDENTS", borderColor: `${colors.sidebarActive}80`, items: pendingStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s pending enrolment (${s.instrument})`, tag: "admin", groupType: `alert-pending-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                             style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>{pendingOnly} pending</span>
@@ -1830,7 +2197,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${trialOnly} trial student${trialOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-trial", pendingOrTrialStudents: trialStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); setAlertDropdown({ rect: r, title: "TRIAL STUDENTS", borderColor: `${colors.sidebarActive}80`, items: trialStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s trial (${s.instrument})`, tag: "admin", groupType: `alert-trial-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "TRIAL STUDENTS", borderColor: `${colors.sidebarActive}80`, items: trialStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s trial (${s.instrument})`, tag: "admin", groupType: `alert-trial-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                             style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>{trialOnly} trial</span>
@@ -1838,6 +2205,14 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           </div>
                         );
                       })()}
+                      {/* ── Reminders chip ── */}
+                      {sortedReminders.length > 0 && (
+                        <div
+                          onClick={() => setRemindersOpen(o => !o)}
+                          style={{ padding: "3px 10px", background: "#FDF0ED", border: `1.5px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                          <span style={{ color: colors.accentDark, fontWeight: 700 }}>🔔 {sortedReminders.length} reminder{sortedReminders.length !== 1 ? "s" : ""}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -2413,7 +2788,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                             <button key={i}
                                               draggable
                                               onDragStart={() => { setAttachmentDragging({ att, messageId: activeMsg.messageId || activeMsg.id }); setTodoDropTarget(true); window._pendingAttachmentDrag = { att, messageId: activeMsg.messageId || activeMsg.id }; }}
-                                              onDragEnd={() => { setAttachmentDragging(null); setTodoDropTarget(false); window._pendingAttachmentDrag = null; }}
+                                              onDragEnd={() => { setAttachmentDragging(null); setTodoDropTarget(false); setTimeout(() => { window._pendingAttachmentDrag = null; }, 100); }}
                                               onClick={e => {
                                                 e.stopPropagation();
                                                 if (window.electronAPI?.gmailGetAttachment) {
@@ -2991,8 +3366,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                       </span>
                                     )}
                                     {item.tag && item.tag !== "manual" && (
-                                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-                                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: tc.bg, color: tc.color }}>{item.tag}</span>
+                                      <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 3, flexShrink: 0 }}>
+                                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: tc.bg, color: tc.color, textAlign: "center" }}>{item.tag}</span>
                                         {item.emailId && isExpanded && (
                                           <button onClick={e => { e.stopPropagation();
                                               setInboxSelected(item.emailId);
@@ -3003,7 +3378,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                                 if (el && container) container.scrollTop = el.offsetTop - container.offsetTop;
                                               }); });
                                             }}
-                                            style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "rgba(52,69,101,0.1)", color: colors.sidebarActive, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                                            style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 4, background: "rgba(52,69,101,0.1)", color: colors.sidebarActive, border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
                                             view
                                           </button>
                                         )}
@@ -3217,167 +3592,285 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 </div>
               )}
             </Card></div>
+              </div>  {/* end inner overflow:hidden wrapper */}
+
+              {/* Reminders button — position:absolute in outer wrapper, scrolls with banner, no JS needed */}
+              <div
+                ref={remindersBtnRef}
+                onClick={() => setRemindersOpen(o => !o)}
+                onDragEnter={e => { e.preventDefault(); setRemindersDragOver(true); setRemindersDropTarget(true); }}
+                onDragOver={e => { e.preventDefault(); setRemindersDragOver(true); setRemindersDropTarget(true); }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) { setRemindersDragOver(false); setRemindersDropTarget(false); } }}
+                onDrop={e => {
+                  e.preventDefault(); setRemindersDragOver(false); setRemindersDropTarget(false);
+                  const text = e.dataTransfer.getData("text/plain") || "";
+                  if (text.trim()) { saveReminders([{ id: uid(), text: text.trim(), createdAt: new Date().toISOString() }, ...reminders]); setRemindersOpen(true); }
+                  else if (emailDragging) {
+                    const em = Array.isArray(emailDragging) ? emailDragging[0] : emailDragging;
+                    if (em) { const t = (em.subject || em.snippet || "Email reminder").slice(0, 120); saveReminders([{ id: uid(), text: t, emailId: em.id, createdAt: new Date().toISOString() }, ...reminders]); setRemindersOpen(true); setEmailDragging(null); }
+                  } else if (alertDragging?.text) {
+                    saveReminders([{ id: uid(), text: alertDragging.text, createdAt: new Date().toISOString() }, ...reminders]); setRemindersOpen(true);
+                  }
+                }}
+                style={{ position: "absolute", right: 10, top: 9, zIndex: 48,
+                  display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 12,
+                  background: remindersDragOver || (remindersGlobalDrag && !remindersOpen) ? colors.accent : remindersOpen ? colors.accentDark : colors.accentDark,
+                  cursor: "pointer", transition: "background 0.15s", userSelect: "none",
+                  boxShadow: remindersDragOver ? `0 0 0 3px ${colors.accent}55, 0 2px 6px rgba(0,0,0,0.3)` : "0 2px 6px rgba(0,0,0,0.25)" }}
+                onMouseEnter={e => { e.currentTarget.style.background = colors.accentDark; }}
+                onMouseLeave={e => { e.currentTarget.style.background = remindersDragOver || remindersOpen ? colors.accentDark : colors.accentDark; }}>
+                <span style={{ fontWeight: 700, fontSize: 11, color: "#fff", letterSpacing: "0.03em" }}>Reminders</span>
+                {sortedReminders.length > 0 && <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "0px 5px" }}>{sortedReminders.length}</span>}
+              </div>
             </div>  {/* end outer banner wrapper */}
           </>
         );
       })()}
 
-      {/* ── Term progress bar ── */}
-      {(() => {
-        const termBreaksForDash = interruptions.filter(i => i.type === "term_break");
-        const currentLabel = getTermWeekLabel(effectiveTodayStr, termBreaksForDash);
-        const currentWeekNum = parseInt((currentLabel.match(/\d+/) || ["1"])[0], 10);
-        const getMondayOf = (dt) => { const m = new Date(dt); const dow = m.getDay(); m.setDate(m.getDate() + (dow === 0 ? -6 : 1 - dow)); m.setHours(0, 0, 0, 0); return m; };
-        let termStart = null, termEnd = null;
-        const sorted = [...termBreaksForDash].sort((a, b) => a.date.localeCompare(b.date));
-        for (const tb of sorted) {
-          const tbEnd = new Date((tb.endDate || tb.date) + "T00:00:00");
-          if (tbEnd < today) {
-            const ts = new Date(tbEnd); ts.setDate(ts.getDate() + 1); termStart = ts;
-          } else if (!termEnd) {
-            termEnd = new Date(tb.date + "T00:00:00");
-          }
-        }
-        if (!termStart) { const y = today.getFullYear(); const s = new Date(y, 0, 27); while (s.getDay() !== 2) s.setDate(s.getDate() + 1); termStart = s; }
-        // Total weeks = week number of the last Mon before term break
-        let totalWeeks = currentWeekNum;
-        if (termEnd) {
-          const lastSchoolDay = new Date(termEnd); lastSchoolDay.setDate(lastSchoolDay.getDate() - 1);
-          const lastLabel = getTermWeekLabel(toLocalDateStr(lastSchoolDay), termBreaksForDash);
-          const lastNum = parseInt((lastLabel.match(/\d+/) || ["0"])[0], 10);
-          if (lastNum > 0) totalWeeks = lastNum;
-        }
-        const progress = totalWeeks > 0 ? Math.min(1, (currentWeekNum - 0.5) / totalWeeks) : 0;
+
+
+      {/* ── Reminders Panel ── */}
+      {remindersOpen && remindersBtnRef.current && (() => {
+        const W = remindersPanelSize.w;
+        const H = remindersPanelSize.h;
+        const CORAL_BG = "#FDF0ED";
+        const CORAL_BORDER = colors.accent;
+
+        const handleResizeMouseDown = (e, type) => {
+          e.preventDefault(); e.stopPropagation();
+          const startX = e.clientX, startY = e.clientY;
+          const startW = W, startH = H;
+          const onMove = (ev) => {
+            let nw = startW, nh = startH;
+            if (type === "left" || type === "corner") nw = Math.max(220, startW + (startX - ev.clientX));
+            if (type === "bottom" || type === "corner") nh = Math.max(200, startH + (ev.clientY - startY));
+            saveRemindersPanelSize({ w: nw, h: nh });
+          };
+          const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+        };
+
+        const addReminder = () => {
+          const t = remindersInput.trim();
+          if (!t) return;
+          saveReminders([{ id: uid(), text: t, createdAt: new Date().toISOString() }, ...reminders]);
+          setRemindersInput("");
+        };
+
         return (
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: "0.06em" }}>Term Progress</span>
-              <span style={{ fontSize: 12, color: colors.textMuted }}>{currentLabel}{totalWeeks > currentWeekNum ? " of " + totalWeeks : ""}</span>
-            </div>
-            <div style={{ height: 7, background: colors.borderLight, borderRadius: 4, overflow: "hidden" }}>
-              <div style={{ height: "100%", width: (progress * 100) + "%", background: colors.sidebarActive, borderRadius: 4, transition: "width 0.4s ease" }} />
+          <div
+            ref={remindersPanelRef}
+            onClick={e => { if (!remindersDropTarget && e.target === e.currentTarget) remindersTypeRef.current?.focus(); }}
+            style={{ position: "absolute", right: 0, top: 0, width: W, height: H, zIndex: 47,
+              background: remindersDropTarget ? `${CORAL_BG}` : CORAL_BG, border: `1.5px solid ${CORAL_BORDER}`, borderRadius: 12,
+              boxShadow: "0 8px 32px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", overflow: "hidden", userSelect: "none",
+              cursor: "text" }}
+            onDragEnter={e => { e.preventDefault(); setRemindersDropTarget(true); }}
+            onDragOver={e => { e.preventDefault(); setRemindersDropTarget(true); e.dataTransfer.dropEffect = "copy"; }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setRemindersDropTarget(false); }}
+            onDrop={e => {
+              e.preventDefault(); setRemindersDropTarget(false);
+              const text = e.dataTransfer.getData("text/plain") || "";
+              if (text.trim()) { saveReminders([{ id: uid(), text: text.trim(), createdAt: new Date().toISOString() }, ...reminders]); return; }
+              if (emailDragging) {
+                const em = Array.isArray(emailDragging) ? emailDragging[0] : emailDragging;
+                if (em) { const t = (em.subject || em.snippet || "Email reminder").slice(0, 120); saveReminders([{ id: uid(), text: t, emailId: em.id, createdAt: new Date().toISOString() }, ...reminders]); setEmailDragging(null); }
+              } else if (alertDragging?.text) {
+                saveReminders([{ id: uid(), text: alertDragging.text, createdAt: new Date().toISOString() }, ...reminders]);
+              }
+            }}>
+
+            {/* Resize — left edge */}
+            <div onMouseDown={e => handleResizeMouseDown(e, "left")}
+              style={{ position: "absolute", left: 0, top: 12, bottom: 12, width: 6, cursor: "ew-resize", zIndex: 10, borderRadius: "3px 0 0 3px" }} />
+            {/* Resize — bottom edge */}
+            <div onMouseDown={e => handleResizeMouseDown(e, "bottom")}
+              style={{ position: "absolute", left: 12, right: 12, bottom: 0, height: 6, cursor: "ns-resize", zIndex: 10 }} />
+            {/* Resize — bottom-left corner */}
+            <div onMouseDown={e => handleResizeMouseDown(e, "corner")}
+              style={{ position: "absolute", left: 0, bottom: 0, width: 14, height: 14, cursor: "nesw-resize", zIndex: 11 }} />
+
+            {/* List — invisible textarea at top captures typing; click anywhere focuses it */}
+            <div data-scroll-list style={{ flex: 1, overflowY: "auto", padding: "10px 12px 12px",
+              background: remindersDropTarget ? `${colors.accent}10` : "transparent", transition: "background 0.15s",
+              cursor: "text" }}
+              onClick={e => { if (e.target === e.currentTarget) remindersTypeRef.current?.focus(); }}>
+              {/* Ghost textarea — invisible, sits at top, shows cursor when focused */}
+              <textarea
+                ref={remindersTypeRef}
+                value={remindersInput}
+                onChange={e => setRemindersInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addReminder(); } }}
+                rows={1}
+                style={{ display: "block", width: "100%", fontSize: 12, lineHeight: 1.5,
+                  padding: 0, margin: "0 0 4px 0", border: "none", background: "transparent",
+                  color: colors.text, caretColor: colors.accent, outline: "none",
+                  fontFamily: "inherit", resize: "none", overflow: "hidden",
+                  userSelect: "text", cursor: "text",
+                  height: remindersInput ? "auto" : "1.5em" }}
+                onInput={e => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }} />
+              {sortedReminders.length === 0 && null}
+              {sortedReminders.map(r => {
+                const hasMeta = !!(r.date || r.week || r.time || r.schoolId || r.className || r.studentName || r.notes);
+                const school = r.schoolId ? schools.find(s => s.id === r.schoolId) : null;
+                const metaLine = [r.week ? `Wk ${r.week}` : r.date ? r.date : null, r.time || null, school?.name || null, r.className || null, r.studentName || null].filter(Boolean).join(" · ");
+                return (
+                  <div key={r.id}
+                    onContextMenu={e => { e.preventDefault(); setRemindersMetaModal(r.id); setRemindersMetaForm({ date: r.date || "", week: r.week || "", time: r.time || "", schoolId: r.schoolId || "", className: r.className || "", studentName: r.studentName || "", notes: r.notes || "" }); }}
+                    style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "5px 2px", cursor: "default" }}>
+                    <span style={{ color: colors.accent, fontSize: 14, lineHeight: "18px", flexShrink: 0 }}>•</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.45, wordBreak: "break-word" }}>{r.text}</div>
+                      {metaLine && <div style={{ fontSize: 10, color: colors.accentDark, marginTop: 2, opacity: 0.8 }}>{metaLine}</div>}
+                    </div>
+                    {hasMeta && <span style={{ fontSize: 9, color: colors.accent, flexShrink: 0, marginTop: 3, opacity: 0.7 }}>◆</span>}
+                    <button
+                      onClick={() => saveReminders(reminders.filter(x => x.id !== r.id))}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 13, lineHeight: 1, padding: 0, flexShrink: 0, opacity: 0.4 }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                      onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>×</button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         );
       })()}
 
-      {/* ── Divider between week grid and day strips ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0 14px" }}>
-        <div style={{ flex: 1, height: 1, background: `linear-gradient(to right, transparent, ${colors.border})` }} />
-        <span style={{ fontSize: 10, color: colors.textMuted, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>Schedule</span>
-        <div style={{ flex: 1, height: 1, background: `linear-gradient(to left, transparent, ${colors.border})` }} />
-      </div>
+      {/* ── Reminders Metadata Modal ── */}
+      {remindersMetaModal && remindersMetaForm && (() => {
+        const r = reminders.find(x => x.id === remindersMetaModal);
+        if (!r) return null;
+        const f = remindersMetaForm;
+        const labelStyle = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 4 };
+        const inputStyle = { width: "100%", fontSize: 12, padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.white, color: colors.text, fontFamily: "inherit", boxSizing: "border-box", outline: "none" };
 
-      {/* Day strips */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
-        {dayData.map((dd, ddIdx) => {
-          const isToday = dd.date === todayStr;
-          const activeDay = hoveredDay !== null ? hoveredDay : (visibleDays[0]?.day || todayDayName);
-          const isActive = activeDay === dd.day;
-          const hasInterruptions = dd.dayInterruptions.length > 0;
-          const totalLessons = dd.teacherSchools.reduce((sum, ts) => sum + ts.lessonCount, 0);
-          const isFirstNextWeek = dd.isNextWeek && (ddIdx === 0 || !dayData[ddIdx - 1].isNextWeek);
+        // Compute available weeks from current week to end of term
+        const todayStr = melbourneToday();
+        let termStart = null;
+        const bks = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date < b.date ? 1 : -1);
+        for (const br of bks) { const tbEnd = br.endDate || br.date; if (tbEnd < todayStr) { const ts = new Date(tbEnd); ts.setDate(ts.getDate()+1); while(ts.getDay()===6||ts.getDay()===0) ts.setDate(ts.getDate()+1); termStart=ts; break; } }
+        if (!termStart) { const y=new Date().getFullYear(); const s=new Date(y,0,27); while(s.getDay()!==2) s.setDate(s.getDate()+1); termStart=s; }
+        // Find next term break to know when term ends
+        const nextBreak = interruptions.filter(i => i.type === "term_break" && i.date > todayStr).sort((a,b) => a.date < b.date ? -1 : 1)[0];
+        const termEndDate = nextBreak ? new Date(nextBreak.date) : new Date(termStart.getTime() + 10*7*86400000);
+        const totalWeeks = Math.ceil((termEndDate - termStart) / (7*86400000));
+        // Current week number
+        const msPerWeek = 7*86400*1000;
+        const currentWeekNum = Math.max(1, Math.ceil((new Date(todayStr) - termStart) / msPerWeek) + 1);
+        const weekOptions = [];
+        for (let w = currentWeekNum; w <= Math.max(totalWeeks, currentWeekNum + 4); w++) {
+          const mon = new Date(termStart); mon.setDate(mon.getDate() + (w-1)*7);
+          const fri = new Date(mon); fri.setDate(fri.getDate()+4);
+          const fmt = d => d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+          weekOptions.push({ value: String(w), label: `Week ${w}  (${fmt(mon)} – ${fmt(fri)})` });
+        }
 
-          return (
-            <React.Fragment key={dd.date}>
-              {isFirstNextWeek && (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "4px 0" }}>
-                  <div style={{ flex: 1, height: 1, background: "rgba(52,69,101,0.25)" }} />
-                  <span style={{ fontSize: 11, color: colors.sidebarActive, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.6 }}>Next Week</span>
-                  <div style={{ flex: 1, height: 1, background: "rgba(52,69,101,0.25)" }} />
+        // Classes for selected school
+        const schoolClasses = f.schoolId
+          ? [...new Set(students.filter(s => s.schoolId === f.schoolId && s.className).map(s => s.className))].sort()
+          : [];
+
+        // Student search
+        const studentSearch = f.studentName || "";
+        const matchedStudents = studentSearch.length >= 1
+          ? students.filter(s => s.status === "active" && s.name.toLowerCase().includes(studentSearch.toLowerCase()) && (!f.schoolId || s.schoolId === f.schoolId)).slice(0, 8)
+          : [];
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => { setRemindersMetaModal(null); setRemindersMetaForm(null); }}>
+            <div style={{ background: colors.white, borderRadius: 14, padding: 20, width: 340, boxShadow: "0 8px 32px rgba(0,0,0,0.18)", fontFamily: "inherit" }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4 }}>Reminder details</div>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16, lineHeight: 1.4 }}>{r.text.slice(0, 80)}{r.text.length > 80 ? "…" : ""}</div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 12px", marginBottom: 12 }}>
+                {/* Date */}
+                <div>
+                  <span style={labelStyle}>Date</span>
+                  <input type="date" value={f.date} onChange={e => setRemindersMetaForm(p => ({ ...p, date: e.target.value }))} style={inputStyle} />
                 </div>
-              )}
-            <Card
-              onMouseEnter={() => setHoveredDay(dd.day)}
-              onMouseLeave={() => setHoveredDay(null)}
-              onContextMenu={e => { e.preventDefault(); setCalEventForm({ date: dd.date, time: "", title: "", details: "", x: e.clientX, y: e.clientY }); }}
-              style={{
-                padding: "14px 18px",
-                borderLeft: isActive ? "4px solid " + colors.sidebarActive : dd.isNextWeek ? "4px solid " + colors.textMuted : "4px solid " + colors.border,
-                background: isActive ? "#E8EDF5" : colors.white,
-                boxShadow: isActive ? "0 2px 12px rgba(52,69,101,0.2)" : "0 1px 4px rgba(0,0,0,0.06)",
-                transition: "background 0.15s, border-color 0.15s",
-              }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                    <span style={{ fontWeight: 700, fontSize: 15, color: isActive ? colors.sidebarActive : colors.text }}>
-                      {dd.day}
-                    </span>
-                    <span style={{ fontSize: 13, color: colors.textLight }}>{dd.dayNum} {dd.month}</span>
-                    {isToday && <Tag color={colors.sidebarActive}>Today</Tag>}
-                    {dd.isNextWeek && <Tag color={colors.textMuted}>Next week</Tag>}
-                    {hasInterruptions && dd.dayInterruptions.map((intr, i) => (
-                      <Tag key={i} color="#D97706">{intr.title}{intr.affectsClasses !== "all" ? ` (${intr.affectsClasses})` : ""}</Tag>
-                    ))}
-                  </div>
-
-                  {/* Calendar events */}
-                  {(() => {
-                    const dayEvents = calendarEvents.filter(ev => ev.date === dd.date);
-                    if (!dayEvents.length) return null;
-                    return (
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-                        {dayEvents.map(ev => (
-                          <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, background: colors.accentLight, color: colors.accentDark, borderRadius: 6, padding: "3px 8px", fontWeight: 600, cursor: "pointer" }}
-                            onClick={() => setCalEventForm({ ...ev, x: null, y: null })}>
-                            {ev.time && <span style={{ opacity: 0.75 }}>{ev.time}</span>}
-                            <span>{ev.title}</span>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })()}
-
-                  {dd.teacherSchools.length === 0 ? (
-                    <div style={{ fontSize: 13, color: colors.textLight, fontStyle: "italic" }}>No lessons scheduled</div>
+                {/* Week dropdown */}
+                <div>
+                  <span style={labelStyle}>Week</span>
+                  <select value={f.week} onChange={e => setRemindersMetaForm(p => ({ ...p, week: e.target.value }))} style={{ ...inputStyle, appearance: "none" }}>
+                    <option value="">— Any —</option>
+                    {weekOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                {/* Time */}
+                <div>
+                  <span style={labelStyle}>Time</span>
+                  <input type="time" value={f.time} onChange={e => setRemindersMetaForm(p => ({ ...p, time: e.target.value }))} style={inputStyle} />
+                </div>
+                {/* School */}
+                <div>
+                  <span style={labelStyle}>School</span>
+                  <select value={f.schoolId} onChange={e => setRemindersMetaForm(p => ({ ...p, schoolId: e.target.value, className: "" }))} style={{ ...inputStyle, appearance: "none" }}>
+                    <option value="">— Any —</option>
+                    {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+                {/* Class — dropdown filtered by school */}
+                <div>
+                  <span style={labelStyle}>Class</span>
+                  {schoolClasses.length > 0 ? (
+                    <select value={f.className} onChange={e => setRemindersMetaForm(p => ({ ...p, className: e.target.value }))} style={{ ...inputStyle, appearance: "none" }}>
+                      <option value="">— Any —</option>
+                      {schoolClasses.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
                   ) : (
-                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                      {(() => {
-                        const bySchool = {};
-                        for (const ts of dd.teacherSchools) {
-                          if (!bySchool[ts.school.id]) bySchool[ts.school.id] = { school: ts.school, teachers: [], totalLessons: 0 };
-                          bySchool[ts.school.id].teachers.push(ts);
-                          bySchool[ts.school.id].totalLessons += ts.lessonCount;
-                        }
-                        return Object.values(bySchool).map(gs => (
-                          <div key={gs.school.id} style={{
-                            padding: "8px 14px", background: isToday ? colors.white : "#F5F3EF", borderRadius: 8,
-                            border: `1px solid ${isToday ? "rgba(52,69,101,0.25)" : colors.border}`, fontSize: 12,
-                            boxShadow: "0 1px 3px rgba(0,0,0,0.04)"
-                          }}>
-                            <div style={{ fontWeight: 600, marginBottom: 4 }}>🏫 {gs.school.name}</div>
-                            {gs.teachers.map(t => (
-                              <div key={t.teacher.id} style={{ display: "flex", alignItems: "center", gap: 6, color: colors.textLight, marginBottom: 1 }}>
-                                <span>{t.teacher.name.split(" ")[0]}</span>
-                                {t.firstLesson && t.lastLesson ? (
-                                  <span style={{ color: colors.textMuted, fontSize: 11 }}>
-                                    {toTimeLabel(t.firstLesson.start)}–{toTimeLabel(t.lastLesson.end)}
-                                  </span>
-                                ) : null}
-                                {t.lessonCount > 0 && <span style={{ fontWeight: 600, color: colors.text, fontSize: 11 }}>({t.lessonCount})</span>}
-                              </div>
-                            ))}
-                          </div>
-                        ));
-                      })()}
+                    <input placeholder="e.g. 5A" value={f.className} onChange={e => setRemindersMetaForm(p => ({ ...p, className: e.target.value }))} style={inputStyle} />
+                  )}
+                </div>
+                {/* Student — searchable */}
+                <div style={{ position: "relative" }}>
+                  <span style={labelStyle}>Student</span>
+                  <input
+                    placeholder="Search name…"
+                    value={f.studentName}
+                    onChange={e => { setRemindersMetaForm(p => ({ ...p, studentName: e.target.value })); setStudentDropOpen(true); }}
+                    onFocus={() => setStudentDropOpen(true)}
+                    onBlur={() => setTimeout(() => setStudentDropOpen(false), 150)}
+                    style={inputStyle} />
+                  {studentDropOpen && matchedStudents.length > 0 && (
+                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 7, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", maxHeight: 160, overflowY: "auto" }}>
+                      {matchedStudents.map(s => (
+                        <div key={s.id}
+                          onMouseDown={() => { setRemindersMetaForm(p => ({ ...p, studentName: s.name, schoolId: p.schoolId || s.schoolId || "", className: p.className || "" })); setStudentDropOpen(false); }}
+                          style={{ padding: "7px 10px", fontSize: 12, cursor: "pointer", borderBottom: `1px solid ${colors.borderLight}` }}
+                          onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                          {s.name}
+                          {s.schoolId && <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 6 }}>{schools.find(sc => sc.id === s.schoolId)?.name?.split(" ")[0]}</span>}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
-
-                {/* Quick action: jump to weekly */}
-                {timetable && dd.teacherSchools.length > 0 && (
-                  <Btn variant="secondary" onClick={() => onNavigate("weekly")} style={{ fontSize: 11, padding: "5px 10px", whiteSpace: "nowrap" }}>
-                    Weekly →
-                  </Btn>
-                )}
               </div>
-            </Card>
-            </React.Fragment>
-          );
-        })}
-      </div>
 
+              <div style={{ marginBottom: 16 }}>
+                <span style={labelStyle}>Notes</span>
+                <textarea rows={2} value={f.notes} onChange={e => setRemindersMetaForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical" }} />
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => {
+                    saveReminders(reminders.map(x => x.id === remindersMetaModal ? { ...x, ...f, week: f.week ? String(parseInt(f.week)) : "" } : x));
+                    setRemindersMetaModal(null); setRemindersMetaForm(null);
+                  }}
+                  style={{ flex: 1, padding: "8px 0", borderRadius: 8, background: colors.accent, color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>Save</button>
+                <button onClick={() => { saveReminders(reminders.filter(x => x.id !== remindersMetaModal)); setRemindersMetaModal(null); setRemindersMetaForm(null); }}
+                  style={{ padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", color: colors.danger, fontWeight: 700, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>Delete</button>
+                <button onClick={() => { setRemindersMetaModal(null); setRemindersMetaForm(null); }}
+                  style={{ padding: "8px 12px", borderRadius: 8, background: colors.bg, color: colors.textMuted, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Backup / Restore */}
       <DashboardBackupBar onBackup={onBackup} onRestore={onRestore} notify={notify} />
@@ -3390,60 +3883,222 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       </div>
 
       {/* ── Calendar event form modal ── */}
-      {calEventForm && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.25)" }}
-          onClick={e => { if (e.target === e.currentTarget) setCalEventForm(null); }}>
-          <div style={{
-            position: "fixed",
-            left: calEventForm.x ? Math.min(calEventForm.x, window.innerWidth - 320) : "50%",
-            top: calEventForm.y ? Math.min(calEventForm.y, window.innerHeight - 320) : "50%",
-            transform: calEventForm.x ? "none" : "translate(-50%,-50%)",
-            background: colors.white, borderRadius: 12, padding: "18px 20px", width: 300,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.2)", zIndex: 10001,
-          }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: colors.text, marginBottom: 14 }}>
-              {calEventForm.id ? "Edit Event" : "Add Event"}
-              <span style={{ fontWeight: 400, fontSize: 12, color: colors.textMuted, marginLeft: 8 }}>
-                {(() => { const d = new Date(calEventForm.date + "T00:00:00"); return d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }); })()}
-              </span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <input value={calEventForm.title} onChange={e => setCalEventForm(f => ({ ...f, title: e.target.value }))}
-                placeholder="Title *" autoFocus
-                style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none" }} />
-              <input value={calEventForm.time} onChange={e => setCalEventForm(f => ({ ...f, time: e.target.value }))}
-                placeholder="Time (e.g. 9:00am)"
-                style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none" }} />
-              <textarea value={calEventForm.details} onChange={e => setCalEventForm(f => ({ ...f, details: e.target.value }))}
-                placeholder="Details (optional)" rows={2}
-                style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", resize: "vertical" }} />
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button onClick={() => {
-                if (!calEventForm.title.trim()) return;
-                if (calEventForm.id) {
-                  saveCalendarEvents(calendarEvents.map(ev => ev.id === calEventForm.id ? { ...ev, title: calEventForm.title, time: calEventForm.time, details: calEventForm.details } : ev));
-                } else {
-                  saveCalendarEvents([...calendarEvents, { id: uid(), date: calEventForm.date, title: calEventForm.title.trim(), time: calEventForm.time.trim(), details: calEventForm.details.trim(), createdAt: new Date().toISOString() }]);
-                }
-                setCalEventForm(null);
-              }} style={{ flex: 1, padding: "8px 0", borderRadius: 8, background: colors.sidebarActive, color: "#fff", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-                {calEventForm.id ? "Save" : "Add"}
-              </button>
-              {calEventForm.id && (
-                <button onClick={() => { saveCalendarEvents(calendarEvents.filter(ev => ev.id !== calEventForm.id)); setCalEventForm(null); }}
-                  style={{ padding: "8px 14px", borderRadius: 8, background: "#FEF2F2", color: colors.danger, fontWeight: 600, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>
-                  Delete
-                </button>
+      {calEventForm && (() => {
+        const f = calEventForm;
+        const tm = EVENT_TYPE_META[f.type] || EVENT_TYPE_META.personal;
+        const isEdit = !!f.id;
+        const needsSchool = f.type === "interruption" || f.type === "school_event" || f.type === "performance";
+        const needsClasses = f.type === "interruption" || f.type === "school_event";
+        const needsSubtype = f.type === "interruption";
+        const schoolClasses = f.schoolId
+          ? [...new Set(students.filter(s => s.schoolId === f.schoolId).map(s => s.className).filter(Boolean))].sort()
+          : [];
+        const selectedClasses = (f.affectsClasses && f.affectsClasses !== "all")
+          ? f.affectsClasses.split(",").map(c => c.trim()).filter(Boolean)
+          : [];
+        const toggleClass = (cls) => {
+          const current = selectedClasses;
+          const next = current.includes(cls) ? current.filter(c => c !== cls) : [...current, cls];
+          setCalEventForm(prev => ({ ...prev, affectsClasses: next.length === 0 ? "all" : next.join(", ") }));
+        };
+        const inputStyle = { padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", width: "100%", boxSizing: "border-box", background: colors.white };
+        const labelStyle = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, display: "block" };
+
+        const saveEvent = () => {
+          if (!f.title.trim()) return;
+          if (f.type === "interruption" || f.type === "school_event") {
+            const entry = {
+              id: (isEdit && f.sourceStore === "interruptions") ? f.id : uid(),
+              schoolId: f.schoolId || "",
+              date: f.startDate,
+              endDate: f.endDate || f.startDate,
+              title: f.title.trim(),
+              type: f.type === "interruption" ? (f.interruptionSubtype || "other") : "other",
+              affectsClasses: f.affectsClasses || "all",
+              startTime: f.startTime || "",
+              endTime: f.endTime || "",
+              notes: f.details || "",
+              source: "calendar",
+            };
+            if (isEdit && f.sourceStore === "interruptions") {
+              setInterruptions(prev => prev.map(i => i.id === f.id ? entry : i));
+            } else {
+              setInterruptions(prev => [...prev, entry]);
+            }
+          } else {
+            const entry = {
+              id: (isEdit && f.sourceStore === "calendar") ? f.id : uid(),
+              date: f.startDate,
+              startDate: f.startDate,
+              endDate: f.endDate || f.startDate,
+              title: f.title.trim(),
+              type: f.type,
+              startTime: f.startTime || "",
+              endTime: f.endTime || "",
+              schoolId: f.schoolId || "",
+              details: f.details || "",
+              createdAt: new Date().toISOString(),
+            };
+            if (isEdit && f.sourceStore === "calendar") {
+              saveCalendarEvents(calendarEvents.map(ev => ev.id === f.id ? entry : ev));
+            } else {
+              saveCalendarEvents([...calendarEvents, entry]);
+            }
+          }
+          setCalEventForm(null);
+        };
+
+        const deleteEvent = () => {
+          if (f.sourceStore === "interruptions") {
+            setInterruptions(prev => prev.filter(i => i.id !== f.id));
+          } else {
+            saveCalendarEvents(calendarEvents.filter(ev => ev.id !== f.id));
+          }
+          setCalEventForm(null);
+        };
+
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.25)" }}
+            onClick={e => { if (e.target === e.currentTarget) setCalEventForm(null); }}>
+            <div style={{
+              position: "fixed",
+              left: f.x ? Math.min(f.x, window.innerWidth - 440) : "50%",
+              top: f.y ? Math.min(f.y, window.innerHeight - 520) : "50%",
+              transform: f.x ? "none" : "translate(-50%,-50%)",
+              background: colors.white, borderRadius: 14, padding: "20px 22px", width: 420,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.22)", zIndex: 10001,
+              maxHeight: "90vh", overflowY: "auto",
+            }}>
+              {/* Header */}
+              <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 16 }}>
+                {isEdit ? "Edit Event" : "New Event"}
+              </div>
+
+              {/* Type picker */}
+              <div style={{ marginBottom: 16 }}>
+                <span style={labelStyle}>Type</span>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Object.entries(EVENT_TYPE_META).map(([key, meta]) => (
+                    <button key={key} onClick={() => setCalEventForm(prev => ({ ...prev, type: key, schoolId: (key === "personal") ? "" : prev.schoolId, affectsClasses: "all" }))}
+                      style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${f.type === key ? meta.border : colors.border}`, background: f.type === key ? meta.bg : colors.white, color: f.type === key ? meta.text : colors.textMuted, transition: "all 0.12s" }}>
+                      {meta.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Title */}
+              <div style={{ marginBottom: 12 }}>
+                <span style={labelStyle}>Title</span>
+                <input value={f.title} onChange={e => setCalEventForm(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="Event title *" autoFocus onKeyDown={e => { if (e.key === "Enter") saveEvent(); if (e.key === "Escape") setCalEventForm(null); }}
+                  style={inputStyle} />
+              </div>
+
+              {/* Date range */}
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <span style={labelStyle}>Start date</span>
+                  <input type="date" value={f.startDate} onChange={e => setCalEventForm(prev => ({ ...prev, startDate: e.target.value, endDate: prev.endDate < e.target.value ? e.target.value : prev.endDate }))}
+                    style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <span style={labelStyle}>End date</span>
+                  <input type="date" value={f.endDate || f.startDate} min={f.startDate} onChange={e => setCalEventForm(prev => ({ ...prev, endDate: e.target.value }))}
+                    style={inputStyle} />
+                </div>
+              </div>
+
+              {/* Time range */}
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <span style={labelStyle}>Start time <span style={{ textTransform: "none", fontWeight: 400 }}>(optional)</span></span>
+                  <input type="time" value={f.startTime || ""} onChange={e => setCalEventForm(prev => ({ ...prev, startTime: e.target.value }))}
+                    style={inputStyle} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <span style={labelStyle}>End time <span style={{ textTransform: "none", fontWeight: 400 }}>(optional)</span></span>
+                  <input type="time" value={f.endTime || ""} onChange={e => setCalEventForm(prev => ({ ...prev, endTime: e.target.value }))}
+                    style={inputStyle} />
+                </div>
+              </div>
+
+              {/* School selector */}
+              {needsSchool && (
+                <div style={{ marginBottom: 12 }}>
+                  <span style={labelStyle}>School {f.type !== "performance" ? "*" : "(optional)"}</span>
+                  <select value={f.schoolId || ""} onChange={e => setCalEventForm(prev => ({ ...prev, schoolId: e.target.value, affectsClasses: "all" }))}
+                    style={{ ...inputStyle, appearance: "none" }}>
+                    <option value="">— Select school —</option>
+                    {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
               )}
-              <button onClick={() => setCalEventForm(null)}
-                style={{ padding: "8px 14px", borderRadius: 8, background: colors.bg, color: colors.textMuted, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-                Cancel
-              </button>
+
+              {/* Interruption subtype */}
+              {needsSubtype && (
+                <div style={{ marginBottom: 12 }}>
+                  <span style={labelStyle}>Interruption type</span>
+                  <select value={f.interruptionSubtype || "other"} onChange={e => setCalEventForm(prev => ({ ...prev, interruptionSubtype: e.target.value }))}
+                    style={{ ...inputStyle, appearance: "none" }}>
+                    {INTERRUPTION_SUBTYPES.map(st => <option key={st.value} value={st.value}>{st.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {/* Affects classes */}
+              {needsClasses && f.schoolId && schoolClasses.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={labelStyle}>Affects classes</span>
+                    <button onClick={() => setCalEventForm(prev => ({ ...prev, affectsClasses: "all" }))}
+                      style={{ fontSize: 11, fontWeight: 600, color: f.affectsClasses === "all" ? colors.sidebarActive : colors.textMuted, background: f.affectsClasses === "all" ? colors.blueLight : "none", border: `1px solid ${f.affectsClasses === "all" ? colors.sidebarActive : colors.border}`, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}>
+                      All classes
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {schoolClasses.map(cls => {
+                      const sel = selectedClasses.includes(cls);
+                      return (
+                        <button key={cls} onClick={() => toggleClass(cls)}
+                          style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: sel ? 700 : 400, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${sel ? tm.border : colors.border}`, background: sel ? tm.bg : colors.white, color: sel ? tm.text : colors.textMuted, transition: "all 0.12s" }}>
+                          {cls}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Details */}
+              <div style={{ marginBottom: 16 }}>
+                <span style={labelStyle}>Notes <span style={{ textTransform: "none", fontWeight: 400 }}>(optional)</span></span>
+                <textarea value={f.details || ""} onChange={e => setCalEventForm(prev => ({ ...prev, details: e.target.value }))}
+                  placeholder="Any additional details…" rows={2}
+                  style={{ ...inputStyle, resize: "vertical" }} />
+              </div>
+
+              {/* Action buttons */}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={saveEvent}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: tm.border, color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                  {isEdit ? "Save" : "Add"}
+                </button>
+                {isEdit && (
+                  <button onClick={deleteEvent}
+                    style={{ padding: "9px 14px", borderRadius: 8, background: "#FEF2F2", color: colors.danger, fontWeight: 700, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>
+                    Delete
+                  </button>
+                )}
+                <button onClick={() => setCalEventForm(null)}
+                  style={{ padding: "9px 14px", borderRadius: 8, background: colors.bg, color: colors.textMuted, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       {/* ── Email body right-click context menu ── */}
       {emailContextMenu && (() => {
         const isEnquiry = emailContextMenu.email && classifyEmailFull(emailContextMenu.email) === "enquiry";

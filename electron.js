@@ -253,7 +253,7 @@ app.whenReady().then(() => {
     if (input.key === "f" || input.key === "F") {
       // Only toggle fullscreen if no text input is focused (check via renderer)
       mainWindow.webContents.executeJavaScript(
-        "document.activeElement && ['INPUT','TEXTAREA'].includes(document.activeElement.tagName)"
+        "document.activeElement && (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable)"
       ).then(inInput => {
         if (!inInput) mainWindow.setFullScreen(!mainWindow.isFullScreen());
       }).catch(() => {});
@@ -690,4 +690,47 @@ ipcMain.handle("anthropic-fetch", async (_e, { url, method, headers, body }) => 
       req.end();
     } catch(e) { resolve({ ok: false, status: 0, text: e.message }); }
   });
+});
+
+// ── Anthropic Streaming API proxy ──────────────────────────────────────────
+// Uses ipcMain.on (not handle) so we can push multiple chunks back via event.sender.send
+ipcMain.on("anthropic-stream", (event, { streamId, url, method, headers, body }) => {
+  try {
+    const urlObj = new URL(url);
+    const bodyBuf = body ? Buffer.from(body, "utf8") : Buffer.alloc(0);
+    const req = https.request({
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: method || "POST",
+      headers: { ...headers, "Content-Length": bodyBuf.length }
+    }, (res) => {
+      // Non-2xx responses from Anthropic are plain JSON errors, not SSE
+      if (res.statusCode >= 400) {
+        let errData = "";
+        res.on("data", c => { errData += c; });
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(errData);
+            event.sender.send("anthropic-stream-error", { streamId, error: parsed.error?.message || errData, status: res.statusCode });
+          } catch {
+            event.sender.send("anthropic-stream-error", { streamId, error: errData, status: res.statusCode });
+          }
+        });
+        return;
+      }
+      res.on("data", (chunk) => {
+        event.sender.send("anthropic-stream-chunk", { streamId, chunk: chunk.toString("utf8") });
+      });
+      res.on("end", () => {
+        event.sender.send("anthropic-stream-end", { streamId });
+      });
+    });
+    req.on("error", (e) => {
+      event.sender.send("anthropic-stream-error", { streamId, error: e.message, status: 0 });
+    });
+    if (bodyBuf.length) req.write(bodyBuf);
+    req.end();
+  } catch(e) {
+    event.sender.send("anthropic-stream-error", { streamId, error: e.message, status: 0 });
+  }
 });
