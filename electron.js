@@ -33,6 +33,7 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
   });
   if (isDev) {
@@ -42,6 +43,37 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "build", "index.html"));
   }
   mainWindow.on("closed", () => { mainWindow = null; });
+  // Inject a drag region at the top of the window so it can be dragged when windowed.
+  // left:72px leaves room for the native macOS traffic lights (close/min/max buttons).
+  mainWindow.webContents.on("dom-ready", () => {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        if (document.getElementById('electron-drag-bar')) return;
+        const bar = document.createElement('div');
+        bar.id = 'electron-drag-bar';
+        bar.style.cssText = 'position:fixed;top:0;left:72px;right:0;height:28px;-webkit-app-region:drag;z-index:9999;pointer-events:none;';
+        document.body.appendChild(bar);
+      })();
+    `).catch(() => {});
+  });
+  // Intercept window.open() calls (e.g. invoice preview) — always open as a
+  // controlled draggable/resizable window instead of inheriting fullscreen state.
+  mainWindow.webContents.setWindowOpenHandler(() => {
+    return {
+      action: "allow",
+      overrideBrowserWindowOptions: {
+        width: 960,
+        height: 780,
+        minWidth: 600,
+        minHeight: 400,
+        fullscreen: false,
+        fullscreenable: false,
+        frame: true,
+        resizable: true,
+        titleBarStyle: "default",
+      },
+    };
+  });
 }
 
 // ── HTTPS helper ───────────────────────────────────────────────────────────
@@ -338,6 +370,14 @@ ipcMain.handle("select-backup-folder", async () => {
   return result.filePaths[0];
 });
 ipcMain.handle("get-backup-folder", async () => { const prefs = loadPrefs(); return prefs.backupFolder || app.getPath("documents"); });
+ipcMain.handle("select-timetable-folder", async () => {
+  const prefs = loadPrefs();
+  const result = await dialog.showOpenDialog(mainWindow, { title: "Choose Timetable Export Folder", defaultPath: prefs.timetableFolder || app.getPath("documents"), properties: ["openDirectory", "createDirectory"] });
+  if (result.canceled || !result.filePaths[0]) return null;
+  prefs.timetableFolder = result.filePaths[0]; savePrefs(prefs);
+  return result.filePaths[0];
+});
+ipcMain.handle("get-timetable-folder", async () => { const prefs = loadPrefs(); return prefs.timetableFolder || ""; });
 ipcMain.handle("save-file-dialog", async (_e, { defaultName, json }) => {
   const prefs = loadPrefs();
   const result = await dialog.showSaveDialog(mainWindow, { title: "Save Backup", defaultPath: path.join(prefs.backupFolder || app.getPath("documents"), defaultName), filters: [{ name: "JSON Backup", extensions: ["json"] }] });
@@ -407,14 +447,22 @@ ipcMain.handle("capture-png", async (_e, { html }) => {
 });
 
 // ── Anthropic API proxy ────────────────────────────────────────────────────
+
+// In-process cache for inbox thread data.
+// Key: threadId, Value: { historyId, data } where data is the processed thread object.
+// historyId from the threads.list response changes whenever a thread is modified
+// (new message, label change, etc.) — so we only re-fetch threads whose historyId
+// has changed since the last poll, reducing ~101 API calls per poll to typically 1.
+let gmailInboxCache = {};
+
 ipcMain.handle("gmail-list-inbox", async () => {
   try {
     const accessToken = await getValidAccessToken();
 
-    // Step 1: Get 30 most recent inbox threads
+    // Step 1: List 100 inbox threads (1 API call — always needed)
     const listRes = await httpsGet(
       "gmail.googleapis.com",
-      "/gmail/v1/users/me/threads?maxResults=50&labelIds=INBOX",
+      "/gmail/v1/users/me/threads?maxResults=100&labelIds=INBOX",
       { "Authorization": `Bearer ${accessToken}` }
     );
     const listData = JSON.parse(listRes.body);
@@ -431,7 +479,6 @@ ipcMain.handle("gmail-list-inbox", async () => {
       }
       return null;
     }
-    // Collect all file attachment parts (non-body parts with a filename)
     function findAttachments(payload) {
       if (!payload) return [];
       const results = [];
@@ -452,94 +499,97 @@ ipcMain.handle("gmail-list-inbox", async () => {
       return decodeRaw(data).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     }
 
-    // Fetch threads in batches of 5 to avoid rate limits
-    async function fetchInBatches(items, batchSize, fn) {
-      const results = [];
-      for (let i = 0; i < items.length; i += batchSize) {
-        const batch = items.slice(i, i + batchSize);
-        const batchResults = await Promise.all(batch.map(fn));
-        results.push(...batchResults);
+    // Step 2: Only fetch full thread data for threads that are new or have changed.
+    // threads.list includes historyId per thread — it changes on any modification.
+    const threadsToFetch = listData.threads.filter(t =>
+      !gmailInboxCache[t.id] || gmailInboxCache[t.id].historyId !== t.historyId
+    );
+
+    if (threadsToFetch.length > 0) {
+      // Fetch in batches of 5 to avoid per-second rate limits
+      async function fetchInBatches(items, batchSize, fn) {
+        const results = [];
+        for (let i = 0; i < items.length; i += batchSize) {
+          const batch = items.slice(i, i + batchSize);
+          const batchResults = await Promise.all(batch.map(fn));
+          results.push(...batchResults);
+        }
+        return results;
       }
-      return results;
-    }
 
-    // Step 2: Fetch full thread data in batches of 5
-    const threads = await fetchInBatches(listData.threads, 5, async (t) => {
-      const threadRes = await httpsGet(
-        "gmail.googleapis.com",
-        `/gmail/v1/users/me/threads/${t.id}?format=full`,
-        { "Authorization": `Bearer ${accessToken}` }
-      );
-      const thread = JSON.parse(threadRes.body);
-      if (thread.error) return null; // skip any individual thread errors
-      const messages = (thread.messages || []).filter(m => m.payload); // skip malformed messages
-      if (!messages.length) return null;
+      const fetched = await fetchInBatches(threadsToFetch, 5, async (t) => {
+        const threadRes = await httpsGet(
+          "gmail.googleapis.com",
+          `/gmail/v1/users/me/threads/${t.id}?format=full`,
+          { "Authorization": `Bearer ${accessToken}` }
+        );
+        const thread = JSON.parse(threadRes.body);
+        if (thread.error) return null;
+        const messages = (thread.messages || []).filter(m => m.payload);
+        if (!messages.length) return null;
+        if (messages.some(m => (m.labelIds || []).includes("CHAT"))) return null;
 
-      // Skip chat threads entirely
-      if (messages.some(m => (m.labelIds || []).includes("CHAT"))) return null;
+        const nonSent = messages.filter(m => !(m.labelIds || []).includes("SENT"));
+        const displayMsg = (nonSent.length > 0 ? nonSent : messages)
+          .reduce((a, b) => (Number(a.internalDate) >= Number(b.internalDate) ? a : b));
 
-      // Display message: most recent non-sent message, or latest overall
-      const nonSent = messages.filter(m => !(m.labelIds || []).includes("SENT"));
-      const displayMsg = (nonSent.length > 0 ? nonSent : messages)
-        .reduce((a, b) => (Number(a.internalDate) >= Number(b.internalDate) ? a : b));
+        const headers = displayMsg.payload?.headers || [];
+        const get = (name) => headers.find(h => h.name === name)?.value || "";
+        const from = get("From") || get("Reply-To") || get("Sender") || "";
+        const subject = get("Subject");
+        if (!from && !subject) return null;
 
-      const headers = displayMsg.payload?.headers || [];
-      const get = (name) => headers.find(h => h.name === name)?.value || "";
-      const from = get("From") || get("Reply-To") || get("Sender") || "";
-      const subject = get("Subject");
+        const plainPart = findPart(displayMsg.payload, "text/plain");
+        const htmlPart  = findPart(displayMsg.payload, "text/html");
+        const plainData = plainPart?.body?.data || displayMsg.payload?.body?.data || "";
+        const htmlData  = htmlPart?.body?.data || "";
 
-      // Skip genuinely empty shells
-      if (!from && !subject) return null;
+        const threadMessages = messages.map(m => {
+          const mh = m.payload?.headers || [];
+          const mGet = n => mh.find(h => h.name === n)?.value || "";
+          const mPlain = findPart(m.payload, "text/plain");
+          const mHtml  = findPart(m.payload, "text/html");
+          const mPlainData = mPlain?.body?.data || m.payload?.body?.data || "";
+          const mHtmlData  = mHtml?.body?.data || "";
+          return {
+            id: m.id, from: mGet("From") || mGet("Reply-To") || mGet("Sender") || "",
+            to: mGet("To"), date: mGet("Date"), internalDate: Number(m.internalDate) || 0,
+            snippet: m.snippet || "", isSent: (m.labelIds || []).includes("SENT"),
+            body: decodeBody(mPlainData || mHtmlData).slice(0, 3000),
+            bodyHtml: mHtmlData ? decodeRaw(mHtmlData) : "",
+            attachments: findAttachments(m.payload), messageId: m.id,
+          };
+        });
 
-      // Parse body from display message
-      const plainPart = findPart(displayMsg.payload, "text/plain");
-      const htmlPart  = findPart(displayMsg.payload, "text/html");
-      const plainData = plainPart?.body?.data || displayMsg.payload?.body?.data || "";
-      const htmlData  = htmlPart?.body?.data || "";
-
-      // Per-message data — bodies already fetched with format=full so include them
-      const threadMessages = messages.map(m => {
-        const mh = m.payload?.headers || [];
-        const mGet = n => mh.find(h => h.name === n)?.value || "";
-        const mPlain = findPart(m.payload, "text/plain");
-        const mHtml  = findPart(m.payload, "text/html");
-        const mPlainData = mPlain?.body?.data || m.payload?.body?.data || "";
-        const mHtmlData  = mHtml?.body?.data || "";
-        return {
-          id:           m.id,
-          from:         mGet("From") || mGet("Reply-To") || mGet("Sender") || "",
-          to:           mGet("To"),
-          date:         mGet("Date"),
-          internalDate: Number(m.internalDate) || 0,
-          snippet:      m.snippet || "",
-          isSent:       (m.labelIds || []).includes("SENT"),
-          body:         decodeBody(mPlainData || mHtmlData).slice(0, 3000),
-          bodyHtml:     mHtmlData ? decodeRaw(mHtmlData) : "",
-          attachments:  findAttachments(m.payload),
-          messageId:    m.id,
+        const data = {
+          id: thread.id, threadId: thread.id, subject, from, to: get("To"),
+          cc: get("Cc"), deliveredTo: get("Delivered-To"), date: get("Date"),
+          internalDate: Number(displayMsg.internalDate) || 0, snippet: displayMsg.snippet || "",
+          body: decodeBody(plainData || htmlData).slice(0, 3000),
+          bodyHtml: htmlData ? decodeRaw(htmlData) : "",
+          threadCount: messages.length, threadMessages,
+          hasAttachment: messages.some(m => findAttachments(m.payload).length > 0),
         };
+
+        // Store in cache keyed by thread ID with the historyId from the list response
+        gmailInboxCache[t.id] = { historyId: t.historyId, data };
+        return data;
       });
 
-      return {
-        id:             thread.id,   // thread ID is the primary key
-        threadId:       thread.id,
-        subject,
-        from,
-        to:             get("To"),
-        cc:             get("Cc"),
-        deliveredTo:    get("Delivered-To"),
-        date:           get("Date"),
-        internalDate:   Number(displayMsg.internalDate) || 0,
-        snippet:        displayMsg.snippet || "",
-        body:           decodeBody(plainData || htmlData).slice(0, 3000),
-        bodyHtml:       htmlData ? decodeRaw(htmlData) : "",
-        threadCount:    messages.length,
-        threadMessages,
-        hasAttachment:  messages.some(m => findAttachments(m.payload).length > 0),
-      };
-    });
+      // Update cache for any successfully fetched threads (nulls = errors, keep old cache entry)
+      // (Cache is updated inline above; nothing extra needed here)
+    }
 
-    return { ok: true, emails: threads.filter(Boolean) };
+    // Step 3: Evict threads that are no longer in the inbox
+    const currentIds = new Set(listData.threads.map(t => t.id));
+    for (const id of Object.keys(gmailInboxCache)) {
+      if (!currentIds.has(id)) delete gmailInboxCache[id];
+    }
+
+    // Step 4: Return all threads in inbox order, served from cache
+    const emails = listData.threads.map(t => gmailInboxCache[t.id]?.data).filter(Boolean);
+    return { ok: true, emails };
+
   } catch(e) {
     return { ok: false, error: e.message + (e.stack ? ' — ' + e.stack.split('\n')[1]?.trim() : '') };
   }
@@ -587,6 +637,21 @@ ipcMain.handle("gmail-fetch-attachment", async (_e, { messageId, attachmentId })
   } catch(e) { return { ok: false, error: e.message }; }
 });
 
+// ── Newsletter archive check — fetch page to detect new content ────────────
+ipcMain.handle("newsletter-check", async (_e, { url }) => {
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.protocol !== "https:") return { ok: false, error: "Only HTTPS URLs supported" };
+    const res = await httpsGet(
+      urlObj.hostname,
+      urlObj.pathname + (urlObj.search || ""),
+      { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
+    );
+    if (res.status < 200 || res.status >= 400) return { ok: false, error: `HTTP ${res.status}` };
+    return { ok: true, content: res.body.slice(0, 50000) };
+  } catch(e) { return { ok: false, error: e.message }; }
+});
+
 // ── Gmail Thread Archive ───────────────────────────────────────────────────
 ipcMain.handle("gmail-archive", async (_e, threadId) => {
   try {
@@ -608,7 +673,7 @@ ipcMain.handle("gmail-list-sent", async () => {
 
     const listRes = await httpsGet(
       "gmail.googleapis.com",
-      "/gmail/v1/users/me/messages?maxResults=50&labelIds=SENT",
+      "/gmail/v1/users/me/messages?maxResults=100&labelIds=SENT",
       { "Authorization": `Bearer ${accessToken}` }
     );
     const listData = JSON.parse(listRes.body);
@@ -663,6 +728,146 @@ ipcMain.handle("gmail-list-sent", async () => {
     return { ok: true, emails };
   } catch(e) {
     return { ok: false, error: e.message };
+  }
+});
+
+// ── Gmail Search (full history) ────────────────────────────────────────────
+ipcMain.handle("gmail-search", async (_e, { query, folder }) => {
+  try {
+    const accessToken = await getValidAccessToken();
+
+    // Step 1: Search messages using Gmail's native query syntax (covers full history)
+    const searchRes = await httpsGet(
+      "gmail.googleapis.com",
+      `/gmail/v1/users/me/messages?maxResults=100&q=${encodeURIComponent(query)}`,
+      { "Authorization": `Bearer ${accessToken}` }
+    );
+    const searchData = JSON.parse(searchRes.body);
+    if (searchData.error) return { ok: false, error: `Gmail API: ${searchData.error.message || JSON.stringify(searchData.error)}` };
+    if (!searchData.messages) return { ok: true, emails: [] };
+
+    // Step 2: Deduplicate to unique thread IDs (a thread may have multiple matching messages)
+    const seenThreads = new Set();
+    const uniqueThreadIds = [];
+    for (const m of searchData.messages) {
+      if (!seenThreads.has(m.threadId)) { seenThreads.add(m.threadId); uniqueThreadIds.push(m.threadId); }
+    }
+
+    // Helpers (same as gmail-list-inbox)
+    function findPart(payload, mimeType) {
+      if (!payload) return null;
+      if (payload.mimeType === mimeType && payload.body?.data) return payload;
+      for (const part of payload.parts || []) { const found = findPart(part, mimeType); if (found) return found; }
+      return null;
+    }
+    function findAttachments(payload) {
+      if (!payload) return [];
+      const results = [];
+      for (const part of payload.parts || []) {
+        if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+          results.push({ filename: part.filename, mimeType: part.mimeType || "application/octet-stream", size: part.body?.size || 0, attachmentId: part.body.attachmentId });
+        }
+        results.push(...findAttachments(part));
+      }
+      return results;
+    }
+    function decodeRaw(data) {
+      if (!data) return "";
+      return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+    }
+    function decodeBody(data) {
+      if (!data) return "";
+      return decodeRaw(data).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
+    async function fetchInBatches(items, batchSize, fn) {
+      const results = [];
+      for (let i = 0; i < items.length; i += batchSize) {
+        const batch = items.slice(i, i + batchSize);
+        const batchResults = await Promise.all(batch.map(fn));
+        results.push(...batchResults);
+      }
+      return results;
+    }
+
+    // Step 3: Fetch full thread data in batches of 5 (same as inbox)
+    const threads = await fetchInBatches(uniqueThreadIds, 5, async (threadId) => {
+      const threadRes = await httpsGet(
+        "gmail.googleapis.com",
+        `/gmail/v1/users/me/threads/${threadId}?format=full`,
+        { "Authorization": `Bearer ${accessToken}` }
+      );
+      const thread = JSON.parse(threadRes.body);
+      if (thread.error) return null;
+      const messages = (thread.messages || []).filter(m => m.payload);
+      if (!messages.length) return null;
+      if (messages.some(m => (m.labelIds || []).includes("CHAT"))) return null;
+
+      const nonSent = messages.filter(m => !(m.labelIds || []).includes("SENT"));
+      const sentMsgs = messages.filter(m => (m.labelIds || []).includes("SENT"));
+      // Skip threads that have no messages of the right type for the requested folder
+      if (folder === "sent" && sentMsgs.length === 0) return null;
+      if (folder !== "sent" && nonSent.length === 0) return null;
+      // Sent view: focus on Matt's most recent sent message. Inbox view: most recent received.
+      const candidates = folder === "sent"
+        ? (sentMsgs.length > 0 ? sentMsgs : messages)
+        : (nonSent.length > 0 ? nonSent : messages);
+      const displayMsg = candidates.reduce((a, b) => (Number(a.internalDate) >= Number(b.internalDate) ? a : b));
+
+      const headers = displayMsg.payload?.headers || [];
+      const get = (name) => headers.find(h => h.name === name)?.value || "";
+      const from = get("From") || get("Reply-To") || get("Sender") || "";
+      const subject = get("Subject");
+      if (!from && !subject) return null;
+
+      const plainPart = findPart(displayMsg.payload, "text/plain");
+      const htmlPart  = findPart(displayMsg.payload, "text/html");
+      const plainData = plainPart?.body?.data || displayMsg.payload?.body?.data || "";
+      const htmlData  = htmlPart?.body?.data || "";
+
+      const threadMessages = messages.map(m => {
+        const mh = m.payload?.headers || [];
+        const mGet = n => mh.find(h => h.name === n)?.value || "";
+        const mPlain = findPart(m.payload, "text/plain");
+        const mHtml  = findPart(m.payload, "text/html");
+        const mPlainData = mPlain?.body?.data || m.payload?.body?.data || "";
+        const mHtmlData  = mHtml?.body?.data || "";
+        return {
+          id:           m.id,
+          from:         mGet("From") || mGet("Reply-To") || mGet("Sender") || "",
+          to:           mGet("To"),
+          date:         mGet("Date"),
+          internalDate: Number(m.internalDate) || 0,
+          snippet:      m.snippet || "",
+          isSent:       (m.labelIds || []).includes("SENT"),
+          body:         decodeBody(mPlainData || mHtmlData).slice(0, 3000),
+          bodyHtml:     mHtmlData ? decodeRaw(mHtmlData) : "",
+          attachments:  findAttachments(m.payload),
+          messageId:    m.id,
+        };
+      });
+
+      return {
+        id:           thread.id,
+        threadId:     thread.id,
+        subject,
+        from,
+        to:           get("To"),
+        cc:           get("Cc"),
+        deliveredTo:  get("Delivered-To"),
+        date:         get("Date"),
+        internalDate: Number(displayMsg.internalDate) || 0,
+        snippet:      displayMsg.snippet || "",
+        body:         decodeBody(plainData || htmlData).slice(0, 3000),
+        bodyHtml:     htmlData ? decodeRaw(htmlData) : "",
+        threadCount:  messages.length,
+        threadMessages,
+        hasAttachment: messages.some(m => findAttachments(m.payload).length > 0),
+      };
+    });
+
+    return { ok: true, emails: threads.filter(Boolean) };
+  } catch(e) {
+    return { ok: false, error: e.message + (e.stack ? ' — ' + e.stack.split('\n')[1]?.trim() : '') };
   }
 });
 

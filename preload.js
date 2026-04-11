@@ -42,6 +42,18 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("menu-backup", callback);
   },
 
+  // Show folder picker and save as backup folder
+  selectBackupFolder: () =>
+    ipcRenderer.invoke("select-backup-folder"),
+
+  // Show folder picker and save as timetable export folder
+  selectTimetableFolder: () =>
+    ipcRenderer.invoke("select-timetable-folder"),
+
+  // Get the current timetable export folder path
+  getTimetableFolder: () =>
+    ipcRenderer.invoke("get-timetable-folder"),
+
   // Listen for backup folder changes via the menu
   onBackupFolderChanged: (callback) => {
     ipcRenderer.on("backup-folder-changed", (_event, folder) => callback(folder));
@@ -67,6 +79,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   gmailSend: (payload) =>
     ipcRenderer.invoke("gmail-send", payload),
 
+  gmailSearch: (query, folder) =>
+    ipcRenderer.invoke("gmail-search", { query, folder }),
+
   gmailArchive: (messageId) =>
     ipcRenderer.invoke("gmail-archive", messageId),
 
@@ -75,6 +90,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   gmailFetchAttachment: (messageId, attachmentId) =>
     ipcRenderer.invoke("gmail-fetch-attachment", { messageId, attachmentId }),
+
+  newsletterCheck: (url) =>
+    ipcRenderer.invoke("newsletter-check", { url }),
 
   // ── Anthropic API proxy (routes through main to avoid CORS in file:// builds)
   anthropicFetch: (url, method, headers, body) =>
@@ -105,6 +123,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("anthropic-stream-end", endHandler);
     ipcRenderer.on("anthropic-stream-error", errorHandler);
     return cleanup;
+  },
+
+  // ── Auto-updater ───────────────────────────────────────────────────────────
+  checkForUpdates: () =>
+    ipcRenderer.send("check-for-updates"),
+
+  installUpdate: () =>
+    ipcRenderer.send("install-update"),
+
+  onUpdateStatus: (callback) => {
+    const handler = (_event, status) => callback(status);
+    ipcRenderer.on("update-status", handler);
+    return () => ipcRenderer.removeListener("update-status", handler);
   },
 
   // True when running inside Electron (false in browser)
