@@ -58,6 +58,11 @@ function createWindow() {
   });
   // Intercept window.open() calls (e.g. invoice preview) — always open as a
   // controlled draggable/resizable window instead of inheriting fullscreen state.
+  // Session 97: previously fullscreenable was false, which blocked macOS
+  // split-screen mode (green-button tile options). Removing that lets these
+  // popups behave like normal macOS app windows — they can be tiled, sent to
+  // the back when another window is clicked, and maximised. Standard
+  // frame/title bar ensures the traffic-light controls work.
   mainWindow.webContents.setWindowOpenHandler(() => {
     return {
       action: "allow",
@@ -67,9 +72,11 @@ function createWindow() {
         minWidth: 600,
         minHeight: 400,
         fullscreen: false,
-        fullscreenable: false,
+        fullscreenable: true,
         frame: true,
         resizable: true,
+        minimizable: true,
+        maximizable: true,
         titleBarStyle: "default",
       },
     };
