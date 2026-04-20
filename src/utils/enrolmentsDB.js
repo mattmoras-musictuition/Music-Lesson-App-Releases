@@ -8,6 +8,29 @@
 
 import { supabase } from "../supabaseClient";
 
+// ── Match a card's identity to an enrolment ──────────────────
+// Returns the matching enrolment.id or null. Matching rule per
+// SPEC 1 §5.2 Step C: studentId + instrument, plus groupId if
+// the card is a group card.
+export function enrolmentIdFor(studentId, instrument, enrolments, groupId) {
+  const match = (enrolments || []).find(e =>
+    e.studentId === studentId &&
+    e.instrument === instrument &&
+    (!groupId || e.groupId === groupId)
+  );
+  return match ? match.id : null;
+}
+
+// Stamp enrolmentId on every lesson in an array. Idempotent —
+// re-stamping a stamped lesson resolves to the same id (or null
+// if the underlying enrolment has been removed).
+export function stampEnrolmentIds(lessons, enrolments) {
+  return (lessons || []).map(l => ({
+    ...l,
+    enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
+  }));
+}
+
 // ── DB row → camelCase JS object ─────────────────────────────
 function rowToEnrolment(row) {
   return {

@@ -18,7 +18,7 @@ import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
-import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase } from "./utils/enrolmentsDB";
+import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
@@ -4307,7 +4307,7 @@ export default function MusicTimetableApp() {
       seen.add(k); return true;
     });
     setMasterBreaks(dedupedBreaks);
-    setTimetable(result);
+    setTimetable({ ...result, lessons: stampEnrolmentIds(result.lessons, enrolments) });
     const groupsSched = groupLessons.scheduled.length;
     let msg = `Timetable scheduled: ${result.lessons.length} lessons scheduled, ${result.unscheduled.length} unscheduled`;
     if (groupsSched > 0) msg += ` (incl. ${groupsSched} group${groupsSched !== 1 ? "s" : ""})`;
@@ -4383,7 +4383,7 @@ export default function MusicTimetableApp() {
         result.lessons.splice(i, 1);
       }
     }
-    setTimetable(result);
+    setTimetable({ ...result, lessons: stampEnrolmentIds(result.lessons, enrolments) });
     const newCount = result.lessons.length - otherLessons.length;
     const newUnsched = result.unscheduled.filter(u => (u.student?.schoolId || u.schoolId) === schoolId).length;
     notify(`${schoolName}: ${newCount} lessons scheduled${newUnsched > 0 ? `, ${newUnsched} unscheduled` : ""}`);
@@ -4481,7 +4481,8 @@ export default function MusicTimetableApp() {
         schoolId: school.id, schoolName: school.name,
         day: manualDay, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
-        instrument: group.instrument || "Group",  duringSpecialist: false
+        instrument: group.instrument || "Group",  duringSpecialist: false,
+        enrolmentId: enrolmentIdFor(group.studentIds[0], group.instrument || "Group", enrolments, group.id)
       };
       setTimetable(prev => ({ ...prev, lessons: [...prev.lessons, lesson] }));
       setGroups(prev => prev.map(g => g.id === groupId ? { ...g, status: "scheduled" } : g));
@@ -4551,7 +4552,8 @@ export default function MusicTimetableApp() {
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
-              instrument: group.instrument || "Group",  duringSpecialist: false
+              instrument: group.instrument || "Group",  duringSpecialist: false,
+              enrolmentId: enrolmentIdFor(group.studentIds[0], group.instrument || "Group", enrolments, group.id)
             };
             setTimetable(prev => ({
               ...prev,
@@ -4576,7 +4578,8 @@ export default function MusicTimetableApp() {
           schoolId: school.id, schoolName: school.name,
           day, slotId: slot.id, slotName: slot.name,
           start: slot.start, end: slot.end,
-          instrument: group.instrument || "Group",  duringSpecialist: false
+          instrument: group.instrument || "Group",  duringSpecialist: false,
+          enrolmentId: enrolmentIdFor(group.studentIds[0], group.instrument || "Group", enrolments, group.id)
         };
         setTimetable(prev => ({ ...prev, lessons: [...prev.lessons, groupLesson] }));
         setGroups(prev => prev.map(g => g.id === groupId ? { ...g, status: "scheduled" } : g));
@@ -4617,7 +4620,8 @@ export default function MusicTimetableApp() {
         day, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
         instrument: inst.name,
-        duringSpecialist: false
+        duringSpecialist: false,
+        enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
       };
       if (!timetable) {
         setTimetable({ lessons: [lesson], unscheduled: [] });
@@ -4663,7 +4667,7 @@ export default function MusicTimetableApp() {
       unscheduled: [...keptUnscheduled, ...newUnscheduled]
     };
     compactTimetable(mergedResult, schools, students, teachers, specialists);
-    setTimetable(mergedResult);
+    setTimetable({ ...mergedResult, lessons: stampEnrolmentIds(mergedResult.lessons, enrolments) });
 
     const sched = newLessons.length;
     const unsched = newUnscheduled.length;
@@ -4708,7 +4712,8 @@ export default function MusicTimetableApp() {
       day, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
       instrument: inst.name,
-      duringSpecialist: false
+      duringSpecialist: false,
+      enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
     };
 
     if (target === "master") {
@@ -6222,7 +6227,8 @@ export default function MusicTimetableApp() {
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
-              instrument: inst.name, duringSpecialist: false
+              instrument: inst.name, duringSpecialist: false,
+              enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
             };
             setTimetable(prev => ({
               ...prev,
@@ -6252,7 +6258,8 @@ export default function MusicTimetableApp() {
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
-              instrument: inst.name, duringSpecialist: false
+              instrument: inst.name, duringSpecialist: false,
+              enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
             };
             // Snapshot both timetable and students before mutating — enables full undo
             pendingPlaceUndoStack.current.push({
@@ -6278,7 +6285,7 @@ export default function MusicTimetableApp() {
               if (!prev) return prev;
               return {
                 ...prev,
-                lessons: [...prev.lessons.filter(l => l.schoolId !== schoolId), ...lessons],
+                lessons: [...prev.lessons.filter(l => l.schoolId !== schoolId), ...stampEnrolmentIds(lessons, enrolments)],
                 unscheduled: (prev.unscheduled || []).filter(u => u.student.schoolId !== schoolId)
               };
             });
