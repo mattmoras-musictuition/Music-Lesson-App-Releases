@@ -3,10 +3,11 @@
 // ============================================================
 
 import React from "react";
-import { colors } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 import { Btn } from "../components/ui/SharedUI";
 
 export function GmailSettingsCard({ notify, cardStyle, gmailStatus, setGmailStatus }) {
+  const { colors } = useTheme();
   const [gmailLoading, setGmailLoading] = React.useState(false);
   // Local override so the UI reflects connect/disconnect immediately without
   // waiting for the prop to propagate down from the parent

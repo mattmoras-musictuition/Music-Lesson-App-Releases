@@ -3,13 +3,14 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
-import { colors, DAYS } from "../constants";
-import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos } from "../utils/helpers";
-import { getTermWeekLabel } from "../utils/helpers";
-import { Tag, PageTitle, NavButtons, Btn, EmptyState } from "../components/ui/SharedUI";
-import { PAGE_COLORS } from "../components/ui/SharedUI";
+import { StickyNote, Check, Trash2 } from "lucide-react";
+import { DAYS } from "../constants";
+import { useTheme } from "../context/ThemeContext";
+import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos, getTermWeekLabel } from "../utils/helpers";
+import { Tag, PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory }) {
+  const { colors } = useTheme();
   const pendingStudents = students.filter(s => s.status === "pending" || s.status === "trial");
   const [manualSched, setManualSched] = useState({});
   const [pendingSortCol, setPendingSortCol] = useState("name");
@@ -125,7 +126,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
             );
             if (schoolRows.length === 0) return null;
             return (
-              <div key={school.id} style={{ borderRadius: 10, overflow: "hidden", border: `1px solid ${colors.sidebarActive}` }}>
+              <div key={school.id} style={{ borderRadius: 10, overflow: "hidden", border: `2px solid ${colors.sidebarHover}` }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, tableLayout: "fixed" }}>
                   <colgroup>
                     <col style={{ width: "20%" }} /><col style={{ width: "10%" }} /><col style={{ width: "8%" }} />
@@ -133,7 +134,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                   </colgroup>
                   <thead>
                     <tr>
-                      <th colSpan={6} style={{ background: colors.sidebarActive, padding: "10px 14px", textAlign: "left" }}>
+                      <th colSpan={6} style={{ background: colors.sidebarHover, padding: "10px 14px", textAlign: "left" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <span style={{ color: colors.white, fontWeight: 700, fontSize: 13 }}>{school.name}</span>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -146,7 +147,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                                   <button onClick={() => setConfirmScheduleAll(prev => { const n = { ...prev }; delete n[school.id]; return n; })} style={{ padding: "2px 8px", fontSize: 11, border: "1px solid rgba(255,255,255,0.3)", borderRadius: 5, background: "transparent", color: "rgba(255,255,255,0.8)", cursor: "pointer", fontFamily: "inherit" }}>No</button>
                                 </div>
                               ) : (
-                                <button onClick={() => setConfirmScheduleAll(prev => ({ ...prev, [school.id]: true }))} style={{ padding: "3px 8px", fontSize: 11, fontWeight: 600, border: "1px solid rgba(255,255,255,0.3)", borderRadius: 6, background: "rgba(255,255,255,0.12)", color: colors.white, cursor: "pointer", fontFamily: "inherit" }}>Schedule All</button>
+                                <button onClick={() => setConfirmScheduleAll(prev => ({ ...prev, [school.id]: true }))} style={{ padding: "3px 8px", fontSize: 11, fontWeight: 600, border: "1px solid rgba(255,255,255,0.3)", borderRadius: 6, background: "rgba(255,255,255,0.12)", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>Schedule All</button>
                               )
                             )}
                           </div>
@@ -167,13 +168,13 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                       const sc = schools.find(sc2 => sc2.id === s.schoolId);
                       const ms = manualSched[s.id] || {};
                       return (
-                        <tr key={s.id + (s._inst?.name || "")} style={{ borderBottom: `1px solid ${colors.borderLight}`, cursor: "pointer", background: colors.white }}
+                        <tr key={s.id + (s._inst?.name || "")} style={{ borderBottom: `1px solid ${colors.borderLight}`, cursor: "pointer", background: colors.cardBg }}
                           onClick={() => onViewStudent && onViewStudent(s.id)}
-                          onMouseEnter={e => e.currentTarget.style.background = "rgba(52,69,101,0.07)"}
-                          onMouseLeave={e => e.currentTarget.style.background = colors.white}>
+                          onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                          onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
                           <td style={{ padding: "8px 10px", fontWeight: 500, fontSize: 13 }}>
                             {s.name}
-                            {s.notes && <div style={{ fontSize: 11, color: colors.textMuted, fontStyle: "italic", marginTop: 2 }}>📝 {s.notes}</div>}
+                            {s.notes && <div style={{ fontSize: 11, color: colors.textMuted, fontStyle: "italic", marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}><StickyNote size={10} />{s.notes}</div>}
                           </td>
                           <td style={{ padding: "8px 10px" }}><Tag color={statusColors[s.status] || "#999"}>{statusLabels[s.status] || s.status}</Tag></td>
                           <td style={{ padding: "8px 10px", color: colors.textLight, fontSize: 12 }}>{s.className || "—"}</td>
@@ -181,11 +182,11 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                           <td style={{ padding: "6px 8px", position: "relative" }} onClick={e => e.stopPropagation()}>
                             {s.status === "trial" ? (() => {
                               const trialSched = trialScheduledMap[s.id];
-                              if (trialSched) return <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#16A34A", fontWeight: 600, fontSize: 12 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Scheduled</div>;
+                              if (trialSched) return <div style={{ display: "flex", alignItems: "center", gap: 5, color: colors.success, fontWeight: 600, fontSize: 12 }}><Check size={14} />Scheduled</div>;
                               return sc ? (
                                 <div style={{ display: "inline-block" }}>
                                   {schedPopup && schedPopup.id === s.id && (
-                                    <div ref={schedPopupRef} style={{ position: "fixed", ...clampMenuPos(schedPopup.x - 272, schedPopup.y, 272, 320), zIndex: 9999, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "14px 16px", minWidth: 260 }} onClick={e => e.stopPropagation()}>
+                                    <div ref={schedPopupRef} style={{ position: "fixed", ...clampMenuPos(schedPopup.x - 272, schedPopup.y, 272, 320), zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "14px 16px", minWidth: 260 }} onClick={e => e.stopPropagation()}>
                                       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                         <select value={ms.weekKey || ""} onChange={e => setManualSched(prev => ({ ...prev, [s.id]: { ...prev[s.id], weekKey: e.target.value } }))} style={{ padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}>
                                           <option value="">Select week...</option>
@@ -211,7 +212,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                             })() : sc && (
                               <div style={{ display: "inline-block" }}>
                                 {schedPopup && schedPopup.id === s.id && (
-                                  <div ref={schedPopupRef} style={{ position: "fixed", ...clampMenuPos(schedPopup.x - 272, schedPopup.y, 272, 320), zIndex: 9999, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "14px 16px", minWidth: 260 }} onClick={e => e.stopPropagation()}>
+                                  <div ref={schedPopupRef} style={{ position: "fixed", ...clampMenuPos(schedPopup.x - 272, schedPopup.y, 272, 320), zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "14px 16px", minWidth: 260 }} onClick={e => e.stopPropagation()}>
                                     <div style={{ fontWeight: 600, fontSize: 12, color: colors.sidebarActive, marginBottom: 10 }}>Schedule — {s.name}</div>
                                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                       <select value={ms.day || ""} onChange={e => setManualSched(prev => ({ ...prev, [s.id]: { ...prev[s.id], day: e.target.value } }))} style={{ padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}>
@@ -240,12 +241,12 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
                           <td style={{ padding: "6px 8px" }} onClick={e => e.stopPropagation()}>
                             <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                               <button onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setSchedPopup(schedPopup && schedPopup.id === s.id ? null : { id: s.id, x: r.left, y: r.top }); }} title="Schedule student"
-                                style={{ padding: "3px 8px", fontSize: 11, fontWeight: 600, border: `1px solid ${colors.sidebarActive}`, borderRadius: 6, background: colors.sidebarActive, color: colors.white, cursor: "pointer", fontFamily: "inherit" }}>
+                                style={{ padding: "3px 8px", fontSize: 11, fontWeight: 600, border: `1px solid ${colors.sidebarHover}`, borderRadius: 6, background: colors.sidebarHover, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
                                 Schedule
                               </button>
                               <button onClick={() => removeStudent(s.id)} title="Remove student"
-                                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", cursor: "pointer", flexShrink: 0 }}>
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, background: colors.redLight, border: `1px solid ${colors.danger}50`, color: colors.danger, cursor: "pointer", flexShrink: 0 }}>
+                                <Trash2 size={13} />
                               </button>
                             </div>
                           </td>

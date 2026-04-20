@@ -54,6 +54,23 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getTimetableFolder: () =>
     ipcRenderer.invoke("get-timetable-folder"),
 
+  // ── Session 98: Invoice folder + PDF save + preview window ────────────────
+  // Matches the timetable-folder pattern. saveInvoicePdf writes a base64 PDF
+  // into <invoiceFolder>/<School>/<Term>/<filename>. openInvoicePreview spawns
+  // a standalone BrowserWindow that won't inherit the parent's fullscreen
+  // space.
+  selectInvoiceFolder: () =>
+    ipcRenderer.invoke("select-invoice-folder"),
+
+  getInvoiceFolder: () =>
+    ipcRenderer.invoke("get-invoice-folder"),
+
+  saveInvoicePdf: ({ base64, schoolName, termLabel, filename }) =>
+    ipcRenderer.invoke("save-invoice-pdf", { base64, schoolName, termLabel, filename }),
+
+  openInvoicePreview: (html, title) =>
+    ipcRenderer.invoke("open-invoice-preview", { html, title }),
+
   // Listen for backup folder changes via the menu
   onBackupFolderChanged: (callback) => {
     ipcRenderer.on("backup-folder-changed", (_event, folder) => callback(folder));

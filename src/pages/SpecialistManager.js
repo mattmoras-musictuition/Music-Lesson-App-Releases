@@ -2,14 +2,17 @@
 // SpecialistManager.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, SLOT_TYPES, SLOT_TYPE_LABELS, HEADER_HEIGHT } from "../constants";
+import React, { useState, useEffect, useRef } from "react";
+import { Building2, Palette, ChevronUp, ChevronDown, StickyNote, Pencil, X, Trash2, RefreshCw, ClipboardList, FileText } from "lucide-react";
+import { DAYS, SLOT_TYPES, SLOT_TYPE_LABELS, HEADER_HEIGHT } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
+  const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
   const filterSchool = (viewState || {}).filterSchool || "";
@@ -28,6 +31,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
   const [importError, setImportError] = useState(null);
   const [updateSchoolId, setUpdateSchoolId] = useState(null); // schoolId being updated
   const [schoolBannerOpen, setSchoolBannerOpen] = useState({}); // schoolId -> bool
+  const [calendarStripOpen, setCalendarStripOpen] = useState(false); // hidden by default
   const [schoolBannerMode, setSchoolBannerMode] = useState({}); // schoolId -> "all"|"day"|"class"
   const filterBarRef = React.useRef(null);
   const [filterBarHeight, setFilterBarHeight] = useState(0);
@@ -684,7 +688,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
 
         {changed.length > 0 && (
           <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.accent, marginBottom: 8 }}>✏️ Changed ({changed.length})</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.accent, marginBottom: 8 }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><Pencil size={13}/>Changed ({changed.length})</span></div>
             {changed.map((c, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", marginBottom: 6, background: diffAccepted["chg_" + i] ? "rgba(52,69,101,0.07)" : colors.bg, border: `1px solid ${diffAccepted["chg_" + i] ? "rgba(52,69,101,0.25)" : colors.border}`, borderRadius: 8, fontSize: 13, flexWrap: "wrap" }}>
                 <input type="checkbox" checked={!!diffAccepted["chg_" + i]} onChange={ev => setDiffAccepted(p => ({ ...p, ["chg_" + i]: ev.target.checked }))} style={{ width: 16, height: 16, cursor: "pointer" }} />
@@ -710,13 +714,13 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         </PageTitle>
         {parsing ? (
           <Card style={{ textAlign: "center", padding: 40 }}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>🔄</div>
+            <div style={{ marginBottom: 12, display:"flex",justifyContent:"center" }}><RefreshCw size={32} /></div>
             <div style={{ fontSize: 16, fontWeight: 600, color: colors.text, marginBottom: 8 }}>Analysing changes...</div>
             <div style={{ fontSize: 13, color: colors.textMuted }}>Comparing new timetable to existing data</div>
           </Card>
         ) : (
           <Card>
-            {importError && <div style={{ marginBottom: 12, padding: "10px 14px", background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 8, fontSize: 13, color: colors.danger }}>{importError}</div>}
+            {importError && <div style={{ marginBottom: 12, padding: "10px 14px", background: colors.redLight, border: "1px solid #FCA5A5", borderRadius: 8, fontSize: 13, color: colors.danger }}>{importError}</div>}
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Optional instructions</label>
               <textarea value={updateInstructions} onChange={e => setUpdateInstructions(e.target.value)}
@@ -739,7 +743,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
             </div>
             <input ref={updateFileRef} type="file" accept=".pdf,.csv,.xlsx,.xls" onChange={handleUpdateFileUpload} style={{ display: "none" }} />
             <div style={{ display: "flex", gap: 10 }}>
-              <Btn onClick={() => updateFileRef.current && updateFileRef.current.click()}>📄 Upload PDF / Spreadsheet</Btn>
+              <Btn onClick={() => updateFileRef.current && updateFileRef.current.click()}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><FileText size={13}/>Upload PDF / Spreadsheet</span></Btn>
               <Btn variant="secondary" onClick={() => { setUpdateSchoolId(null); setUpdateInstructions(""); setUpdateUrl(""); setImportError(null); }}>Cancel</Btn>
             </div>
           </Card>
@@ -759,15 +763,15 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
             <button onClick={() => setImportMode("pdf")} style={{
               flex: 1, padding: "10px 14px", borderRadius: 8, fontSize: 14, fontFamily: "inherit", cursor: "pointer",
               border: "2px solid " + (importMode === "pdf" ? colors.accent : colors.border),
-              background: importMode === "pdf" ? colors.accentLight : colors.white,
+              background: importMode === "pdf" ? colors.accentLight : colors.cardBg,
               color: importMode === "pdf" ? colors.accentDark : colors.text, fontWeight: 600
-            }}>📄 PDF Document</button>
+            }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><FileText size={14}/>PDF Document</span></button>
             <button onClick={() => setImportMode("spreadsheet")} style={{
               flex: 1, padding: "10px 14px", borderRadius: 8, fontSize: 14, fontFamily: "inherit", cursor: "pointer",
               border: "2px solid " + (importMode === "spreadsheet" ? colors.accent : colors.border),
-              background: importMode === "spreadsheet" ? colors.accentLight : colors.white,
+              background: importMode === "spreadsheet" ? colors.accentLight : colors.cardBg,
               color: importMode === "spreadsheet" ? colors.accentDark : colors.text, fontWeight: 600
-            }}>📁 Spreadsheet (CSV/XLSX)</button>
+            }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><ClipboardList size={14}/>Spreadsheet (CSV/XLSX)</span></button>
           </div>
           <Input label="School" value={importSchoolId} onChange={setImportSchoolId}
             options={schools.map(s => ({ value: s.id, label: s.name }))} />
@@ -799,7 +803,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input ref={fileRef} type="file" accept={importMode === "pdf" ? ".pdf" : ".csv,.xlsx,.xls"} onChange={handleFileUpload} style={{ display: "none" }} />
             <Btn onClick={() => fileRef.current?.click()}>
-              {importMode === "pdf" ? "📄 Select PDF File" : "📁 Select Spreadsheet"}
+              {importMode === "pdf" ? <span style={{display:"inline-flex",alignItems:"center",gap:5}}><FileText size={13}/>Select PDF File</span> : <span style={{display:"inline-flex",alignItems:"center",gap:5}}><ClipboardList size={13}/>Select Spreadsheet</span>}
             </Btn>
             <Btn variant="secondary" onClick={() => setImportMode(null)}>Cancel</Btn>
           </div>
@@ -813,7 +817,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     return (
       <div>
         <PageTitle>Specialist Timetables</PageTitle>
-        <Card style={{ background: "#FFF8F0", borderColor: colors.accent + "40" }}>
+        <Card style={{ background: colors.amberLight, borderColor: colors.accent + "40" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ fontSize: 28 }}>⏳</div>
             <div>
@@ -834,7 +838,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     return (
       <div>
         <PageTitle subtitle="Something went wrong during import">Import Error</PageTitle>
-        <Card style={{ background: "#FEF6F6", borderColor: "#FCC" }}>
+        <Card style={{ background: colors.redLight, borderColor: "#FCC" }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
             <div style={{ fontSize: 28, flexShrink: 0 }}>⚠️</div>
             <div style={{ flex: 1 }}>
@@ -844,7 +848,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
               <div style={{ fontSize: 14, color: colors.text, lineHeight: 1.6, marginBottom: 12 }}>
                 {importError.message}
               </div>
-              <div style={{ fontSize: 12, color: colors.textMuted, padding: "10px 14px", background: "#FFF", borderRadius: 8, border: "1px solid #F0E0E0", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto" }}>
+              <div style={{ fontSize: 12, color: colors.textMuted, padding: "10px 14px", background: colors.cardBg, borderRadius: 8, border: "1px solid #F0E0E0", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto" }}>
                 {importError.details}
               </div>
             </div>
@@ -923,7 +927,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                         style={{ width: "100%", padding: "4px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
                     </td>
                     <td style={{ padding: "6px 12px" }}>
-                      <button onClick={() => removePreviewEntry(i)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 16 }}>×</button>
+                      <button onClick={() => removePreviewEntry(i)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                     </td>
                   </tr>
                 ))}
@@ -973,7 +977,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                   <>
                     <button onClick={() => duplicateTimeSlot(i)} title="Duplicate" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 14, color: colors.textMuted, padding: "2px 4px" }}>⧉</button>
                     {form.timeSlots.length > 1 && (
-                      <button onClick={() => removeTimeSlot(i)} title="Remove" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: colors.danger, padding: "2px 4px" }}>×</button>
+                      <button onClick={() => removeTimeSlot(i)} title="Remove" style={{ border: "none", background: "none", cursor: "pointer", color: colors.danger, padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                     )}
                   </>
                 )}
@@ -1085,7 +1089,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
         action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {filterSchool && (
-            <Btn variant="secondary" onClick={() => { setUpdateSchoolId(filterSchool); setImportError(null); }} style={{ fontSize: 12 }}>🔄 Update</Btn>
+            <Btn variant="secondary" onClick={() => { setUpdateSchoolId(filterSchool); setImportError(null); }} style={{ fontSize: 12 }}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><RefreshCw size={12}/>Update</span></Btn>
           )}
           <div style={{ position: "relative", display: "inline-block" }}
             onMouseEnter={e => { const t = e.currentTarget.querySelector(".spec-import-tooltip"); if (t) t.style.display = "block"; }}
@@ -1093,11 +1097,11 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
             <Btn variant="secondary" onClick={() => openImport("spreadsheet")}>Import</Btn>
             <div className="spec-import-tooltip" style={{
               display: "none", position: "absolute", top: "calc(100% + 8px)", right: 0,
-              width: 360, background: colors.white, border: "1px solid " + colors.border,
+              width: 360, background: colors.cardBg, border: "1px solid " + colors.border,
               borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "14px 16px",
               zIndex: 200, color: colors.text, fontSize: 12, lineHeight: 1.6,
             }}>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: colors.sidebarActive }}>📋 Spreadsheet Import Format</div>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: colors.sidebarActive }}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><ClipboardList size={13}/>Spreadsheet Import Format</span></div>
               <div style={{ marginBottom: 8 }}>
                 <span style={{ fontWeight: 600 }}>Required columns:</span><br/>
                 <code style={{ background: colors.bg, borderRadius: 4, padding: "1px 5px", fontSize: 11 }}>class</code> &nbsp;
@@ -1120,7 +1124,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                 <span style={{ color: colors.textMuted }}>Art, Music, PE/Sport, LOTE, Science, Library, Digital Tech, Drama, Dance, STEM, Wellbeing — or any custom name.</span>
               </div>
               <div style={{ borderTop: "1px solid " + colors.border, paddingTop: 8, marginTop: 4, color: colors.textMuted }}>
-                📄 PDF import also available — click Import to switch modes.
+                <span style={{display:"inline-flex",alignItems:"center",gap:4}}><FileText size={12}/>PDF import also available — click Import to switch modes.</span>
               </div>
             </div>
           </div>
@@ -1130,9 +1134,9 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       </PageTitle>
 
       {schools.length === 0 ? (
-        <EmptyState icon="🏫" title="Add schools first" subtitle="Set up at least one school before adding specialist timetables." />
+        <EmptyState icon={<Building2 size={32} />} title="Add schools first" subtitle="Set up at least one school before adding specialist timetables." />
       ) : specialists.length === 0 ? (
-        <EmptyState icon="🎨" title="No specialist timetables yet" subtitle="Import from a PDF or spreadsheet (with optional instructions), or add entries manually." action="+ Add Entry" onAction={newEntry} />
+        <EmptyState icon={<Palette size={32} />} title="No specialist timetables yet" subtitle="Import from a PDF or spreadsheet (with optional instructions), or add entries manually." action="+ Add Entry" onAction={newEntry} />
       ) : (
         <>
           {/* ── FILTER BAR ── */}
@@ -1179,7 +1183,15 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
           </div>
 
           {/* ── CALENDAR STRIP ── */}
-          <Card style={{ marginBottom: 20, padding: 0, overflow: "hidden" }}>
+          <div style={{ marginBottom: 20, borderRadius: 10, overflow: "hidden", border: `2px solid ${colors.sidebarHover}` }}>
+            <div onClick={() => setCalendarStripOpen(v => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: colors.sidebarHover, color: "#fff", cursor: "pointer", userSelect: "none" }}>
+              <span style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>Week Overview</span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", marginRight: 4 }}>{specialists.length} {specialists.length === 1 ? "entry" : "entries"}</span>
+              {calendarStripOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </div>
+            {calendarStripOpen && (
+          <Card style={{ marginBottom: 0, padding: 0, overflow: "hidden", borderRadius: 0, border: "none" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)" }}>
               {stripByDay.map(({ day, bySchool }, di) => {
                 const allEntries = Object.values(bySchool).flat();
@@ -1192,7 +1204,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                     <div style={{
                       padding: "8px 10px", textAlign: "center", fontWeight: 700, fontSize: 12,
                       letterSpacing: 0.8, textTransform: "uppercase",
-                      background: allEntries.length > 0 ? colors.sidebarActive : "rgba(52,69,101,0.55)",
+                      background: allEntries.length > 0 ? colors.sidebarHover : `${colors.sidebarHover}88`,
                       color: allEntries.length > 0 ? "#fff" : "rgba(255,255,255,0.55)",
                       borderBottom: `1px solid ${colors.borderLight}`,
                     }}>
@@ -1235,11 +1247,15 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
               })}
             </div>
           </Card>
+            )}
+          </div>
 
           {/* ── SCHOOL BANNERS ── */}
           {bannerSchools.map(({ id, name, entries }) => {
             const isOpen = !!schoolBannerOpen[id];
             const mode = schoolBannerMode[id] || "all";
+            const bannerSchool = schools.find(s => s.id === id);
+            const bannerColor = bannerSchool?.color || colors.sidebarHover;
 
             // Build display entries based on mode
             const displayContent = (() => {
@@ -1250,17 +1266,17 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                   if (dayEntries.length === 0) return null;
                   return (
                     <div key={day} style={{ marginBottom: 14 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: colors.sidebarActive, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6, paddingBottom: 4, borderBottom: `1px solid ${colors.borderLight}` }}>{day}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: colors.sidebarHover, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6, paddingBottom: 4, borderBottom: `1px solid ${colors.sidebarHover}40` }}>{day}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         {dayEntries.map(e => (
                           <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: colors.bg, borderRadius: 7, border: `1px solid ${colors.borderLight}`, fontSize: 13 }}>
                             <span style={{ fontSize: 11, color: colors.textMuted, minWidth: 80, whiteSpace: "nowrap" }}>{to12h(e.start)}–{to12h(e.end)}</span>
                             <Tag color={subjectColor(e.subject)}>{e.subject}</Tag>
                             <Tag color={colors.accent}>{e.className}</Tag>
-                            {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help" }}>📝</span>}
+                            {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help", display: "inline-flex", alignItems: "center" }}><StickyNote size={11} /></span>}
                             <div style={{ flex: 1 }} />
-                            <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 12, padding: "2px 4px" }}>✏️</button>
-                            <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>×</button>
+                            <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><Pencil size={12} /></button>
+                            <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><X size={13} /></button>
                           </div>
                         ))}
                       </div>
@@ -1287,10 +1303,10 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                               <span style={{ fontSize: 11, fontWeight: 600, color: colors.text, minWidth: 28 }}>{e.day.slice(0, 3)}</span>
                               <span style={{ fontSize: 11, color: colors.textMuted, minWidth: 80, whiteSpace: "nowrap" }}>{to12h(e.start)}–{to12h(e.end)}</span>
                               <Tag color={subjectColor(e.subject)}>{e.subject}</Tag>
-                              {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help" }}>📝</span>}
+                              {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help", display: "inline-flex", alignItems: "center" }}><StickyNote size={11} /></span>}
                               <div style={{ flex: 1 }} />
-                              <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 12, padding: "2px 4px" }}>✏️</button>
-                              <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>×</button>
+                              <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><Pencil size={12} /></button>
+                              <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><X size={13} /></button>
                             </div>
                           ))}
                         </div>
@@ -1308,10 +1324,10 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                         <span style={{ fontSize: 11, color: colors.textMuted, minWidth: 80, whiteSpace: "nowrap" }}>{to12h(e.start)}–{to12h(e.end)}</span>
                         <Tag color={subjectColor(e.subject)}>{e.subject}</Tag>
                         <Tag color={colors.accent}>{e.className}</Tag>
-                        {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help" }}>📝</span>}
+                        {e.notes && <span title={e.notes} style={{ fontSize: 11, color: colors.textMuted, cursor: "help", display: "inline-flex", alignItems: "center" }}><StickyNote size={11} /></span>}
                         <div style={{ flex: 1 }} />
-                        <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 12, padding: "2px 4px" }}>✏️</button>
-                        <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 14, padding: "2px 4px" }}>×</button>
+                        <button onClick={() => editEntry(e)} style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><Pencil size={12} /></button>
+                        <button onClick={() => deleteEntry(e.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: "2px 4px", display: "inline-flex", alignItems: "center" }}><X size={13} /></button>
                       </div>
                     ))}
                   </div>
@@ -1320,12 +1336,12 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
             })();
 
             return (
-              <div key={id} style={{ marginBottom: 8, borderRadius: 10, overflow: "hidden", border: `1px solid ${colors.borderLight}` }}>
+              <div key={id} style={{ marginBottom: 8, borderRadius: 10, overflow: "hidden", border: `2px solid ${bannerColor}` }}>
                 {/* Banner header — click to toggle */}
                 <div
                   onClick={() => toggleBanner(id)}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: colors.sidebarActive, color: "#fff", cursor: "pointer", userSelect: "none" }}>
-                  <span style={{ fontSize: 16 }}>🏫</span>
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: bannerColor, color: "#fff", cursor: "pointer", userSelect: "none" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center" }}><Building2 size={15} /></span>
                   <span style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>{name}</span>
                   <span style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", marginRight: 8 }}>{entries.length} {entries.length === 1 ? "entry" : "entries"}</span>
                   {/* Day / Class mode buttons */}
@@ -1339,11 +1355,11 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                     style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1px solid ${mode === "class" && isOpen ? "#fff" : "rgba(255,255,255,0.35)"}`, background: mode === "class" && isOpen ? "rgba(255,255,255,0.22)" : "transparent", color: "#fff" }}>
                     Class
                   </button>
-                  <span style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginLeft: 4 }}>{isOpen ? "▲" : "▼"}</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", marginLeft: 4 }}>{isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}</span>
                 </div>
                 {/* Collapsible content */}
                 {isOpen && (
-                  <div style={{ padding: "14px 16px", background: colors.white }}>
+                  <div style={{ padding: "14px 16px", background: colors.cardBg }}>
                     {displayContent}
                   </div>
                 )}
@@ -1354,7 +1370,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       )}
 
       <Card style={{ marginTop: 20, background: colors.accentLight, borderColor: colors.accent + "40" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: colors.accentDark, marginBottom: 6 }}>📋 Import Tips</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.accentDark, marginBottom: 6, display:"flex", alignItems:"center", gap:6 }}><ClipboardList size={13}/>Import Tips</div>
         <div style={{ fontSize: 12, color: colors.accentDark, lineHeight: 1.8 }}>
           Both PDF and spreadsheet imports let you add <strong>instructions</strong> to guide the AI. Use them to specify:
           <br />• What class names look like (e.g. "Prep A", "1/2B", "3/4C")

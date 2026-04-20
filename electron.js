@@ -385,6 +385,131 @@ ipcMain.handle("select-timetable-folder", async () => {
   return result.filePaths[0];
 });
 ipcMain.handle("get-timetable-folder", async () => { const prefs = loadPrefs(); return prefs.timetableFolder || ""; });
+
+// ── Session 98: Invoice folder + PDF save + preview window ─────────────────
+// Invoices get saved to a user-configured local folder, auto-organised into
+// <folder>/<School Name>/<Term Label>/. This is deliberately local-disk-only
+// (not Supabase) so it's immune to the bucket retention issue that's been
+// eating timetable blobs. Permanent, findable, survives reinstalls as long
+// as the folder does.
+
+function _sanitizeForPath(s) {
+  // Strip characters that are problematic in file/folder names across macOS,
+  // Windows, and Linux. Keep letters/digits/space/dash/underscore/ampersand.
+  // Collapse runs of whitespace, trim, fall back to "Unknown" if empty.
+  const out = String(s || "")
+    .replace(/[\/\\:*?"<>|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out || "Unknown";
+}
+
+ipcMain.handle("select-invoice-folder", async () => {
+  const prefs = loadPrefs();
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose Invoice Save Folder",
+    defaultPath: prefs.invoiceFolder || app.getPath("documents"),
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  prefs.invoiceFolder = result.filePaths[0];
+  savePrefs(prefs);
+  return result.filePaths[0];
+});
+
+ipcMain.handle("get-invoice-folder", async () => {
+  // Session 98 (patch): auto-default to ~/Documents/Invoices on first use
+  // instead of prompting the user. Creates the directory if missing and
+  // persists it as the pref — subsequent calls return it instantly. Users
+  // can still change the location via selectInvoiceFolder from Settings.
+  const prefs = loadPrefs();
+  if (prefs.invoiceFolder) {
+    // Sanity: if the saved folder no longer exists on disk (user moved or
+    // deleted it), fall through to the default below rather than fail on
+    // every subsequent save.
+    try {
+      fs.accessSync(prefs.invoiceFolder, fs.constants.W_OK);
+      return prefs.invoiceFolder;
+    } catch {
+      console.warn("[invoice folder] saved path unusable, regenerating default:", prefs.invoiceFolder);
+    }
+  }
+  const defaultFolder = path.join(app.getPath("documents"), "Invoices");
+  try {
+    fs.mkdirSync(defaultFolder, { recursive: true });
+    prefs.invoiceFolder = defaultFolder;
+    savePrefs(prefs);
+    return defaultFolder;
+  } catch (e) {
+    console.warn("[invoice folder] couldn't create default:", e?.message || e);
+    return "";
+  }
+});
+
+// Save a base64-encoded PDF to <invoiceFolder>/<school>/<term>/<filename>.
+// Creates intermediate directories as needed. Overwrites existing files
+// (upsert behaviour — same invoice number regenerating is fine).
+// Returns { ok, filePath } on success or { ok: false, error, reason } where
+// reason is "no_folder" if the user hasn't configured one yet (caller can
+// prompt to set one up).
+ipcMain.handle("save-invoice-pdf", async (_e, { base64, schoolName, termLabel, filename }) => {
+  try {
+    const prefs = loadPrefs();
+    if (!prefs.invoiceFolder) {
+      return { ok: false, error: "No invoice folder configured", reason: "no_folder" };
+    }
+    const schoolDir = _sanitizeForPath(schoolName || "Multi-school");
+    const termDir   = _sanitizeForPath(termLabel  || "Unknown Term");
+    const safeName  = _sanitizeForPath(filename.replace(/\.pdf$/i, "")) + ".pdf";
+    const targetDir = path.join(prefs.invoiceFolder, schoolDir, termDir);
+    fs.mkdirSync(targetDir, { recursive: true });
+    const targetPath = path.join(targetDir, safeName);
+    fs.writeFileSync(targetPath, Buffer.from(base64, "base64"));
+    return { ok: true, filePath: targetPath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// Open an HTML payload (invoice preview, or any other rendered HTML) in a
+// standalone BrowserWindow. Unlike window.open from the renderer — which
+// inherits the parent's macOS fullscreen space and becomes inaccessible
+// when the app is fullscreened — this creates a top-level window owned by
+// the app but not parented to mainWindow, so macOS places it in the
+// regular desktop space. Cmd+W closes it, traffic lights work, it can be
+// tiled/minimised/maximised normally.
+ipcMain.handle("open-invoice-preview", async (_e, { html, title }) => {
+  try {
+    const tmpFile = path.join(app.getPath("temp"), "mmm-preview-" + Date.now() + ".html");
+    fs.writeFileSync(tmpFile, html, "utf8");
+    const win = new BrowserWindow({
+      width: 960,
+      height: 900,
+      minWidth: 600,
+      minHeight: 400,
+      title: title || "Invoice Preview",
+      fullscreen: false,
+      fullscreenable: true,
+      frame: true,
+      resizable: true,
+      minimizable: true,
+      maximizable: true,
+      titleBarStyle: "default",
+      // Deliberately no `parent:` option — keeps this window out of the
+      // main app's fullscreen space.
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    win.loadURL("file://" + tmpFile);
+    // Clean up the temp file after the window is closed. Small delay to
+    // ensure the page has finished loading before we unlink.
+    win.on("closed", () => {
+      setTimeout(() => { try { fs.unlinkSync(tmpFile); } catch(e) {} }, 500);
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 ipcMain.handle("save-file-dialog", async (_e, { defaultName, json }) => {
   const prefs = loadPrefs();
   const result = await dialog.showSaveDialog(mainWindow, { title: "Save Backup", defaultPath: path.join(prefs.backupFolder || app.getPath("documents"), defaultName), filters: [{ name: "JSON Backup", extensions: ["json"] }] });
@@ -425,15 +550,23 @@ async function renderHtmlWindow(html, width, height, fn) {
   }
 }
 
-ipcMain.handle("print-to-pdf", async (_e, { html }) => {
+ipcMain.handle("print-to-pdf", async (_e, { html, options }) => {
+  // Session 98: accept optional `options` to override defaults. Existing
+  // callers (timetable exports) pass no options and get the original
+  // landscape A4 behaviour. Invoice send passes { landscape: false,
+  // margins: {...} } for portrait output with tighter margins.
   try {
-    const pdfBuf = await renderHtmlWindow(html, 1200, 900, async (win) => {
-      return win.webContents.printToPDF({
-        landscape: true,
-        printBackground: true,
-        pageSize: "A4",
-        margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
-      });
+    const pdfOptions = {
+      landscape: true,
+      printBackground: true,
+      pageSize: "A4",
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+      ...(options || {}),
+    };
+    const winW = pdfOptions.landscape ? 1200 : 900;
+    const winH = pdfOptions.landscape ? 900  : 1200;
+    const pdfBuf = await renderHtmlWindow(html, winW, winH, async (win) => {
+      return win.webContents.printToPDF(pdfOptions);
     });
     return { ok: true, base64: pdfBuf.toString("base64") };
   } catch(e) {

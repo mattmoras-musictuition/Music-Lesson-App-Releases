@@ -2,14 +2,17 @@
 // STUDENTSMANAGER — extracted from App.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, INSTRUMENTS, instruments_colors } from "../constants";
+import React, { useState, useEffect, useRef } from "react";
+import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus, ClipboardList, ChevronUp, ChevronDown, Archive, RotateCcw, ChevronRight } from "lucide-react";
+import { instruments_colors } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor, getInitials, openCompose } from "../utils/helpers";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, goBack, goForward, historyCursor, pageHistory }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onTeacherChange }) {
+  const { colors } = useTheme();
   // Derive available instruments from what teachers can actually teach
   const availableInstruments = [...new Set(teachers.flatMap(t => t.instruments.map(i => i.name)))].sort();
   // Lazy initialisers: if focusStudentId is set on mount, open edit form immediately
@@ -41,7 +44,23 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
   const toggleStudentNote = (id) => setExpandedStudentNotes(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   // Merge prompt: shown when activating a pending student whose name matches an active student
   const [mergePrompt, setMergePrompt] = useState(null); // { pendingStudent, targetStudent, pendingForm }
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiveDeleteConfirmId, setArchiveDeleteConfirmId] = useState(null); // row-level delete confirm in archived panel
+  const [pickingStudentForParent, setPickingStudentForParent] = useState(false);
+  const parentPrefillRef = useRef(null);
   const updateStudentNote = (id, val) => setStudents(prev => prev.map(s => s.id === id ? { ...s, notes: val } : s));
+  // Context menu for student rows (right-click → Add to Claude memory)
+  const [studentCtxMenu, setStudentCtxMenu] = useState(null); // { x, y, student }
+  const studentCtxRef = useRef(null);
+  useEffect(() => {
+    if (!studentCtxMenu) return;
+    const close = (e) => {
+      if (studentCtxRef.current && studentCtxRef.current.contains(e.target)) return;
+      setStudentCtxMenu(null);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [studentCtxMenu]);
 
   // Clear focusStudentId after it's been consumed on mount (handled via lazy useState above)
   // This also handles the case where focusStudentId changes while the component is already mounted
@@ -59,12 +78,23 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
   // Open new student form pre-filled from enquiry data
   useEffect(() => {
     if (newStudentPrefill) {
-      const base = { id: uid(), name: "", instruments: [{ name: "", teacherId: "" }], schoolId: "", className: "", status: "pending", parents: [], notes: "", outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidTimes: [], preferredTimes: [] };
+      const base = { id: uid(), name: "", instruments: [{ name: "", teacherId: "" }], schoolId: "", className: "", status: "pending", parents: [], notes: "", outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false, avoidTimes: [], preferredTimes: [] };
       setForm({ ...base, ...newStudentPrefill });
       setEditing("new");
       if (onClearNewStudentPrefill) onClearNewStudentPrefill();
     }
   }, [newStudentPrefill]);
+
+  // Navigate to student picker to add a parent from email context menu
+  useEffect(() => {
+    if (addParentPrefill) {
+      parentPrefillRef.current = addParentPrefill;
+      setPickingStudentForParent(true);
+      setEditing(null);
+      setForm(null);
+      if (onClearAddParentPrefill) onClearAddParentPrefill();
+    }
+  }, [addParentPrefill]);
 
   const lastResetKey = useRef(resetKey);
   useEffect(() => {
@@ -93,6 +123,10 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
         changed = true;
         return { ...s, outsideClassOnly: s.outsideClassOnly || false, outsideClassPreferred: s.outsideClassPreferred || false, availableBefore: false, availableAfter: false };
       }
+      if (s.avoidRecessLunch === undefined) {
+        changed = true;
+        return { ...s, avoidRecessLunch: false };
+      }
       // Migrate student-level isGroup to instrument-level isGroup
       if (s.isGroup !== undefined) {
         changed = true;
@@ -110,12 +144,13 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
   }, []);
 
   const activeStudents = students.filter(s => s.status === "active" || s.status === "pending" || s.status === "trial");
+  const archivedStudents = students.filter(s => s.status === "archived");
 
   const newStudent = () => {
     setForm({
       id: uid(), name: "", schoolId: "", className: "",
       instruments: [{ name: "", isGroup: false }],
-      outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false,
+      outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false,
       avoidTimes: [], preferredTimes: [], status: "active", notes: "",
       parents: []
     });
@@ -123,6 +158,18 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
   };
 
   const editStudent = (student) => {
+    if (pickingStudentForParent && parentPrefillRef.current) {
+      const prefill = parentPrefillRef.current;
+      const updatedForm = { ...student, instruments: student.instruments.map(i => ({ ...i })) };
+      if ((updatedForm.parents || []).length < 2) {
+        updatedForm.parents = [...(updatedForm.parents || []), { id: uid(), name: prefill.name || "", email: prefill.email || "", phone: "", relationship: "", isPrimary: (updatedForm.parents || []).length === 0 }];
+      }
+      setForm(updatedForm);
+      setEditing(student.id);
+      setPickingStudentForParent(false);
+      parentPrefillRef.current = null;
+      return;
+    }
     setForm({ ...student, instruments: student.instruments.map(i => ({ ...i })) });
     setEditing(student.id);
   };
@@ -151,10 +198,26 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
   };
 
   const commitSaveStudent = (f) => {
+    const prevRecord = students.find(s => s.id === f.id);
+    const record = f.status === "archived" && !f.archivedAt ? { ...f, archivedAt: new Date().toISOString() } : f;
     if (editing === "new") {
-      setStudents(prev => [...prev, f]);
+      setStudents(prev => [...prev, record]);
     } else {
-      setStudents(prev => prev.map(s => s.id === f.id ? f : s));
+      setStudents(prev => prev.map(s => s.id === record.id ? record : s));
+      if (prevRecord && prevRecord.status !== "archived" && record.status === "archived") {
+        onArchiveStudent(record.id);
+      }
+      // Detect instrument teacher changes and propagate to master + weekly timetables
+      if (prevRecord && onTeacherChange) {
+        const changes = (record.instruments || []).flatMap(inst => {
+          const prev = (prevRecord.instruments || []).find(pi => pi.name === inst.name);
+          if (prev && prev.teacherId !== inst.teacherId) {
+            return [{ instrumentName: inst.name, newTeacherId: inst.teacherId || "" }];
+          }
+          return [];
+        });
+        if (changes.length > 0) onTeacherChange(record.id, changes);
+      }
     }
     setForm(null); setEditing(null);
     notify("Student saved!");
@@ -189,7 +252,21 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
 
   const deleteStudent = (id) => {
     setStudents(prev => prev.filter(s => s.id !== id));
+    if (onDeleteStudent) onDeleteStudent(id);
     notify("Student removed");
+  };
+
+  const archiveStudent = (id) => {
+    setStudents(prev => prev.map(s => s.id === id ? { ...s, status: "archived", archivedAt: new Date().toISOString() } : s));
+    onArchiveStudent(id); // timetable cleanup
+    setForm(null); setEditing(null);
+    notify("Student archived");
+  };
+
+  const restoreStudent = (id) => {
+    // Restore to pending — timetable data was cleared on archive, so no slot will reappear
+    setStudents(prev => prev.map(s => s.id === id ? { ...s, status: "pending", archivedAt: undefined } : s));
+    notify("Student restored to pending");
   };
 
   const handleImport = (data, filename) => {
@@ -218,7 +295,7 @@ export function StudentsManager({ students, setStudents, schools, teachers, spec
         const initials = s.name.split(/\s+/).map(w => w[0]).join("").toUpperCase();
         return `"${s.name}" (abbreviation: "${initials}")`;
       }).join(", ");
-      const instrumentListStr = (availableInstruments.length > 0 ? availableInstruments : INSTRUMENTS).join(", ");
+      const instrumentListStr = availableInstruments.join(", ");
       const teacherListStr = teachers.map(t => t.name).join(", ");
 
       const prompt = `Extract student data from this document. Each student should have:
@@ -523,11 +600,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
     if (filter.search && !s.name.toLowerCase().includes(filter.search.toLowerCase())) return false;
     if (filter.hasNote && !(s.notes && s.notes.trim())) return false;
     if (filter.hasWarning) {
+      const isPrivate = s.schoolId === "__private__";
       const hasUnassignedTeacher = (s.instruments || []).some(i => !i.isGroup && !i.teacherId);
       const hasMissingInstrument = !(s.instruments || []).length;
-      const hasMissingParent = !(s.parents || []).length || !(s.parents || []).some(p => p.email);
-      const hasMissingClass = !s.className;
-      const hasMissingSchool = !s.schoolId;
+      const hasMissingParent = !isPrivate && (!(s.parents || []).length || !(s.parents || []).some(p => p.email));
+      const hasMissingClass = !isPrivate && !s.className;
+      const hasMissingSchool = !isPrivate && !s.schoolId;
       const hasAnyWarning = hasUnassignedTeacher || hasMissingInstrument || hasMissingParent || hasMissingClass || hasMissingSchool;
       if (!hasAnyWarning) return false;
     }
@@ -577,15 +655,15 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             <button onClick={() => setImportMode("pdf")} style={{
               flex: 1, padding: "10px 14px", borderRadius: 8, fontSize: 14, fontFamily: "inherit", cursor: "pointer",
               border: `2px solid ${importMode === "pdf" ? colors.accent : colors.border}`,
-              background: importMode === "pdf" ? colors.accentLight : colors.white,
+              background: importMode === "pdf" ? colors.accentLight : colors.cardBg,
               color: importMode === "pdf" ? colors.accentDark : colors.text, fontWeight: 600
-            }}>📄 PDF Document</button>
+            }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><ClipboardList size={14}/>PDF Document</span></button>
             <button onClick={() => setImportMode("spreadsheet")} style={{
               flex: 1, padding: "10px 14px", borderRadius: 8, fontSize: 14, fontFamily: "inherit", cursor: "pointer",
               border: `2px solid ${importMode === "spreadsheet" ? colors.accent : colors.border}`,
-              background: importMode === "spreadsheet" ? colors.accentLight : colors.white,
+              background: importMode === "spreadsheet" ? colors.accentLight : colors.cardBg,
               color: importMode === "spreadsheet" ? colors.accentDark : colors.text, fontWeight: 600
-            }}>📁 Spreadsheet (CSV/XLSX)</button>
+            }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><ClipboardList size={14}/>Spreadsheet (CSV/XLSX)</span></button>
           </div>
 
           {schools.length > 1 && (
@@ -643,7 +721,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
     return (
       <div>
         <PageTitle>Students</PageTitle>
-        <Card style={{ background: "#FFF8F0", borderColor: colors.accent + "40" }}>
+        <Card style={{ background: colors.amberLight, borderColor: colors.accent + "40" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             <div style={{ fontSize: 28 }}>⏳</div>
             <div>
@@ -664,9 +742,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
     return (
       <div>
         <PageTitle subtitle="Something went wrong during import">Import Error</PageTitle>
-        <Card style={{ background: "#FEF6F6", borderColor: "#FCC" }}>
+        <Card style={{ background: colors.redLight, borderColor: "#FCC" }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
-            <div style={{ fontSize: 28, flexShrink: 0 }}>⚠️</div>
+            <div style={{ flexShrink: 0, color: colors.danger, display: "flex", alignItems: "flex-start", paddingTop: 2 }}><AlertTriangle size={26} /></div>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 15, color: colors.danger, marginBottom: 8 }}>
                 Failed to import "{importError.filename}"
@@ -675,7 +753,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                 {importError.message}
               </div>
               {importError.details && (
-                <div style={{ fontSize: 12, color: colors.textMuted, padding: "10px 14px", background: "#FFF", borderRadius: 8, border: "1px solid #F0E0E0", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto" }}>
+                <div style={{ fontSize: 12, color: colors.textMuted, padding: "10px 14px", background: colors.cardBg, borderRadius: 8, border: "1px solid #F0E0E0", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 120, overflowY: "auto" }}>
                   {importError.details}
                 </div>
               )}
@@ -732,7 +810,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       }} style={{ width: "100%", padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 12, fontFamily: "inherit" }}>
                         <option value="">Select...</option>
                         {(() => {
-                          const base = availableInstruments.length > 0 ? availableInstruments : INSTRUMENTS;
+                          const base = availableInstruments.length > 0 ? availableInstruments : [];
                           const current = entry.instruments[0]?.name;
                           if (current && !base.includes(current)) return [...base, current].sort();
                           return base;
@@ -760,7 +838,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       <button onClick={() => removePreviewStudent(i)}
-                        style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 16 }}>×</button>
+                        style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                     </td>
                   </tr>
                 ))}
@@ -770,7 +848,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         </Card>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <Btn onClick={confirmStudentImport}>✓ Import {preview.entries.length} Students</Btn>
+          <Btn onClick={confirmStudentImport}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Check size={13}/>Import {preview.entries.length} Students</span></Btn>
           <Btn variant="secondary" onClick={() => setPreview(null)}>Cancel</Btn>
         </div>
       </div>
@@ -784,23 +862,32 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         <Card>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 20px" }}>
             <Input label="Student Name" value={form.name} onChange={v => setForm(p => ({ ...p, name: v }))} placeholder="Full name" />
-            <Input label="School" value={form.schoolId} onChange={v => setForm(p => ({ ...p, schoolId: v }))}
-              options={schools.map(s => ({ value: s.id, label: s.name }))} />
+            <Input label="School" value={form.schoolId} onChange={v => setForm(p => ({ ...p, schoolId: v, ...(v === "__private__" ? { className: "", status: "active" } : {}) }))}
+              options={[...schools.map(s => ({ value: s.id, label: s.name })), { value: "__private__", label: "Private Student" }]} />
             <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Class</label>
               <select
                 value={form.className || ""}
                 onChange={e => setForm(p => ({ ...p, className: e.target.value }))}
-                disabled={!form.schoolId}
-                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: !form.schoolId ? colors.bg : colors.white, color: !form.schoolId ? colors.textMuted : colors.text, cursor: !form.schoolId ? "not-allowed" : "pointer" }}>
-                <option value="">{form.schoolId ? "Select class..." : "Select a school first"}</option>
-                {form.schoolId && [...new Set((specialists || []).filter(s => s.schoolId === form.schoolId).map(s => s.className).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(c => (
+                disabled={!form.schoolId || form.schoolId === "__private__"}
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: (!form.schoolId || form.schoolId === "__private__") ? colors.bg : colors.cardBg, color: (!form.schoolId || form.schoolId === "__private__") ? colors.textMuted : colors.text, cursor: (!form.schoolId || form.schoolId === "__private__") ? "not-allowed" : "pointer" }}>
+                <option value="">{form.schoolId === "__private__" ? "N/A — Private student" : form.schoolId ? "Select class..." : "Select a school first"}</option>
+                {form.schoolId && form.schoolId !== "__private__" && [...new Set((specialists || []).filter(s => s.schoolId === form.schoolId).map(s => s.className).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(c => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
             </div>
-            <Input label="Status" value={form.status} onChange={v => setForm(p => ({ ...p, status: v }))}
-              options={[{ value: "active", label: "Active" }, { value: "pending", label: "Pending (Waiting List)" }, { value: "trial", label: "Trial Lesson" }]} />
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Status</label>
+              <select value={form.status} onChange={e => setForm(p => ({ ...p, status: e.target.value }))}
+                disabled={form.schoolId === "__private__"}
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: form.schoolId === "__private__" ? colors.bg : colors.cardBg, color: form.schoolId === "__private__" ? colors.textMuted : colors.text, cursor: form.schoolId === "__private__" ? "not-allowed" : "pointer" }}>
+                <option value="active">Active</option>
+                {form.schoolId !== "__private__" && <option value="pending">Pending (Waiting List)</option>}
+                {form.schoolId !== "__private__" && <option value="trial">Trial Lesson</option>}
+                <option value="archived">Archived</option>
+              </select>
+            </div>
           </div>
 
           <div style={{ marginBottom: 14 }}>
@@ -820,7 +907,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       const insts = [...form.instruments]; insts[i] = { ...insts[i], name: v };
                       setForm(p => ({ ...p, instruments: insts }));
                     }} options={(() => {
-                      const base = availableInstruments.length > 0 ? availableInstruments : INSTRUMENTS;
+                      const base = availableInstruments.length > 0 ? availableInstruments : [];
                       if (inst.name && !base.includes(inst.name)) return [...base, inst.name].sort();
                       return base;
                     })()} style={{ marginBottom: 0 }} />
@@ -834,7 +921,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                   </label>
                   {i > 0 && (
                     <button onClick={() => setForm(p => ({ ...p, instruments: p.instruments.filter((_, idx) => idx !== i) }))}
-                      style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", fontSize: 18 }}>×</button>
+                      style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={15} /></button>
                   )}
                   {i > 0 && !inst.isGroup && <span style={{ fontSize: 11, color: colors.textMuted, whiteSpace: "nowrap" }}>↑ 2nd: specialist/break/before-after only</span>}
                 </div>
@@ -852,25 +939,49 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             ))}
           </div>
 
+          {form.schoolId !== "__private__" && (
           <div style={{ marginBottom: 14 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Scheduling Constraints</label>
             <Checkbox label="Outside of class time only" checked={form.outsideClassOnly} onChange={v => setForm(p => ({ ...p, outsideClassOnly: v, outsideClassPreferred: v ? false : p.outsideClassPreferred }))} />
             <Checkbox label="Outside of class time preferred" checked={form.outsideClassPreferred} onChange={v => setForm(p => ({ ...p, outsideClassPreferred: v, outsideClassOnly: v ? false : p.outsideClassOnly }))} />
             <Checkbox label="Available before school" checked={form.availableBefore} onChange={v => setForm(p => ({ ...p, availableBefore: v }))} />
             <Checkbox label="Available after school" checked={form.availableAfter} onChange={v => setForm(p => ({ ...p, availableAfter: v }))} />
+            <Checkbox label="Avoid recess/lunch lessons" checked={form.avoidRecessLunch || false} onChange={v => setForm(p => ({ ...p, avoidRecessLunch: v }))} />
           </div>
+          )}
 
           <Input label="Notes" value={form.notes} onChange={v => setForm(p => ({ ...p, notes: v }))} multiline placeholder="Any preferences, restrictions, or notes..." />
+
+          {/* Teacher notes — read-only, shown in teacher's colour, not parsed by AI */}
+          {(form.teacher_notes || []).length > 0 && (
+            <div style={{ marginBottom: 14, marginTop: 4 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Teacher Notes</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {(form.teacher_notes || []).map(n => (
+                  <div key={n.id} style={{ padding: "8px 12px", borderRadius: 8, background: (n.teacherColor || "#94A3B8") + "14", border: `1px solid ${(n.teacherColor || "#94A3B8") + "40"}`, borderLeft: `3px solid ${n.teacherColor || "#94A3B8"}`, fontSize: 13, color: colors.text, lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: n.teacherColor || "#94A3B8", marginBottom: 3, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: n.teacherColor || "#94A3B8", display: "inline-block" }} />
+                      {n.teacherName || "Teacher"}
+                      <span style={{ fontWeight: 400, color: colors.textMuted, fontSize: 10 }}>· {n.editedAt ? `edited ${new Date(n.editedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` : n.addedAt ? new Date(n.addedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""}</span>
+                    </div>
+                    {n.text}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Parent / Guardian contacts */}
           <div style={{ marginBottom: 14, marginTop: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                Parent / Guardian
+                {form.schoolId === "__private__" ? "Contact Details" : "Parent / Guardian"}
               </label>
               {(form.parents || []).length < 2 && (
                 <Btn variant="ghost" onClick={() => setForm(p => ({ ...p, parents: [...(p.parents || []), { id: uid(), name: "", email: "", phone: "", relationship: "", isPrimary: (p.parents || []).length === 0 }] }))} style={{ fontSize: 12 }}>
-                  {(form.parents || []).length === 0 ? "+ Add Parent" : "+ Add Second Parent"}
+                  {form.schoolId === "__private__"
+                    ? ((form.parents || []).length === 0 ? "+ Add Contact" : "+ Add Second Contact")
+                    : ((form.parents || []).length === 0 ? "+ Add Parent" : "+ Add Second Parent")}
                 </Btn>
               )}
             </div>
@@ -884,11 +995,11 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       {pi === 0 ? "Primary Contact" : "Second Contact"}
                     </div>
                     <button onClick={() => setForm(p => ({ ...p, parents: (p.parents || []).filter((_, i) => i !== pi) }))}
-                      style={{ position: "absolute", top: 8, right: 10, border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
-                      title="Remove">×</button>
+                      style={{ position: "absolute", top: 8, right: 10, border: "none", background: "none", color: colors.textMuted, cursor: "pointer", lineHeight: 1, display: "inline-flex", alignItems: "center" }}
+                      title="Remove"><X size={14} /></button>
                     <div style={{ display: "flex", gap: 10, marginBottom: 8 }}>
                       <div style={{ flex: 1 }}>
-                        <Input label="Name" value={parent.name} onChange={v => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, name: v } : pr) }))} placeholder="Parent or guardian name" />
+                        <Input label="Name" value={parent.name} onChange={v => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, name: v } : pr) }))} placeholder={form.schoolId === "__private__" ? "Contact name (optional)" : "Parent or guardian name"} />
                       </div>
                       <div style={{ width: 140 }}>
                         <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 4 }}>Relationship</label>
@@ -908,7 +1019,17 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         <Input label="Email" value={parent.email} onChange={v => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, email: v } : pr) }))} placeholder="parent@example.com" />
                       </div>
                       <div style={{ flex: 1 }}>
-                        <Input label="Phone" value={parent.phone} onChange={v => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, phone: v } : pr) }))} placeholder="04xx xxx xxx" />
+                        <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Phone</label>
+                        <div style={{ display: "flex", gap: 0, borderRadius: 8, overflow: "hidden", border: `1px solid ${colors.inputBorder}` }}>
+                          <input value={parent.phone} onChange={e => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, phone: e.target.value } : pr) }))} placeholder="04xx xxx xxx"
+                            style={{ flex: 1, padding: "8px 12px", border: "none", fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }} />
+                          <button
+                            onClick={() => setForm(p => ({ ...p, parents: (p.parents || []).map((pr, i) => i === pi ? { ...pr, sharePhone: !pr.sharePhone } : pr) }))}
+                            title={parent.sharePhone ? "Phone shared with teachers — click to hide" : "Phone not shared with teachers — click to share"}
+                            style={{ padding: "0 10px", border: "none", borderLeft: `1px solid ${colors.inputBorder}`, background: parent.sharePhone ? colors.sidebarActive : colors.cardBg, color: parent.sharePhone ? "#fff" : colors.textMuted, fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap", transition: "background 0.15s, color 0.15s" }}>
+                            Share with staff
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -927,7 +1048,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         {mergePrompt && (
           <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
             onClick={() => setMergePrompt(null)}>
-            <div style={{ background: colors.white, borderRadius: 14, padding: 28, maxWidth: 460, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
+            <div style={{ background: colors.cardBg, borderRadius: 14, padding: 28, maxWidth: 460, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
               onClick={e => e.stopPropagation()}>
               <div style={{ fontWeight: 700, fontSize: 15, color: colors.sidebarActive, marginBottom: 10 }}>
                 Merge into existing student?
@@ -943,7 +1064,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <Btn variant="secondary" onClick={handleActivateWithoutMerge}>Keep as Separate Student</Btn>
-                <Btn onClick={handleMerge}>&#10003; Merge Instruments</Btn>
+                <Btn onClick={handleMerge}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Check size={13}/>Merge Instruments</span></Btn>
               </div>
             </div>
           </div>
@@ -967,11 +1088,11 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             <Btn variant="secondary" onClick={() => openImport("spreadsheet")}>Import</Btn>
             <div className="import-tooltip" style={{
               display: "none", position: "absolute", top: "calc(100% + 8px)", right: 0,
-              width: 340, background: colors.white, border: "1px solid " + colors.border,
+              width: 340, background: colors.cardBg, border: "1px solid " + colors.border,
               borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: "14px 16px",
               zIndex: 200, color: colors.text, fontSize: 12, lineHeight: 1.6,
             }}>
-              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: colors.sidebarActive }}>📋 Spreadsheet Import Format</div>
+              <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: colors.sidebarActive }}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><ClipboardList size={13}/>Spreadsheet Import Format</span></div>
               <div style={{ marginBottom: 8 }}>
                 <span style={{ fontWeight: 600 }}>Required columns:</span><br/>
                 <code style={{ background: colors.bg, borderRadius: 4, padding: "1px 5px", fontSize: 11 }}>name</code> &nbsp;
@@ -997,13 +1118,29 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               </div>
             </div>
           </div>
-          <Btn onClick={newStudent}>+ Add</Btn>
+          <Btn onClick={newStudent}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Plus size={13}/>Add</span></Btn>
         </div>}
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>
         Students
       </PageTitle>
 
-      {activeStudents.length > 0 && (
+      {/* ── Add-parent student picker banner ── */}
+      {pickingStudentForParent && (
+        <div style={{ margin: "0 0 12px 0", padding: "14px 18px", background: colors.accentLight, border: `1px solid ${colors.accent}`, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <span style={{ fontWeight: 700, fontSize: 13, color: colors.accentDark }}>Select the student to add this parent to:</span>
+            {parentPrefillRef.current && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: colors.accentDark }}>
+                {parentPrefillRef.current.name && <strong>{parentPrefillRef.current.name}</strong>}
+                {parentPrefillRef.current.name && parentPrefillRef.current.email && " · "}
+                {parentPrefillRef.current.email}
+              </span>
+            )}
+          </div>
+          <button onClick={() => { setPickingStudentForParent(false); parentPrefillRef.current = null; }}
+            style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, lineHeight: 1, padding: 0, flexShrink: 0, display: "inline-flex", alignItems: "center" }}><X size={16} /></button>
+        </div>
+      )}
         <Card style={{ marginBottom: 10, padding: "10px 14px" }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap" }}>
             <div style={{ flex: "1 1 140px", minWidth: 0, position: "relative" }}>
@@ -1011,13 +1148,14 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                 style={{ width: "100%", padding: "6px 28px 6px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", boxSizing: "border-box" }} />
               {filter.search && (
                 <button onClick={() => setFilter(p => ({ ...p, search: "" }))}
-                  style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+                  style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", lineHeight: 1, padding: 0, display: "inline-flex", alignItems: "center" }}><X size={13} /></button>
               )}
             </div>
             <select value={filter.school} onChange={e => setFilter(p => ({ ...p, school: e.target.value, className: "" }))}
               style={{ flex: "0 0 auto", padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit" }}>
               <option value="">All Schools</option>
               {schools.map(s => <option key={s.id} value={s.id}>{s.name.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("") || s.name}</option>)}
+              <option value="__private__">Private</option>
             </select>
             <select value={filter.className} onChange={e => setFilter(p => ({ ...p, className: e.target.value }))}
               style={{ flex: "0 0 auto", padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit" }}>
@@ -1032,7 +1170,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               style={{ flex: "0 1 120px", minWidth: 0, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit" }}>
               <option value="">All Instruments</option>
               {[...new Set([
-                ...(availableInstruments.length > 0 ? availableInstruments : INSTRUMENTS),
+                ...(availableInstruments),
                 ...activeStudents.flatMap(s => s.instruments.map(i => i.name)).filter(Boolean)
               ])].sort().map(i => <option key={i} value={i}>{i}</option>)}
             </select>
@@ -1044,28 +1182,27 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             </select>
             <button onClick={() => setFilter(p => ({ ...p, hasNote: !p.hasNote }))}
               title="Show only students with a note"
-              style={{ flex: "0 0 auto", padding: "6px 10px", border: `1px solid ${filter.hasNote ? colors.accent : colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", cursor: "pointer", background: filter.hasNote ? colors.accent : colors.white, color: filter.hasNote ? colors.white : colors.textMuted, fontWeight: filter.hasNote ? 700 : 400, whiteSpace: "nowrap" }}>
-              📝 Has note
+              style={{ flex: "0 0 auto", padding: "6px 10px", border: `1px solid ${filter.hasNote ? colors.accent : colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", cursor: "pointer", background: filter.hasNote ? colors.accent : colors.cardBg, color: filter.hasNote ? colors.cardBg : colors.textMuted, fontWeight: filter.hasNote ? 700 : 400, whiteSpace: "nowrap" }}>
+              <StickyNote size={12} style={{marginRight:4,display:"inline-flex",verticalAlign:"middle"}} />Has note
             </button>
             <button onClick={() => setFilter(p => ({ ...p, hasWarning: p.hasWarning ? "" : "any" }))}
               title="Show only students with missing data (teacher, instrument, parent, class, or school)"
-              style={{ flex: "0 0 auto", padding: "6px 10px", border: `1px solid ${filter.hasWarning ? colors.danger : colors.inputBorder}`, borderRadius: 7, fontSize: 14, fontFamily: "inherit", cursor: "pointer", background: filter.hasWarning ? "#FEF2F2" : colors.white, color: filter.hasWarning ? colors.danger : colors.textMuted, fontWeight: filter.hasWarning ? 700 : 400, lineHeight: 1 }}>
-              ⚠
+              style={{ flex: "0 0 auto", padding: "6px 10px", border: `1px solid ${filter.hasWarning ? colors.danger : colors.inputBorder}`, borderRadius: 7, fontFamily: "inherit", cursor: "pointer", background: filter.hasWarning ? colors.redLight : colors.cardBg, color: filter.hasWarning ? colors.danger : colors.textMuted, fontWeight: filter.hasWarning ? 700 : 400, display: "inline-flex", alignItems: "center" }}>
+              <AlertTriangle size={14} />
             </button>
           </div>
         </Card>
-      )}
 
       {activeStudents.length === 0 ? (
-        <EmptyState icon="👨‍🎓" title="No students yet" subtitle="Add students manually or import from a spreadsheet (CSV or Excel)." action="+ Add Student" onAction={newStudent} />
+        <EmptyState icon={<GraduationCap size={32} />} title="No students yet" subtitle="Add students manually or import from a spreadsheet (CSV or Excel)." action="+ Add Student" onAction={newStudent} />
       ) : (
         <>
           <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>Showing {filtered.length} of {activeStudents.length} students</div>
-          <div style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 210px)" }}>
+          <div style={{ background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 210px)" }}>
             <div style={{ overflowY: "auto", flex: 1 }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
-                <tr style={{ background: colors.sidebarActive, borderBottom: `1px solid ${colors.border}` }}>
+                <tr style={{ background: colors.sidebarHover, borderBottom: `1px solid ${colors.sidebarHover}` }}>
                   {[
                     { key: "name", label: "Name" },
                     { key: "school", label: "School" },
@@ -1085,7 +1222,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         userSelect: "none",
                         width: ci === 0 ? "18%" : ci === 1 ? "8%" : ci === 2 ? "7%" : ci === 3 ? "16%" : ci === 4 ? "20%" : ci === 5 ? "22%" : 72,
                       }}>
-                      {col.label}{sortCol === col.key ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                      {col.label}{sortCol === col.key ? (sortDir === "asc" ? <ChevronUp size={10} style={{marginLeft:3,display:"inline-flex",verticalAlign:"middle"}} /> : <ChevronDown size={10} style={{marginLeft:3,display:"inline-flex",verticalAlign:"middle"}} />) : ""}
                     </th>
                   ))}
                 </tr>
@@ -1100,14 +1237,15 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                     <React.Fragment key={s.id}>
                     <tr ref={s.id === editing ? focusRowRef : null} style={{ borderBottom: noteOpen ? "none" : `1px solid ${colors.borderLight}`, cursor: "pointer", opacity: s.status !== "active" ? 0.6 : 1 }}
                       onClick={() => editStudent(s)}
+                      onContextMenu={e => { e.preventDefault(); setStudentCtxMenu({ x: e.clientX, y: e.clientY, student: s }); }}
                       onMouseEnter={e => e.currentTarget.style.background = colors.bg}
                       onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                       <td style={{ padding: "10px 14px", fontWeight: 500 }}>{s.name}</td>
-                      <td style={{ padding: "10px 14px", color: colors.textLight }}>{school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}</td>
+                      <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.schoolId === "__private__" ? <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent, background: colors.accentLight, borderRadius: 4, padding: "2px 6px" }}>Private</span> : school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}</td>
                       <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.className || "—"}</td>
                       <td style={{ padding: "10px 14px" }}>
                         {s.instruments.map((inst, i) => (
-                          <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.isGroup ? "👥 " : ""}{inst.name}</Tag>
+                          <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.isGroup ? <span style={{display:"inline-flex",alignItems:"center",marginRight:3}}><Users size={10}/></span> : ""}{inst.name}</Tag>
                         ))}
                       </td>
                       <td style={{ padding: "10px 14px", color: colors.textLight, fontSize: 13 }}>
@@ -1123,21 +1261,24 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         })()}
                       </td>
                       <td style={{ padding: "10px 14px", fontSize: 12, color: colors.textMuted }}>
-                        {s.outsideClassOnly && <Tag color={colors.warning}>Outside class only</Tag>}
+                        {s.outsideClassOnly && <Tag color={colors.accent}>Outside class only</Tag>}
                         {s.outsideClassPreferred && <Tag color="#F59E0B">Outside class pref.</Tag>}
-                        {s.availableBefore && <Tag color={colors.info || "#3B82F6"}>Before school</Tag>}
-                        {s.availableAfter && <Tag color={colors.info || "#3B82F6"}>After school</Tag>}
+                        {s.availableBefore && <Tag color={colors.sidebarActive}>Before school</Tag>}
+                        {s.availableAfter && <Tag color={colors.sidebarActive}>After school</Tag>}
                         {s.instruments.some(i => i.isGroup) && <Tag color={instruments_colors.Group}>Group</Tag>}
                         {(() => {
+                          const isPrivate = s.schoolId === "__private__";
                           const warns = [];
                           if (!(s.instruments || []).length) warns.push("No instrument");
                           else (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).forEach(i => warns.push(`No teacher (${i.name})`));
-                          if (!(s.parents || []).length) warns.push("No parent");
-                          else if (!(s.parents || []).some(p => p.email)) warns.push("Parent missing email");
-                          if (!s.className) warns.push("No class");
-                          if (!s.schoolId) warns.push("No school");
+                          if (!isPrivate) {
+                            if (!(s.parents || []).length) warns.push("No parent");
+                            else if (!(s.parents || []).some(p => p.email)) warns.push("Parent missing email");
+                            if (!s.className) warns.push("No class");
+                            if (!s.schoolId) warns.push("No school");
+                          }
                           return warns.map((w, wi) => (
-                            <Tag key={wi} color={colors.danger}>⚠ {w}</Tag>
+                            <Tag key={wi} color={colors.danger}><span style={{display:"inline-flex",alignItems:"center",gap:3}}><AlertTriangle size={10}/>{w}</span></Tag>
                           ));
                         })()}
                       </td>
@@ -1148,8 +1289,8 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                             onMouseEnter={e => { e.stopPropagation(); setStudentNoteTooltip({ text: hasNote ? s.notes.slice(0, 80) : "Add note", x: e.clientX, y: e.clientY }); }}
                             onMouseLeave={() => setStudentNoteTooltip(null)}
                             title={hasNote ? s.notes.slice(0, 80) : "Add note"}
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 6, background: noteOpen ? colors.sidebarActive : hasNote ? colors.accentLight : colors.white, border: `1px solid ${noteOpen ? colors.sidebarActive : hasNote ? colors.accent : colors.border}`, color: noteOpen ? colors.white : hasNote ? colors.accent : colors.textMuted, cursor: "pointer", flexShrink: 0, fontSize: 14 }}>
-                            📝
+                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 6, background: noteOpen ? colors.sidebarActive : hasNote ? colors.accentLight : colors.cardBg, border: `1px solid ${noteOpen ? colors.sidebarActive : hasNote ? colors.accent : colors.border}`, color: noteOpen ? colors.cardBg : hasNote ? colors.accent : colors.textMuted, cursor: "pointer", flexShrink: 0 }}>
+                            <StickyNote size={13} />
                           </button>
                           {(() => {
                             const primaryParent = (s.parents || []).find(p => p.isPrimary) || (s.parents || [])[0];
@@ -1161,10 +1302,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                               </button>
                             ) : null;
                           })()}
-                          <button onClick={(e) => { e.stopPropagation(); deleteStudent(s.id); }}
-                            title="Remove student"
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 6, background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", cursor: "pointer", flexShrink: 0 }}>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                          <button onClick={(e) => { e.stopPropagation(); archiveStudent(s.id); }}
+                            title="Archive student"
+                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 6, background: colors.bg, border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: "pointer", flexShrink: 0 }}
+                            onMouseEnter={e => { e.currentTarget.style.borderColor = colors.accent; e.currentTarget.style.color = colors.accent; e.currentTarget.style.background = colors.accentLight; }}
+                            onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = colors.bg; }}>
+                            <Archive size={13} />
                           </button>
                         </div>
                       </td>
@@ -1176,18 +1319,30 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                             <textarea value={s.notes || ""} onChange={e => { e.stopPropagation(); updateStudentNote(s.id, e.target.value); }}
                               onClick={e => e.stopPropagation()}
                               placeholder="Notes…"
-                              style={{ width: "100%", padding: "8px 32px 8px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, color: colors.text, background: colors.white, boxSizing: "border-box" }} />
+                              style={{ width: "100%", padding: "8px 32px 8px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, color: colors.text, background: colors.cardBg, boxSizing: "border-box" }} />
                             {s.notes && s.notes.trim() && (
                               <button
                                 onClick={e => { e.stopPropagation(); updateStudentNote(s.id, ""); }}
                                 title="Clear note"
-                                style={{ position: "absolute", top: 6, right: 6, background: "none", border: "none", cursor: "pointer", fontSize: 14, color: colors.textMuted, lineHeight: 1, padding: 2, borderRadius: 4 }}
-                                onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = "#FEF2F2"; }}
+                                style={{ position: "absolute", top: 6, right: 6, background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: 2, borderRadius: 4, display: "inline-flex", alignItems: "center" }}
+                                onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = colors.redLight; }}
                                 onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = "none"; }}>
-                                ✕
+                                <X size={13} />
                               </button>
                             )}
                           </div>
+                          {/* Teacher notes inline — read-only, coloured by teacher */}
+                          {(s.teacher_notes || []).length > 0 && (
+                            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 5 }}>
+                              {(s.teacher_notes || []).map(n => (
+                                <div key={n.id} style={{ padding: "6px 10px", borderRadius: 7, background: (n.teacherColor || "#94A3B8") + "14", border: `1px solid ${(n.teacherColor || "#94A3B8") + "40"}`, borderLeft: `3px solid ${n.teacherColor || "#94A3B8"}`, fontSize: 12, color: colors.text, lineHeight: 1.5 }}>
+                                  <span style={{ fontWeight: 600, color: n.teacherColor || "#94A3B8", marginRight: 6 }}>{n.teacherName || "Teacher"}:</span>
+                                  {n.text}
+                                  <span style={{ marginLeft: 8, fontSize: 10, color: colors.textMuted }}>{n.editedAt ? `edited ${new Date(n.editedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` : n.addedAt ? new Date(n.addedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     )}
@@ -1198,11 +1353,123 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             </table>
             </div>
           </div>
+        {/* ── Archived Students panel ── */}
+        {archivedStudents.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <button
+              onClick={() => setShowArchived(v => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "10px 14px", background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: showArchived ? "10px 10px 0 0" : 10, cursor: "pointer", fontFamily: "inherit", color: colors.textMuted, fontSize: 13, fontWeight: 600 }}>
+              <Archive size={14} />
+              Archived Students ({archivedStudents.length})
+              <ChevronRight size={13} style={{ marginLeft: "auto", transform: showArchived ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+            </button>
+            {showArchived && (
+              <div style={{ background: colors.cardBg, border: `1px solid ${colors.border}`, borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: colors.bg, borderBottom: `1px solid ${colors.border}` }}>
+                      {["Name", "School", "Instruments", "Archived", ""].map((h, i) => (
+                        <th key={i} style={{ padding: "8px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {archivedStudents.sort((a, b) => a.name.localeCompare(b.name)).map(s => {
+                      const school = schools.find(sc => sc.id === s.schoolId);
+                      const isConfirmingDelete = archiveDeleteConfirmId === s.id;
+                      return (
+                        <tr key={s.id} style={{ borderBottom: `1px solid ${colors.borderLight}`, opacity: 0.75 }}>
+                          <td style={{ padding: "9px 14px", fontWeight: 500, color: colors.text }}>{s.name}</td>
+                          <td style={{ padding: "9px 14px", color: colors.textMuted, fontSize: 12 }}>
+                            {s.schoolId === "__private__" ? <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent }}>Private</span> : school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}
+                          </td>
+                          <td style={{ padding: "9px 14px" }}>
+                            {(s.instruments || []).map((inst, i) => (
+                              <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.name}</Tag>
+                            ))}
+                          </td>
+                          <td style={{ padding: "9px 14px", color: colors.textMuted, fontSize: 12 }}>
+                            {s.archivedAt ? new Date(s.archivedAt).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "—"}
+                          </td>
+                          <td style={{ padding: "9px 8px" }}>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+                              {!isConfirmingDelete ? (
+                                <>
+                                  <button onClick={() => restoreStudent(s.id)} title="Restore to pending"
+                                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, color: colors.textMuted, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+                                    onMouseEnter={e => { e.currentTarget.style.borderColor = colors.accent; e.currentTarget.style.color = colors.accent; e.currentTarget.style.background = colors.accentLight; }}
+                                    onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = colors.cardBg; }}>
+                                    <RotateCcw size={12} /> Restore
+                                  </button>
+                                  <button onClick={() => setArchiveDeleteConfirmId(s.id)} title="Delete permanently"
+                                    style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, background: "none", border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: "pointer", flexShrink: 0 }}
+                                    onMouseEnter={e => { e.currentTarget.style.borderColor = colors.danger; e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = colors.redLight; }}
+                                    onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = "none"; }}>
+                                    <Trash2 size={13} />
+                                  </button>
+                                </>
+                              ) : (
+                                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span style={{ fontSize: 12, color: colors.textMuted }}>Delete permanently?</span>
+                                  <button onClick={() => { deleteStudent(s.id); setArchiveDeleteConfirmId(null); }}
+                                    style={{ padding: "4px 10px", border: "none", borderRadius: 6, background: colors.danger, color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>Delete</button>
+                                  <button onClick={() => setArchiveDeleteConfirmId(null)}
+                                    style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: "none", fontSize: 12, cursor: "pointer", fontFamily: "inherit", color: colors.textMuted }}>Cancel</button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {studentNoteTooltip && (
           <div style={{ position: "fixed", left: studentNoteTooltip.x + 12, top: studentNoteTooltip.y - 8, background: "#1B2432", color: "#fff", fontSize: 11, padding: "5px 9px", borderRadius: 6, zIndex: 9999, maxWidth: 220, pointerEvents: "none", whiteSpace: "pre-wrap", lineHeight: 1.4 }}>
             {studentNoteTooltip.text}
           </div>
         )}
+        {studentCtxMenu && onAddMemory && (() => {
+          const s = studentCtxMenu.student;
+          const school = schools.find(sc => sc.id === s.schoolId);
+          const instrs = (s.instruments || []).map(i => {
+            const t = teachers.find(t => t.id === i.teacherId);
+            return `${i.name}${t ? ` with ${t.name}` : ""}`;
+          }).join(", ");
+          const namePart = s.name;
+          const schoolPart = school ? school.name : "";
+          const classPart = s.className || "";
+          const memText = [
+            `Student: ${namePart}`,
+            schoolPart && `school: ${schoolPart}`,
+            classPart && `class: ${classPart}`,
+            instrs && `instruments: ${instrs}`,
+            s.notes && `note: ${s.notes.trim()}`,
+          ].filter(Boolean).join(" — ");
+          const menuY = studentCtxMenu.y + 160 > window.innerHeight ? studentCtxMenu.y - 44 : studentCtxMenu.y;
+          return (
+            <>
+              <div onMouseDown={() => setStudentCtxMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 9998 }} />
+              <div ref={studentCtxRef}
+                style={{ position: "fixed", left: studentCtxMenu.x, top: menuY, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.14)", minWidth: 180, overflow: "hidden", fontFamily: "inherit" }}>
+                <button
+                  onClick={() => { onAddMemory(memText); setStudentCtxMenu(null); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+                  Add to Claude memory
+                </button>
+              </div>
+            </>
+          );
+        })()}
+        
         </>
       )}
 

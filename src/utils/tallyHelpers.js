@@ -92,9 +92,9 @@ export function getTermWeeksList(dateStr, sortedTermBreaks) {
   return weeks;
 }
 
-// Returns true if the given school day has passed 6pm Melbourne time
+// Returns true if the given day has passed 6pm Melbourne time
 export function isDayPast6pm(dayName, weekKey) {
-  const dayIndex = ["Monday","Tuesday","Wednesday","Thursday","Friday"].indexOf(dayName);
+  const dayIndex = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].indexOf(dayName);
   if (dayIndex < 0) return false;
   const dayDate = new Date(weekKey + "T00:00:00");
   dayDate.setDate(dayDate.getDate() + dayIndex);
@@ -111,13 +111,23 @@ export function computeAutoTallyDay(dateStr, weeklyTimetables, timetable, studen
   const newEntries = [];
   const dateObj = new Date(dateStr + "T00:00:00");
   const dow = dateObj.getDay();
-  if (dow === 0 || dow === 6) return newEntries;
   const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
   const monday = _getMondayOf(dateObj);
   const weekKey = toLocalDateStr(monday);
   const termBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
+
+  // Check if this week falls within a term break (holiday week)
+  const fri = new Date(monday); fri.setDate(fri.getDate() + 4);
+  const isHolidayWeek = termBreaks.some(tb => {
+    const bs = tb.date; const be = tb.endDate || tb.date;
+    return weekKey >= bs && toLocalDateStr(fri) <= be;
+  });
+
+  // Skip weekends UNLESS it's a holiday week (catch-ups can be on Sat/Sun)
+  if ((dow === 0 || dow === 6) && !isHolidayWeek) return newEntries;
+
   const termWeekNum = computeTermWeekNum(weekKey, termBreaks);
-  const weekLabel = termWeekNum ? `Week ${termWeekNum}` : `Week of ${weekKey}`;
+  const weekLabel = isHolidayWeek ? `Holiday` : (termWeekNum ? `Week ${termWeekNum}` : `Week of ${weekKey}`);
   const termKey = computeTermKey(dateStr, termBreaks);
   const existingKeys = new Set(existingTallyEntries.map(e => `${e.lessonKey}|${e.weekKey}`));
 
@@ -147,7 +157,6 @@ export function computeAutoTallyDay(dateStr, weeklyTimetables, timetable, studen
           });
         }
       } else if (lesson.isGroup) {
-        // Group lessons: one tally entry per group row (key = group|groupId), matching TallyView lessonRows
         const lessonKey = `group|${lesson.groupId}`;
         if (existingKeys.has(`${lessonKey}|${weekKey}`)) continue;
         existingKeys.add(`${lessonKey}|${weekKey}`);
@@ -162,8 +171,9 @@ export function computeAutoTallyDay(dateStr, weeklyTimetables, timetable, studen
           recordedAt: new Date().toISOString(), autoRecorded: true,
         });
       } else {
-        // catch-up cards resolved by 6pm batch post-step, not as regular completed entries
-        if (lesson.isMakeup) continue;
+        // During holiday weeks, create tally entries for isMakeup cards too
+        // (during term weeks, catch-up cards are resolved separately by the 6pm batch)
+        if (lesson.isMakeup && !isHolidayWeek) continue;
         const lessonKey = `${lesson.studentId}|${lesson.instrument}`;
         if (!lesson.studentId) continue;
         if (existingKeys.has(`${lessonKey}|${weekKey}`)) continue;
@@ -172,10 +182,11 @@ export function computeAutoTallyDay(dateStr, weeklyTimetables, timetable, studen
         newEntries.push({
           id: uid(), lessonKey, lessonId: lesson.id, isGroup: false, groupName: "",
           studentId: lesson.studentId, studentName: student?.name || lesson.studentName || "",
-          instrument: lesson.instrument, schoolId,
+          instrument: lesson.instrument, schoolId: lesson.isMakeup ? (lesson.schoolId || schoolId) : schoolId,
           teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
           weekKey, weekLabel, weekNum: termWeekNum, termKey, day: dayName,
-          status: "completed", reason: null, notes: "",
+          status: "completed", reason: null, notes: lesson.isMakeup ? "Holiday catch-up" : "",
+          isHolidayCatchup: !!lesson.isMakeup,
           makeupEligible: false, madeUp: false,
           recordedAt: new Date().toISOString(), autoRecorded: true,
         });

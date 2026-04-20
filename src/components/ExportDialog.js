@@ -6,14 +6,20 @@
 // ============================================================
 
 import React from "react";
-import { colors, DAYS, STORAGE_KEYS } from "../constants";
-import { getParentEmails, openCompose, openGmailSequential, downloadFile } from "../utils/helpers";
+import { DAYS, STORAGE_KEYS } from "../constants";
+import { useTheme } from "../context/ThemeContext";
+import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
   exportLessons, exportTeacherSchedules, exportTallyData,
-  electronPrintToPdf, electronCapturePng
+  electronPrintToPdf
 } from "../data/exportHelpers";
+// Session 96: upload exported timetables to the public resources bucket and
+// register them as Documents so Matt can pick them up later when emailing.
+import {
+  BUCKET_DOCUMENTS, makeStoragePath, uploadToBucket,
+} from "../utils/storageHelpers";
 import { Btn } from "./ui/SharedUI";
 
 export const ExportIcon = (
@@ -24,9 +30,22 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, contacts, specialists, tallyEntries, availableWeeks, initialType, onClose, notify }) {
+export function ExportDialog({ lessons, students, schools, teachers, contacts, specialists, tallyEntries, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
+  const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
-  const [source, setSource] = React.useState("master");
+  // Source is derived from sourceTab + selectedPastWeek
+  const mostRecentWeek = (availableWeeks || []).slice(-1)[0] || null;
+  const pastWeeks = (availableWeeks || []).slice(0, -1);
+  const hasPastWeeks = pastWeeks.length > 0;
+  const [sourceTab, setSourceTab] = React.useState(() =>
+    mostRecentWeek ? "weekly" : "master"
+  );
+  const [selectedPastWeek, setSelectedPastWeek] = React.useState(
+    () => pastWeeks.slice(-1)[0]?.weekKey || ""
+  );
+  const source = sourceTab === "master" ? "master"
+    : sourceTab === "weekly" ? (mostRecentWeek?.weekKey || "master")
+    : (selectedPastWeek || mostRecentWeek?.weekKey || "master");
   const [schoolId, setSchoolId] = React.useState("");
   const [teacherName, setTeacherName] = React.useState("");
   const [className, setClassName] = React.useState("");
@@ -38,7 +57,6 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
   const [sendSubmenu, setSendSubmenu] = React.useState(null);
   const [showPreview, setShowPreview] = React.useState(false);
   const [previewHtml, setPreviewHtml] = React.useState(null);
-  const [includePng, setIncludePng] = React.useState(true);
   const [contactSearch, setContactSearch] = React.useState("");
   const [manualRecipients, setManualRecipients] = React.useState([]);
   const [attachQueue, setAttachQueue] = React.useState([]);
@@ -47,6 +65,14 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
   const saveBtnRef = React.useRef(null);
   const sendBtnRef = React.useRef(null);
   const sendMenuHideTimer = React.useRef(null);
+  const [showPastDropdown, setShowPastDropdown] = React.useState(false);
+  const pastDropdownRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!showPastDropdown) return;
+    const handler = (e) => { if (pastDropdownRef.current && !pastDropdownRef.current.contains(e.target)) setShowPastDropdown(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showPastDropdown]);
 
   const selectedWeek = source !== "master" ? (availableWeeks || []).find(w => w.weekKey === source) : null;
   const sourceLessons = selectedWeek ? selectedWeek.lessons : lessons;
@@ -96,7 +122,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
     return `${sourceLabel}-${filterLabel}`.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
   })();
 
-  React.useEffect(() => { setCustomFilename(null); }, [exportType, source, schoolId, teacherName, className, day]);
+  React.useEffect(() => { setCustomFilename(null); }, [exportType, sourceTab, selectedPastWeek, schoolId, teacherName, className, day]);
   const activeFilename = (customFilename !== null ? customFilename : autoFilename).trim() || autoFilename;
 
   const toggleFormat = (f) => {
@@ -175,6 +201,46 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
     });
   }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists]);
 
+  // Session 96: helper — upload a base64 PDF to the private documents bucket
+  // and register it as a Document so it appears in the Documents tab and
+  // becomes attachable in emails via the template editor's auto-attach picker.
+  // Non-fatal on failure: local save path still runs independently (caller
+  // doesn't await success). setDocuments is optional — if the caller didn't
+  // pass it through, we skip the Documents-tab registration.
+  const uploadExportToDocuments = React.useCallback(async (pdfBase64, filename, label) => {
+    if (!setDocuments || !pdfBase64) return;
+    try {
+      // Convert base64 → Blob for Supabase upload. The storage SDK accepts
+      // Blob/File/ArrayBuffer; a Blob is simplest here since we already have
+      // the data as base64 and don't need to touch the filesystem.
+      const byteChars = atob(pdfBase64);
+      const bytes = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      const docId = makeId();
+      const storagePath = makeStoragePath(docId, filename);
+      const res = await uploadToBucket(BUCKET_DOCUMENTS, storagePath, blob);
+      if (!res) return;
+      const today = new Date().toISOString().slice(0, 10);
+      const newDoc = {
+        id: docId,
+        label: label || filename.replace(/\.pdf$/, ""),
+        type: "Timetable",
+        teacherId: "", schoolId: "",
+        expiryDate: "",
+        url: "",
+        notes: `Exported ${today}`,
+        storage_path: storagePath,
+        filename,
+        size_bytes: blob.size,
+        mime_type: "application/pdf",
+      };
+      setDocuments(prev => [newDoc, ...prev]);
+    } catch (e) {
+      console.warn("[export] Supabase upload failed:", e?.message || e);
+    }
+  }, [setDocuments]);
+
   const doExport = async (saveToFile) => {
     setExporting(true);
     const ttFolder = localStorage.getItem(STORAGE_KEYS.timetableFolder) || null;
@@ -206,6 +272,13 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                     const a = document.createElement("a"); a.href = url; a.download = filenameBase + ".pdf";
                     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
                   }
+                  // Session 96: upload to Supabase + register in Documents.
+                  // Runs in parallel with local save — no await blocking.
+                  // Session 97: use the user's filename (filenameBase) as the
+                  // label so the Documents tab matches what they typed in the
+                  // export dialog, instead of a derived "Master Timetable —
+                  // SPS — Mon" auto-label.
+                  uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
                   if (ttFolder && window.electronAPI?.writeBackup) {
                     await window.electronAPI.writeBackup(filenameBase + ".html", html, ttFolder);
@@ -238,6 +311,8 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                     const a = document.createElement("a"); a.href = url; a.download = filenameBase + ".pdf";
                     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
                   }
+                  // Session 96: also register teacher-schedule PDFs in Documents.
+                  uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
                   await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase });
                 }
@@ -270,25 +345,22 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
       const contentBase64 = btoa(unescape(encodeURIComponent(html)));
       atts.push({ filename: activeFilename + ".html", contentBase64, mimeType: "text/html" });
     }
-    if (includePng) {
-      const pngBase64 = await electronCapturePng(html);
-      if (pngBase64) atts.push({ filename: activeFilename + ".png", contentBase64: pngBase64, mimeType: "image/png" });
-    }
-    return atts;
-  }, [exportType, getExportHtml, activeFilename, includePng]);
 
-  const selectStyle = { padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", width: "100%" };
+    return atts;
+  }, [exportType, getExportHtml, activeFilename]);
+
+  const selectStyle = { padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", width: "100%", background: colors.inputBg, color: colors.text };
   const radioGroupStyle = { display: "flex", gap: 6, flexWrap: "wrap" };
   const labelStyle = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 };
 
   const RadioBtn = ({ value, current, onChange, children }) => (
-    <button onClick={() => onChange(value)} style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${current === value ? colors.accent : colors.border}`, background: current === value ? colors.accentLight : colors.white, color: current === value ? colors.accentDark : colors.text, fontWeight: current === value ? 600 : 400 }}>{children}</button>
+    <button onClick={() => onChange(value)} style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${current === value ? colors.sidebarActive : colors.border}`, background: current === value ? colors.blueLight : colors.cardBg, color: current === value ? (darkMode ? colors.blue600 : colors.sidebarHover) : colors.text, fontWeight: current === value ? 600 : 400 }}>{children}</button>
   );
 
   const CheckBtn = ({ value, children }) => {
     const active = formats.includes(value);
     return (
-      <button onClick={() => toggleFormat(value)} style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${active ? colors.accent : colors.border}`, background: active ? colors.accentLight : colors.white, color: active ? colors.accentDark : colors.text, fontWeight: active ? 600 : 400, display: "flex", alignItems: "center", gap: 5 }}>
+      <button onClick={() => toggleFormat(value)} style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${active ? colors.sidebarActive : colors.border}`, background: active ? colors.blueLight : colors.cardBg, color: active ? (darkMode ? colors.blue600 : colors.sidebarHover) : colors.text, fontWeight: active ? 600 : 400, display: "flex", alignItems: "center", gap: 5 }}>
         <span style={{ fontSize: 10 }}>{active ? "✓" : "○"}</span>{children}
       </button>
     );
@@ -296,16 +368,16 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
 
   const TypeCard = ({ value, icon, title, desc }) => (
     <div onClick={() => { setExportType(value); setSchoolId(""); setTeacherName(""); setClassName(""); setDay(new Set()); }}
-      style={{ flex: 1, padding: "12px 14px", borderRadius: 10, cursor: "pointer", border: `2px solid ${exportType === value ? colors.accent : colors.border}`, background: exportType === value ? colors.accentLight : colors.white, transition: "all 0.15s" }}>
+      style={{ flex: 1, padding: "12px 14px", borderRadius: 10, cursor: "pointer", border: `2px solid ${exportType === value ? colors.sidebarActive : colors.border}`, background: exportType === value ? colors.blueLight : colors.cardBg, transition: "all 0.15s" }}>
       <div style={{ fontSize: 18, marginBottom: 4 }}>{icon}</div>
-      <div style={{ fontWeight: 700, fontSize: 13, color: exportType === value ? colors.accentDark : colors.text }}>{title}</div>
+      <div style={{ fontWeight: 700, fontSize: 13, color: exportType === value ? (darkMode ? colors.blue600 : colors.sidebarHover) : colors.text }}>{title}</div>
       <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{desc}</div>
     </div>
   );
 
   const SendMenu = () => {
-    const menuStyle = { position: "absolute", bottom: "calc(100% + 6px)", right: 0, zIndex: 10010, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 180, padding: "4px 0", overflow: "visible" };
-    const subMenuStyle = { position: "absolute", bottom: 0, right: "calc(100% + 4px)", zIndex: 10011, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 180, padding: "4px 0" };
+    const menuStyle = { position: "absolute", bottom: "calc(100% + 6px)", right: 0, zIndex: 10010, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 180, padding: "4px 0", overflow: "visible" };
+    const subMenuStyle = { position: "absolute", bottom: 0, right: "calc(100% + 4px)", zIndex: 10011, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 180, padding: "4px 0" };
     const btn = (color) => ({ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, fontWeight: 400 });
     const btnChev = (color) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, fontWeight: 600 });
     const hov = (e) => e.currentTarget.style.background = colors.bg;
@@ -358,17 +430,17 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
 
         {allParentEmails.length > 0 && exportType !== "teacher_schedules" && (
           <div style={{ position: "relative" }}>
-            <button onClick={() => sendTo(allParentEmails, "parents")} onMouseEnter={e => { hov(e); setSendSubmenu("parents"); }} onMouseLeave={unhov} style={btnChev(colors.accent)}>Parents<span style={{ fontSize: 10, opacity: 0.5 }}>▶</span></button>
+            <button onClick={() => sendTo(allParentEmails, "parents")} onMouseEnter={e => { hov(e); setSendSubmenu("parents"); }} onMouseLeave={unhov} style={btnChev(colors.sidebarActive)}>Parents<span style={{ fontSize: 10, opacity: 0.5 }}>▶</span></button>
             {sendSubmenu === "parents" && (
               <div style={subMenuStyle}>
-                <button onClick={() => sendSequential(allParentEmails)} style={btn(colors.accent)} onMouseEnter={hov} onMouseLeave={unhov}>Individual (one each)</button>
+                <button onClick={() => sendSequential(allParentEmails)} style={btn(colors.sidebarActive)} onMouseEnter={hov} onMouseLeave={unhov}>Individual (one each)</button>
                 <div style={{ height: 1, background: colors.borderLight, margin: "2px 10px" }} />
                 {parentStudents.slice(0, 12).map(s => {
                   const pEmails = getParentEmails(s);
                   const parents = (s.parents || []).filter(p => p.email);
                   if (pEmails.length === 0) return null;
-                  if (parents.length <= 1) return <button key={s.id} onClick={() => sendTo(pEmails, s.name)} style={btn(colors.accent)} onMouseEnter={hov} onMouseLeave={unhov}>{parents[0]?.name || s.name}</button>;
-                  return parents.map((p, pi) => <button key={`${s.id}-${pi}`} onClick={() => sendTo([p.email], s.name)} style={btn(colors.accent)} onMouseEnter={hov} onMouseLeave={unhov}>{p.name || p.email}</button>);
+                  if (parents.length <= 1) return <button key={s.id} onClick={() => sendTo(pEmails, s.name)} style={btn(colors.sidebarActive)} onMouseEnter={hov} onMouseLeave={unhov}>{parents[0]?.name || s.name}</button>;
+                  return parents.map((p, pi) => <button key={`${s.id}-${pi}`} onClick={() => sendTo([p.email], s.name)} style={btn(colors.sidebarActive)} onMouseEnter={hov} onMouseLeave={unhov}>{p.name || p.email}</button>);
                 })}
                 {parentStudents.length > 12 && <div style={{ padding: "4px 14px", fontSize: 11, color: colors.textMuted }}>+{parentStudents.length - 12} more…</div>}
               </div>
@@ -426,13 +498,14 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
     <div style={{ position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={() => { setSendMenu(false); setSendSubmenu(null); }}>
       {attachQueue.length > 0 && (() => {
-        const saveRect = saveBtnRef.current?.getBoundingClientRect();
-        const left = saveRect ? saveRect.right + 10 : window.innerWidth;
-        const bottom = saveRect ? window.innerHeight - saveRect.bottom : 20;
+        const anchorRect = (sendBtnRef.current || saveBtnRef.current)?.getBoundingClientRect();
+        const modalRect = document.querySelector("[data-export-modal]")?.getBoundingClientRect();
+        const left = modalRect ? modalRect.right + 12 : (anchorRect ? anchorRect.right + 10 : window.innerWidth);
+        const bottom = anchorRect ? window.innerHeight - anchorRect.bottom : 20;
         return (
-          <div onClick={e => e.stopPropagation()} style={{ position: "fixed", bottom, left, zIndex: 10025, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 20px rgba(0,0,0,0.18)", padding: "6px 0", minWidth: 220 }}>
+          <div onClick={e => e.stopPropagation()} style={{ position: "fixed", bottom, left, zIndex: 10025, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 20px rgba(0,0,0,0.18)", padding: 0, minWidth: 220 }}>
             {attachQueue.map((q, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px", fontSize: 12 }}>
+              <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", height: 34, padding: "0 12px", fontSize: 12 }}>
                 <span style={{ color: colors.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 170 }}>📎 {q.label}</span>
                 <button onClick={() => setAttachQueue(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.danger, fontSize: 15, lineHeight: 1, padding: "0 0 0 8px", flexShrink: 0 }}>×</button>
               </div>
@@ -441,7 +514,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
         );
       })()}
       <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)" }} onClick={onClose} />
-      <div data-export-modal style={{ position: "relative", background: colors.white, borderRadius: 16, padding: "28px 32px", width: 560, maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}
+      <div data-export-modal style={{ position: "relative", background: colors.cardBg, borderRadius: 16, padding: "28px 32px", width: 560, maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}
         onClick={e => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 }}>
           <div style={{ fontWeight: 700, fontSize: 18, color: colors.text, display: "flex", alignItems: "center", gap: 4 }}>{ExportIcon}Export</div>
@@ -460,9 +533,40 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
         {exportType !== "tally" && (
           <div style={{ marginBottom: 16 }}>
             <div style={labelStyle}>Source</div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              {lessons.length > 0 && <RadioBtn value="master" current={source} onChange={v => { setSource(v); setSchoolId(""); setTeacherName(""); setClassName(""); }}>Master</RadioBtn>}
-              {(availableWeeks || []).length > 0 && <RadioBtn value={(availableWeeks || []).slice(-1)[0]?.weekKey || ""} current={source} onChange={v => { setSource(v); setSchoolId(""); setTeacherName(""); setClassName(""); }}>Weekly</RadioBtn>}
+            <div ref={pastDropdownRef} style={{ position: "relative", width: "fit-content" }}>
+              <div style={{ display: "flex", gap: 0, background: colors.bg, border: `2px solid ${colors.sidebarActive}40`, borderRadius: 10, overflow: "hidden" }}>
+                {[
+                  { id: "master", label: "Master", disabled: !lessons || lessons.length === 0 },
+                  { id: "weekly", label: "Weekly", disabled: !mostRecentWeek },
+                  { id: "past", disabled: !hasPastWeeks },
+                ].map(tab => (
+                  <button key={tab.id}
+                    onClick={() => {
+                      if (tab.disabled) return;
+                      setSourceTab(tab.id);
+                      if (tab.id === "past") setShowPastDropdown(v => !v);
+                      else setShowPastDropdown(false);
+                    }}
+                    style={{ width: 100, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: tab.disabled ? "default" : "pointer", fontWeight: 600, background: sourceTab === tab.id ? colors.sidebarActive : "transparent", color: sourceTab === tab.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s", opacity: tab.disabled ? 0.4 : 1, textAlign: "center", whiteSpace: "nowrap" }}>
+                    {tab.id === "past"
+                      ? (sourceTab === "past" && selectedPastWeek ? (pastWeeks.find(w => w.weekKey === selectedPastWeek)?.weekLabel || "Past Weeks") : "Past Weeks")
+                      : tab.label}
+                  </button>
+                ))}
+              </div>
+              {showPastDropdown && hasPastWeeks && (
+                <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 200, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 160, overflow: "hidden" }}>
+                  {pastWeeks.slice().reverse().map(w => (
+                    <button key={w.weekKey}
+                      onClick={() => { setSelectedPastWeek(w.weekKey); setShowPastDropdown(false); }}
+                      style={{ display: "block", width: "100%", padding: "9px 14px", background: selectedPastWeek === w.weekKey ? colors.blueLight : "none", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", textAlign: "left", color: selectedPastWeek === w.weekKey ? colors.sidebarHover : colors.text, fontWeight: selectedPastWeek === w.weekKey ? 600 : 400 }}
+                      onMouseEnter={e => { if (selectedPastWeek !== w.weekKey) e.currentTarget.style.background = colors.bg; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = selectedPastWeek === w.weekKey ? colors.blueLight : "none"; }}>
+                      {w.weekLabel}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -497,7 +601,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                 const active = day.has(d);
                 return (
                   <button key={d} onClick={() => setDay(prev => { const next = new Set(prev); active ? next.delete(d) : next.add(d); return next; })}
-                    style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${active ? colors.accent : colors.border}`, background: active ? colors.accentLight : colors.white, color: active ? colors.accentDark : colors.text, fontWeight: active ? 600 : 400 }}>
+                    style={{ padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${active ? colors.sidebarActive : colors.border}`, background: active ? colors.blueLight : colors.cardBg, color: active ? (darkMode ? colors.blue600 : colors.sidebarHover) : colors.text, fontWeight: active ? 600 : 400 }}>
                     {d.slice(0, 3)}
                   </button>
                 );
@@ -516,7 +620,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
           </div>
         )}
         {exportType === "teacher_schedules" && scheduleTeachersFiltered.length > 0 && (
-          <div style={{ marginBottom: 16, padding: "10px 14px", background: colors.accentLight, borderRadius: 8, fontSize: 12, color: colors.accentDark }}>
+          <div style={{ marginBottom: 16, padding: "10px 14px", background: colors.blueLight, borderRadius: 8, fontSize: 12, color: colors.sidebarHover }}>
             Will export: {scheduleTeachersFiltered.join(", ")}
           </div>
         )}
@@ -530,14 +634,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
           </div>
           {formats.includes("pdf") && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>PDF downloads as HTML — open and use File → Print → Save as PDF</div>}
           {formats.includes("xlsx") && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>Excel opens in Numbers, Excel, or Google Sheets</div>}
-          {(exportType === "timetable" || exportType === "teacher_schedules") && (
-            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8 }}>
-              <button onClick={() => setIncludePng(v => !v)}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${includePng ? colors.accent : colors.border}`, background: includePng ? colors.accentLight : colors.white, color: includePng ? colors.accentDark : colors.text, fontWeight: includePng ? 600 : 400 }}>
-                <span style={{ fontSize: 10 }}>{includePng ? "✓" : "○"}</span> Include PNG image (when sending)
-              </button>
-            </div>
-          )}
+
         </div>
 
         <div style={{ marginBottom: 22 }}>
@@ -545,7 +642,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <input type="text" value={customFilename !== null ? customFilename : autoFilename}
               onChange={e => setCustomFilename(e.target.value)}
-              style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${customFilename !== null ? colors.accent : colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", boxSizing: "border-box" }}
+              style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${customFilename !== null ? colors.sidebarActive : colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", boxSizing: "border-box" }}
               spellCheck={false} />
             {customFilename !== null && (
               <button onClick={() => setCustomFilename(null)} title="Reset" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: colors.textMuted, padding: "0 2px", lineHeight: 1 }}>↺</button>
@@ -559,7 +656,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
               <input value={contactSearch} onChange={e => setContactSearch(e.target.value)} placeholder="+ Add recipient…"
                 style={{ width: "100%", height: 34, padding: "0 11px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit", boxSizing: "border-box", outline: "none" }} />
               {contactSearchResults.length > 0 && (
-                <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, right: 0, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
+                <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
                   {contactSearchResults.map((c, i) => (
                     <button key={i} onClick={() => addManualRecipient(c)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
                       onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
@@ -570,12 +667,12 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                 </div>
               )}
               {manualRecipients.length > 0 && (
-                <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, right: 0, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)", zIndex: 99, padding: "8px 10px" }}>
+                <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.12)", zIndex: 99, padding: "8px 10px" }}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
                     {manualRecipients.map((r, i) => (
-                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, border: `1px solid ${colors.accent}40`, borderRadius: 10, fontSize: 11, color: colors.accentDark, fontWeight: 500 }}>
+                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 10, fontSize: 11, color: colors.sidebarHover, fontWeight: 500 }}>
                         {r.name.split(" ")[0]}
-                        <button onClick={() => setManualRecipients(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accent, fontSize: 13, lineHeight: 1, padding: 0 }}>×</button>
+                        <button onClick={() => setManualRecipients(prev => prev.filter((_, j) => j !== i))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.sidebarActive, fontSize: 13, lineHeight: 1, padding: 0 }}>×</button>
                       </span>
                     ))}
                   </div>
@@ -584,7 +681,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                     if (attachQueue.length > 0) { atts = attachQueue.flatMap(q => q.atts); } else { atts = await buildAttachment(); }
                     openCompose(manualRecipients.map(r => r.email), { triggerId: "timetable_send", mergeCtx: mergeCtxForSend, attachments: atts });
                     setManualRecipients([]);
-                  }} style={{ width: "100%", padding: "5px 0", borderRadius: 6, border: `1px solid ${colors.accent}`, background: colors.accent, color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                  }} style={{ width: "100%", padding: "5px 0", borderRadius: 6, border: `1px solid ${colors.sidebarActive}`, background: colors.sidebarActive, color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
                     Send to {manualRecipients.length}
                   </button>
                 </div>
@@ -616,9 +713,9 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                     } catch (e) { notify("Attach failed: " + e.message, "danger"); }
                     setAttaching(false);
                   }}
-                  style={{ height: 34, padding: "0 16px", border: `2px solid ${hasQueue ? colors.accent : colors.border}`, borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: !isReady ? "not-allowed" : "pointer", fontFamily: "inherit", transition: "all 0.15s", opacity: !isReady ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: 6, boxSizing: "border-box", flexShrink: 0, marginTop: -2, background: hasQueue ? colors.accentLight : colors.tagBg, color: hasQueue ? colors.accentDark : colors.text, whiteSpace: "nowrap" }}>
+                  style={{ height: 34, padding: "0 16px", border: `2px solid ${hasQueue ? colors.sidebarActive : colors.border}`, borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: !isReady ? "not-allowed" : "pointer", fontFamily: "inherit", transition: "all 0.15s", opacity: !isReady ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: 6, boxSizing: "border-box", flexShrink: 0, marginTop: -2, background: hasQueue ? colors.blueLight : colors.tagBg, color: hasQueue ? colors.sidebarHover : colors.text, whiteSpace: "nowrap" }}>
                   Attach
-                  <span style={{ background: hasQueue ? colors.accent : colors.border, color: hasQueue ? "#fff" : colors.textMuted, borderRadius: "50%", width: 18, height: 18, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+                  <span style={{ background: hasQueue ? colors.sidebarActive : colors.border, color: hasQueue ? "#fff" : colors.textMuted, borderRadius: "50%", width: 18, height: 18, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
                     {attaching ? <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid rgba(0,0,0,0.15)", borderTopColor: colors.textMuted, borderRadius: "50%", animation: "spin 0.7s linear infinite" }} /> : attachQueue.length}
                   </span>
                 </button>
@@ -638,7 +735,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
 
         {showPreview && previewHtml && (
           <div style={{ position: "fixed", inset: 0, zIndex: 10020, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowPreview(false)}>
-            <div style={{ background: colors.white, borderRadius: 12, width: "85vw", maxWidth: 1100, height: "85vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 64px rgba(0,0,0,0.3)" }} onClick={e => e.stopPropagation()}>
+            <div style={{ background: colors.cardBg, borderRadius: 12, width: "85vw", maxWidth: 1100, height: "85vh", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 64px rgba(0,0,0,0.3)" }} onClick={e => e.stopPropagation()}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderBottom: `1px solid ${colors.border}` }}>
                 <span style={{ fontWeight: 600, fontSize: 14, color: colors.text }}>Preview</span>
                 <button onClick={() => setShowPreview(false)} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: colors.textMuted, lineHeight: 1 }}>×</button>

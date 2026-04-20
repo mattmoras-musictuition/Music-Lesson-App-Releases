@@ -63,6 +63,8 @@ export function getCleanHtml(html, { showHistory = false, showSig = false, suppr
       doc.querySelectorAll("blockquote").forEach(el => el.remove());
       _stripWriteLine(doc.body);
       _stripHrLine(doc.body);
+      // Strip "Get Outlook for iOS/Android" and everything after
+      _stripTextMarker(doc.body, /Get Outlook for/i);
     }
     if (!showSig) {
       doc.querySelectorAll(".gmail_signature").forEach(el => el.remove());
@@ -105,7 +107,7 @@ export function _stripWriteLine(root) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let found = null;
   while (walker.nextNode()) {
-    if (/On\s+\w+,?\s+\d+\s+\w+\s+\d{4}.{0,120}wrote:/i.test(walker.currentNode.textContent)) {
+    if (/On\s+(\w+,?\s+\d+\s+\w+\s+\d{4}|\w+,\s+\w+\s+\d+,?\s+\d{4}).{0,120}wrote:/i.test(walker.currentNode.textContent)) {
       found = walker.currentNode;
       break;
     }
@@ -149,13 +151,77 @@ export function _stripHrLine(root) {
   }
 }
 
+// Generic text marker stripper — finds a regex match in element textContent and removes it + everything after
+export function _stripTextMarker(root, pattern) {
+  // Walk block-level and inline elements; check their full textContent
+  const els = root.querySelectorAll("*");
+  let found = null;
+  for (const el of els) {
+    if (el.children.length === 0 || el.nodeName === "A" || el.nodeName === "SPAN" || el.nodeName === "P" || el.nodeName === "DIV") {
+      if (pattern.test(el.textContent)) {
+        // Walk up to the nearest block-level ancestor to cut at the block boundary
+        found = el;
+        while (found.parentNode && found.parentNode !== root && !["P","DIV","TABLE","SECTION","ARTICLE","TD","TR","LI","BLOCKQUOTE"].includes(found.parentNode.nodeName)) {
+          found = found.parentNode;
+        }
+        break;
+      }
+    }
+  }
+  if (!found) {
+    // Fallback: check raw textContent for inline matches (single text node or combined)
+    if (pattern.test(root.textContent)) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const parent = node.parentNode;
+        if (parent && pattern.test(parent.textContent)) {
+          found = parent;
+          while (found.parentNode && found.parentNode !== root && !["P","DIV","TABLE","SECTION","ARTICLE"].includes(found.parentNode.nodeName)) {
+            found = found.parentNode;
+          }
+          break;
+        }
+      }
+    }
+  }
+  if (!found) return;
+  // Remove found element and all subsequent siblings up the tree
+  let node = found;
+  while (node && node !== root) {
+    let sib = node.nextSibling;
+    while (sib) { const next = sib.nextSibling; sib.remove(); sib = next; }
+    const parent = node.parentNode;
+    parent?.removeChild(node);
+    node = parent;
+    if (node && ["P","DIV","TABLE","SECTION","ARTICLE"].includes(node?.nodeName)) break;
+  }
+  if (node && node !== root) {
+    let sib = node.nextSibling;
+    while (sib) { const next = sib.nextSibling; sib.remove(); sib = next; }
+    node.remove();
+  }
+}
+
 export function getPlainParts(raw) {
   const text = (raw || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // RFC standard: `-- \n` (note the space — most mail clients write this)
   const rfcIdx = text.search(/\n-- ?\n/);
   if (rfcIdx > 0) return { main: text.slice(0, rfcIdx).trimEnd(), sig: text.slice(rfcIdx + 1), hist: "" };
-  // History split
-  const histIdx = text.search(/(-{3,}\s*Original Message\s*-{3,}|(?:\n|>\s*)On\s+\d+\s+\w+\s+\d{4}.+wrote:|(?:\n)From:[\s\S]{0,80}Sent:|_{5,})/m);
+  // History split — line-start patterns first
+  let histIdx = text.search(/(-{3,}\s*Original Message\s*-{3,}|(?:\n|>\s*)On\s+(\d+\s+\w+\s+\d{4}|\w+,\s+\w+\s+\d+,?\s+\d{4}).+wrote:|(?:\n)From:[\s\S]{0,80}Sent:|_{5,}|Get Outlook for)/m);
+  // Inline fallback — catches mid-line "On Thursday, April 16, 2026...wrote:" patterns
+  if (histIdx < 0) {
+    const inlinePatterns = [
+      / On (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+\w+\s+\d/,
+      / On [A-Z][a-z]{2,8} \d{1,2},?\s+\d{4}/,
+      / On \d{1,2}\/\d{1,2}\/\d{2,4}/,
+    ];
+    for (const pat of inlinePatterns) {
+      const idx = text.search(pat);
+      if (idx > 20 && /wrote:/i.test(text.slice(idx, idx + 200))) { histIdx = idx; break; }
+    }
+  }
   const mainAndSig = histIdx > 0 ? text.slice(0, histIdx).trimEnd() : text;
   const hist = histIdx > 0 ? text.slice(histIdx) : "";
   // Signature heuristic — scan backward up to 12 lines from end
@@ -187,8 +253,9 @@ export function preprocessEmail(email) {
       hasHistory = !!(
         doc.querySelector('.gmail_quote, .gmail_attr, #divRplyFwdMsg, #OLK_SRC_BODY_SECTION') ||
         doc.querySelector('blockquote') ||
-        /On\s+\w+,?\s+\d+\s+\w+\s+\d{4}.{0,120}wrote:/i.test(doc.body.textContent) ||
-        /[-]{3,}\s*(Original Message|Forwarded Message)\s*[-]{3,}/i.test(doc.body.textContent)
+        /On\s+(\w+,?\s+\d+\s+\w+\s+\d{4}|\w+,\s+\w+\s+\d+,?\s+\d{4}).{0,120}wrote:/i.test(doc.body.textContent) ||
+        /[-]{3,}\s*(Original Message|Forwarded Message)\s*[-]{3,}/i.test(doc.body.textContent) ||
+        /Get Outlook for/i.test(doc.body.textContent)
       );
       // Signature: case-insensitive class/id matching
       hasSig = !!(
@@ -200,7 +267,7 @@ export function preprocessEmail(email) {
     } catch {}
   } else {
     const raw = email.body || email.snippet || "";
-    hasHistory = /(-{3,}\s*Original Message\s*-{3,}|^On .+ wrote:|^From:.*\r?\nSent:|^_{3,}$)/m.test(raw);
+    hasHistory = /(-{3,}\s*Original Message\s*-{3,}|^On .+ wrote:|^From:.*\r?\nSent:|^_{3,}$|Get Outlook for| On (Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday).{0,120}wrote:| On [A-Z][a-z]{2,8} \d{1,2},?\s+\d{4}.{0,120}wrote:)/m.test(raw);
     plainParts = getPlainParts(raw);
     hasSig = !!(plainParts?.sig);
   }
