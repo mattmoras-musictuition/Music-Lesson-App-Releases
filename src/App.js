@@ -4119,9 +4119,67 @@ export default function MusicTimetableApp() {
     notify("Added to Claude memory ✦", "success");
   };
 
-  // Spec 1 Commit 3 — handler stub (real wire-up in Piece C)
+  // Spec 1 Commit 3 — runs the one-shot migration when the banner button is clicked
   const handleRunMigration = () => {
-    console.log("Migration button clicked — handler stub (Piece C not yet wired).");
+    setMigrationStatus("running");
+    setMigrationError(null);
+    try {
+      // Inlined canonical term-start derivation (mirrors App.js:2885-2894 / 3982-3990 pattern)
+      const tBreaks = [...interruptions].filter(i => i.type === "term_break").sort((a, b) => b.date.localeCompare(a.date));
+      const todayStr = toLocalDateStr(melbourneNow());
+      let termStart = null;
+      for (const br of tBreaks) {
+        const tbEnd = br.endDate || br.date;
+        if (tbEnd < todayStr) {
+          const ts = new Date(tbEnd + "T00:00:00"); ts.setDate(ts.getDate() + 1);
+          while (ts.getDay() === 6 || ts.getDay() === 0) ts.setDate(ts.getDate() + 1);
+          termStart = ts; break;
+        }
+      }
+      if (!termStart) { const y = new Date().getFullYear(); const s = new Date(y, 0, 27); while (s.getDay() !== 2) s.setDate(s.getDate() + 1); termStart = s; }
+      const termStartDate = toLocalDateStr(termStart);
+
+      const result = runSpec1Migration({
+        students,
+        timetable,
+        weeklyTimetables,
+        tallyEntries,
+        groups,
+        termStartDate,
+      });
+
+      if (result.skipped) {
+        // Defensive — migrationNeeded should have hidden the button. Set marker, succeed silently.
+        localStorage.setItem("mt-migration-spec1-done", new Date().toISOString());
+        setMigrationResult(result);
+        setMigrationStatus("success");
+        return;
+      }
+
+      // Apply via setters — per-collection sync effects fire naturally.
+      // Each sync effect's !isDev guard blocks Supabase writes in dev (non-negotiable, see Spec 1 §0).
+      setStudents(result.students);
+      setEnrolments(result.enrolments);
+      setTimetable(result.timetable);
+      setWeeklyTimetables(result.weeklyTimetables);
+      setTallyEntries(result.tallyEntries);
+
+      localStorage.setItem("mt-migration-spec1-done", new Date().toISOString());
+
+      if (result.warnings.length > 0) {
+        console.group(`Migration warnings (${result.warnings.length})`);
+        result.warnings.forEach(w => console.warn(w));
+        console.groupEnd();
+      }
+      console.log("Migration stats:", result.stats);
+
+      setMigrationResult(result);
+      setMigrationStatus("success");
+    } catch (err) {
+      console.error("Migration failed", err);
+      setMigrationError(err.message || String(err));
+      setMigrationStatus("error");
+    }
   };
 
   const handleRestore = (data) => {
