@@ -46,7 +46,7 @@ export function GroupsManager({ groups, setGroups, students, schools, teachers, 
     if (focusGroupId) { lastFocusGroupId.current = null; if (onClearFocusGroup) onClearFocusGroup(); }
   }, [focusGroupId]);
 
-  const groupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && s.instruments.some(i => i.isGroup));
+  const groupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && (s.instruments || []).some(i => i.isGroup));
   const assignedIds = new Set(groups.flatMap(g => g.studentIds || []));
   const unassignedStudents = groupStudents.filter(s => !assignedIds.has(s.id));
   const filteredUnassigned = filterSchool ? unassignedStudents.filter(s => s.schoolId === filterSchool) : unassignedStudents;
@@ -155,7 +155,7 @@ export function GroupsManager({ groups, setGroups, students, schools, teachers, 
                     <div>
                       <span style={{ fontWeight: 600, fontSize: 13 }}>{s.name}</span>
                       <span style={{ color: colors.textMuted, fontSize: 12, marginLeft: 8 }}>{s.className}</span>
-                      <span style={{ color: colors.textMuted, fontSize: 12, marginLeft: 8 }}>{s.instruments.filter(i => i.isGroup).map(i => i.name).join(", ")}</span>
+                      <span style={{ color: colors.textMuted, fontSize: 12, marginLeft: 8 }}>{(s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", ")}</span>
                     </div>
                     <button onClick={() => removeStudentFromGroup(s.id)} style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: 4, display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                   </div>
@@ -220,7 +220,7 @@ export function GroupsManager({ groups, setGroups, students, schools, teachers, 
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {filteredUnassigned.map(s => {
                   const school = schools.find(sc => sc.id === s.schoolId);
-                  const groupInsts = s.instruments.filter(i => i.isGroup).map(i => i.name).join(", ");
+                  const groupInsts = (s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", ");
                   const isDragTarget = dragOverStudentId === s.id && draggedStudentId && draggedStudentId !== s.id;
                   return (
                     <div key={s.id} draggable

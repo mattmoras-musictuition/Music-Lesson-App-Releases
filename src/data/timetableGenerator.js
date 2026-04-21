@@ -369,7 +369,7 @@ export function generateMasterTimetable(schools, students, teachers, specialistT
       if (reqDayCounts[d] > 1) requiredSameDayAllowed.add(d);
     }
 
-    const individualInsts = student.instruments.filter(i => !i.isGroup);
+    const individualInsts = (student.instruments || []).filter(i => !i.isGroup);
     const studentExistingDays = studentDayMap[student.id] || new Set();
     const hasGroupLesson = studentExistingDays.size > 0;
     const isMultiInstrument = individualInsts.length > 1 || hasGroupLesson;

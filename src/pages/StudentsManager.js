@@ -22,7 +22,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     return null;
   });
   const [form, setForm] = useState(() => {
-    if (focusStudentId) { const s = students.find(st => st.id === focusStudentId); return s ? { ...s, instruments: s.instruments.map(i => ({ ...i })) } : null; }
+    if (focusStudentId) { const s = students.find(st => st.id === focusStudentId); return s ? { ...s, instruments: (s.instruments || []).map(i => ({ ...i })) } : null; }
     return null;
   });
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
@@ -68,7 +68,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     if (focusStudentId) {
       const student = students.find(s => s.id === focusStudentId);
       if (student) {
-        setForm({ ...student, instruments: student.instruments.map(i => ({ ...i })) });
+        setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
         setEditing(student.id);
       }
       if (onClearFocus) onClearFocus();
@@ -136,7 +136,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       // Ensure all instruments have isGroup field
       if (s.instruments?.some(i => i.isGroup === undefined)) {
         changed = true;
-        return { ...s, instruments: s.instruments.map(i => ({ ...i, isGroup: i.isGroup || false })) };
+        return { ...s, instruments: (s.instruments || []).map(i => ({ ...i, isGroup: i.isGroup || false })) };
       }
       return s;
     });
@@ -160,7 +160,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const editStudent = (student) => {
     if (pickingStudentForParent && parentPrefillRef.current) {
       const prefill = parentPrefillRef.current;
-      const updatedForm = { ...student, instruments: student.instruments.map(i => ({ ...i })) };
+      const updatedForm = { ...student, instruments: (student.instruments || []).map(i => ({ ...i })) };
       if ((updatedForm.parents || []).length < 2) {
         updatedForm.parents = [...(updatedForm.parents || []), { id: uid(), name: prefill.name || "", email: prefill.email || "", phone: "", relationship: "", isPrimary: (updatedForm.parents || []).length === 0 }];
       }
@@ -170,7 +170,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       parentPrefillRef.current = null;
       return;
     }
-    setForm({ ...student, instruments: student.instruments.map(i => ({ ...i })) });
+    setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
     setEditing(student.id);
   };
 
@@ -240,7 +240,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     );
     setMergePrompt(null);
     setForm(null); setEditing(null);
-    notify(`Merged ${pendingStudent.instruments.map(i => i.name).join(", ")} into ${targetStudent.name}`);
+    notify(`Merged ${(pendingStudent.instruments || []).map(i => i.name).join(", ")} into ${targetStudent.name}`);
     if (onReturn) onReturn();
   };
 
@@ -589,12 +589,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
   const filtered = activeStudents.filter(s => {
     if (filter.school && s.schoolId !== filter.school) return false;
     if (filter.className && s.className !== filter.className) return false;
-    if (filter.instrument && !s.instruments.some(i => i.name === filter.instrument)) return false;
+    if (filter.instrument && !(s.instruments || []).some(i => i.name === filter.instrument)) return false;
     if (filter.teacher) {
       if (filter.teacher === "_none_") {
-        if (s.instruments.some(i => i.teacherId)) return false;
+        if ((s.instruments || []).some(i => i.teacherId)) return false;
       } else {
-        if (!s.instruments.some(i => i.teacherId === filter.teacher)) return false;
+        if (!(s.instruments || []).some(i => i.teacherId === filter.teacher)) return false;
       }
     }
     if (filter.search && !s.name.toLowerCase().includes(filter.search.toLowerCase())) return false;
@@ -628,8 +628,8 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
       }
       case "class": return dir * (a.className || "").localeCompare(b.className || "", undefined, { numeric: true });
       case "instrument": {
-        const aInst = a.instruments[0]?.name || "";
-        const bInst = b.instruments[0]?.name || "";
+        const aInst = (a.instruments || [])[0]?.name || "";
+        const bInst = (b.instruments || [])[0]?.name || "";
         return dir * aInst.localeCompare(bInst);
       }
       case "teacher": {
@@ -1056,7 +1056,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 20 }}>
                 <strong>{mergePrompt.targetStudent.name}</strong> already exists as an active student.
                 <br /><br />
-                Merge <strong>{mergePrompt.pendingStudent.instruments.map(i => i.name).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
+                Merge <strong>{mergePrompt.(pendingStudent.instruments || []).map(i => i.name).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
                 <br /><br />
                 <span style={{ color: colors.textMuted, fontSize: 12 }}>
                   Tally entries and lesson cards stay separate — they already reference each student individually.
@@ -1171,7 +1171,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <option value="">All Instruments</option>
               {[...new Set([
                 ...(availableInstruments),
-                ...activeStudents.flatMap(s => s.instruments.map(i => i.name)).filter(Boolean)
+                ...activeStudents.flatMap(s => (s.instruments || []).map(i => i.name)).filter(Boolean)
               ])].sort().map(i => <option key={i} value={i}>{i}</option>)}
             </select>
             <select value={filter.teacher} onChange={e => setFilter(p => ({ ...p, teacher: e.target.value }))}
@@ -1244,7 +1244,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.schoolId === "__private__" ? <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent, background: colors.accentLight, borderRadius: 4, padding: "2px 6px" }}>Private</span> : school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}</td>
                       <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.className || "—"}</td>
                       <td style={{ padding: "10px 14px" }}>
-                        {s.instruments.map((inst, i) => (
+                        {(s.instruments || []).map((inst, i) => (
                           <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.isGroup ? <span style={{display:"inline-flex",alignItems:"center",marginRight:3}}><Users size={10}/></span> : ""}{inst.name}</Tag>
                         ))}
                       </td>
@@ -1265,7 +1265,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         {s.outsideClassPreferred && <Tag color="#F59E0B">Outside class pref.</Tag>}
                         {s.availableBefore && <Tag color={colors.sidebarActive}>Before school</Tag>}
                         {s.availableAfter && <Tag color={colors.sidebarActive}>After school</Tag>}
-                        {s.instruments.some(i => i.isGroup) && <Tag color={instruments_colors.Group}>Group</Tag>}
+                        {(s.instruments || []).some(i => i.isGroup) && <Tag color={instruments_colors.Group}>Group</Tag>}
                         {(() => {
                           const isPrivate = s.schoolId === "__private__";
                           const warns = [];

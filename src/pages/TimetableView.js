@@ -1769,7 +1769,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
                   {allSchoolUnscheduled.map((u, i) => (
                     <div key={i} draggable
-                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${u.instrument || u.student.instruments[0]?.name}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
+                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${u.instrument || (u.student.instruments || [])[0]?.name}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
                       onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
                       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isUnschedCard: true, studentId: u.student.id, instrument: u.instrument || u.student.instruments?.[0]?.name, studentName: u.student.name }); }}
                       style={{
@@ -1778,7 +1778,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         cursor: "grab", opacity: draggingId === `unsched:${i}` ? 0.4 : 1,
                         transition: "opacity 0.15s", maxWidth: 280
                       }}>
-                      <div style={{ fontWeight: 600 }}>{u.student.name} — {(u.instrument || u.student.instruments[0]?.name) + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
+                      <div style={{ fontWeight: 600 }}>{u.student.name} — {(u.instrument || (u.student.instruments || [])[0]?.name) + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
                       {u.reason && u.reason !== "Unassigned" && !u._derived && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{u.reason}</div>}
                     </div>
                   ))}

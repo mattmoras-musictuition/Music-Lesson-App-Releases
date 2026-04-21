@@ -169,7 +169,7 @@ export function BandsManager({ bands, setBands, schools, students, teachers, res
                       onMouseEnter={e => { setMemberSearchIdx(idx); e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => e.currentTarget.style.background = idx === memberSearchIdx ? colors.sidebarHover : "none"}>
                       <span>{s.name}</span>
-                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.className} · {s.instruments.map(i => i.name).join(", ")}</span>
+                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.className} · {(s.instruments || []).map(i => i.name).join(", ")}</span>
                     </button>
                   ))}
                 </div>

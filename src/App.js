@@ -4273,7 +4273,7 @@ export default function MusicTimetableApp() {
 
     // Data validation warnings
     const warnings = [];
-    const noTeacher = allSchedulable.filter(s => !s.instruments.some(i => i.teacherId));
+    const noTeacher = allSchedulable.filter(s => !(s.instruments || []).some(i => i.teacherId));
     if (noTeacher.length > 0) warnings.push(`${noTeacher.length} student${noTeacher.length > 1 ? "s" : ""} without assigned teacher: ${noTeacher.slice(0, 5).map(s => s.name).join(", ")}${noTeacher.length > 5 ? "..." : ""}`);
     const noInstrument = allSchedulable.filter(s => !s.instruments || s.instruments.length === 0 || !s.instruments[0].name);
     if (noInstrument.length > 0) warnings.push(`${noInstrument.length} student${noInstrument.length > 1 ? "s" : ""} without instruments: ${noInstrument.slice(0, 5).map(s => s.name).join(", ")}${noInstrument.length > 5 ? "..." : ""}`);
@@ -4675,8 +4675,8 @@ export default function MusicTimetableApp() {
       const slot = school.slots.find(s => s.start === time);
       if (!slot) { notify("Invalid time slot", "warning"); return; }
       const inst = instrumentName
-        ? (student.instruments || []).find(i => i.name === instrumentName) || student.instruments[0]
-        : student.instruments[0];
+        ? (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0]
+        : (student.instruments || [])[0];
       if (!inst) { notify("Student has no instruments", "warning"); return; }
       let teacher = null;
       if (inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
@@ -4763,7 +4763,7 @@ export default function MusicTimetableApp() {
     if (!slot) { notify("Invalid time slot", "warning"); return; }
 
     // Find a compatible teacher
-    const inst = student.instruments[0];
+    const inst = (student.instruments || [])[0];
     if (!inst) { notify("Student has no instruments", "warning"); return; }
     let teacher = null;
     if (inst && inst.teacherId) {
@@ -6352,7 +6352,7 @@ export default function MusicTimetableApp() {
             if (!school) return;
             const slot = school.slots.find(s => s.start === time);
             if (!slot) return;
-            const inst = student.instruments.find(i => i.name === instrumentName) || student.instruments[0];
+            const inst = (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0];
             if (!inst) return;
             let teacher = null;
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
@@ -6370,7 +6370,7 @@ export default function MusicTimetableApp() {
             setTimetable(prev => ({
               ...prev,
               lessons: [...prev.lessons, lesson],
-              unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || u.student.instruments[0]?.name) === instrumentName))
+              unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || (u.student.instruments || [])[0]?.name) === instrumentName))
             }));
           }} onPlacePending={(data, day, time) => {
             const parts = data.split(":");
@@ -6383,7 +6383,7 @@ export default function MusicTimetableApp() {
             if (!school) return;
             const slot = school.slots.find(s => s.start === time);
             if (!slot) return;
-            const inst = student.instruments.find(i => i.name === instrumentName) || student.instruments[0];
+            const inst = (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0];
             if (!inst) return;
             let teacher = null;
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);

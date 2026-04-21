@@ -1076,7 +1076,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${s.instruments.map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
 
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
@@ -1414,7 +1414,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${s.instruments.map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
         const schoolGroups2 = groups.filter(g => g.schoolId === selectedSchool && g.status === "scheduled");
