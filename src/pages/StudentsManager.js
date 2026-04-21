@@ -1056,7 +1056,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 20 }}>
                 <strong>{mergePrompt.targetStudent.name}</strong> already exists as an active student.
                 <br /><br />
-                Merge <strong>{mergePrompt.(pendingStudent.instruments || []).map(i => i.name).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
+                Merge <strong>{(mergePrompt.pendingStudent.instruments || []).map(i => i.name).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
                 <br /><br />
                 <span style={{ color: colors.textMuted, fontSize: 12 }}>
                   Tally entries and lesson cards stay separate — they already reference each student individually.
