@@ -19,6 +19,7 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
+import { runSpec1Migration } from "./utils/migrations/spec1";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
@@ -984,6 +985,15 @@ export default function MusicTimetableApp() {
   const [notification, setNotification] = useState(null);
   const [quickAddTodoTrigger, setQuickAddTodoTrigger] = useState(0);
   const [quickAddReminderTrigger, setQuickAddReminderTrigger] = useState(0);
+  // Spec 1 Commit 3 — one-shot migration banner state
+  const [migrationStatus, setMigrationStatus] = useState("pending");   // "pending" | "running" | "success" | "error" | "dismissed"
+  const [migrationResult, setMigrationResult] = useState(null);
+  const [migrationError, setMigrationError] = useState(null);
+  const migrationNeeded = (() => {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("mt-migration-spec1-done")) return false;
+    if (enrolments.length > 0) return false;
+    return students.some(s => Array.isArray(s.instruments) && s.instruments.length > 0);
+  })();
   // Defined immediately after setNotification to prevent temporal dead zone in HMR
   // Toast colours: guitar green (success), coral/accent (warning), danger red (danger)
   const TOAST_COLORS = {
@@ -4109,6 +4119,11 @@ export default function MusicTimetableApp() {
     notify("Added to Claude memory ✦", "success");
   };
 
+  // Spec 1 Commit 3 — handler stub (real wire-up in Piece C)
+  const handleRunMigration = () => {
+    console.log("Migration button clicked — handler stub (Piece C not yet wired).");
+  };
+
   const handleRestore = (data) => {
     if (data.schools) { const ms = migrateData("schools", data.schools); setSchools(ms); saveData(STORAGE_KEYS.schools, ms); saveData(STORAGE_KEYS.schoolsBak, ms); }
     if (data.students) { const mst = migrateData("students", data.students); setStudents(mst); saveStudents(mst); }
@@ -4995,6 +5010,70 @@ export default function MusicTimetableApp() {
       {isDev && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 99999, background: "#D97706", color: "#fff", textAlign: "center", fontSize: 12, fontWeight: 700, padding: "3px 0", letterSpacing: 0.5, fontFamily: "'DM Sans', sans-serif", pointerEvents: "none" }}>
           DEV MODE — Supabase writes disabled
+        </div>
+      )}
+      {migrationNeeded && migrationStatus !== "dismissed" && (
+        <div style={{
+          position: "fixed",
+          top: isDev ? 24 : 0,
+          left: 0,
+          right: 0,
+          zIndex: 99998,
+          background: "#D97706",
+          color: "#fff",
+          textAlign: "center",
+          fontSize: 13,
+          fontWeight: 600,
+          padding: "8px 16px",
+          fontFamily: "'DM Sans', sans-serif",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+        }}>
+          {migrationStatus === "pending" && (
+            <>
+              <span>Phase 3 Spec 1 migration ready. One-time action.</span>
+              <button
+                onClick={handleRunMigration}
+                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
+              >
+                Run migration
+              </button>
+            </>
+          )}
+          {migrationStatus === "running" && <span>Running migration…</span>}
+          {migrationStatus === "error" && (
+            <>
+              <span>Migration failed: {migrationError}</span>
+              <button
+                onClick={handleRunMigration}
+                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
+              >
+                Retry
+              </button>
+              <button
+                onClick={() => console.log("Migration error details:", migrationError)}
+                style={{ background: "transparent", color: "#fff", border: "1px solid #fff", padding: "4px 12px", borderRadius: 4, fontWeight: 500, cursor: "pointer" }}
+              >
+                View details
+              </button>
+            </>
+          )}
+          {migrationStatus === "success" && migrationResult && (
+            <>
+              <span>
+                Migration complete — {migrationResult.stats.enrolmentsCreated} enrolments created,
+                {" "}{migrationResult.stats.warningCount} warnings logged.
+              </span>
+              <button
+                onClick={() => setMigrationStatus("dismissed")}
+                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
+              >
+                Dismiss
+              </button>
+            </>
+          )}
         </div>
       )}
       {composeEmail && (
