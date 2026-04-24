@@ -1199,6 +1199,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 }
                 if (newRemoveEntries.length > 0) {
                   const removeKeys = new Set(newRemoveEntries.map(e => e.lessonKey + "|" + e.weekKey));
+                  // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
                   setTallyEntries(prev => [...prev.filter(e => !removeKeys.has(e.lessonKey + "|" + e.weekKey)), ...newRemoveEntries]);
                   notify("Tally: " + newRemoveEntries.length + " slot" + (newRemoveEntries.length !== 1 ? "s" : "") + " removed from tally");
                 }
@@ -1269,6 +1270,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         };
       });
     if (autoTallyEntries.length > 0) {
+      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
       setTallyEntries(prev => {
         // Remove previous auto-recorded entries for this week+school, then add new ones
         const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool));
@@ -1342,10 +1344,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           generatedAt: new Date().toISOString()
         }
       }));
-      // Clear unreasoned missed tally entries for this day — lesson is back in timetable
-      setTallyEntries(prev => prev.filter(e =>
-        !(e.weekKey === weekKey && e.day === targetDay && e.status === "missed" && !e.reason && !e.notes)
-      ));
       notify(`Imported ${importedLessons.length} lessons for ${targetDay}`);
       // Rerun tally if this day is already past 6pm
       if (isDayPast6pm(targetDay, weekKey) && rerunAutoTallyForDate) {
@@ -1577,6 +1575,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         };
       });
     if (autoTallyDay.length > 0) {
+      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
       setTallyEntries(prev => {
         const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool && e.day === targetDay));
         return [...filtered, ...autoTallyDay];
@@ -1612,9 +1611,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ...prev,
         [storageKey]: { ...(prev[storageKey] || {}), lessons: clearedLessons, missed: clearedMissed }
       }));
-      setTallyEntries(prev => prev.filter(e =>
-        !(e.weekKey === weekKey && e.day === day && !e.reason && !e.notes)
-      ));
       notify(`${day} cleared`);
     } else {
       setWeeklyTimetables(prev => {
@@ -1622,9 +1618,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         delete updated[storageKey];
         return updated;
       });
-      setTallyEntries(prev => prev.filter(e =>
-        !(e.weekKey === weekKey && !e.reason && !e.notes)
-      ));
       notify("Week cleared");
     }
   };
@@ -1801,8 +1794,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         makeupEligible: false, madeUp: false,
         recordedAt: new Date().toISOString(),
       };
+      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
       setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)), completedEntry]);
     } else {
+      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
       setTallyEntries(prev => prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)));
     }
     notify(`${missed.isGroup ? missed.groupName : missed.studentName} rescheduled to ${newDay} ${slot.start}`);
@@ -1898,6 +1893,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       .sort((a, b) => a.weekKey.localeCompare(b.weekKey));
     if (owed.length > 0) {
       const oldest = owed[0];
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
       setTallyEntries(prev => prev.map(e => e.id === oldest.id ? { ...e, madeUp: true } : e));
     }
   };
@@ -1907,6 +1903,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
     const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
     if (tallyIds.length > 0) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
       setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: true } : e));
     }
     setConfirmedCatchupDays(prev => ({
@@ -1920,6 +1917,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
     const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
     if (tallyIds.length > 0) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
       setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
     }
     setConfirmedCatchupDays(prev => ({
@@ -1938,9 +1936,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(l => l.id !== lessonId) }));
     // Forfeit the tally entry: makeupEligible: false, madeUp: false
     if (lesson.makeupForTallyId) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
       setTallyEntries(prev => prev.map(e => e.id === lesson.makeupForTallyId ? { ...e, makeupEligible: false, madeUp: false } : e));
     } else {
       const toForfeit = tallyEntries.filter(e => e.studentId === lesson.studentId && e.instrument === lesson.instrument && e.status === "missed" && e.makeupEligible).sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
       if (toForfeit.length > 0) setTallyEntries(prev => prev.map(e => e.id === toForfeit[0].id ? { ...e, makeupEligible: false, madeUp: false } : e));
     }
     setCatchupSelectedCards(new Set());
@@ -1998,6 +1998,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             makeupEligible: finalMakeup, madeUp: false,
             recordedAt: new Date().toISOString(),
           };
+          // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
           setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lKey && e.weekKey === tallyPrompt.weekKey)), entry]);
           const displayReason = tallyPromptCategory ? TALLY_REASONS.find(r => r.value === tallyPromptCategory)?.label : (finalReasonDetail || "Other");
           setWeeklyTimetables(prev => {
@@ -2143,6 +2144,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               status: "missed", reason: finalReason, reasonDetail: finalReasonDetail,
               notes: finalDetails, makeupEligible: finalMakeup, madeUp: false, recordedAt: now,
             }));
+            // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
             setTallyEntries(prev => {
               const existingKeys = new Set(newEntries.map(e => `${e.lessonKey}|${e.weekKey}`));
               return [...prev.filter(e => !existingKeys.has(`${e.lessonKey}|${e.weekKey}`)), ...newEntries];
@@ -2168,6 +2170,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   status: "missed", reason: finalReason, reasonDetail: finalReasonDetail,
                   notes: finalDetails, makeupEligible: finalMakeup, madeUp: false, recordedAt: now,
                 };
+            // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
             setTallyEntries(prev => [...prev.filter(e => !(e.weekKey === mmWeekKey && e.lessonKey === lKey)), updatedEntry]);
             setMissedModal(null);
           }
@@ -2373,9 +2376,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       const newMissed = entry.missed.filter((_, i) => i !== missedIdx);
                       return { ...prev, [storageKey]: { ...entry, missed: newMissed } };
                     });
-                    if (existingTallyEntry) {
-                      setTallyEntries(prev => prev.filter(e => e.id !== existingTallyEntry.id));
-                    }
                     setContextMenu(null);
                   }}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
@@ -2918,6 +2918,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               // Un-mark tally entries for those lessons
               const removedLessonTallyIds = removedLessons.map(l => l.makeupForTallyId).filter(Boolean);
               if (removedLessonTallyIds.length > 0) {
+                // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
                 setTallyEntries(prev => prev.map(e => removedLessonTallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
               }
               // Also un-mark by studentId+instrument for any that don't have makeupForTallyId
@@ -2926,6 +2927,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const markedUp = tallyEntries
                     .filter(e => e.studentId === l.studentId && e.instrument === l.instrument && e.status === "missed" && e.makeupEligible && e.madeUp)
                     .sort((a, b) => b.weekKey.localeCompare(a.weekKey));
+                  // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
                   if (markedUp.length > 0) setTallyEntries(prev => prev.map(e => e.id === markedUp[0].id ? { ...e, madeUp: false } : e));
                 }
               });
@@ -3113,6 +3115,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const unhov = (e => e.currentTarget.style.background = "none");
             const removeSingleCatchup = (l) => {
               if (!l) return;
+              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
               if (l.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === l.makeupForTallyId ? { ...e, madeUp: false } : e));
               setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(x => x.id !== l.id) }));
             };
@@ -4483,6 +4486,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div key={m.id || i} style={{ padding: "8px 12px", borderRadius: 8, minWidth: 180, maxWidth: 260, background: darkMode ? "rgba(196,84,84,0.10)" : "#FEF2F2", border: `1px solid ${colors.danger}30`, borderLeft: `3px solid ${colors.danger}`, position: "relative" }}>
                             <button title="Return to available catch-ups" onClick={() => {
                               setCatchupMissed(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter((_, idx) => idx !== i) }));
+                              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
                               if (m.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === m.makeupForTallyId ? { ...e, makeupEligible: true, madeUp: false } : e));
                               if (notify) notify(`${m.studentName} — returned to available catch-ups`);
                             }} style={{ position: "absolute", top: 4, right: 5, background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", borderRadius: 4 }}
@@ -5433,6 +5437,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", gap: 8 }}><Check size={15} /> Term Missed Lessons Tally</div>
                 {Object.keys(tallyByStudent).length > 0 && (
+                  // TODO Commit 6 — button's pre-refactor semantics don't translate post-refactor; button becomes no-op when tallyEntries state is removed.
                   <Btn variant="danger" onClick={() => { setTallyEntries(prev => prev.filter(e => e.status !== "missed")); notify("Missed tally cleared"); }} style={{ fontSize: 11 }}>Clear All</Btn>
                 )}
               </div>
