@@ -11,7 +11,7 @@ import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onTeacherChange }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, onTeacherChange }) {
   const { colors } = useTheme();
 
   // ── Enrolment helpers (Commit 2b) ────────────────────────────
@@ -243,26 +243,73 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
 
   const commitSaveStudent = (f) => {
     const prevRecord = students.find(s => s.id === f.id);
+    const isBecomingArchived = prevRecord && prevRecord.status !== "archived" && f.status === "archived";
     const record = f.status === "archived" && !f.archivedAt ? { ...f, archivedAt: new Date().toISOString() } : f;
+    const todayISO = new Date().toISOString().split("T")[0];
+
+    // Strip instruments off the student record — student rows never carry an
+    // instruments field post-migration. Enrolments live in their own collection.
+    const { instruments, ...cleanRecord } = record;
+
+    // If the student is becoming archived, stamp today's endDate on every
+    // still-active form-enrolment so history reflects the archive date.
+    let effectiveFormEnrolments = formEnrolments;
+    if (isBecomingArchived) {
+      effectiveFormEnrolments = formEnrolments.map(e =>
+        e.endDate ? e : { ...e, endDate: todayISO }
+      );
+    }
+
+    // Find enrolments that are newly-ended by this save — they need a card
+    // cascade. Ignore ones that were already ended before the form opened.
+    const priorEnrolments = allEnrolmentsFor(cleanRecord.id, enrolments);
+    const newlyEndedIds = effectiveFormEnrolments
+      .filter(e => e.endDate && !priorEnrolments.find(p => p.id === e.id)?.endDate)
+      .map(e => e.id);
+
+    // Student writeback
     if (editing === "new") {
-      setStudents(prev => [...prev, record]);
+      setStudents(prev => [...prev, cleanRecord]);
     } else {
-      setStudents(prev => prev.map(s => s.id === record.id ? record : s));
-      if (prevRecord && prevRecord.status !== "archived" && record.status === "archived") {
-        onArchiveStudent(record.id);
-      }
-      // Detect instrument teacher changes and propagate to master + weekly timetables
-      if (prevRecord && onTeacherChange) {
-        const changes = (record.instruments || []).flatMap(inst => {
-          const prev = (prevRecord.instruments || []).find(pi => pi.name === inst.name);
-          if (prev && prev.teacherId !== inst.teacherId) {
-            return [{ instrumentName: inst.name, newTeacherId: inst.teacherId || "" }];
-          }
-          return [];
-        });
-        if (changes.length > 0) onTeacherChange(record.id, changes);
+      setStudents(prev => prev.map(s => s.id === cleanRecord.id ? cleanRecord : s));
+    }
+
+    // Enrolment writeback: replace this student's enrolments with the form's version
+    setEnrolments(prev => {
+      const others = prev.filter(e => e.studentId !== cleanRecord.id);
+      return [...others, ...effectiveFormEnrolments];
+    });
+
+    // Teacher-change propagation: diff formEnrolments vs priorEnrolments by id.
+    // instrumentName is included as a fallback match key for the (now-legacy)
+    // App.js handler; once 2b.8 ports that handler to prefer enrolmentId,
+    // this still works unchanged.
+    if (prevRecord && onTeacherChange) {
+      const changes = effectiveFormEnrolments.flatMap(e => {
+        const prior = priorEnrolments.find(p => p.id === e.id);
+        if (prior && prior.teacherId !== e.teacherId) {
+          return [{
+            enrolmentId: e.id,
+            instrumentName: e.instrument,
+            newTeacherId: e.teacherId || "",
+          }];
+        }
+        return [];
+      });
+      if (changes.length > 0) onTeacherChange(cleanRecord.id, changes);
+    }
+
+    // Cascade: archive clears all of the student's cards in one shot (by
+    // studentId, subsumes all enrolments). Otherwise each newly-ended
+    // enrolment gets a per-enrolment card cascade.
+    if (isBecomingArchived) {
+      onArchiveStudent(cleanRecord.id);
+    } else {
+      for (const endedId of newlyEndedIds) {
+        if (onEndEnrolment) onEndEnrolment(endedId);
       }
     }
+
     setForm(null); setEditing(null); setFormEnrolments([]);
     notify("Student saved!");
     if (onReturn) onReturn();
@@ -296,6 +343,9 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
 
   const deleteStudent = (id) => {
     setStudents(prev => prev.filter(s => s.id !== id));
+    // Symmetric with onDeleteStudent's card cleanup — otherwise a permanent
+    // delete would leave orphan enrolment rows keyed to a missing student.
+    setEnrolments(prev => prev.filter(e => e.studentId !== id));
     if (onDeleteStudent) onDeleteStudent(id);
     notify("Student removed");
   };
