@@ -8,8 +8,9 @@ import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos, getTermWeekLabel } from "../utils/helpers";
 import { Tag, PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
+import { enrolmentIdFor } from "../utils/enrolmentsDB";
 
-export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory }) {
+export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory }) {
   const { colors } = useTheme();
   const pendingStudents = students.filter(s => s.status === "pending" || s.status === "trial");
   const [manualSched, setManualSched] = useState({});
@@ -73,7 +74,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
       const slot = (school.slots || []).find(sl => sl.start === ms.time);
       const endTime = slot ? slot.end : ms.time;
       const storageKey = ms.weekKey + "|" + student.schoolId;
-      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", teacherId: inst.teacherId || "", teacherName: "", day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
+      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", teacherId: inst.teacherId || "", teacherName: "", enrolmentId: enrolmentIdFor(student.id, inst.name || "", enrolments), day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
       setWeeklyTimetables(prev => { const existing = prev[storageKey] || { lessons: [], missed: [] }; return { ...prev, [storageKey]: { ...existing, lessons: [...(existing.lessons || []), newLesson] } }; });
       setManualSched(prev => { const n = { ...prev }; delete n[studentId]; return n; });
       notify("Trial lesson scheduled for " + student.name);
@@ -122,7 +123,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {schools.map(school => {
             const schoolRows = sortedPendingStudents.filter(s => s.schoolId === school.id).flatMap(s =>
-              (s.instruments || [{ name: "", teacherId: "" }]).map(inst => ({ ...s, _inst: inst }))
+              ((s.instruments && s.instruments.length > 0) ? s.instruments : [{ name: "", teacherId: "" }]).map(inst => ({ ...s, _inst: inst }))
             );
             if (schoolRows.length === 0) return null;
             return (

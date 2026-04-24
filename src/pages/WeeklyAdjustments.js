@@ -15,6 +15,7 @@ import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, cla
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
+import { enrolmentIdFor } from "../utils/enrolmentsDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -2831,7 +2832,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 <button key={e.studentId + "|" + e.instrument} disabled={alreadyPlaced}
                                   onClick={() => {
                                     if (alreadyPlaced) return;
-                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, teacherId: e.teacherId || "", teacherName: e.teacherName || "", day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
+                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, teacherId: e.teacherId || "", teacherName: e.teacherName || "", enrolmentId: enrolmentIdFor(e.studentId, e.instrument, enrolments), day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
                                     setCatchupLessons(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), newLesson] }));
                                     if (notify) notify(`${e.studentName} — catch-up scheduled`);
                                     setContextMenu(null); setCatchupSlotSubTeacher(null);
@@ -3300,12 +3301,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 };
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
+                  const activeEnrolment = (enrolments || []).find(e =>
+                    e.studentId === s.id && !e.endDate && !e.isGroup
+                  );
+                  if (!activeEnrolment) {
+                    if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
+                    return;
+                  }
+                  const teacher = teachers.find(t => t.id === activeEnrolment.teacherId);
                   const newLesson = {
                     id: uid(), studentId: s.id, studentName: s.name,
                     schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                    instrument: (s.instruments && s.instruments[0]?.name) || "",
-                    teacherId: (s.instruments && s.instruments[0]?.teacherId) || "",
-                    teacherName: (() => { const tid = s.instruments && s.instruments[0]?.teacherId; return tid ? (teachers.find(t => t.id === tid)?.name || "") : ""; })(),
+                    instrument: activeEnrolment.instrument,
+                    teacherId: activeEnrolment.teacherId || "",
+                    teacherName: teacher?.name || "",
+                    enrolmentId: activeEnrolment.id,
                     day: contextMenu.day, start: contextMenu.time, end: contextMenu.time,
                     ...opts
                   };
@@ -3346,6 +3356,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     studentNames: ml.studentNames || undefined, members: ml.members || undefined,
                     schoolId: ml.schoolId, schoolName: ml.schoolName || "",
                     instrument: ml.instrument, teacherId: ml.teacherId || "", teacherName: ml.teacherName || "",
+                    enrolmentId: ml.enrolmentId || enrolmentIdFor(ml.studentId, ml.instrument, enrolments, ml.groupId),
                     day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false,
                   };
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
@@ -3462,12 +3473,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.danger)}>Temp slot (waiting list)</div>
                           {students.filter(s => s.schoolId === sId && s.status === "pending").sort((a, b) => a.name.localeCompare(b.name)).map(s => (
                             <button key={s.id} onClick={() => {
-                              const inst = s.instruments?.[0] || {};
-                              const teacherForTemp = inst.teacherId ? teachers.find(t => t.id === inst.teacherId) : null;
+                              const activeEnrolment = (enrolments || []).find(e =>
+                                e.studentId === s.id && !e.endDate && !e.isGroup
+                              );
+                              if (!activeEnrolment) {
+                                if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
+                                return;
+                              }
+                              const teacherForTemp = activeEnrolment.teacherId
+                                ? teachers.find(t => t.id === activeEnrolment.teacherId) : null;
                               const newLesson = {
                                 id: uid(), studentId: s.id, studentName: s.name,
                                 schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                                instrument: inst.name || "", teacherId: inst.teacherId || "", teacherName: teacherForTemp?.name || "",
+                                instrument: activeEnrolment.instrument,
+                                teacherId: activeEnrolment.teacherId || "",
+                                teacherName: teacherForTemp?.name || "",
+                                enrolmentId: activeEnrolment.id,
                                 day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
                               };
                               const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
