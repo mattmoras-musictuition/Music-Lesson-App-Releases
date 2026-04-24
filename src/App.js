@@ -6240,29 +6240,60 @@ export default function MusicTimetableApp() {
                 }
                 return next;
               });
+            }} onEndEnrolment={(enrolmentId) => {
+              // Clear MTT + WTT cards stamped with this enrolmentId. Per Spec §17,
+              // post-migration cards carry enrolmentId; the five WTT creation sites
+              // deferred to Commit 4 may still produce enrolmentId:undefined cards,
+              // which this filter won't clear — expected until Commit 4 stamps them.
+              if (timetable) {
+                setTimetable(prev => ({
+                  ...prev,
+                  lessons: (prev.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
+                  unscheduled: (prev.unscheduled || []).filter(u => u.enrolmentId !== enrolmentId),
+                }));
+              }
+              setWeeklyTimetables(prev => {
+                const next = { ...prev };
+                for (const key of Object.keys(next)) {
+                  const entry = next[key];
+                  if (!entry) continue;
+                  next[key] = {
+                    ...entry,
+                    lessons: (entry.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
+                    missed:  (entry.missed  || []).filter(m => m.enrolmentId !== enrolmentId),
+                  };
+                }
+                return next;
+              });
             }} onTeacherChange={(studentId, changes) => {
-              // Update master timetable lessons when a student's teacher changes
+              // Match a card's change. Prefer enrolmentId match; fall back to
+              // (studentId, instrumentName) for cards that haven't been stamped yet.
+              const matchChange = (l) => {
+                if (l.enrolmentId) {
+                  const byId = changes.find(c => c.enrolmentId === l.enrolmentId);
+                  if (byId) return byId;
+                }
+                if (l.studentId !== studentId) return null;
+                return changes.find(c => c.instrumentName === l.instrument) || null;
+              };
               if (timetable) {
                 setTimetable(prev => ({
                   ...prev,
                   lessons: (prev.lessons || []).map(l => {
-                    if (l.studentId !== studentId) return l;
-                    const change = changes.find(c => c.instrumentName === l.instrument);
+                    const change = matchChange(l);
                     if (!change) return l;
                     const newTeacher = teachers.find(t => t.id === change.newTeacherId);
                     return { ...l, teacherId: change.newTeacherId, teacherName: newTeacher?.name || "" };
                   })
                 }));
               }
-              // Update weekly timetables too
               setWeeklyTimetables(prev => {
                 const next = { ...prev };
                 for (const key of Object.keys(next)) {
                   const entry = next[key];
                   if (!entry) continue;
                   next[key] = { ...entry, lessons: (entry.lessons || []).map(l => {
-                    if (l.studentId !== studentId) return l;
-                    const change = changes.find(c => c.instrumentName === l.instrument);
+                    const change = matchChange(l);
                     if (!change) return l;
                     const newTeacher = teachers.find(t => t.id === change.newTeacherId);
                     return { ...l, teacherId: change.newTeacherId, teacherName: newTeacher?.name || "" };
