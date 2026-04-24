@@ -43,7 +43,12 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     return null;
   });
   const [form, setForm] = useState(() => {
-    if (focusStudentId) { const s = students.find(st => st.id === focusStudentId); return s ? { ...s, instruments: (s.instruments || []).map(i => ({ ...i })) } : null; }
+    if (focusStudentId) {
+      const s = students.find(st => st.id === focusStudentId);
+      if (!s) return null;
+      const { instruments, ...clean } = s;
+      return clean;
+    }
     return null;
   });
   const [formEnrolments, setFormEnrolments] = useState(() => {
@@ -97,7 +102,8 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     if (focusStudentId) {
       const student = students.find(s => s.id === focusStudentId);
       if (student) {
-        setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
+        const { instruments, ...studentClean } = student;
+        setForm(studentClean);
         setFormEnrolments(allEnrolmentsFor(student.id, enrolments).map(e => ({ ...e })));
         setEditing(student.id);
       }
@@ -108,10 +114,31 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   // Open new student form pre-filled from enquiry data
   useEffect(() => {
     if (newStudentPrefill) {
-      const base = { id: uid(), name: "", instruments: [{ name: "", teacherId: "" }], schoolId: "", className: "", status: "pending", parents: [], notes: "", outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false, avoidTimes: [], preferredTimes: [] };
-      setForm({ ...base, ...newStudentPrefill });
-      setFormEnrolments([]);
+      const base = { id: uid(), name: "", schoolId: "", className: "", status: "pending", parents: [], notes: "", outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false, avoidTimes: [], preferredTimes: [] };
+      const merged = { ...base, ...newStudentPrefill };
+      const { instruments, ...mergedClean } = merged;
+      setForm(mergedClean);
       setEditing("new");
+
+      // If the prefill carried an instrument hint (e.g. from an email enquiry),
+      // seed one enrolment row so the user doesn't lose the hint.
+      const prefillInstrument = newStudentPrefill.instrument || newStudentPrefill.instruments?.[0]?.name;
+      const prefillTeacher = newStudentPrefill.teacherId || newStudentPrefill.instruments?.[0]?.teacherId || "";
+      if (prefillInstrument) {
+        setFormEnrolments([{
+          id: uid(),
+          studentId: merged.id,
+          instrument: prefillInstrument,
+          teacherId: prefillTeacher,
+          isGroup: false,
+          groupId: undefined,
+          startDate: new Date().toISOString().split("T")[0],
+          endDate: undefined,
+        }]);
+      } else {
+        setFormEnrolments([]);
+      }
+
       if (onClearNewStudentPrefill) onClearNewStudentPrefill();
     }
   }, [newStudentPrefill]);
@@ -191,7 +218,6 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const newStudent = () => {
     setForm({
       id: uid(), name: "", schoolId: "", className: "",
-      instruments: [{ name: "", isGroup: false }],
       outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false,
       avoidTimes: [], preferredTimes: [], status: "active", notes: "",
       parents: []
@@ -203,7 +229,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const editStudent = (student) => {
     if (pickingStudentForParent && parentPrefillRef.current) {
       const prefill = parentPrefillRef.current;
-      const updatedForm = { ...student, instruments: (student.instruments || []).map(i => ({ ...i })) };
+      const { instruments, ...updatedForm } = student;
       if ((updatedForm.parents || []).length < 2) {
         updatedForm.parents = [...(updatedForm.parents || []), { id: uid(), name: prefill.name || "", email: prefill.email || "", phone: "", relationship: "", isPrimary: (updatedForm.parents || []).length === 0 }];
       }
@@ -214,7 +240,8 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       parentPrefillRef.current = null;
       return;
     }
-    setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
+    const { instruments, ...studentClean } = student;
+    setForm(studentClean);
     setFormEnrolments(allEnrolmentsFor(student.id, enrolments).map(e => ({ ...e })));
     setEditing(student.id);
   };
