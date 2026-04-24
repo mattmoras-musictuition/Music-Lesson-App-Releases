@@ -13,6 +13,27 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, C
 
 export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onTeacherChange }) {
   const { colors } = useTheme();
+
+  // ── Enrolment helpers (Commit 2b) ────────────────────────────
+  // Active enrolments for a student: no endDate.
+  function activeEnrolmentsFor(studentId, enrolments) {
+    return (enrolments || []).filter(e => e.studentId === studentId && !e.endDate);
+  }
+
+  // All enrolments (active + ended) for a student.
+  function allEnrolmentsFor(studentId, enrolments) {
+    return (enrolments || []).filter(e => e.studentId === studentId);
+  }
+
+  // Primary enrolment for display/sort — first active by startDate.
+  function primaryEnrolmentFor(studentId, enrolments) {
+    const active = activeEnrolmentsFor(studentId, enrolments);
+    if (active.length === 0) return null;
+    return active.slice().sort((a, b) =>
+      (a.startDate || "").localeCompare(b.startDate || "")
+    )[0];
+  }
+
   // Derive available instruments from what teachers can actually teach
   const availableInstruments = [...new Set(teachers.flatMap(t => t.instruments.map(i => i.name)))].sort();
   // Lazy initialisers: if focusStudentId is set on mount, open edit form immediately
@@ -24,6 +45,10 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const [form, setForm] = useState(() => {
     if (focusStudentId) { const s = students.find(st => st.id === focusStudentId); return s ? { ...s, instruments: (s.instruments || []).map(i => ({ ...i })) } : null; }
     return null;
+  });
+  const [formEnrolments, setFormEnrolments] = useState(() => {
+    if (focusStudentId) return allEnrolmentsFor(focusStudentId, enrolments).map(e => ({ ...e }));
+    return [];
   });
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
   const setFilter = (v) => setViewState(prev => ({ ...prev, filter: typeof v === "function" ? v(prev.filter || {}) : v }));
@@ -69,6 +94,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       const student = students.find(s => s.id === focusStudentId);
       if (student) {
         setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
+        setFormEnrolments(allEnrolmentsFor(student.id, enrolments).map(e => ({ ...e })));
         setEditing(student.id);
       }
       if (onClearFocus) onClearFocus();
@@ -80,6 +106,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     if (newStudentPrefill) {
       const base = { id: uid(), name: "", instruments: [{ name: "", teacherId: "" }], schoolId: "", className: "", status: "pending", parents: [], notes: "", outsideClassOnly: false, outsideClassPreferred: false, availableBefore: false, availableAfter: false, avoidRecessLunch: false, avoidTimes: [], preferredTimes: [] };
       setForm({ ...base, ...newStudentPrefill });
+      setFormEnrolments([]);
       setEditing("new");
       if (onClearNewStudentPrefill) onClearNewStudentPrefill();
     }
@@ -92,6 +119,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       setPickingStudentForParent(true);
       setEditing(null);
       setForm(null);
+      setFormEnrolments([]);
       if (onClearAddParentPrefill) onClearAddParentPrefill();
     }
   }, [addParentPrefill]);
@@ -100,7 +128,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   useEffect(() => {
     if (resetKey === lastResetKey.current) return; // skip strict-mode double-fire and initial mount
     lastResetKey.current = resetKey;
-    setEditing(null); setForm(null); setImportMode(null); setPreview(null);
+    setEditing(null); setForm(null); setFormEnrolments([]); setImportMode(null); setPreview(null);
   }, [resetKey]);
 
   // Migrate old constraint fields to new ones
@@ -154,6 +182,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       avoidTimes: [], preferredTimes: [], status: "active", notes: "",
       parents: []
     });
+    setFormEnrolments([]);
     setEditing("new");
   };
 
@@ -165,12 +194,14 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
         updatedForm.parents = [...(updatedForm.parents || []), { id: uid(), name: prefill.name || "", email: prefill.email || "", phone: "", relationship: "", isPrimary: (updatedForm.parents || []).length === 0 }];
       }
       setForm(updatedForm);
+      setFormEnrolments(allEnrolmentsFor(student.id, enrolments).map(e => ({ ...e })));
       setEditing(student.id);
       setPickingStudentForParent(false);
       parentPrefillRef.current = null;
       return;
     }
     setForm({ ...student, instruments: (student.instruments || []).map(i => ({ ...i })) });
+    setFormEnrolments(allEnrolmentsFor(student.id, enrolments).map(e => ({ ...e })));
     setEditing(student.id);
   };
 
@@ -219,7 +250,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
         if (changes.length > 0) onTeacherChange(record.id, changes);
       }
     }
-    setForm(null); setEditing(null);
+    setForm(null); setEditing(null); setFormEnrolments([]);
     notify("Student saved!");
     if (onReturn) onReturn();
   };
@@ -1040,7 +1071,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
 
           <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
             <Btn onClick={saveStudent}>Save Student</Btn>
-            <Btn variant="secondary" onClick={() => { setForm(null); setEditing(null); if (onReturn) onReturn(); }}>Cancel</Btn>
+            <Btn variant="secondary" onClick={() => { setForm(null); setEditing(null); setFormEnrolments([]); if (onReturn) onReturn(); }}>Cancel</Btn>
           </div>
         </Card>
 
