@@ -318,20 +318,34 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const handleMerge = () => {
     if (!mergePrompt) return;
     const { pendingStudent, targetStudent } = mergePrompt;
-    // Append instruments from the pending record that aren't already on the target
-    const existingInstNames = new Set((targetStudent.instruments || []).map(i => i.name.trim().toLowerCase()));
-    const newInsts = (pendingStudent.instruments || []).filter(i => !existingInstNames.has(i.name.trim().toLowerCase()));
-    const merged = {
-      ...targetStudent,
-      instruments: [...(targetStudent.instruments || []), ...newInsts],
-    };
-    setStudents(prev => prev
-      .filter(s => s.id !== pendingStudent.id)   // remove temp pending record
-      .map(s => s.id === targetStudent.id ? merged : s)
+
+    // Pending's enrolments come from formEnrolments — the form is open, and
+    // the user may have added/edited enrolments that aren't yet in the
+    // enrolments prop. formEnrolments is the more-current source of truth.
+    const pendingEnrolments = formEnrolments.filter(e => e.studentId === pendingStudent.id);
+
+    // Target's already-active instruments — case-insensitive dedup.
+    const targetActiveInstruments = new Set(
+      activeEnrolmentsFor(targetStudent.id, enrolments).map(e => e.instrument.toLowerCase())
     );
+
+    // Non-duplicate pending enrolments, reassigned to the target student.
+    // Preserves id, startDate, teacherId, isGroup, groupId — only studentId changes.
+    const transferred = pendingEnrolments
+      .filter(e => !targetActiveInstruments.has(e.instrument.toLowerCase()))
+      .map(e => ({ ...e, studentId: targetStudent.id }));
+
+    // Drop ALL of pending's enrolments (dupes + transferred alike), then add
+    // the transferred ones back with the new studentId. Clean state.
+    setEnrolments(prev => [
+      ...prev.filter(e => e.studentId !== pendingStudent.id),
+      ...transferred,
+    ]);
+    setStudents(prev => prev.filter(s => s.id !== pendingStudent.id));
+
     setMergePrompt(null);
-    setForm(null); setEditing(null);
-    notify(`Merged ${(pendingStudent.instruments || []).map(i => i.name).join(", ")} into ${targetStudent.name}`);
+    setForm(null); setEditing(null); setFormEnrolments([]);
+    notify(`Merged ${transferred.map(e => e.instrument).join(", ") || "0 new instruments"} into ${targetStudent.name}`);
     if (onReturn) onReturn();
   };
 
@@ -1254,11 +1268,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 20 }}>
                 <strong>{mergePrompt.targetStudent.name}</strong> already exists as an active student.
                 <br /><br />
-                Merge <strong>{(mergePrompt.pendingStudent.instruments || []).map(i => i.name).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
-                <br /><br />
-                <span style={{ color: colors.textMuted, fontSize: 12 }}>
-                  Tally entries and lesson cards stay separate — they already reference each student individually.
-                </span>
+                Merge <strong>{formEnrolments.filter(e => e.studentId === mergePrompt.pendingStudent.id).map(e => e.instrument).filter(Boolean).join(", ")}</strong> into their profile and remove this duplicate record?
               </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <Btn variant="secondary" onClick={handleActivateWithoutMerge}>Keep as Separate Student</Btn>
