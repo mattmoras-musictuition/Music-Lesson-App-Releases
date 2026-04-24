@@ -7,7 +7,7 @@ import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus
 import { instruments_colors } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor, getInitials, openCompose } from "../utils/helpers";
-import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
+import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
@@ -625,8 +625,8 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         reader.onload = async (ev) => {
           try {
             if (file.name.endsWith(".csv")) {
-              const Papa = window.Papa;
-              const result = window.window.Papa.parse(ev.target.result, { header: true, skipEmptyLines: true });
+              const Papa = await getPapa();
+              const result = Papa.parse(ev.target.result, { header: true, skipEmptyLines: true });
               resolve(result.data);
             } else {
               const XLSX = await getXLSX();
