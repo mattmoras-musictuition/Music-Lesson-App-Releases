@@ -50,6 +50,10 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     if (focusStudentId) return allEnrolmentsFor(focusStudentId, enrolments).map(e => ({ ...e }));
     return [];
   });
+  const [isAddingEnrolment, setIsAddingEnrolment] = useState(false);
+  const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", teacherId: "" });
+  const [endingEnrolment, setEndingEnrolment] = useState(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
   const setFilter = (v) => setViewState(prev => ({ ...prev, filter: typeof v === "function" ? v(prev.filter || {}) : v }));
   const sortCol = (viewState || {}).sortCol || "name";
@@ -123,6 +127,16 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       if (onClearAddParentPrefill) onClearAddParentPrefill();
     }
   }, [addParentPrefill]);
+
+  // Reset enrolment-subsection UI state whenever the form opens for a different
+  // student (or closes). Prevents stale add-row drafts, open end-confirmation
+  // modals, or history-expanded state leaking across students.
+  useEffect(() => {
+    setIsAddingEnrolment(false);
+    setNewEnrolmentDraft({ instrument: "", teacherId: "" });
+    setEndingEnrolment(null);
+    setHistoryExpanded(form?.status === "archived");
+  }, [form?.id]);
 
   const lastResetKey = useRef(resetKey);
   useEffect(() => {
@@ -207,7 +221,6 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
 
   const saveStudent = () => {
     if (!form.name.trim()) { notify("Student name required", "warning"); return; }
-    if (!form.instruments[0]?.name) { notify("At least one instrument required", "warning"); return; }
     // Activation merge check: if an existing pending/trial student is being set to active,
     // look for an active student with the same name and offer to merge instruments.
     if (editing !== "new" && form.status === "active") {
@@ -921,55 +934,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             </div>
           </div>
 
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5 }}>Instruments</label>
-              {form.instruments.length < 2 && (
-                <Btn variant="ghost" onClick={() => setForm(p => ({ ...p, instruments: [...p.instruments, { name: "", isGroup: false }] }))} style={{ fontSize: 12 }}>
-                  + Second Instrument
-                </Btn>
-              )}
-            </div>
-            {form.instruments.map((inst, i) => (
-              <React.Fragment key={i}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 4 }}>
-                  <div style={{ flex: 1 }}>
-                    <Input value={inst.name} onChange={v => {
-                      const insts = [...form.instruments]; insts[i] = { ...insts[i], name: v };
-                      setForm(p => ({ ...p, instruments: insts }));
-                    }} options={(() => {
-                      const base = availableInstruments.length > 0 ? availableInstruments : [];
-                      if (inst.name && !base.includes(inst.name)) return [...base, inst.name].sort();
-                      return base;
-                    })()} style={{ marginBottom: 0 }} />
-                  </div>
-                  <label style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12, color: inst.isGroup ? instruments_colors.Group : colors.textMuted, cursor: "pointer", whiteSpace: "nowrap" }}>
-                    <input type="checkbox" checked={inst.isGroup || false} onChange={e => {
-                      const insts = [...form.instruments]; insts[i] = { ...insts[i], isGroup: e.target.checked };
-                      setForm(p => ({ ...p, instruments: insts }));
-                    }} style={{ accentColor: instruments_colors.Group, width: 14, height: 14 }} />
-                    Group
-                  </label>
-                  {i > 0 && (
-                    <button onClick={() => setForm(p => ({ ...p, instruments: p.instruments.filter((_, idx) => idx !== i) }))}
-                      style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={15} /></button>
-                  )}
-                  {i > 0 && !inst.isGroup && <span style={{ fontSize: 11, color: colors.textMuted, whiteSpace: "nowrap" }}>↑ 2nd: specialist/break/before-after only</span>}
-                </div>
-                <div style={{ marginBottom: 8 }}>
-                  <select value={inst.teacherId || ""} onChange={e => {
-                      const insts = [...form.instruments]; insts[i] = { ...insts[i], teacherId: e.target.value };
-                      setForm(p => ({ ...p, instruments: insts }));
-                    }}
-                    style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: inst.teacherId ? colors.text : colors.textMuted }}>
-                    <option value="">Unassigned</option>
-                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
-                </div>
-              </React.Fragment>
-            ))}
-          </div>
-
           {form.schoolId !== "__private__" && (
           <div style={{ marginBottom: 14 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Scheduling Constraints</label>
@@ -1069,6 +1033,158 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             )}
           </div>
 
+          {/* Enrolments subsection (Commit 2b) */}
+          {(() => {
+            const isArchived = form.status === "archived";
+            const activeFormEnrolments = formEnrolments.filter(e => !e.endDate);
+            const endedFormEnrolments = formEnrolments
+              .filter(e => e.endDate)
+              .sort((a, b) => (b.endDate || "").localeCompare(a.endDate || ""));
+            const existingActiveInstruments = new Set(activeFormEnrolments.map(e => e.instrument));
+            const addableInstruments = availableInstruments.filter(i => !existingActiveInstruments.has(i));
+            const formatDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" }) : "";
+
+            return (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5 }}>Enrolments</label>
+                  {!isArchived && !isAddingEnrolment && (
+                    <Btn variant="ghost" onClick={() => { setIsAddingEnrolment(true); setNewEnrolmentDraft({ instrument: "", teacherId: "" }); }} style={{ fontSize: 12 }}>
+                      + Add enrolment
+                    </Btn>
+                  )}
+                </div>
+
+                {activeFormEnrolments.length === 0 && !isAddingEnrolment && (
+                  <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic", padding: "8px 0" }}>No enrolments</div>
+                )}
+
+                {activeFormEnrolments.map(e => (
+                  e.isGroup ? (
+                    // Group enrolment — read-only; editing lives in Groups & Bands
+                    <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", marginBottom: 6, background: colors.bg, borderRadius: 8, border: `1px solid ${colors.border}` }}>
+                      <Tag color={getInstColor(e.instrument, true)}>
+                        <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span>{e.instrument}
+                      </Tag>
+                      <span style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>Group enrolment</span>
+                      {!isArchived && (
+                        <button
+                          // TODO: wire focusGroupId navigation — post-Commit-2b
+                          onClick={() => notify("Edit group enrolments via Groups & Bands", "info")}
+                          style={{ marginLeft: "auto", border: "none", background: "none", color: colors.textMuted, fontSize: 12, cursor: "pointer", textDecoration: "underline", fontFamily: "inherit" }}>
+                          Edit via Groups & Bands
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    // Individual enrolment — editable unless form is for an archived student
+                    <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", marginBottom: 6, background: colors.bg, borderRadius: 8, border: `1px solid ${colors.border}` }}>
+                      <Tag color={getInstColor(e.instrument, false)}>{e.instrument}</Tag>
+                      {isArchived ? (
+                        <>
+                          <span style={{ fontSize: 12, color: colors.text }}>
+                            {e.teacherId ? (teachers.find(t => t.id === e.teacherId)?.name || "—") : <span style={{ color: colors.textMuted, fontStyle: "italic" }}>Unassigned</span>}
+                          </span>
+                          <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)}</span>
+                        </>
+                      ) : (
+                        <>
+                          <select
+                            value={e.teacherId || ""}
+                            onChange={ev => {
+                              const updatedTeacherId = ev.target.value;
+                              setFormEnrolments(prev => prev.map(x => x.id === e.id ? { ...x, teacherId: updatedTeacherId } : x));
+                            }}
+                            style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: e.teacherId ? colors.text : colors.textMuted }}>
+                            <option value="">Unassigned</option>
+                            {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          </select>
+                          <span style={{ fontSize: 11, color: colors.textMuted }}>{formatDate(e.startDate)}</span>
+                          <button onClick={() => setEndingEnrolment(e)}
+                            style={{ marginLeft: "auto", padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: "none", color: colors.danger, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+                            onMouseEnter={ev => { ev.currentTarget.style.background = colors.redLight; ev.currentTarget.style.borderColor = colors.danger; }}
+                            onMouseLeave={ev => { ev.currentTarget.style.background = "none"; ev.currentTarget.style.borderColor = colors.border; }}>
+                            End enrolment
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )
+                ))}
+
+                {/* Inline add row */}
+                {isAddingEnrolment && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", marginBottom: 6, background: colors.accentLight, borderRadius: 8, border: `1px dashed ${colors.accent}` }}>
+                    <select
+                      value={newEnrolmentDraft.instrument}
+                      onChange={ev => setNewEnrolmentDraft(d => ({ ...d, instrument: ev.target.value }))}
+                      disabled={addableInstruments.length === 0}
+                      style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", flex: 1 }}>
+                      {addableInstruments.length === 0 && <option value="">All instruments already enrolled.</option>}
+                      {addableInstruments.length > 0 && <option value="">Select instrument…</option>}
+                      {addableInstruments.map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
+                    <select
+                      value={newEnrolmentDraft.teacherId}
+                      onChange={ev => setNewEnrolmentDraft(d => ({ ...d, teacherId: ev.target.value }))}
+                      style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", flex: 1 }}>
+                      <option value="">Unassigned</option>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                    <Btn
+                      onClick={() => {
+                        if (!newEnrolmentDraft.instrument) { notify("Pick an instrument", "warning"); return; }
+                        setFormEnrolments(prev => [...prev, {
+                          id: uid(),
+                          studentId: form.id,
+                          instrument: newEnrolmentDraft.instrument,
+                          teacherId: newEnrolmentDraft.teacherId || "",
+                          isGroup: false,
+                          groupId: undefined,
+                          startDate: new Date().toISOString().split("T")[0],
+                          endDate: undefined,
+                        }]);
+                        setIsAddingEnrolment(false);
+                        setNewEnrolmentDraft({ instrument: "", teacherId: "" });
+                      }}
+                      disabled={addableInstruments.length === 0 || !newEnrolmentDraft.instrument}
+                      style={{ fontSize: 12 }}>
+                      Save
+                    </Btn>
+                    <Btn variant="secondary" onClick={() => { setIsAddingEnrolment(false); setNewEnrolmentDraft({ instrument: "", teacherId: "" }); }} style={{ fontSize: 12 }}>Cancel</Btn>
+                  </div>
+                )}
+
+                {/* History subsection (collapsible) */}
+                {endedFormEnrolments.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <button onClick={() => setHistoryExpanded(v => !v)}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4, border: "none", background: "none", color: colors.textMuted, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0, fontFamily: "inherit" }}>
+                      <ChevronRight size={13} style={{ transform: historyExpanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+                      History
+                    </button>
+                    {historyExpanded && (
+                      <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                        {endedFormEnrolments.map(e => {
+                          const teacher = e.teacherId ? teachers.find(t => t.id === e.teacherId) : null;
+                          return (
+                            <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}`, opacity: 0.8 }}>
+                              <Tag color={getInstColor(e.instrument, e.isGroup)}>
+                                {e.isGroup ? <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span> : null}{e.instrument}
+                              </Tag>
+                              <span style={{ fontSize: 12, color: colors.text }}>{teacher ? teacher.name : "—"}</span>
+                              <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)} – {formatDate(e.endDate)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
             <Btn onClick={saveStudent}>Save Student</Btn>
             <Btn variant="secondary" onClick={() => { setForm(null); setEditing(null); setFormEnrolments([]); if (onReturn) onReturn(); }}>Cancel</Btn>
@@ -1096,6 +1212,33 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <Btn variant="secondary" onClick={handleActivateWithoutMerge}>Keep as Separate Student</Btn>
                 <Btn onClick={handleMerge}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Check size={13}/>Merge Instruments</span></Btn>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* End-enrolment confirmation modal */}
+        {endingEnrolment && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setEndingEnrolment(null)}>
+            <div style={{ background: colors.cardBg, borderRadius: 14, padding: 28, maxWidth: 460, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
+              onClick={ev => ev.stopPropagation()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: colors.danger, marginBottom: 10 }}>
+                End {endingEnrolment.instrument} enrolment?
+              </div>
+              <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 20 }}>
+                This will end {form?.name || "this student"}'s {endingEnrolment.instrument} enrolment when you save. This is permanent — if {form?.name || "this student"} takes {endingEnrolment.instrument} again, it will be a new enrolment.
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <Btn variant="secondary" onClick={() => setEndingEnrolment(null)}>Cancel</Btn>
+                <button onClick={() => {
+                  const todayISO = new Date().toISOString().split("T")[0];
+                  setFormEnrolments(prev => prev.map(x => x.id === endingEnrolment.id ? { ...x, endDate: todayISO } : x));
+                  setEndingEnrolment(null);
+                }}
+                  style={{ padding: "8px 16px", border: "none", borderRadius: 8, background: colors.danger, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                  End enrolment
+                </button>
               </div>
             </div>
           </div>
