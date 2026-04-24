@@ -415,8 +415,30 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const handleImport = (data, filename) => {
     const imported = parseStudentCSV(data, schools, teachers);
     if (imported.length === 0) { notify("No valid students found in file", "warning"); return; }
-    setStudents(prev => [...prev, ...imported]);
-    notify(`Imported ${imported.length} students from ${filename}`);
+    const todayISO = new Date().toISOString().split("T")[0];
+
+    // Build enrolment rows from each imported student's instruments[].
+    // Each instrument becomes one enrolment keyed to the student's id.
+    const importedEnrolments = imported.flatMap(s =>
+      (s.instruments || []).map(inst => ({
+        id: uid(),
+        studentId: s.id,
+        instrument: inst.name,
+        teacherId: inst.teacherId || "",
+        isGroup: inst.isGroup || false,
+        groupId: undefined,
+        startDate: todayISO,
+        endDate: undefined,
+      }))
+    );
+
+    // Strip instruments from student records before persisting — student rows
+    // don't carry instruments post-migration.
+    const cleanStudents = imported.map(({ instruments, ...rest }) => rest);
+
+    setStudents(prev => [...prev, ...cleanStudents]);
+    setEnrolments(prev => [...prev, ...importedEnrolments]);
+    notify(`Imported ${imported.length} students (${importedEnrolments.length} enrolments) from ${filename}`);
   };
 
   const openImport = (mode) => { setImportMode(mode); setImportError(null); };
@@ -712,8 +734,28 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
   const confirmStudentImport = () => {
     if (!preview) return;
     const valid = preview.entries.filter(e => e.name && e.instruments[0]?.name);
-    setStudents(prev => [...prev, ...valid]);
-    notify(`Imported ${valid.length} students from ${preview.filename}`);
+    const todayISO = new Date().toISOString().split("T")[0];
+
+    // Unwrap preview entries' instruments[] into enrolment rows.
+    const newEnrolments = valid.flatMap(s =>
+      (s.instruments || []).map(inst => ({
+        id: uid(),
+        studentId: s.id,
+        instrument: inst.name,
+        teacherId: inst.teacherId || "",
+        isGroup: inst.isGroup || false,
+        groupId: undefined,
+        startDate: todayISO,
+        endDate: undefined,
+      }))
+    );
+
+    // Strip instruments from student records before persisting.
+    const cleanStudents = valid.map(({ instruments, ...rest }) => rest);
+
+    setStudents(prev => [...prev, ...cleanStudents]);
+    setEnrolments(prev => [...prev, ...newEnrolments]);
+    notify(`Imported ${valid.length} students (${newEnrolments.length} enrolments) from ${preview.filename}`);
     setPreview(null);
   };
 
