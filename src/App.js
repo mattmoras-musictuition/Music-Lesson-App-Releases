@@ -3300,8 +3300,9 @@ export default function MusicTimetableApp() {
       // ── edit_student ─────────────────────────────────────────────────────
       if (name === "edit_student") {
         const { studentId, studentName, name: newName, schoolId, className, instruments, parentName, parentEmail, parentPhone, notes, status } = input;
-        const idx = students.findIndex(s => s.id === studentId);
-        if (idx === -1) return `No student found with ID ${studentId} — nothing changed.`;
+        // Existence check only — the mutation below matches by id inside the
+        // setter, not by index, so we don't capture findIndex's idx.
+        if (!students.some(s => s.id === studentId)) return `No student found with ID ${studentId} — nothing changed.`;
         const patch = {};
         if (newName      !== undefined) patch.name        = newName;
         if (schoolId     !== undefined) patch.schoolId    = schoolId;
@@ -3316,7 +3317,7 @@ export default function MusicTimetableApp() {
           ...(i.teacherId ? { teacherId: i.teacherId } : {}),
         }));
         if (Object.keys(patch).length === 0) return `No fields provided — nothing changed for ${studentName}.`;
-        setStudents(prev => prev.map((s, i) => i !== idx ? s : { ...s, ...patch }));
+        setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, ...patch }));
         const changes = Object.entries(patch).map(([k, v]) => {
           if (k === "instruments") return `instruments → ${v.map(i => i.name).join(", ")}`;
           if (k === "schoolId") { const sn = schools.find(s => s.id === v)?.name || v; return `school → ${sn}`; }
@@ -3329,9 +3330,27 @@ export default function MusicTimetableApp() {
       // ── archive_student ───────────────────────────────────────────────────
       if (name === "archive_student") {
         const { studentId, studentName } = input;
-        const idx = students.findIndex(s => s.id === studentId);
-        if (idx === -1) return `No student found with ID ${studentId} — nothing changed.`;
-        setStudents(prev => prev.map((s, i) => i !== idx ? s : { ...s, status: "archived", archivedAt: new Date().toISOString() }));
+        if (!students.some(s => s.id === studentId)) return `No student found with ID ${studentId} — nothing changed.`;
+        const todayISO = new Date().toISOString().split("T")[0];
+        setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, status: "archived", archivedAt: new Date().toISOString() }));
+        // Match commitSaveStudent's archive branch: stamp endDate on every
+        // active enrolment for this student.
+        setEnrolments(prev => prev.map(e =>
+          e.studentId === studentId && !e.endDate ? { ...e, endDate: todayISO } : e
+        ));
+        // Match the StudentsManager-prop onArchiveStudent card cleanup
+        // (App.js:6200). The AI tool path was missing this pre-Spec-1; without
+        // it, archived students kept visible MTT/WTT cards.
+        if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== studentId), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== studentId) }));
+        setWeeklyTimetables(prev => {
+          const next = { ...prev };
+          for (const key of Object.keys(next)) {
+            const entry = next[key];
+            if (!entry) continue;
+            next[key] = { ...entry, lessons: (entry.lessons || []).filter(l => l.studentId !== studentId) };
+          }
+          return next;
+        });
         notify(`Archived student: ${studentName}`, "success");
         return `Done — ${studentName} has been archived. They are hidden from all active views but can be restored from the Students page.`;
       }
@@ -3339,10 +3358,10 @@ export default function MusicTimetableApp() {
       // ── restore_student ───────────────────────────────────────────────────
       if (name === "restore_student") {
         const { studentId, studentName } = input;
-        const idx = students.findIndex(s => s.id === studentId);
-        if (idx === -1) return `No student found with ID ${studentId} — nothing changed.`;
-        if (students[idx].status !== "archived") return `${studentName} is not archived (current status: ${students[idx].status}) — nothing changed.`;
-        setStudents(prev => prev.map((s, i) => i !== idx ? s : { ...s, status: "pending", archivedAt: undefined }));
+        const existing = students.find(s => s.id === studentId);
+        if (!existing) return `No student found with ID ${studentId} — nothing changed.`;
+        if (existing.status !== "archived") return `${studentName} is not archived (current status: ${existing.status}) — nothing changed.`;
+        setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, status: "pending", archivedAt: undefined }));
         notify(`Restored student: ${studentName}`, "success");
         return `Done — ${studentName} has been restored to pending status and will appear in the student list again.`;
       }

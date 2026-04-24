@@ -392,7 +392,15 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   };
 
   const archiveStudent = (id) => {
+    const todayISO = new Date().toISOString().split("T")[0];
     setStudents(prev => prev.map(s => s.id === id ? { ...s, status: "archived", archivedAt: new Date().toISOString() } : s));
+    // Mirror commitSaveStudent's archive path: stamp endDate on every active
+    // enrolment. Without this, row-button archive leaves enrolments active
+    // in the data model while cards are cleared — they'd still show as
+    // active in the form's Enrolments section on a later re-open.
+    setEnrolments(prev => prev.map(e =>
+      e.studentId === id && !e.endDate ? { ...e, endDate: todayISO } : e
+    ));
     onArchiveStudent(id); // timetable cleanup
     setForm(null); setEditing(null);
     notify("Student archived");
