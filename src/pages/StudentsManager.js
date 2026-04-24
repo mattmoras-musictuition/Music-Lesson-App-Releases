@@ -683,20 +683,21 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
   const filtered = activeStudents.filter(s => {
     if (filter.school && s.schoolId !== filter.school) return false;
     if (filter.className && s.className !== filter.className) return false;
-    if (filter.instrument && !(s.instruments || []).some(i => i.name === filter.instrument)) return false;
+    const active = activeEnrolmentsFor(s.id, enrolments);
+    if (filter.instrument && !active.some(e => e.instrument === filter.instrument)) return false;
     if (filter.teacher) {
       if (filter.teacher === "_none_") {
-        if ((s.instruments || []).some(i => i.teacherId)) return false;
+        if (active.some(e => e.teacherId)) return false;
       } else {
-        if (!(s.instruments || []).some(i => i.teacherId === filter.teacher)) return false;
+        if (!active.some(e => e.teacherId === filter.teacher)) return false;
       }
     }
     if (filter.search && !s.name.toLowerCase().includes(filter.search.toLowerCase())) return false;
     if (filter.hasNote && !(s.notes && s.notes.trim())) return false;
     if (filter.hasWarning) {
       const isPrivate = s.schoolId === "__private__";
-      const hasUnassignedTeacher = (s.instruments || []).some(i => !i.isGroup && !i.teacherId);
-      const hasMissingInstrument = !(s.instruments || []).length;
+      const hasUnassignedTeacher = active.some(e => !e.isGroup && !e.teacherId);
+      const hasMissingInstrument = active.length === 0;
       const hasMissingParent = !isPrivate && (!(s.parents || []).length || !(s.parents || []).some(p => p.email));
       const hasMissingClass = !isPrivate && !s.className;
       const hasMissingSchool = !isPrivate && !s.schoolId;
@@ -722,13 +723,13 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
       }
       case "class": return dir * (a.className || "").localeCompare(b.className || "", undefined, { numeric: true });
       case "instrument": {
-        const aInst = (a.instruments || [])[0]?.name || "";
-        const bInst = (b.instruments || [])[0]?.name || "";
+        const aInst = primaryEnrolmentFor(a.id, enrolments)?.instrument || "";
+        const bInst = primaryEnrolmentFor(b.id, enrolments)?.instrument || "";
         return dir * aInst.localeCompare(bInst);
       }
       case "teacher": {
-        const aTid = a.instruments && a.instruments[0] && a.instruments[0].teacherId;
-        const bTid = b.instruments && b.instruments[0] && b.instruments[0].teacherId;
+        const aTid = primaryEnrolmentFor(a.id, enrolments)?.teacherId;
+        const bTid = primaryEnrolmentFor(b.id, enrolments)?.teacherId;
         const aT = aTid ? (teachers.find(t => t.id === aTid)?.name || "") : "zzz";
         const bT = bTid ? (teachers.find(t => t.id === bTid)?.name || "") : "zzz";
         return dir * aT.localeCompare(bT);
@@ -1393,10 +1394,13 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             <select value={filter.instrument} onChange={e => setFilter(p => ({ ...p, instrument: e.target.value }))}
               style={{ flex: "0 1 120px", minWidth: 0, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit" }}>
               <option value="">All Instruments</option>
-              {[...new Set([
-                ...(availableInstruments),
-                ...activeStudents.flatMap(s => (s.instruments || []).map(i => i.name)).filter(Boolean)
-              ])].sort().map(i => <option key={i} value={i}>{i}</option>)}
+              {(() => {
+                const activeIds = new Set(activeStudents.map(s => s.id));
+                return [...new Set([
+                  ...(availableInstruments),
+                  ...enrolments.filter(e => !e.endDate && activeIds.has(e.studentId)).map(e => e.instrument).filter(Boolean)
+                ])].sort().map(i => <option key={i} value={i}>{i}</option>);
+              })()}
             </select>
             <select value={filter.teacher} onChange={e => setFilter(p => ({ ...p, teacher: e.target.value }))}
               style={{ flex: "0 1 120px", minWidth: 0, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit" }}>
@@ -1454,7 +1458,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <tbody>
                 {sortedFiltered.map(s => {
                   const school = schools.find(sc => sc.id === s.schoolId);
-                  const prefTeacher = s.instruments && s.instruments[0] && s.instruments[0].teacherId ? teachers.find(t => t.id === s.instruments[0].teacherId) : null;
+                  const active = activeEnrolmentsFor(s.id, enrolments);
+                  const primary = primaryEnrolmentFor(s.id, enrolments);
+                  const prefTeacher = primary?.teacherId ? teachers.find(t => t.id === primary.teacherId) : null;
                   const noteOpen = expandedStudentNotes.has(s.id);
                   const hasNote = !!(s.notes && s.notes.trim());
                   return (
@@ -1468,18 +1474,18 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.schoolId === "__private__" ? <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent, background: colors.accentLight, borderRadius: 4, padding: "2px 6px" }}>Private</span> : school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}</td>
                       <td style={{ padding: "10px 14px", color: colors.textLight }}>{s.className || "—"}</td>
                       <td style={{ padding: "10px 14px" }}>
-                        {(s.instruments || []).map((inst, i) => (
-                          <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.isGroup ? <span style={{display:"inline-flex",alignItems:"center",marginRight:3}}><Users size={10}/></span> : ""}{inst.name}</Tag>
+                        {active.map(e => (
+                          <Tag key={e.id} color={getInstColor(e.instrument, e.isGroup)}>{e.isGroup ? <span style={{display:"inline-flex",alignItems:"center",marginRight:3}}><Users size={10}/></span> : ""}{e.instrument}</Tag>
                         ))}
                       </td>
                       <td style={{ padding: "10px 14px", color: colors.textLight, fontSize: 13 }}>
                         {(() => {
-                          const indInsts = (s.instruments || []).filter(i => !i.isGroup);
+                          const indInsts = active.filter(e => !e.isGroup);
                           if (!indInsts.length) return <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>;
-                          const parts = indInsts.map(i => {
-                            if (!i.teacherId) return <span key={i.name} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
-                            const t = teachers.find(t => t.id === i.teacherId);
-                            return <span key={i.name}>{t ? t.name : "—"}</span>;
+                          const parts = indInsts.map(e => {
+                            if (!e.teacherId) return <span key={e.id} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
+                            const t = teachers.find(t => t.id === e.teacherId);
+                            return <span key={e.id}>{t ? t.name : "—"}</span>;
                           });
                           return parts.reduce((acc, el, idx) => idx === 0 ? [el] : [...acc, <span key={"sep"+idx} style={{ color: colors.borderLight }}> / </span>, el], []);
                         })()}
@@ -1489,12 +1495,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         {s.outsideClassPreferred && <Tag color="#F59E0B">Outside class pref.</Tag>}
                         {s.availableBefore && <Tag color={colors.sidebarActive}>Before school</Tag>}
                         {s.availableAfter && <Tag color={colors.sidebarActive}>After school</Tag>}
-                        {(s.instruments || []).some(i => i.isGroup) && <Tag color={instruments_colors.Group}>Group</Tag>}
+                        {active.some(e => e.isGroup) && <Tag color={instruments_colors.Group}>Group</Tag>}
                         {(() => {
                           const isPrivate = s.schoolId === "__private__";
                           const warns = [];
-                          if (!(s.instruments || []).length) warns.push("No instrument");
-                          else (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).forEach(i => warns.push(`No teacher (${i.name})`));
+                          if (!active.length) warns.push("No instrument");
+                          else active.filter(e => !e.isGroup && !e.teacherId).forEach(e => warns.push(`No teacher (${e.instrument})`));
                           if (!isPrivate) {
                             if (!(s.parents || []).length) warns.push("No parent");
                             else if (!(s.parents || []).some(p => p.email)) warns.push("Parent missing email");
@@ -1608,8 +1614,8 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                             {s.schoolId === "__private__" ? <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent }}>Private</span> : school ? school.name.split(" ").filter(w => /^[A-Z]/.test(w) || w.length <= 3).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase() : "—"}
                           </td>
                           <td style={{ padding: "9px 14px" }}>
-                            {(s.instruments || []).map((inst, i) => (
-                              <Tag key={i} color={getInstColor(inst.name, inst.isGroup)}>{inst.name}</Tag>
+                            {allEnrolmentsFor(s.id, enrolments).map(e => (
+                              <Tag key={e.id} color={getInstColor(e.instrument, e.isGroup)}>{e.instrument}</Tag>
                             ))}
                           </td>
                           <td style={{ padding: "9px 14px", color: colors.textMuted, fontSize: 12 }}>
@@ -1661,9 +1667,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         {studentCtxMenu && onAddMemory && (() => {
           const s = studentCtxMenu.student;
           const school = schools.find(sc => sc.id === s.schoolId);
-          const instrs = (s.instruments || []).map(i => {
-            const t = teachers.find(t => t.id === i.teacherId);
-            return `${i.name}${t ? ` with ${t.name}` : ""}`;
+          const instrs = allEnrolmentsFor(s.id, enrolments).map(e => {
+            const t = teachers.find(t => t.id === e.teacherId);
+            return `${e.instrument}${t ? ` with ${t.name}` : ""}${e.endDate ? " (ended)" : ""}`;
           }).join(", ");
           const namePart = s.name;
           const schoolPart = school ? school.name : "";
