@@ -2749,51 +2749,40 @@ export default function MusicTimetableApp() {
           if (lesson) { foundKey = sk; foundLesson = lesson; break; }
         }
 
-        const instr = foundLesson?.instrument || instrument || student?.instruments?.[0]?.name || "";
+        if (!foundLesson) return `No active lesson found for ${studentName}${instrument ? ` (${instrument})` : ""} on ${dayName} ${date} — nothing recorded.`;
+
+        const instr = foundLesson.instrument || instrument || student?.instruments?.[0]?.name || "";
         const lessonKey = `${studentId}|${instr}`;
 
         // Duplicate tally check
         const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === dayName);
         if (already) return `Already have a tally entry for ${studentName} on ${dayName} ${date} — nothing added.`;
 
-        // Move lesson from lessons → missed array (proper missed zone flow)
-        if (foundLesson && foundKey) {
-          setWeeklyTimetables(prev => {
-            const data = prev[foundKey];
-            if (!data) return prev;
-            const missedEntry = { ...foundLesson, reason: displayReason };
-            return {
-              ...prev,
-              [foundKey]: {
-                ...data,
-                lessons: data.lessons.filter(l => l.id !== foundLesson.id),
-                missed: [...(data.missed || []), missedEntry],
-              }
-            };
-          });
-        }
+        // Move lesson from lessons → missed array with full structured payload (post-Commit-5)
+        setWeeklyTimetables(prev => {
+          const data = prev[foundKey];
+          if (!data) return prev;
+          const missedEntry = {
+            ...foundLesson,
+            reason: reason || "other",
+            reasonDetail: reasonDetail || "",
+            notes: notes || "",
+            makeupEligible: eligible,
+            madeUp: false,
+            cardNote: "",
+          };
+          return {
+            ...prev,
+            [foundKey]: {
+              ...data,
+              lessons: data.lessons.filter(l => l.id !== foundLesson.id),
+              missed: [...(data.missed || []), missedEntry],
+            }
+          };
+        });
 
-        // Create tally entry (same as saveAndConfirm in WeeklyAdjustments)
-        const tallyEntry = {
-          id: uid(), lessonKey, lessonId: foundLesson?.id || null,
-          isGroup: false, groupName: "",
-          studentId, studentName, studentNames: [],
-          instrument: instr,
-          schoolId: foundLesson?.schoolId || student?.schoolId || "",
-          teacherId: foundLesson?.teacherId || student?.instruments?.find(i => i.name === instr)?.teacherId || "",
-          teacherName: foundLesson?.teacherName || "",
-          weekKey, weekLabel, weekNum, termKey, day: dayName,
-          status: "missed",
-          reason: reason || "other",
-          reasonDetail: reasonDetail || "",
-          notes: notes || "",
-          makeupEligible: eligible, madeUp: false,
-          recordedAt: new Date().toISOString(), autoRecorded: false,
-        };
-        setTallyEntries(prev => [...prev, tallyEntry]);
         notify(`Marked ${studentName} absent — ${dayName}`, "info");
-        const wttNote = foundLesson ? " Moved to missed zone in WTT." : " No matching WTT lesson found — tally entry created only.";
-        return `Done — ${studentName}'s ${instr ? instr + " lesson" : "lesson"} on ${dayName} ${date} moved to missed zone. Reason: ${displayReason || "none"}. Catch-up ${eligible ? "is owed" : "is not owed"}.${wttNote}`;
+        return `Done — ${studentName}'s ${instr ? instr + " lesson" : "lesson"} on ${dayName} ${date} moved to missed zone. Reason: ${displayReason || "none"}. Catch-up ${eligible ? "is owed" : "is not owed"}.`;
       }
 
       // ── bulk_mark_missed ─────────────────────────────────────────────────
@@ -2807,7 +2796,6 @@ export default function MusicTimetableApp() {
           teacher_absent: "Teacher Absent", cancelled: "Cancelled", other: "Other",
         };
         const displayReason = reasonDetail || REASON_DISPLAY[reason] || reason || "";
-        const newEntries = [];
         // Collect lessons to move per storage key
         const toMoveBySk = {}; // sk → [lesson, ...]
         for (const [sk, weeklyData] of Object.entries(weeklyTimetables)) {
@@ -2821,46 +2809,38 @@ export default function MusicTimetableApp() {
             if (!lessonKey || lessonKey === "|") continue;
             const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === dayName);
             if (already) continue;
-            newEntries.push({
-              id: uid(), lessonKey, lessonId: lesson.id || null,
-              isGroup: lesson.isGroup || false, groupName: lesson.groupName || "",
-              studentId: lesson.studentId || "",
-              studentName: lesson.isGroup ? (lesson.groupName || "") : (lesson.studentName || ""),
-              studentNames: lesson.studentNames || [],
-              instrument: lesson.instrument || "", schoolId: lessonSchoolId,
-              teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
-              weekKey, weekLabel, weekNum, termKey, day: dayName,
-              status: "missed",
-              reason: reason || null, reasonDetail: reasonDetail || "", notes: "",
-              makeupEligible: eligible, madeUp: false,
-              recordedAt: new Date().toISOString(), autoRecorded: false,
-            });
             if (!toMoveBySk[sk]) toMoveBySk[sk] = [];
             toMoveBySk[sk].push(lesson);
           }
         }
-        if (newEntries.length === 0) return `No lessons found for ${schoolName || "that school"} on ${dayName} ${date} — nothing to mark.`;
-        // Move lessons from lessons → missed array for each storage key
-        if (Object.keys(toMoveBySk).length > 0) {
-          setWeeklyTimetables(prev => {
-            const next = { ...prev };
-            for (const [sk, lessonsToMove] of Object.entries(toMoveBySk)) {
-              const data = next[sk];
-              if (!data) continue;
-              const moveIds = new Set(lessonsToMove.map(l => l.id));
-              const missedEntries = lessonsToMove.map(l => ({ ...l, reason: displayReason }));
-              next[sk] = {
-                ...data,
-                lessons: data.lessons.filter(l => !moveIds.has(l.id)),
-                missed: [...(data.missed || []), ...missedEntries],
-              };
-            }
-            return next;
-          });
-        }
-        setTallyEntries(prev => [...prev, ...newEntries]);
-        notify(`Marked ${newEntries.length} lessons missed — ${dayName}`, "info");
-        return `Done — moved ${newEntries.length} lesson${newEntries.length !== 1 ? "s" : ""} to missed zone on ${dayName} ${date}${schoolName ? ` at ${schoolName}` : ""}. Catch-ups ${eligible ? "are" : "are not"} owed.`;
+        const movedCount = Object.values(toMoveBySk).reduce((n, arr) => n + arr.length, 0);
+        if (movedCount === 0) return `No lessons found for ${schoolName || "that school"} on ${dayName} ${date} — nothing to mark.`;
+        // Move lessons from lessons → missed array with full structured payload (post-Commit-5)
+        setWeeklyTimetables(prev => {
+          const next = { ...prev };
+          for (const [sk, lessonsToMove] of Object.entries(toMoveBySk)) {
+            const data = next[sk];
+            if (!data) continue;
+            const moveIds = new Set(lessonsToMove.map(l => l.id));
+            const missedEntries = lessonsToMove.map(l => ({
+              ...l,
+              reason: reason || "other",
+              reasonDetail: reasonDetail || "",
+              notes: "",
+              makeupEligible: eligible,
+              madeUp: false,
+              cardNote: "",
+            }));
+            next[sk] = {
+              ...data,
+              lessons: data.lessons.filter(l => !moveIds.has(l.id)),
+              missed: [...(data.missed || []), ...missedEntries],
+            };
+          }
+          return next;
+        });
+        notify(`Marked ${movedCount} lessons missed — ${dayName}`, "info");
+        return `Done — moved ${movedCount} lesson${movedCount !== 1 ? "s" : ""} to missed zone on ${dayName} ${date}${schoolName ? ` at ${schoolName}` : ""}. Catch-ups ${eligible ? "are" : "are not"} owed.`;
       }
 
       // ── add_todo ─────────────────────────────────────────────────────────
@@ -3005,7 +2985,6 @@ export default function MusicTimetableApp() {
           teacher_absent: "Teacher Absent", cancelled: "Cancelled", other: "Other",
         };
         const displayReason = reasonDetail || REASON_DISPLAY[reason] || reason || "";
-        const newEntries = [];
         const toMoveBySk = {};
         for (const [sk, data] of Object.entries(weeklyTimetables || {})) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
@@ -3015,44 +2994,38 @@ export default function MusicTimetableApp() {
             const lessonKey = `${lesson.studentId}|${lesson.instrument}`;
             const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === lesson.day);
             if (already) continue;
-            newEntries.push({
-              id: uid(), lessonKey, lessonId: lesson.id || null,
-              isGroup: false, groupName: "",
-              studentId, studentName, studentNames: [],
-              instrument: lesson.instrument || "", schoolId: sk_schoolId,
-              teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
-              weekKey, weekLabel, weekNum, termKey, day: lesson.day,
-              status: "missed",
-              reason: reason || null, reasonDetail: reasonDetail || "", notes: "",
-              makeupEligible: eligible, madeUp: false,
-              recordedAt: new Date().toISOString(), autoRecorded: false,
-            });
             if (!toMoveBySk[sk]) toMoveBySk[sk] = [];
             toMoveBySk[sk].push(lesson);
           }
         }
-        if (newEntries.length === 0) return `No unrecorded lessons found for ${studentName} in the week of ${weekKey} — nothing added.`;
-        // Move lessons to missed zone
-        if (Object.keys(toMoveBySk).length > 0) {
-          setWeeklyTimetables(prev => {
-            const next = { ...prev };
-            for (const [sk, lessonsToMove] of Object.entries(toMoveBySk)) {
-              const data = next[sk];
-              if (!data) continue;
-              const moveIds = new Set(lessonsToMove.map(l => l.id));
-              const missedEntries = lessonsToMove.map(l => ({ ...l, reason: displayReason }));
-              next[sk] = {
-                ...data,
-                lessons: data.lessons.filter(l => !moveIds.has(l.id)),
-                missed: [...(data.missed || []), ...missedEntries],
-              };
-            }
-            return next;
-          });
-        }
-        setTallyEntries(prev => [...prev, ...newEntries]);
-        notify(`Marked ${studentName} absent — ${newEntries.length} lesson${newEntries.length !== 1 ? "s" : ""}`, "info");
-        return `Done — moved all ${newEntries.length} of ${studentName}'s lessons to missed zone for the week of ${weekKey}. Catch-ups ${eligible ? "are" : "are not"} owed.`;
+        const movedCount = Object.values(toMoveBySk).reduce((n, arr) => n + arr.length, 0);
+        if (movedCount === 0) return `No unrecorded lessons found for ${studentName} in the week of ${weekKey} — nothing added.`;
+        // Move lessons to missed zone with full structured payload (post-Commit-5)
+        setWeeklyTimetables(prev => {
+          const next = { ...prev };
+          for (const [sk, lessonsToMove] of Object.entries(toMoveBySk)) {
+            const data = next[sk];
+            if (!data) continue;
+            const moveIds = new Set(lessonsToMove.map(l => l.id));
+            const missedEntries = lessonsToMove.map(l => ({
+              ...l,
+              reason: reason || "other",
+              reasonDetail: reasonDetail || "",
+              notes: "",
+              makeupEligible: eligible,
+              madeUp: false,
+              cardNote: "",
+            }));
+            next[sk] = {
+              ...data,
+              lessons: data.lessons.filter(l => !moveIds.has(l.id)),
+              missed: [...(data.missed || []), ...missedEntries],
+            };
+          }
+          return next;
+        });
+        notify(`Marked ${studentName} absent — ${movedCount} lesson${movedCount !== 1 ? "s" : ""}`, "info");
+        return `Done — moved all ${movedCount} of ${studentName}'s lessons to missed zone for the week of ${weekKey}. Catch-ups ${eligible ? "are" : "are not"} owed.`;
       }
 
       // ── reassign_teacher_day ─────────────────────────────────────────────
