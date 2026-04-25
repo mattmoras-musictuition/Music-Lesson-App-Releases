@@ -1634,7 +1634,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!weeklyData) return;
     const lesson = weeklyData.lessons.find(l => l.id === lessonId);
     if (!lesson) return;
-    const missedEntry = { ...lesson, reason: "" };
+    const missedEntry = {
+      ...lesson,
+      reason: "",
+      reasonDetail: "",
+      notes: "",
+      makeupEligible: false,
+      madeUp: false,
+      cardNote: "",
+    };
     // Move lesson to missed area
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];

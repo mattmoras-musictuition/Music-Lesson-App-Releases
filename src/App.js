@@ -20,6 +20,7 @@ import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teache
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
 import { runSpec1Migration } from "./utils/migrations/spec1";
+import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
@@ -2114,6 +2115,18 @@ export default function MusicTimetableApp() {
       console.warn("[sync] Weekly timetables — no Supabase session");
     }
   }, [weeklyTimetables, sessionUserId]);
+
+  // Spec 1 Commit 5.0 — one-shot WTT shape transform
+  useEffect(() => {
+    if (!storageReady.current) return;
+    if (localStorage.getItem("mt-migration-spec1c5-done")) return;
+    if (Object.keys(weeklyTimetables || {}).length === 0) return;
+    const result = runSpec1Commit5Transform({ weeklyTimetables });
+    if (result.skipped) return;
+    setWeeklyTimetables(result.weeklyTimetables);
+    try { localStorage.setItem("mt-migration-spec1c5-done", new Date().toISOString()); } catch (e) {}
+    console.log("[migration] Spec 1 Commit 5 transform applied:", result.stats);
+  }, [weeklyTimetables]);
 
   // ── Polling: pick up weekly_adjustments changes from teacher app ─────────
   // Polls every 4 seconds. Skips rows that this app just wrote (own-write
