@@ -1158,51 +1158,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 }).filter(Boolean);
                 if (suggestions.length > 0) setPendingRecurringNotes(suggestions);
               }
-              // Process tally_remove hints — apply to current week immediately
+              // tally_remove hints are consumed by the scheduler-side filter (weeklyTimetableGenerator.js); no longer persisted post-Commit-5
               const removeHints = parsed.filter(h => h.action === "tally_remove");
               if (removeHints.length > 0) {
-                const wttLessons = timetable.lessons.filter(l => l.schoolId === selectedSchool);
-                const seen = new Set();
-                const removeRows = [];
-                for (const l of wttLessons) {
-                  const lk = l.isGroup ? "group|" + l.groupId : l.studentId + "|" + l.instrument;
-                  if (!seen.has(lk)) { seen.add(lk); removeRows.push({ ...l, lessonKey: lk }); }
-                }
-                const newRemoveEntries = [];
-                for (const h of removeHints) {
-                  const reasonVal = h.tallyRemoveReason === "extended_absence" ? "extended_absence" : "removed_not_charged";
-                  let matchRows = removeRows;
-                  if (h.targetStudentName && !h.wholeSchool) {
-                    const nl = h.targetStudentName.toLowerCase();
-                    matchRows = removeRows.filter(r => {
-                      const n = (r.isGroup ? (r.groupName || "") : (r.studentName || "")).toLowerCase();
-                      return n.includes(nl) || nl.includes(n.split(" ")[0]);
-                    });
-                    if (h.targetInstrument) matchRows = matchRows.filter(r => (r.instrument || "").toLowerCase() === h.targetInstrument.toLowerCase());
-                  }
-                  for (const row of matchRows) {
-                    newRemoveEntries.push({
-                      id: uid(), lessonKey: row.lessonKey, lessonId: row.id,
-                      isGroup: row.isGroup || false, groupName: row.groupName || "",
-                      studentId: row.studentId || "",
-                      studentName: row.isGroup ? (row.groupName || row.studentNames?.join(", ") || "Group") : row.studentName,
-                      studentNames: row.studentNames || [],
-                      instrument: row.instrument, schoolId: row.schoolId,
-                      teacherId: row.teacherId, teacherName: row.teacherName,
-                      weekKey, weekLabel, weekNum: termWeek,
-                      termKey: null, day: row.day,
-                      status: "removed", reason: reasonVal,
-                      notes: "", makeupEligible: false, madeUp: false,
-                      recordedAt: new Date().toISOString(), recordedBy: "weekly_ai",
-                    });
-                  }
-                }
-                if (newRemoveEntries.length > 0) {
-                  const removeKeys = new Set(newRemoveEntries.map(e => e.lessonKey + "|" + e.weekKey));
-                  // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-                  setTallyEntries(prev => [...prev.filter(e => !removeKeys.has(e.lessonKey + "|" + e.weekKey)), ...newRemoveEntries]);
-                  notify("Tally: " + newRemoveEntries.length + " slot" + (newRemoveEntries.length !== 1 ? "s" : "") + " removed from tally");
-                }
+                console.log("[AI] tally_remove hints received but no longer persisted (post-Commit-5):", removeHints.length);
               }
             }
           } catch (parseErr) { notify("Could not parse adjustment notes — try rephrasing", "warning"); }
@@ -1758,29 +1717,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setExpandedWarnings(prev => { const next = new Set(prev); next.add(rescuedLesson.id); return next; });
     } else {
       setExpandedWarnings(prev => { const next = new Set(prev); next.delete(rescuedLesson.id); return next; });
-    }
-    // Update tally: remove missed entry; add completed entry if the slot day is past 6pm
-    const lessonKey = missed.isGroup ? `group|${missed.groupId}` : `${missed.studentId}|${missed.instrument}`;
-    if (isDayPast6pm(newDay, weekKey)) {
-      const tBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
-      const wNum = computeTermWeekNum(weekKey, tBreaks);
-      const completedEntry = {
-        id: uid(), lessonKey, lessonId: missed.id,
-        isGroup: false, groupName: "",
-        studentId: missed.studentId || "", studentName: missed.studentName || "",
-        instrument: missed.instrument, schoolId: missed.schoolId,
-        teacherId: missed.teacherId, teacherName: missed.teacherName,
-        weekKey, weekLabel: wNum ? `Week ${wNum}` : `Week of ${weekKey}`,
-        weekNum: wNum, termKey: computeTermKey(weekKey, tBreaks), day: newDay,
-        status: "completed", reason: null, notes: "",
-        makeupEligible: false, madeUp: false,
-        recordedAt: new Date().toISOString(),
-      };
-      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-      setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)), completedEntry]);
-    } else {
-      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-      setTallyEntries(prev => prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)));
     }
     notify(`${missed.isGroup ? missed.groupName : missed.studentName} rescheduled to ${newDay} ${slot.start}`);
   };
