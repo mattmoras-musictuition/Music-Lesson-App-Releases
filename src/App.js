@@ -19,7 +19,6 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
-import { runSpec1Migration } from "./utils/migrations/spec1";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
@@ -986,15 +985,6 @@ export default function MusicTimetableApp() {
   const [notification, setNotification] = useState(null);
   const [quickAddTodoTrigger, setQuickAddTodoTrigger] = useState(0);
   const [quickAddReminderTrigger, setQuickAddReminderTrigger] = useState(0);
-  // Spec 1 Commit 3 — one-shot migration banner state
-  const [migrationStatus, setMigrationStatus] = useState("pending");   // "pending" | "running" | "success" | "error" | "dismissed"
-  const [migrationResult, setMigrationResult] = useState(null);
-  const [migrationError, setMigrationError] = useState(null);
-  const migrationNeeded = (() => {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("mt-migration-spec1-done")) return false;
-    if (enrolments.length > 0) return false;
-    return students.some(s => Array.isArray(s.instruments) && s.instruments.length > 0);
-  })();
   // Defined immediately after setNotification to prevent temporal dead zone in HMR
   // Toast colours: guitar green (success), coral/accent (warning), danger red (danger)
   const TOAST_COLORS = {
@@ -2669,9 +2659,14 @@ export default function MusicTimetableApp() {
         const instr = foundLesson.instrument || instrument || student?.instruments?.[0]?.name || "";
         const lessonKey = `${studentId}|${instr}`;
 
-        // Duplicate tally check
-        const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === dayName);
-        if (already) return `Already have a tally entry for ${studentName} on ${dayName} ${date} — nothing added.`;
+        // Duplicate check — scan the same WTT entry's missed array for an existing match
+        const foundData = weeklyTimetables[foundKey];
+        const alreadyMissed = (foundData?.missed || []).some(m =>
+          m.studentId === studentId &&
+          m.day === dayName &&
+          (!instr || m.instrument?.toLowerCase() === instr.toLowerCase())
+        );
+        if (alreadyMissed) return `Already have a missed entry for ${studentName} on ${dayName} ${date} — nothing added.`;
 
         // Move lesson from lessons → missed array with full structured payload (post-Commit-5)
         setWeeklyTimetables(prev => {
@@ -2722,8 +2717,11 @@ export default function MusicTimetableApp() {
             if (lesson.day !== dayName || lesson.isCancelled) continue;
             const lessonKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
             if (!lessonKey || lessonKey === "|") continue;
-            const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === dayName);
-            if (already) continue;
+            const alreadyMissed = (weeklyData.missed || []).some(m => {
+              const mKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
+              return mKey === lessonKey && m.day === dayName;
+            });
+            if (alreadyMissed) continue;
             if (!toMoveBySk[sk]) toMoveBySk[sk] = [];
             toMoveBySk[sk].push(lesson);
           }
@@ -2907,8 +2905,12 @@ export default function MusicTimetableApp() {
           for (const lesson of (data.lessons || [])) {
             if (lesson.studentId !== studentId || lesson.isCancelled) continue;
             const lessonKey = `${lesson.studentId}|${lesson.instrument}`;
-            const already = tallyEntries.find(e => e.lessonKey === lessonKey && e.weekKey === weekKey && e.day === lesson.day);
-            if (already) continue;
+            const alreadyMissed = (data.missed || []).some(m =>
+              m.studentId === lesson.studentId &&
+              m.instrument === lesson.instrument &&
+              m.day === lesson.day
+            );
+            if (alreadyMissed) continue;
             if (!toMoveBySk[sk]) toMoveBySk[sk] = [];
             toMoveBySk[sk].push(lesson);
           }
@@ -4096,68 +4098,6 @@ export default function MusicTimetableApp() {
     notify("Added to Claude memory ✦", "success");
   };
 
-  // Spec 1 Commit 3 — runs the one-shot migration when the banner button is clicked
-  const handleRunMigration = () => {
-    setMigrationStatus("running");
-    setMigrationError(null);
-    try {
-      // Inlined canonical term-start derivation (mirrors App.js:2885-2894 / 3982-3990 pattern)
-      const tBreaks = [...interruptions].filter(i => i.type === "term_break").sort((a, b) => b.date.localeCompare(a.date));
-      const todayStr = toLocalDateStr(melbourneNow());
-      let termStart = null;
-      for (const br of tBreaks) {
-        const tbEnd = br.endDate || br.date;
-        if (tbEnd < todayStr) {
-          const ts = new Date(tbEnd + "T00:00:00"); ts.setDate(ts.getDate() + 1);
-          while (ts.getDay() === 6 || ts.getDay() === 0) ts.setDate(ts.getDate() + 1);
-          termStart = ts; break;
-        }
-      }
-      if (!termStart) { const y = new Date().getFullYear(); const s = new Date(y, 0, 27); while (s.getDay() !== 2) s.setDate(s.getDate() + 1); termStart = s; }
-      const termStartDate = toLocalDateStr(termStart);
-
-      const result = runSpec1Migration({
-        students,
-        timetable,
-        weeklyTimetables,
-        tallyEntries,
-        groups,
-        termStartDate,
-      });
-
-      if (result.skipped) {
-        // Defensive — migrationNeeded should have hidden the button. Set marker, succeed silently.
-        localStorage.setItem("mt-migration-spec1-done", new Date().toISOString());
-        setMigrationResult(result);
-        setMigrationStatus("success");
-        return;
-      }
-
-      // Apply via setters — per-collection sync effects fire naturally.
-      // Each sync effect's !isDev guard blocks Supabase writes in dev (non-negotiable, see Spec 1 §0).
-      setStudents(result.students);
-      setEnrolments(result.enrolments);
-      setTimetable(result.timetable);
-      setWeeklyTimetables(result.weeklyTimetables);
-      setTallyEntries(result.tallyEntries);
-
-      localStorage.setItem("mt-migration-spec1-done", new Date().toISOString());
-
-      if (result.warnings.length > 0) {
-        console.group(`Migration warnings (${result.warnings.length})`);
-        result.warnings.forEach(w => console.warn(w));
-        console.groupEnd();
-      }
-      console.log("Migration stats:", result.stats);
-
-      setMigrationResult(result);
-      setMigrationStatus("success");
-    } catch (err) {
-      console.error("Migration failed", err);
-      setMigrationError(err.message || String(err));
-      setMigrationStatus("error");
-    }
-  };
 
   const handleRestore = (data) => {
     if (data.schools) { const ms = migrateData("schools", data.schools); setSchools(ms); saveData(STORAGE_KEYS.schools, ms); saveData(STORAGE_KEYS.schoolsBak, ms); }
@@ -5045,70 +4985,6 @@ export default function MusicTimetableApp() {
       {isDev && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 99999, background: "#D97706", color: "#fff", textAlign: "center", fontSize: 12, fontWeight: 700, padding: "3px 0", letterSpacing: 0.5, fontFamily: "'DM Sans', sans-serif", pointerEvents: "none" }}>
           DEV MODE — Supabase writes disabled
-        </div>
-      )}
-      {migrationNeeded && migrationStatus !== "dismissed" && (
-        <div style={{
-          position: "fixed",
-          top: isDev ? 24 : 0,
-          left: 0,
-          right: 0,
-          zIndex: 99998,
-          background: "#D97706",
-          color: "#fff",
-          textAlign: "center",
-          fontSize: 13,
-          fontWeight: 600,
-          padding: "8px 16px",
-          fontFamily: "'DM Sans', sans-serif",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: 12,
-        }}>
-          {migrationStatus === "pending" && (
-            <>
-              <span>Phase 3 Spec 1 migration ready. One-time action.</span>
-              <button
-                onClick={handleRunMigration}
-                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
-              >
-                Run migration
-              </button>
-            </>
-          )}
-          {migrationStatus === "running" && <span>Running migration…</span>}
-          {migrationStatus === "error" && (
-            <>
-              <span>Migration failed: {migrationError}</span>
-              <button
-                onClick={handleRunMigration}
-                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
-              >
-                Retry
-              </button>
-              <button
-                onClick={() => console.log("Migration error details:", migrationError)}
-                style={{ background: "transparent", color: "#fff", border: "1px solid #fff", padding: "4px 12px", borderRadius: 4, fontWeight: 500, cursor: "pointer" }}
-              >
-                View details
-              </button>
-            </>
-          )}
-          {migrationStatus === "success" && migrationResult && (
-            <>
-              <span>
-                Migration complete — {migrationResult.stats.enrolmentsCreated} enrolments created,
-                {" "}{migrationResult.stats.warningCount} warnings logged.
-              </span>
-              <button
-                onClick={() => setMigrationStatus("dismissed")}
-                style={{ background: "#fff", color: "#D97706", border: "none", padding: "4px 12px", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}
-              >
-                Dismiss
-              </button>
-            </>
-          )}
         </div>
       )}
       {composeEmail && (

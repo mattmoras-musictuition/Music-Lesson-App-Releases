@@ -5353,10 +5353,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             <Card style={{ marginTop: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", gap: 8 }}><Check size={15} /> Term Missed Lessons Tally</div>
-                {Object.keys(tallyByStudent).length > 0 && (
-                  // TODO Commit 6 — button's pre-refactor semantics don't translate post-refactor; button becomes no-op when tallyEntries state is removed.
-                  <Btn variant="danger" onClick={() => { setTallyEntries(prev => prev.filter(e => e.status !== "missed")); notify("Missed tally cleared"); }} style={{ fontSize: 11 }}>Clear All</Btn>
-                )}
               </div>
               {Object.keys(tallyByStudent).length === 0 ? (
                 <div style={{ color: colors.textMuted, fontSize: 13, textAlign: "center", padding: 20 }}>No missed lessons recorded.</div>
