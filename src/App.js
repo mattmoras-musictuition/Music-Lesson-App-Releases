@@ -2243,146 +2243,44 @@ export default function MusicTimetableApp() {
     return e.status === "completed" || e.status === "missed";
   };
   const doAutoTallyForDate = (dateStr, force = false) => {
-    if (!force && autoProcessedDaysRef.current.has(dateStr)) return;
+    if (!dateStr) return;
     const dateObj = new Date(dateStr + "T00:00:00");
     const dow = dateObj.getDay();
+
     const monday = _getMondayOf(dateObj);
     const weekKey = toLocalDateStr(monday);
-    // Check if this week falls within a term break (holiday week)
+
+    // Detect holiday weeks (term breaks) — catch-ups can land on Sat/Sun during them
     const tBreaks = interruptionsRef.current.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
     const fri = new Date(monday); fri.setDate(fri.getDate() + 4);
     const isHolidayWeek = tBreaks.some(tb => {
       const bs = tb.date; const be = tb.endDate || tb.date;
       return weekKey >= bs && toLocalDateStr(fri) <= be;
     });
+
     // Skip weekends UNLESS it's a holiday week (catch-ups can be on Sat/Sun)
-    if ((dow === 0 || dow === 6) && !isHolidayWeek) { autoProcessedDaysRef.current.add(dateStr); return; }
-    const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
-    // Session 97.1: force-mode now strips ONLY auto-untouched entries.
-    // User-touched entries flow through into `prev`, which means their
-    // lessonKey|weekKey ends up in computeAutoTallyDay's existingKeys set,
-    // so the rebuild won't create duplicates.
-    //
-    // Session 98.1 FIX — orphan preservation. The 97.1 predicate correctly
-    // identifies "this entry is auto and has no user input", but stripping
-    // such entries only makes sense if the rebuild will actually regenerate
-    // them. For students who've been archived or removed from the master
-    // between the time their tally entry was created and now, the
-    // corresponding WTT lesson no longer exists — so strip succeeds but
-    // regenerate produces nothing, leaving a blank cell. That's the Matt-
-    // reported "26 → 36 lessons reverted" symptom. Fix: compute the set of
-    // lesson keys the rebuild WILL cover (from current WTT lessons + missed
-    // zone for this date), and only strip entries whose keys are in that
-    // set. Orphans are preserved by default; Matt can clean them up via
-    // TallyView's inactive state if desired.
-    const rebuildableKeys = new Set();
-    for (const [sk, weeklyData] of Object.entries(weeklyTimetablesRef.current)) {
-      const parts = sk.split("|");
-      if (parts[0] !== weekKey || !parts[1]) continue;
-      for (const lesson of (weeklyData?.lessons || []).filter(l => l.day === dayName)) {
-        if (lesson.isBandSession) {
-          for (const member of (lesson.members || [])) {
-            if (member.studentId && member.instrument) {
-              rebuildableKeys.add(`${member.studentId}|${member.instrument}`);
-            }
-          }
-        } else if (lesson.isGroup && lesson.groupId) {
-          rebuildableKeys.add(`group|${lesson.groupId}`);
-        } else if (lesson.studentId && lesson.instrument) {
-          rebuildableKeys.add(`${lesson.studentId}|${lesson.instrument}`);
-        }
-      }
-      for (const m of (weeklyData?.missed || []).filter(mi => mi.day === dayName)) {
-        if (m.isGroup && m.groupId) rebuildableKeys.add(`group|${m.groupId}`);
-        else if (m.studentId && m.instrument) rebuildableKeys.add(`${m.studentId}|${m.instrument}`);
-      }
-    }
-    const prev = force
-      ? tallyEntriesRef.current.filter(e => !(
-          e.weekKey === weekKey && e.day === dayName &&
-          _isAutoUntouched(e) && rebuildableKeys.has(e.lessonKey)
-        ))
-      : tallyEntriesRef.current;
-    const newEntries = computeAutoTallyDay(dateStr, weeklyTimetablesRef.current, timetableRef.current, studentsRef.current, interruptionsRef.current, prev)
-      .map(e => ({ ...e, autoRecorded: true }));
-    const extraTicks = computeExtraTicks(newEntries, prev, weekKey, timetableRef.current, studentsRef.current, interruptionsRef.current)
-      .map(e => ({ ...e, autoRecorded: true }));
-    // Also generate missed entries from the missed zone for force-reruns
-    const missedZoneEntries = [];
-    if (force) {
-      const tBreaks = interruptionsRef.current.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
-      const wNum = computeTermWeekNum(weekKey, tBreaks);
-      const tKey = computeTermKey(dateStr, tBreaks);
-      const wLabel = wNum ? `Week ${wNum}` : `Week of ${weekKey}`;
-      // Snapshot existing tally entries for this day BEFORE the wipe so we can carry
-      // forward manually-set reasons, notes and makeup status.
-      const existingDayEntryByKey = {};
-      for (const e of tallyEntriesRef.current) {
-        if (e.weekKey === weekKey && e.day === dayName) existingDayEntryByKey[e.lessonKey] = e;
-      }
-      // Session 97.1: track preserved lessonKeys so missedZoneEntries doesn't
-      // duplicate any user-touched entries we kept in `prev`. Without this,
-      // a preserved manual missed entry + a regenerated missed-zone entry
-      // would both end up in state for the same (lessonKey, weekKey).
-      const preservedKeysForDay = new Set();
-      for (const e of tallyEntriesRef.current) {
-        if (e.weekKey === weekKey && e.day === dayName && !_isAutoUntouched(e)) {
-          preservedKeysForDay.add(e.lessonKey);
-        }
-      }
-      for (const [sk, weeklyData] of Object.entries(weeklyTimetablesRef.current)) {
-        const parts = sk.split("|");
-        if (parts[0] !== weekKey || !parts[1]) continue;
-        const schoolId = parts[1];
-        for (const m of (weeklyData.missed || []).filter(mi => mi.day === dayName && !mi.isMakeup)) {
-          const lessonKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-          if (!lessonKey || lessonKey === "|") continue;
-          if (preservedKeysForDay.has(lessonKey)) continue; // user-touched entry already in state
-          const existing = existingDayEntryByKey[lessonKey];
-          missedZoneEntries.push({
-            id: uid(), lessonKey, lessonId: m.id,
-            isGroup: m.isGroup || false, groupName: m.groupName || "",
-            studentId: m.studentId || "",
-            studentName: m.isGroup ? (m.groupName || m.studentNames?.join(", ") || "Group") : (m.studentName || ""),
-            studentNames: m.studentNames || [],
-            instrument: m.instrument, schoolId,
-            teacherId: m.teacherId || "", teacherName: m.teacherName || "",
-            weekKey, weekLabel: wLabel, weekNum: wNum, termKey: tKey, day: dayName,
-            status: "missed",
-            reason: existing?.reason ?? null,
-            notes: existing?.notes || "",
-            makeupEligible: existing?.makeupEligible ?? false,
-            madeUp: existing?.madeUp ?? false,
-            recordedAt: new Date().toISOString(), autoRecorded: true,
-          });
-        }
-      }
-    }
-    const allNew = [...newEntries, ...extraTicks, ...missedZoneEntries];
-    autoProcessedDaysRef.current.add(dateStr);
-    try { localStorage.setItem(STORAGE_KEYS.autoProcessedDays, JSON.stringify([...autoProcessedDaysRef.current])); } catch(e) {}
-    if (force) {
-      // Session 97.1 + 98.1: only strip auto-untouched entries whose keys
-      // WILL be regenerated by the rebuild. Same predicate + rebuildable-keys
-      // guard as the `prev` filter above — see session 98.1 comment there.
-      setTallyEntries(p => {
-        const filtered = p.filter(e => !(
-          e.weekKey === weekKey && e.day === dayName &&
-          _isAutoUntouched(e) && rebuildableKeys.has(e.lessonKey)
-        ));
-        return allNew.length > 0 ? [...filtered, ...allNew] : filtered;
-      });
-    } else if (allNew.length > 0) {
-      setTallyEntries(p => [...p, ...allNew]);
+    if ((dow === 0 || dow === 6) && !isHolidayWeek) {
+      autoProcessedDaysRef.current.add(dateStr);
+      return;
     }
 
-    // ── Catch-up card resolution at 6pm ──────────────────────────────────
-    // For each isMakeup card on today's date, check whether it ended up in
-    // the timetable (attended → madeUp: true) or the missed zone
-    // (uninformed absence → makeupEligible: false, no further catch-up).
-    // Deletion leaves the original missed entry untouched (catch-up still owed).
+    const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
+
+    // Catch-up card resolution: for each isMakeup card on today's date,
+    // find the original WTT missed entry and stamp madeUp / makeupEligible.
+    // (Entry-writing for completed/missed cells removed in Commit 5 — those
+    //  states now derive from WTT directly. Catch-up resolution kept here
+    //  until Spec 3 ships its catch-up cards rewrite.)
     const wt = weeklyTimetablesRef.current;
-    const makeupUpdates = {}; // tallyEntryId → partial update
+    const missedUpdates = []; // {storageKey, missedId, patch}
+
+    // Collect all missed entries across all weeks (catch-ups can resolve from any prior week)
+    const allMissedAcrossWeeks = [];
+    for (const [sk, weeklyData] of Object.entries(wt)) {
+      for (const m of (weeklyData.missed || [])) {
+        allMissedAcrossWeeks.push({ storageKey: sk, missed: m });
+      }
+    }
 
     for (const [sk, weeklyData] of Object.entries(wt)) {
       const parts = sk.split("|");
@@ -2392,15 +2290,16 @@ export default function MusicTimetableApp() {
       for (const lesson of (weeklyData.lessons || [])) {
         if (!lesson.isMakeup || lesson.day !== dayName) continue;
         if (!lesson.studentId) continue;
-        const tallyEntries = tallyEntriesRef.current;
-        // Use makeupForTallyId if present; fall back to oldest eligible entry
-        const target = lesson.makeupForTallyId
-          ? tallyEntries.find(e => e.id === lesson.makeupForTallyId && e.makeupEligible && !e.madeUp)
-          : tallyEntries
-              .filter(e => e.studentId === lesson.studentId && e.status === "missed" && e.makeupEligible && !e.madeUp)
-              .sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
-        if (target && !makeupUpdates[target.id]) {
-          makeupUpdates[target.id] = { madeUp: true, madeUpWeekKey: sk };
+        const candidates = allMissedAcrossWeeks
+          .filter(({ missed }) => missed.studentId === lesson.studentId && missed.makeupEligible && !missed.madeUp)
+          .sort((a, b) => (a.storageKey || "").localeCompare(b.storageKey || ""));
+        const target = candidates[0];
+        if (target && !missedUpdates.find(u => u.missedId === target.missed.id)) {
+          missedUpdates.push({
+            storageKey: target.storageKey,
+            missedId: target.missed.id,
+            patch: { madeUp: true }
+          });
         }
       }
 
@@ -2408,21 +2307,37 @@ export default function MusicTimetableApp() {
       for (const lesson of (weeklyData.missed || [])) {
         if (!lesson.isMakeup || lesson.day !== dayName) continue;
         if (!lesson.studentId) continue;
-        const tallyEntries = tallyEntriesRef.current;
-        const target = lesson.makeupForTallyId
-          ? tallyEntries.find(e => e.id === lesson.makeupForTallyId && e.makeupEligible && !e.madeUp)
-          : tallyEntries
-              .filter(e => e.studentId === lesson.studentId && e.status === "missed" && e.makeupEligible && !e.madeUp)
-              .sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
-        if (target && !makeupUpdates[target.id]) {
-          makeupUpdates[target.id] = { makeupEligible: false }; // uninformed absence — no further catch-up
+        const candidates = allMissedAcrossWeeks
+          .filter(({ missed }) => missed.studentId === lesson.studentId && missed.makeupEligible && !missed.madeUp)
+          .sort((a, b) => (a.storageKey || "").localeCompare(b.storageKey || ""));
+        const target = candidates[0];
+        if (target && !missedUpdates.find(u => u.missedId === target.missed.id)) {
+          missedUpdates.push({
+            storageKey: target.storageKey,
+            missedId: target.missed.id,
+            patch: { makeupEligible: false }  // uninformed absence — no further catch-up
+          });
         }
       }
     }
 
-    if (Object.keys(makeupUpdates).length > 0) {
-      setTallyEntries(p => p.map(e => makeupUpdates[e.id] ? { ...e, ...makeupUpdates[e.id] } : e));
+    if (missedUpdates.length > 0) {
+      setWeeklyTimetables(prev => {
+        const out = { ...prev };
+        for (const { storageKey, missedId, patch } of missedUpdates) {
+          const data = out[storageKey];
+          if (!data) continue;
+          out[storageKey] = {
+            ...data,
+            missed: (data.missed || []).map(m => m.id !== missedId ? m : { ...m, ...patch })
+          };
+        }
+        return out;
+      });
     }
+
+    autoProcessedDaysRef.current.add(dateStr);
+    try { localStorage.setItem(STORAGE_KEYS.autoProcessedDays, JSON.stringify([...autoProcessedDaysRef.current])); } catch(e) {}
   };
   doAutoTallyRef.current = doAutoTallyForDate;
 
