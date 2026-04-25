@@ -8,6 +8,7 @@ import { DAYS, TALLY_REASONS, STORAGE_KEYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, toLocalDateStr, melbourneNow, melbourneToday, getTermWeekLabel, to12h, timeToMin, getInstColor, getSchoolAcronym, _getMondayOf, getParentEmails, openCompose } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey, getTermWeeksList } from "../utils/tallyHelpers";
+import { deriveTallyRows, deriveTallyCell } from "../utils/tallyDerive";
 import { getEmailTemplates, resolveTemplate, preferredFirstName } from "../utils/emailTemplates";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, PAGE_COLORS } from "../components/ui/SharedUI";
 
@@ -174,125 +175,38 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
       : timetable.lessons.filter(l => l.schoolId === selectedSchool);
   }, [timetable, selectedSchool]);
 
-  // Unique lesson identifiers: one row per student/group+instrument
-  const lessonRows = useMemo(() => {
-    const seen = new Set();
-    const rows = [];
-    for (const l of schoolLessons) {
-      const key = l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push({ ...l, lessonKey: key });
-    }
-    // Also include archived students who have tally entries in the current term —
-    // they should stay visible until the tally is closed at term end. Session 97:
-    // require at least one non-"removed" entry, otherwise hide the row. This
-    // auto-cleans up the case where a student was added to the timetable, all
-    // their cells were marked Inactive (e.g. they hadn't actually started yet),
-    // and the student was then archived — the row would otherwise linger with
-    // no way to remove it. Mid-term quitters keep their rows because they have
-    // real completed/missed entries.
-    if (activeTerm) {
-      const validWeekKeys = new Set(termWeeks.map(w => w.weekKey));
-      const archivedByKey = new Map();
-      for (const e of tallyEntries) {
-        if (!validWeekKeys.has(e.weekKey)) continue;
-        if (e.isGroup || !e.studentId) continue;
-        const key = `${e.studentId}|${e.instrument}`;
-        if (seen.has(key)) continue;
-        const liveStu = students.find(s => s.id === e.studentId);
-        if (!liveStu || liveStu.status !== "archived") continue;
-        if (selectedSchool !== "all" && e.schoolId !== selectedSchool) continue;
-        if (!archivedByKey.has(key)) archivedByKey.set(key, { firstEntry: e, liveStu, hasReal: false });
-        if (e.status !== "removed") archivedByKey.get(key).hasReal = true;
-      }
-      for (const [key, { firstEntry: e, liveStu, hasReal }] of archivedByKey) {
-        if (!hasReal) continue;
-        seen.add(key);
-        rows.push({
-          id: e.lessonId || key,
-          lessonKey: key,
-          studentId: e.studentId,
-          studentName: e.studentName || liveStu.name,
-          instrument: e.instrument,
-          schoolId: e.schoolId,
-          teacherId: e.teacherId || "",
-          teacherName: e.teacherName || "",
-          day: e.day || "",
-          isGroup: false,
-          _archived: true,
-        });
-      }
-    }
-    rows.sort((a, b) => {
-      const nameA = (a.isGroup ? (a.groupName || "") : (a.studentName || "")).toLowerCase();
-      const nameB = (b.isGroup ? (b.groupName || "") : (b.studentName || "")).toLowerCase();
-      return nameA.localeCompare(nameB);
+  // ── Tally rows + entryMap (derived from WTT via tallyDerive helper) ──
+  // Replaces today's lessonRows + entryMap useMemos as of Commit 5a.
+  // The helper returns BOTH the canonical tallyRows shape (which 5b's cycle
+  // handler and 5c's edit modal will read) AND a transitional entryMap shim
+  // synthesized from WTT data so existing render code (CellIcon, tooltips,
+  // stats, makeups filter, holiday-rendering branches) keeps working
+  // unmodified through 5a–5c.
+  const { tallyRows, entryMap } = useMemo(() => {
+    if (!activeTerm) return { tallyRows: [], entryMap: {} };
+    return deriveTallyRows({
+      enrolments,
+      students,
+      termWeeks,
+      weeklyTimetables,
+      timetable,
+      schoolFilter: selectedSchool,
     });
-    return rows;
-  }, [schoolLessons, tallyEntries, activeTerm, termWeeks, students, selectedSchool]);
+  }, [enrolments, students, termWeeks, weeklyTimetables, timetable, selectedSchool, activeTerm]);
+  const lessonRows = tallyRows;
 
-  // ── Entry lookup ────────────────────────────────────────────
-  const entryMap = useMemo(() => {
-    if (!activeTerm) return {};
-    // Build set of valid weekKeys for this term so we only show relevant entries
-    const validWeekKeys = new Set(termWeeks.map(w => w.weekKey));
-    const map = {};
-    for (const e of tallyEntries) {
-      if (e.schoolId === "__private__") continue; // private entries handled by privateEntryMap
-      if (selectedSchool !== "all" && e.schoolId !== selectedSchool) continue;
-      if (!validWeekKeys.has(e.weekKey)) continue;
-      map[`${e.lessonKey}|${e.weekKey}`] = e;
-    }
-    return map;
-  }, [tallyEntries, activeTerm, selectedSchool, termWeeks]);
-
-  // ── Private students ─────────────────────────────────────────
+  // ── Private students (stub) ─────────────────────────────────
+  // TODO Spec 7 — private students use the enrolments collection too once
+  // that spec resolves Type-A pending + private. Today's privateStudents
+  // filter is preserved (gates the panel render); rows / entryMap / stats
+  // are stubbed empty since student.instruments is empty post-Commit-3.
   const privateStudents = useMemo(() =>
     students.filter(s => s.schoolId === "__private__" && (s.status === "active" || s.status === "pending" || s.status === "trial")),
     [students]
   );
-
-  const privateLessonRows = useMemo(() =>
-    privateStudents.flatMap(student =>
-      (student.instruments || []).filter(inst => inst.name).map(inst => ({
-        lessonKey: `private|${student.id}|${inst.name}`,
-        id: `private|${student.id}|${inst.name}`,
-        studentId: student.id,
-        studentName: student.name,
-        instrument: inst.name,
-        schoolId: "__private__",
-        teacherId: inst.teacherId || "",
-        teacherName: teachers.find(t => t.id === inst.teacherId)?.name || "",
-        day: "Saturday",
-        isGroup: false,
-      }))
-    ),
-    [privateStudents, teachers]
-  );
-
-  const privateEntryMap = useMemo(() => {
-    if (!activeTerm) return {};
-    const validWeekKeys = new Set(termWeeks.map(w => w.weekKey));
-    const map = {};
-    for (const e of tallyEntries) {
-      if (e.schoolId !== "__private__") continue;
-      if (!validWeekKeys.has(e.weekKey)) continue;
-      map[`${e.lessonKey}|${e.weekKey}`] = e;
-    }
-    return map;
-  }, [tallyEntries, activeTerm, termWeeks]);
-
-  const privateStats = useMemo(() => {
-    const marked = Object.values(privateEntryMap);
-    const removed = marked.filter(e => e.status === "removed").length;
-    const totalCells = privateLessonRows.length * termWeeks.length - removed;
-    const completed = marked.filter(e => e.status === "completed").length;
-    const missed = marked.filter(e => e.status === "missed").length;
-    const makeupOwed = marked.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
-    const madeUp = marked.filter(e => e.madeUp).length;
-    return { totalCells, completed, missed, makeupOwed, madeUp };
-  }, [privateEntryMap, privateLessonRows, termWeeks]);
+  const privateLessonRows = [];
+  const privateEntryMap = {};
+  const privateStats = { totalCells: 0, completed: 0, missed: 0, makeupOwed: 0, madeUp: 0 };
 
   // ── Holiday lesson map: which cells have a catch-up card on the timetable ──
   const holidayLessonMap = useMemo(() => {
