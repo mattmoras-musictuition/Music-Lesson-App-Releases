@@ -2110,45 +2110,49 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
           }
           if (isBulk) {
-            const newEntries = selLessons.map(l => ({
-              id: uid(), lessonKey: l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`,
-              lessonId: l.id, isGroup: l.isGroup || false, groupName: l.groupName || "",
-              studentId: l.studentId || "", studentName: l.isGroup ? (l.groupName || "Group") : l.studentName,
-              studentNames: l.studentNames || [], instrument: l.instrument, schoolId: l.schoolId,
-              teacherId: l._swapTeacherId || l.teacherId, teacherName: l._swapTeacherName || l.teacherName,
-              weekKey: mmWeekKey, weekLabel: mmWeekLabel, weekNum: wNum,
-              termKey: computeTermKey(mmWeekKey, tBreaks), day: l.day,
-              status: "missed", reason: finalReason, reasonDetail: finalReasonDetail,
-              notes: finalDetails, makeupEligible: finalMakeup, madeUp: false, recordedAt: now,
-            }));
-            // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-            setTallyEntries(prev => {
-              const existingKeys = new Set(newEntries.map(e => `${e.lessonKey}|${e.weekKey}`));
-              return [...prev.filter(e => !existingKeys.has(`${e.lessonKey}|${e.weekKey}`)), ...newEntries];
+            setWeeklyTimetables(prev => {
+              const out = { ...prev };
+              for (const l of selLessons) {
+                const sk = mmWeekKey + "|" + l.schoolId;
+                const data = out[sk] || { lessons: [], missed: [] };
+                const newMissedEntry = {
+                  ...l,
+                  reason: finalReason,
+                  reasonDetail: finalReasonDetail,
+                  notes: finalDetails,
+                  makeupEligible: finalMakeup,
+                  madeUp: false,
+                  cardNote: "",
+                };
+                out[sk] = {
+                  ...data,
+                  lessons: data.lessons.filter(ll => ll.id !== l.id),
+                  missed: [...(data.missed || []), newMissedEntry],
+                };
+              }
+              return out;
             });
-            selLessons.forEach(l => handleMissedDrop(l.id));
             setMissedModal(null); setSelectedCards(new Set());
             notify(`${selLessons.length} lessons marked missed`);
           } else {
-            const lKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
-            const existingEntry = tallyEntries.find(e => e.weekKey === mmWeekKey && e.lessonKey === lKey);
-            const updatedEntry = existingEntry
-              ? { ...existingEntry, reason: finalReason, reasonDetail: finalReasonDetail, notes: finalDetails, makeupEligible: finalMakeup, madeUp: existingEntry.madeUp && finalMakeup }
-              : {
-                  id: uid(), lessonKey: lKey, lessonId: lesson.id,
-                  isGroup: lesson.isGroup || false, groupName: lesson.groupName || "",
-                  studentId: lesson.studentId || "",
-                  studentName: lesson.isGroup ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group") : lesson.studentName,
-                  studentNames: lesson.studentNames || [],
-                  instrument: lesson.instrument, schoolId: lesson.schoolId,
-                  teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
-                  weekKey: mmWeekKey, weekLabel: mmWeekLabel, weekNum: wNum,
-                  termKey: computeTermKey(mmWeekKey, tBreaks), day: lesson.day,
-                  status: "missed", reason: finalReason, reasonDetail: finalReasonDetail,
-                  notes: finalDetails, makeupEligible: finalMakeup, madeUp: false, recordedAt: now,
-                };
-            // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-            setTallyEntries(prev => [...prev.filter(e => !(e.weekKey === mmWeekKey && e.lessonKey === lKey)), updatedEntry]);
+            setWeeklyTimetables(prev => {
+              const wEntry = prev[storageKey];
+              if (!wEntry) return prev;
+              return {
+                ...prev,
+                [storageKey]: {
+                  ...wEntry,
+                  missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
+                    ...m,
+                    reason: finalReason,
+                    reasonDetail: finalReasonDetail,
+                    notes: finalDetails,
+                    makeupEligible: finalMakeup,
+                    madeUp: m.madeUp && finalMakeup,
+                  } : m)
+                }
+              };
+            });
             setMissedModal(null);
           }
         };
