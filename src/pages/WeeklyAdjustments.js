@@ -1990,30 +1990,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
           }
           const lKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
-          const entry = {
-            id: uid(), lessonKey: lKey, lessonId: lesson.id,
-            isGroup: lesson.isGroup || false, groupName: lesson.groupName || "",
-            studentId: lesson.studentId || "",
-            studentName: lesson.isGroup ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group") : lesson.studentName,
-            studentNames: lesson.studentNames || [],
-            instrument: lesson.instrument, schoolId: lesson.schoolId,
-            teacherId: lesson.teacherId, teacherName: lesson.teacherName,
-            weekKey: tallyPrompt.weekKey, weekLabel, weekNum: tallyPrompt.weekNum,
-            termKey: null, day: lesson.day,
-            status: "missed", reason: finalReason,
-            reasonDetail: finalReasonDetail,
-            notes: finalDetails,
-            makeupEligible: finalMakeup, madeUp: false,
-            recordedAt: new Date().toISOString(),
-          };
-          // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-          setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lKey && e.weekKey === tallyPrompt.weekKey)), entry]);
-          const displayReason = tallyPromptCategory ? TALLY_REASONS.find(r => r.value === tallyPromptCategory)?.label : (finalReasonDetail || "Other");
           setWeeklyTimetables(prev => {
             const wEntry = prev[storageKey];
             if (!wEntry) return prev;
-            return { ...prev, [storageKey]: { ...wEntry, missed: (wEntry.missed || []).map(m => m.id === lesson.id ? { ...m, reason: displayReason } : m) } };
+            return {
+              ...prev,
+              [storageKey]: {
+                ...wEntry,
+                missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
+                  ...m,
+                  reason: finalReason,
+                  reasonDetail: finalReasonDetail,
+                  notes: finalDetails,
+                  makeupEligible: finalMakeup,
+                  madeUp: m.madeUp || false,
+                } : m)
+              }
+            };
           });
+          const displayReason = TALLY_REASONS.find(r => r.value === finalReason)?.label || finalReasonDetail || "Other";
           notify(`Missed lesson recorded${displayReason ? ": " + displayReason : ""}`);
           setTallyPrompt(null); setTallyConfirm(null);
         };
