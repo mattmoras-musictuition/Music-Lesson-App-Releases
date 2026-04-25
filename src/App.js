@@ -3195,64 +3195,120 @@ export default function MusicTimetableApp() {
       if (name === "update_tally_entry") {
         const { studentId, studentName, weekOf, day, instrument, reason, reasonDetail, makeupEligible, notes } = input;
         const { weekKey } = buildDateParts(weekOf);
-        const idx = tallyEntries.findIndex(e =>
-          e.studentId === studentId &&
-          e.weekKey === weekKey &&
-          e.day === day &&
-          (!instrument || e.instrument?.toLowerCase() === instrument.toLowerCase())
-        );
-        if (idx === -1) return `No tally entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
-        const existing = tallyEntries[idx];
-        setTallyEntries(prev => prev.map((e, i) => i !== idx ? e : {
-          ...e,
-          ...(reason        !== undefined ? { reason }         : {}),
-          ...(reasonDetail  !== undefined ? { reasonDetail }   : {}),
-          ...(makeupEligible!== undefined ? { makeupEligible } : {}),
-          ...(notes         !== undefined ? { notes }          : {}),
-        }));
+        // Find the WTT entry containing the missed record
+        let foundKey = null, foundMissed = null;
+        for (const [sk, data] of Object.entries(weeklyTimetables)) {
+          const [sk_weekKey, sk_schoolId] = sk.split("|");
+          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          const m = (data.missed || []).find(mm =>
+            mm.studentId === studentId &&
+            mm.day === day &&
+            (!instrument || mm.instrument?.toLowerCase() === instrument.toLowerCase())
+          );
+          if (m) { foundKey = sk; foundMissed = m; break; }
+        }
+        if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
+        setWeeklyTimetables(prev => {
+          const data = prev[foundKey];
+          if (!data) return prev;
+          return {
+            ...prev,
+            [foundKey]: {
+              ...data,
+              missed: (data.missed || []).map(m => m.id !== foundMissed.id ? m : {
+                ...m,
+                ...(reason         !== undefined ? { reason }         : {}),
+                ...(reasonDetail   !== undefined ? { reasonDetail }   : {}),
+                ...(makeupEligible !== undefined ? { makeupEligible } : {}),
+                ...(notes          !== undefined ? { notes }          : {}),
+              })
+            }
+          };
+        });
         const changes = [
           reason         !== undefined ? `reason → ${reason}` : null,
           reasonDetail   !== undefined ? `detail → "${reasonDetail}"` : null,
           makeupEligible !== undefined ? `catch-up owed → ${makeupEligible}` : null,
           notes          !== undefined ? `notes updated` : null,
         ].filter(Boolean).join(", ");
-        notify(`Updated tally — ${studentName}`, "info");
-        return `Done — updated ${studentName}'s ${existing.instrument || ""} tally entry for ${day} (${weekKey}): ${changes || "no fields changed"}.`;
+        notify(`Updated missed entry — ${studentName}`, "info");
+        return `Done — updated ${studentName}'s ${foundMissed.instrument || ""} missed-lesson entry for ${day} (${weekKey}): ${changes || "no fields changed"}.`;
       }
 
       // ── mark_tally_completed ──────────────────────────────────────────────
       if (name === "mark_tally_completed") {
         const { studentId, studentName, weekOf, day, instrument, madeUp } = input;
         const { weekKey } = buildDateParts(weekOf);
-        const idx = tallyEntries.findIndex(e =>
-          e.studentId === studentId &&
-          e.weekKey === weekKey &&
-          e.day === day &&
-          (!instrument || e.instrument?.toLowerCase() === instrument.toLowerCase())
-        );
-        if (idx === -1) return `No tally entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
-        const existing = tallyEntries[idx];
-        const isMadeUp = madeUp !== false; // default true
-        setTallyEntries(prev => prev.map((e, i) => i !== idx ? e : { ...e, status: "completed", madeUp: isMadeUp }));
+        let foundKey = null, foundMissed = null;
+        for (const [sk, data] of Object.entries(weeklyTimetables)) {
+          const [sk_weekKey, sk_schoolId] = sk.split("|");
+          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          const m = (data.missed || []).find(mm =>
+            mm.studentId === studentId &&
+            mm.day === day &&
+            (!instrument || mm.instrument?.toLowerCase() === instrument.toLowerCase())
+          );
+          if (m) { foundKey = sk; foundMissed = m; break; }
+        }
+        if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
+        const isMadeUp = madeUp !== false;
+        setWeeklyTimetables(prev => {
+          const data = prev[foundKey];
+          if (!data) return prev;
+          if (isMadeUp) {
+            // Stamp madeUp: true on the missed entry (catch-up resolved)
+            return {
+              ...prev,
+              [foundKey]: {
+                ...data,
+                missed: (data.missed || []).map(m => m.id !== foundMissed.id ? m : { ...m, madeUp: true })
+              }
+            };
+          } else {
+            // Move from missed back to lessons (attendance confirmed, not a catch-up)
+            return {
+              ...prev,
+              [foundKey]: {
+                ...data,
+                lessons: [...(data.lessons || []), { ...foundMissed }],
+                missed: (data.missed || []).filter(m => m.id !== foundMissed.id)
+              }
+            };
+          }
+        });
         notify(`Marked completed — ${studentName}`, "info");
-        return `Done — ${studentName}'s ${existing.instrument || ""} lesson on ${day} (${weekKey}) marked as completed${isMadeUp ? " (made up)" : ""}.`;
+        return `Done — ${studentName}'s ${foundMissed.instrument || ""} lesson on ${day} (${weekKey}) marked as completed${isMadeUp ? " (made up)" : ""}.`;
       }
 
       // ── delete_tally_entry ────────────────────────────────────────────────
       if (name === "delete_tally_entry") {
         const { studentId, studentName, weekOf, day, instrument } = input;
         const { weekKey } = buildDateParts(weekOf);
-        const idx = tallyEntries.findIndex(e =>
-          e.studentId === studentId &&
-          e.weekKey === weekKey &&
-          e.day === day &&
-          (!instrument || e.instrument?.toLowerCase() === instrument.toLowerCase())
-        );
-        if (idx === -1) return `No tally entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing deleted.`;
-        const existing = tallyEntries[idx];
-        setTallyEntries(prev => prev.filter((_, i) => i !== idx));
-        notify(`Deleted tally entry — ${studentName}`, "info");
-        return `Done — deleted ${studentName}'s ${existing.instrument || ""} missed lesson entry for ${day} (${weekKey}).`;
+        let foundKey = null, foundMissed = null;
+        for (const [sk, data] of Object.entries(weeklyTimetables)) {
+          const [sk_weekKey, sk_schoolId] = sk.split("|");
+          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          const m = (data.missed || []).find(mm =>
+            mm.studentId === studentId &&
+            mm.day === day &&
+            (!instrument || mm.instrument?.toLowerCase() === instrument.toLowerCase())
+          );
+          if (m) { foundKey = sk; foundMissed = m; break; }
+        }
+        if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing deleted.`;
+        setWeeklyTimetables(prev => {
+          const data = prev[foundKey];
+          if (!data) return prev;
+          return {
+            ...prev,
+            [foundKey]: {
+              ...data,
+              missed: (data.missed || []).filter(m => m.id !== foundMissed.id)
+            }
+          };
+        });
+        notify(`Deleted missed entry — ${studentName}`, "info");
+        return `Done — deleted ${studentName}'s ${foundMissed.instrument || ""} missed-lesson entry for ${day} (${weekKey}).`;
       }
 
       // ── add_student ──────────────────────────────────────────────────────
