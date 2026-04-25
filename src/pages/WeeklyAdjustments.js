@@ -1240,43 +1240,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return { ...l, reason: tallyEntry?.reason || "informed_absence" };
     })];
 
+    const allMissedNormalized = allMissed.map(m => {
+      const isClashOrCancel = m.reason && (
+        m.reason.includes("No available slot") ||
+        m.reason.includes("conflict") ||
+        m.reason.includes("Cancelled by weekly")
+      );
+      if (!isClashOrCancel) return m;
+      const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
+      const makeupElig = matchingHint?.makeupEligible === false ? false : true;
+      return {
+        ...m,
+        reason: m.reason.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
+        reasonDetail: "",
+        notes: m.reason || "",
+        makeupEligible: makeupElig,
+        madeUp: false,
+        cardNote: "",
+      };
+    });
+
     setWeeklyTimetables(prev => ({
       ...prev,
-      [storageKey]: { lessons: [...existingBandSessions, ...scheduledLessons], missed: allMissed, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
+      [storageKey]: { lessons: [...existingBandSessions, ...scheduledLessons], missed: allMissedNormalized, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
     }));
-
-    // Update cumulative missed tally
-    // Auto-tally scheduler-placed missed lessons as "timetable_clash"
-    const autoTallyEntries = allMissed
-      .filter(m => m.reason && (m.reason.includes("No available slot") || m.reason.includes("conflict") || m.reason.includes("Cancelled by weekly")))
-      .map(m => {
-        const lKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-        return {
-          id: uid(),
-          lessonKey: lKey, lessonId: m.id,
-          isGroup: m.isGroup || false, groupName: m.groupName || "",
-          studentId: m.studentId || "",
-          studentName: m.isGroup ? (m.groupName || m.studentNames?.join(", ") || "Group") : m.studentName,
-          studentNames: m.studentNames || [],
-          instrument: m.instrument, schoolId: m.schoolId,
-          teacherId: m.teacherId, teacherName: m.teacherName,
-          weekKey, weekLabel, weekNum: termWeek,
-          termKey: null, day: m.day,
-          status: "missed", reason: "timetable_clash",
-          notes: m.reason || "",
-          makeupEligible: (() => { const mh = aiHints.find(h => h.lessonMatch && h.lessonMatch(m)); return mh?.makeupEligible === false ? false : true; })(),
-          madeUp: false,
-          recordedAt: new Date().toISOString(), autoRecorded: true,
-        };
-      });
-    if (autoTallyEntries.length > 0) {
-      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-      setTallyEntries(prev => {
-        // Remove previous auto-recorded entries for this week+school, then add new ones
-        const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool));
-        return [...filtered, ...autoTallyEntries];
-      });
-    }
 
     const adj = scheduledLessons.filter(l => l.adjusted).length;
     const absentSkipped = _absentLessons.length;
@@ -1541,46 +1528,33 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }),
     ];
 
+    const newDayMissedNormalized = newDayMissed.map(m => {
+      const isClashOrCancel = m.reason && (
+        m.reason.includes("No available slot") ||
+        m.reason.includes("conflict") ||
+        m.reason.includes("Cancelled by weekly")
+      );
+      if (!isClashOrCancel) return m;
+      const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
+      const makeupElig = matchingHint?.makeupEligible === false ? false : true;
+      return {
+        ...m,
+        reason: m.reason.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
+        reasonDetail: "",
+        notes: m.reason || "",
+        makeupEligible: makeupElig,
+        madeUp: false,
+        cardNote: "",
+      };
+    });
+
     const mergedLessons = [...otherDayLessons, ...newDayLessons];
-    const mergedMissed = [...otherDayMissed, ...newDayMissed];
+    const mergedMissed = [...otherDayMissed, ...newDayMissedNormalized];
 
     setWeeklyTimetables(prev => ({
       ...prev,
       [storageKey]: { lessons: mergedLessons, missed: mergedMissed, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
     }));
-
-    // Auto-tally AI-cancelled and unplaceable lessons for this day
-    const autoTallyDay = newDayMissed
-      .filter(m => m.reason && (m.reason.includes("No available slot") || m.reason.includes("conflict") || m.reason.includes("Cancelled by weekly")))
-      .map(m => {
-        const lKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-        // Find matching hint to check makeupEligible override
-        const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
-        const makeupElig = matchingHint?.makeupEligible === false ? false : true;
-        return {
-          id: uid(),
-          lessonKey: lKey, lessonId: m.id,
-          isGroup: m.isGroup || false, groupName: m.groupName || "",
-          studentId: m.studentId || "",
-          studentName: m.isGroup ? (m.groupName || m.studentNames?.join(", ") || "Group") : m.studentName,
-          studentNames: m.studentNames || [],
-          instrument: m.instrument, schoolId: m.schoolId,
-          teacherId: m.teacherId, teacherName: m.teacherName,
-          weekKey, weekLabel, weekNum: termWeek,
-          termKey: null, day: m.day,
-          status: "missed", reason: m.reason?.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
-          notes: m.reason || "",
-          makeupEligible: makeupElig, madeUp: false,
-          recordedAt: new Date().toISOString(), autoRecorded: true,
-        };
-      });
-    if (autoTallyDay.length > 0) {
-      // TODO Commit 5 — WTT missed-entry shape needs extending with {reason, notes, makeupEligible, madeUp, cardNote} before this write can be removed. TallyView derive (spec §7.6) and this removal land together.
-      setTallyEntries(prev => {
-        const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool && e.day === targetDay));
-        return [...filtered, ...autoTallyDay];
-      });
-    }
 
     const adj = newDayLessons.filter(l => l.adjusted).length;
     notify(`${targetDay}: ${newDayLessons.length} lessons${adj > 0 ? `, ${adj} adjusted` : ""}${newDayMissed.length > 0 ? `, ${newDayMissed.length} missed` : ""}`);
