@@ -118,8 +118,13 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHo
 }
 
 // Build all tally rows for the current term + a synthesized entryMap shim.
-// One row per enrolment whose date range overlaps the term, with cells
-// indexed by weekKey. Returns { tallyRows, entryMap }.
+// Inclusion rules:
+// - Skip private students (handled by Spec 7) and pending/trial students.
+// - Active students appear if they have an MTT card OR at least one WTT
+//   entry in any term week (handles dropped-mid-term enrolments where the
+//   MTT card is removed forward but earlier weeks still have data).
+// - Archived students appear if their enrolment date range overlaps the term.
+// Returns { tallyRows, entryMap }.
 export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetables, timetable, schoolFilter }) {
   const today = new Date();
   const tallyRows = [];
@@ -138,23 +143,35 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     const student = students.find(s => s.id === e.studentId);
     if (!student) continue;
 
-    // Enrolment-overlap filter: skip enrolments that don't intersect the current term.
-    // Naturally excludes archived students whose enrolment ended before the term started.
-    const enrolStart = e.startDate || "0000-00-00";
-    const enrolEnd = e.endDate || "9999-99-99";
-    if (enrolEnd < termStart) continue;
-    if (enrolStart > termEnd) continue;
+    // Skip private students — handled by Spec 7 (currently stubbed in TallyView).
+    if (student.schoolId === "__private__") continue;
+
+    // Skip pending and trial students — not real enrolments yet.
+    if (student.status === "pending" || student.status === "trial") continue;
 
     if (schoolFilter && schoolFilter !== "all" && student.schoolId !== schoolFilter) continue;
 
-    seen.add(lessonKey);
+    // Archived students: keep the enrolment-overlap filter as a fast exit
+    // before walking cells. Active students defer the MTT-or-WTT-data decision
+    // until after the cell loop (need to know if any WTT entry matched).
+    if (student.status === "archived") {
+      const enrolStart = e.startDate || "0000-00-00";
+      const enrolEnd = e.endDate || "9999-99-99";
+      if (enrolEnd < termStart) continue;
+      if (enrolStart > termEnd) continue;
+    }
 
     // Find MTT card for scheduling info (day, schoolId, teacherName, groupName, studentNames)
     const mttCard = (timetable?.lessons || []).find(l => l.enrolmentId === e.id);
     const schoolId = mttCard?.schoolId || student.schoolId;
 
     // Walk weeks: derive cell state and synthesize shim entry per cell.
+    // Track whether any WTT entry matches this enrolment in any term week,
+    // and stage shim entries locally so we don't pollute entryMap if we later
+    // skip pushing this row.
     const cells = {};
+    let hasWttData = false;
+    const pendingShimEntries = [];
     for (const week of termWeeks) {
       const sk = `${week.weekKey}|${schoolId}`;
       const weekData = weeklyTimetables?.[sk] || { lessons: [], missed: [] };
@@ -174,6 +191,8 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
             || (weekData.missed || []).find(matchByLessonKey))
         : null;
 
+      if (lessonMatch || missedMatch) hasWttData = true;
+
       let wttWithKind = null;
       if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
       else if (missedMatch) wttWithKind = { ...missedMatch, kind: "missed" };
@@ -191,9 +210,19 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
         lessonKey,
       });
       if (shimEntry) {
-        entryMap[`${lessonKey}|${week.weekKey}`] = shimEntry;
+        pendingShimEntries.push([`${lessonKey}|${week.weekKey}`, shimEntry]);
       }
     }
+
+    // Unified inclusion check: need MTT card OR at least one WTT entry.
+    // Active students may appear via either route. Archived students fall
+    // through naturally because they don't carry MTT cards — so this also
+    // tightens archived to require WTT activity, mirroring pre-5a's
+    // "archived with tally data" behavior with WTT as the source.
+    if (!mttCard && !hasWttData) continue;
+
+    seen.add(lessonKey);
+    for (const [k, v] of pendingShimEntries) entryMap[k] = v;
 
     // Row shape: spread MTT card if present (carries teacherName, groupName,
     // studentNames, id), else synthesize a minimal base from enrolment + student.
