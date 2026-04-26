@@ -2400,8 +2400,8 @@ export default function MusicTimetableApp() {
   // Auto-backup to localStorage whenever important data changes (silent, always available)
   useEffect(() => {
     if (!storageReady.current) return;
-    triggerAutoBackup({ version: 1, exportedAt: new Date().toISOString(), schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, tallyEntries, contacts, bands });
-  }, [schools, students, teachers, timetable, weeklyTimetables, tallyEntries]);
+    triggerAutoBackup({ version: 1, exportedAt: new Date().toISOString(), schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, contacts, bands });
+  }, [schools, students, teachers, timetable, weeklyTimetables]);
 
 
   // ── Scheduled backup 4× per day at 6-hour intervals ──────────
@@ -2418,7 +2418,7 @@ export default function MusicTimetableApp() {
         const backup = {
           version: DATA_VERSION, exportedAt: new Date().toISOString(),
           schools, students, teachers, specialists, interruptions, groups,
-          timetable, weeklyTimetables, tallyEntries, timetableVersions: ttVersions,
+          timetable, weeklyTimetables, timetableVersions: ttVersions,
           contacts, bands, masterBreaks, resources,
           userTemplates, emailTemplates, aiEmailRules,
         };
@@ -2590,7 +2590,6 @@ export default function MusicTimetableApp() {
   const undoClaudeAction = () => {
     const snap = claudeActionSnapshotRef.current;
     if (!snap) return;
-    setTallyEntries(snap.tallyEntries);
     setWeeklyTimetablesRaw(snap.weeklyTimetables);
     setStudents(snap.students);
     setTeachersRaw(snap.teachers);
@@ -4108,7 +4107,6 @@ export default function MusicTimetableApp() {
     if (data.groups) { const mg = migrateData("groups", data.groups); setGroups(mg); saveData(STORAGE_KEYS.groups, mg); }
     if (data.timetable !== undefined) { setTimetableRaw(data.timetable); saveData(STORAGE_KEYS.timetable, data.timetable); }
     if (data.weeklyTimetables) { setWeeklyTimetables(data.weeklyTimetables); saveData(STORAGE_KEYS.weeklyTimetables, data.weeklyTimetables); }
-    if (data.tallyEntries) { const mte = migrateData("tallyEntries", data.tallyEntries); setTallyEntries(mte); saveData(STORAGE_KEYS.tallyEntries, mte); }
     if (data.timetableVersions) saveData(STORAGE_KEYS.timetableVersions, data.timetableVersions);
     if (data.contacts) { setContacts(data.contacts); saveData(STORAGE_KEYS.contacts, data.contacts); }
     if (data.bands) { setBands(data.bands); saveData(STORAGE_KEYS.bands, data.bands); }
@@ -4130,7 +4128,7 @@ export default function MusicTimetableApp() {
     const backup = {
       version: DATA_VERSION, exportedAt: new Date().toISOString(),
       schools, students, teachers, specialists, interruptions, groups,
-      timetable, weeklyTimetables, tallyEntries, timetableVersions: ttVersions,
+      timetable, weeklyTimetables, timetableVersions: ttVersions,
       contacts, bands, masterBreaks, resources,
       userTemplates, emailTemplates, aiEmailRules,
     };
@@ -4154,7 +4152,7 @@ export default function MusicTimetableApp() {
       notify("Backup downloaded!");
       return true;
     }
-  }, [schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, tallyEntries, contacts, bands, masterBreaks, resources, notify]);
+  }, [schools, students, teachers, specialists, interruptions, groups, timetable, weeklyTimetables, contacts, bands, masterBreaks, resources, notify]);
 
   // Cmd+Shift+B from Electron menu — works from any page
   React.useEffect(() => {
@@ -5317,7 +5315,6 @@ export default function MusicTimetableApp() {
                       // Execute each tool and collect results
                       // Snapshot current state before any mutations so the user can undo
                       claudeActionSnapshotRef.current = {
-                        tallyEntries:    JSON.parse(JSON.stringify(tallyEntries)),
                         weeklyTimetables:JSON.parse(JSON.stringify(weeklyTimetables)),
                         students:        JSON.parse(JSON.stringify(students)),
                         teachers:        JSON.parse(JSON.stringify(teachers)),
