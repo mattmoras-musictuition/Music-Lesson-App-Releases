@@ -12,7 +12,7 @@ import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
-  exportLessons, exportTeacherSchedules, exportTallyData,
+  exportLessons, exportTeacherSchedules,
   electronPrintToPdf
 } from "../data/exportHelpers";
 // Session 96: upload exported timetables to the public resources bucket and
@@ -93,25 +93,17 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
 
   const scheduleTeachers = [...new Set((schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons).map(l => l.teacherName))].sort();
   const scheduleTeachersFiltered = teacherName ? scheduleTeachers.filter(t => t === teacherName) : scheduleTeachers;
-  const tallyFiltered = (tallyEntries || []).filter(e => !schoolId || e.schoolId === schoolId);
-  const tallySchoolIds = [...new Set((tallyEntries || []).map(e => e.schoolId))];
-  const tallySchools = schools.filter(s => tallySchoolIds.includes(s.id));
 
   const getPreviewLabel = () => {
     if (exportType === "teacher_schedules") return `${scheduleTeachersFiltered.length} teacher schedule${scheduleTeachersFiltered.length !== 1 ? "s" : ""}`;
-    if (exportType === "tally") return `${tallyFiltered.length} tally record${tallyFiltered.length !== 1 ? "s" : ""}`;
     return `${previewLessons.length} lesson${previewLessons.length !== 1 ? "s" : ""}`;
   };
-  const isReady = exportType === "teacher_schedules" ? scheduleTeachersFiltered.length > 0 : exportType === "tally" ? tallyFiltered.length > 0 : previewLessons.length > 0;
+  const isReady = exportType === "teacher_schedules" ? scheduleTeachersFiltered.length > 0 : previewLessons.length > 0;
 
   const autoFilename = (() => {
     if (exportType === "teacher_schedules") {
       const schoolPart = schoolId ? ("-" + (schools.find(s => s.id === schoolId)?.name || "School")) : "";
       return `${sourceLabel}-Teacher-Schedules${schoolPart}`.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
-    }
-    if (exportType === "tally") {
-      const schoolPart = schoolId ? ("-" + (schools.find(s => s.id === schoolId)?.name || "School")) : "-All-Schools";
-      return `Master-Tally${schoolPart}`.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
     }
     const parts = [];
     if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
@@ -320,8 +312,6 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
             } else {
               await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase });
             }
-          } else if (exportType === "tally") {
-            await exportTallyData(tallyEntries || [], lessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, filenameBase });
           }
         }
       }
@@ -526,56 +516,53 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
           <div style={{ display: "flex", gap: 8 }}>
             <TypeCard value="timetable" icon="📅" title="Timetable" desc="Grid view by school, teacher or class" />
             <TypeCard value="teacher_schedules" icon="👩‍🏫" title="Teacher Schedules" desc="One page per teacher, all schools" />
-            <TypeCard value="tally" icon="✓" title="Master Tally" desc="Lesson completion records as spreadsheet" />
           </div>
         </div>
 
-        {exportType !== "tally" && (
-          <div style={{ marginBottom: 16 }}>
-            <div style={labelStyle}>Source</div>
-            <div ref={pastDropdownRef} style={{ position: "relative", width: "fit-content" }}>
-              <div style={{ display: "flex", gap: 0, background: colors.bg, border: `2px solid ${colors.sidebarActive}40`, borderRadius: 10, overflow: "hidden" }}>
-                {[
-                  { id: "master", label: "Master", disabled: !lessons || lessons.length === 0 },
-                  { id: "weekly", label: "Weekly", disabled: !mostRecentWeek },
-                  { id: "past", disabled: !hasPastWeeks },
-                ].map(tab => (
-                  <button key={tab.id}
-                    onClick={() => {
-                      if (tab.disabled) return;
-                      setSourceTab(tab.id);
-                      if (tab.id === "past") setShowPastDropdown(v => !v);
-                      else setShowPastDropdown(false);
-                    }}
-                    style={{ width: 100, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: tab.disabled ? "default" : "pointer", fontWeight: 600, background: sourceTab === tab.id ? colors.sidebarActive : "transparent", color: sourceTab === tab.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s", opacity: tab.disabled ? 0.4 : 1, textAlign: "center", whiteSpace: "nowrap" }}>
-                    {tab.id === "past"
-                      ? (sourceTab === "past" && selectedPastWeek ? (pastWeeks.find(w => w.weekKey === selectedPastWeek)?.weekLabel || "Past Weeks") : "Past Weeks")
-                      : tab.label}
+        <div style={{ marginBottom: 16 }}>
+          <div style={labelStyle}>Source</div>
+          <div ref={pastDropdownRef} style={{ position: "relative", width: "fit-content" }}>
+            <div style={{ display: "flex", gap: 0, background: colors.bg, border: `2px solid ${colors.sidebarActive}40`, borderRadius: 10, overflow: "hidden" }}>
+              {[
+                { id: "master", label: "Master", disabled: !lessons || lessons.length === 0 },
+                { id: "weekly", label: "Weekly", disabled: !mostRecentWeek },
+                { id: "past", disabled: !hasPastWeeks },
+              ].map(tab => (
+                <button key={tab.id}
+                  onClick={() => {
+                    if (tab.disabled) return;
+                    setSourceTab(tab.id);
+                    if (tab.id === "past") setShowPastDropdown(v => !v);
+                    else setShowPastDropdown(false);
+                  }}
+                  style={{ width: 100, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: tab.disabled ? "default" : "pointer", fontWeight: 600, background: sourceTab === tab.id ? colors.sidebarActive : "transparent", color: sourceTab === tab.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s", opacity: tab.disabled ? 0.4 : 1, textAlign: "center", whiteSpace: "nowrap" }}>
+                  {tab.id === "past"
+                    ? (sourceTab === "past" && selectedPastWeek ? (pastWeeks.find(w => w.weekKey === selectedPastWeek)?.weekLabel || "Past Weeks") : "Past Weeks")
+                    : tab.label}
+                </button>
+              ))}
+            </div>
+            {showPastDropdown && hasPastWeeks && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 200, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 160, overflow: "hidden" }}>
+                {pastWeeks.slice().reverse().map(w => (
+                  <button key={w.weekKey}
+                    onClick={() => { setSelectedPastWeek(w.weekKey); setShowPastDropdown(false); }}
+                    style={{ display: "block", width: "100%", padding: "9px 14px", background: selectedPastWeek === w.weekKey ? colors.blueLight : "none", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", textAlign: "left", color: selectedPastWeek === w.weekKey ? colors.sidebarHover : colors.text, fontWeight: selectedPastWeek === w.weekKey ? 600 : 400 }}
+                    onMouseEnter={e => { if (selectedPastWeek !== w.weekKey) e.currentTarget.style.background = colors.bg; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = selectedPastWeek === w.weekKey ? colors.blueLight : "none"; }}>
+                    {w.weekLabel}
                   </button>
                 ))}
               </div>
-              {showPastDropdown && hasPastWeeks && (
-                <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 200, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 160, overflow: "hidden" }}>
-                  {pastWeeks.slice().reverse().map(w => (
-                    <button key={w.weekKey}
-                      onClick={() => { setSelectedPastWeek(w.weekKey); setShowPastDropdown(false); }}
-                      style={{ display: "block", width: "100%", padding: "9px 14px", background: selectedPastWeek === w.weekKey ? colors.blueLight : "none", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", textAlign: "left", color: selectedPastWeek === w.weekKey ? colors.sidebarHover : colors.text, fontWeight: selectedPastWeek === w.weekKey ? 600 : 400 }}
-                      onMouseEnter={e => { if (selectedPastWeek !== w.weekKey) e.currentTarget.style.background = colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = selectedPastWeek === w.weekKey ? colors.blueLight : "none"; }}>
-                      {w.weekLabel}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            )}
           </div>
-        )}
+        </div>
 
         <div style={{ marginBottom: 16 }}>
           <div style={labelStyle}>School</div>
           <select value={schoolId} onChange={e => { setSchoolId(e.target.value); setTeacherName(""); setClassName(""); }} style={selectStyle}>
             <option value="">All Schools</option>
-            {(exportType === "tally" ? tallySchools : filteredSchools).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            {filteredSchools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </div>
 
@@ -628,7 +615,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
         <div style={{ marginBottom: 22 }}>
           <div style={labelStyle}>Format <span style={{ fontSize: 10, fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(select one or more)</span></div>
           <div style={radioGroupStyle}>
-            {exportType !== "tally" && <CheckBtn value="pdf">PDF (printable)</CheckBtn>}
+            <CheckBtn value="pdf">PDF (printable)</CheckBtn>
             <CheckBtn value="xlsx">Excel (.xlsx)</CheckBtn>
             {exportType !== "teacher_schedules" && <CheckBtn value="csv">CSV</CheckBtn>}
           </div>

@@ -730,51 +730,6 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
   }
 }
 
-export async function exportTallyData(tallyEntries, lessons, students, schools, teachers, opts) {
-  var format = opts.format || "csv";
-  var schoolId = opts.schoolId || null;
-  var filenameBase = opts.filenameBase || "Master-Tally";
-  var rows = tallyEntries
-    .filter(function(e) { return !schoolId || e.schoolId === schoolId; })
-    .map(function(e) {
-      var lesson = lessons.find(function(l) { return l.id === e.lessonId; });
-      var student = students.find(function(s) { return s.id === e.studentId; });
-      var school = schools.find(function(s) { return s.id === e.schoolId; });
-      return {
-        "Week": e.weekKey || "",
-        "Date": e.date || "",
-        "Day": lesson?.day || "",
-        "Time": lesson ? (lesson.start + "–" + lesson.end) : "",
-        "Student": e.studentName || "",
-        "Class": student?.className || "",
-        "School": school?.name || e.schoolName || "",
-        "Instrument": e.instrument || lesson?.instrument || "",
-        "Teacher": lesson?.teacherName || "",
-        "Status": e.status || "",
-        "Reason": e.reason || "",
-        "Makeup Eligible": e.makeupEligible === true ? "Yes" : e.makeupEligible === false ? "No" : "",
-        "Made Up": e.madeUp ? "Yes" : "No",
-        "Notes": e.notes || ""
-      };
-    });
-  if (rows.length === 0) throw new Error("No tally records to export");
-  if (format === "csv") {
-    const Papa = window.Papa;
-    downloadFile(window.window.Papa.unparse(rows), filenameBase + ".csv", "text/csv");
-  } else {
-    var XLSX = await getXLSX();
-    var wb = XLSX.utils.book_new();
-    var ws = XLSX.utils.json_to_sheet(rows);
-    var cols = Object.keys(rows[0] || {});
-    ws["!cols"] = cols.map(function(k) {
-      var max = Math.max(k.length, ...rows.map(function(r) { return String(r[k] || "").length; }));
-      return { wch: Math.min(max + 2, 40) };
-    });
-    XLSX.utils.book_append_sheet(wb, ws, "Master Tally");
-    XLSX.writeFile(wb, filenameBase + ".xlsx");
-  }
-}
-
 // ── Electron PDF / PNG helpers ────────────────────────────────────────────────
 
 export async function electronPrintToPdf(html) {
