@@ -2234,11 +2234,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const missedIdx = (weeklyData?.missed || []).findIndex(m => m.id === contextMenu.lessonId);
             const missedLesson = missedIdx >= 0 ? weeklyData.missed[missedIdx] : null;
             if (!missedLesson) return null;
-            const existingTallyEntry = tallyEntries.find(e =>
-              e.weekKey === weekKey &&
-              (missedLesson.isGroup ? e.lessonKey === `group|${missedLesson.groupId}` : e.lessonKey === `${missedLesson.studentId}|${missedLesson.instrument}`)
-            );
-            const currentReason = existingTallyEntry?.reason || null;
+            const currentReason = missedLesson.reason || null;
             const currentReasonLabel = currentReason ? (TALLY_REASONS.find(r => r.value === currentReason)?.label || currentReason) : null;
             const missedSt = !missedLesson.isGroup ? students.find(s => s.id === missedLesson.studentId) : null;
             const parentEmails = missedSt ? getParentEmails(missedSt) : [];
@@ -2273,7 +2269,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         weekLabel: weekLabel || "",
                         teacherName: missedLesson.teacherName || "",
                         schoolName: school?.name || "",
-                        absenceReason: existingTallyEntry?.reasonDetail || "",
+                        absenceReason: missedLesson.reasonDetail || "",
                       });
                       openCompose(parentEmails, { subject: resolved.subject, body: resolved.body, from: school?.senderEmail || "", triggerId: "tally_missed" });
                       setContextMenu(null);
@@ -2474,11 +2470,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // Group by reasonDetail from tally entry, falling back to "Other"
             const byReason = {};
             for (const m of missed) {
-              const tallyEntry = tallyEntries.find(e =>
-                e.weekKey === weekKey &&
-                (m.isGroup ? e.lessonKey === `group|${m.groupId}` : e.lessonKey === `${m.studentId}|${m.instrument}`)
-              );
-              const key = tallyEntry?.reasonDetail?.trim() || "Other";
+              const key = m.reasonDetail?.trim() || "Other";
               if (!byReason[key]) byReason[key] = [];
               byReason[key].push(m);
             }
