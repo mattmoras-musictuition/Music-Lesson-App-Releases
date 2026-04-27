@@ -9,6 +9,7 @@ import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getLiveTeacherName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "../utils/tallyHelpers";
+import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, findOpenCatchups } from "../utils/tallyDerive";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
@@ -240,18 +241,14 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     return { ...wd, teacherSchools, dayInterruptions, weeklyStatus, studentsWithNotes, pendingOnDay };
   });
 
-  // Students with 2+ missed lessons in the last 14 days — derived from tallyEntries
+  // Students with 2+ missed lessons in the last 14 days — derived from WTT.missed.
+  // Helper applies the count >= 2 threshold internally; cutoff snaps to the
+  // containing Monday since WTT.missed lacks recordedAt (audit-acknowledged).
   const recentCutoff = new Date(today);
   recentCutoff.setDate(today.getDate() - 14);
-  const missedByStudent = {};
-  for (const e of tallyEntries) {
-    if (e.status !== "missed") continue;
-    if (new Date(e.recordedAt) < recentCutoff) continue;
-    const k = `${e.studentId}|${e.instrument}`;
-    if (!missedByStudent[k]) missedByStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: e.schoolId, schoolName: schools.find(s => s.id === e.schoolId)?.name || "", count: 0 };
-    missedByStudent[k].count++;
-  }
-  const missedList = Object.values(missedByStudent).filter(m => m.count >= 2);
+  const sinceWeekKey = toLocalDateStr(_getMondayOf(recentCutoff));
+  const missedList = getMissedSince({ weeklyTimetables, sinceWeekKey })
+    .map(r => ({ ...r, schoolName: schools.find(s => s.id === r.schoolId)?.name || "" }));
 
   // Unacknowledged timetable warnings
   const archivedStudentIds = new Set(students.filter(s => s.status === "archived").map(s => s.id));
@@ -1339,12 +1336,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     ).length;
 
     const missedThisWeekCount = new Set(
-      tallyEntries.filter(e => e.status === "missed" && e.weekKey === currentWeekKey).map(e => `${e.studentId}|${e.instrument}`)
+      getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })
+        .map(e => `${e.studentId}|${e.instrument}`)
     ).size;
 
-    const catchupTotal = tallyEntries.filter(e =>
-      e.status === "missed" && e.weekKey !== currentWeekKey && e.makeupEligible !== false && !e.madeUp
-    ).length;
+    // Note: helper requires !!makeupEligible (true only). Legacy accepted true OR undefined,
+    // but WTT.missed writers always set the field explicitly — no live entries affected.
+    const catchupTotal = findOpenCatchups({ weeklyTimetables })
+      .filter(r => r.weekKey !== currentWeekKey)
+      .length;
 
     const allRR = inboxEmails.filter(e => {
       if (emailNoReplyOverrides.has(e.id)) return false;
@@ -1382,7 +1382,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     });
 
     const upcomingAbsences = new Set(
-      tallyEntries.filter(e => e.status === "missed" && e.reason === "informed_absence" && e.weekKey === nextWeekKey).map(e => `${e.studentId || e.studentName}|${e.instrument}`)
+      getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })
+        .map(e => `${e.studentId || e.studentName}|${e.instrument}`)
     ).size;
 
     let count = 0;
@@ -1404,7 +1405,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, tallyEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
+  }, [unassignedCount, unschedCount, students, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -2620,24 +2621,23 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         // Missed lessons: split this week (red) vs prior weeks (coral)
         const currentWeekKey = toLocalDateStr(monday);
         const nextWeekKey = toLocalDateStr((() => { const d = new Date(monday); d.setDate(d.getDate() + 7); return d; })());
-        const missedThisWeek = Object.values((() => {
+        const missedThisWeek = (() => {
           const byStudent = {};
-          for (const e of tallyEntries) {
-            if (e.status !== "missed" || e.weekKey !== currentWeekKey) continue;
+          for (const e of getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })) {
             const k = `${e.studentId}|${e.instrument}`;
             if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: e.schoolId || "", count: 0 };
             byStudent[k].count++;
           }
-          return byStudent;
-        })());
+          return Object.values(byStudent);
+        })();
         const missedPriorSorted = (() => {
-          // All makeup-eligible, un-made-up misses from prior weeks — no 14-day cap, no 2+ filter
+          // All makeup-eligible, un-made-up misses from prior weeks — no 14-day cap, no 2+ filter.
+          // Predicate-shift: helper requires !!makeupEligible (true only); legacy accepted true OR
+          // undefined, but WTT.missed writers always set the field explicitly — no live entries affected.
           const byKey = {};
-          for (const e of tallyEntries) {
-            if (e.status !== "missed") continue;
-            if (e.weekKey === currentWeekKey) continue;
-            if (e.makeupEligible === false) continue;
-            if (e.madeUp === true) continue;
+          for (const r of findOpenCatchups({ weeklyTimetables })) {
+            if (r.weekKey === currentWeekKey) continue;
+            const e = r.missed;
             const k = `${e.studentId}|${e.instrument}`;
             if (!byKey[k]) {
               const st = students.find(s => s.id === e.studentId);
@@ -2667,9 +2667,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         });
         // Upcoming absences: informed_absence entries for NEXT week (alert fires the week before)
         const upcomingAbsences = (() => {
+          // weekLabel is absent on WTT.missed; the || nextWeekKey fallback always resolves
+          // to nextWeekKey post-migration (audit-acknowledged degradation).
           const byStudent = {};
-          for (const e of tallyEntries) {
-            if (e.status !== "missed" || e.reason !== "informed_absence" || e.weekKey !== nextWeekKey) continue;
+          for (const e of getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })) {
             const k = `${e.studentId || e.studentName}|${e.instrument}`;
             if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, weekLabel: e.weekLabel || nextWeekKey, count: 0 };
             byStudent[k].count++;
