@@ -34,6 +34,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase } from "./utils/helpers";
+import { countMissedForDate, getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
@@ -2342,9 +2343,15 @@ export default function MusicTimetableApp() {
     const monday = _getMondayOf(dateObj);
     const weekKey = toLocalDateStr(monday);
     const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
-    const manualCount = tallyEntriesRef.current.filter(e =>
-      e.weekKey === weekKey && e.day === dayName && !e.autoRecorded && (e.reason || e.notes)
-    ).length;
+    // WTT.missed entries are all user-initiated by writer-construction (no autoRecorded
+    // field exists on WTT.missed; the legacy !autoRecorded && (reason || notes) filter
+    // degenerates to "every WTT.missed entry on this weekKey+day").
+    // Using weeklyTimetablesRef.current to preserve closure-stale-state defense.
+    const manualCount = countMissedForDate({
+      weeklyTimetables: weeklyTimetablesRef.current,
+      weekKey,
+      day: dayName,
+    });
     // Clear from cache so force-mode re-runs cleanly
     autoProcessedDaysRef.current.delete(dateStr);
     doAutoTallyRef.current?.(dateStr, true);
@@ -3856,7 +3863,13 @@ export default function MusicTimetableApp() {
     }
 
     // ── Tally — full current term, only when tally keywords detected or on tally page ──
-    const allWeekKeys = [...new Set(tallyEntries.map(e => e.weekKey).filter(Boolean))].sort();
+    // Legacy data source (tallyEntries) only contained past/current weeks because auto-tally
+    // writes after the fact. WTT contains all generated weeks including future-planned ones.
+    // Filter to past/current to preserve legacy temporal scope — future weeks have scheduled
+    // lessons that haven't happened yet, so reporting them as "completed" would be wrong.
+    // currentWeekKey is in scope from the WTT history block above (line ~3684).
+    const allWeekKeys = getWttWeekKeysWithActivity({ weeklyTimetables })
+      .filter(k => k <= currentWeekKey);
     if (ctx.tally || currentPage === "tally") {
       // Full current term — find weeks after the most recent term break end
       const lastBreakEnd = termBreaks.filter(b => (b.endDate || b.date) < todayStr).sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -3867,15 +3880,15 @@ export default function MusicTimetableApp() {
         lines.push("No tally entries recorded yet.");
       } else {
         termWeekKeys.forEach(wk => {
-          const wkEntries = tallyEntries.filter(e => e.weekKey === wk);
-          const completed = wkEntries.filter(e => e.status === "completed");
-          const missed = wkEntries.filter(e => e.status === "missed");
-          const label = wkEntries[0]?.weekLabel || wk;
-          lines.push(`${label}: ${completed.length} completed, ${missed.length} missed`);
-          missed.forEach(e => {
-            const school = schools.find(s => s.id === e.schoolId)?.name || "";
+          // Note: `completed` semantic shift — legacy tallyEntries counted per-attendee
+          // (group lesson with N students = N completed entries); helper counts per-slot
+          // (group lesson = 1 completed entry). AI prompt wording "X completed" is neutral;
+          // numbers shrink post-migration but no surrounding-text edit needed.
+          const summary = getWeekTallySummary({ weeklyTimetables, weekKey: wk, schools, termBreaks });
+          lines.push(`${summary.label}: ${summary.completed} completed, ${summary.missed.length} missed`);
+          summary.missed.forEach(e => {
             const catchupStatus = e.makeupEligible && !e.madeUp ? " | catch-up owed" : e.madeUp ? " | caught up" : "";
-            lines.push(`  Missed: ${e.studentName} (${e.instrument})${school ? ` at ${school}` : ""} | ${e.day}${catchupStatus}${e.reason ? ` | reason: ${e.reason}` : ""}`);
+            lines.push(`  Missed: ${e.studentName} (${e.instrument})${e.schoolName ? ` at ${e.schoolName}` : ""} | ${e.day}${catchupStatus}${e.reason ? ` | reason: ${e.reason}` : ""}`);
           });
         });
       }
@@ -3883,10 +3896,14 @@ export default function MusicTimetableApp() {
     }
 
     // ── Outstanding catch-ups (all time, not yet made up) — always shown if any exist ──
-    const catchupsOwed = tallyEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp);
+    // No upper-bound filter (unlike site 3859); the "all time" semantics are intentional.
+    const catchupsOwed = findOpenCatchups({ weeklyTimetables });
     if (catchupsOwed.length > 0) {
       lines.push("## Outstanding Catch-ups");
-      catchupsOwed.forEach(e => lines.push(`  - ${e.studentName} (${e.instrument}), ${e.weekLabel || e.weekKey}`));
+      catchupsOwed.forEach(r => {
+        const label = getTermWeekLabel(r.weekKey, termBreaks) || r.weekKey;
+        lines.push(`  - ${r.missed.studentName} (${r.missed.instrument}), ${label}`);
+      });
       lines.push("");
     }
 
