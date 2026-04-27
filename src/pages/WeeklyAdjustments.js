@@ -9,6 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks, isDayPast6pm } from "../utils/tallyHelpers";
+import { hasMissedEntry, getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
@@ -593,13 +594,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const slotEnd = timeToMin(slot.end);
     const hints = student._noteHints || {};
 
-    // Pre-marked absence: warn if student has an informed_absence tally entry for this week
-    const hasPreMarkedAbsence = tallyEntries.some(e =>
-      e.studentId === lesson.studentId &&
-      e.weekKey === weekKey &&
-      e.status === "missed" &&
-      e.reason === "informed_absence"
-    );
+    // Pre-marked absence: warn if student has an informed_absence missed entry for this week
+    const hasPreMarkedAbsence = hasMissedEntry({
+      weeklyTimetables,
+      studentId: lesson.studentId,
+      weekKey,
+      reasons: ["informed_absence"],
+    });
     if (hasPreMarkedAbsence) warnings.push("⚠ Pre-marked absence this week — student not expected in");
     const hasRequiredHere = (hints.requiredTimes || []).some(function(rt) { return rt.day === newDay && rt.start === slot.start; });
     if (slot.type === "before_school" && !student.availableBefore && !hasRequiredHere) warnings.push("Student not available before school");
@@ -1183,10 +1184,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
     // Skip students with a pre-marked informed_absence or extended_absence for this week — remove from
     // scheduled lessons and push into missed so they don't appear on the grid.
+    const _preAbsentEntries = getMissedEntries({
+      weeklyTimetables,
+      weekKey,
+      schoolId: selectedSchool,
+      reasons: ["informed_absence", "extended_absence"],
+    });
     const _preAbsentIds = new Set(
-      tallyEntries
-        .filter(e => e.weekKey === weekKey && e.status === "missed" && ["informed_absence", "extended_absence"].includes(e.reason) && e.studentId && e.schoolId === selectedSchool)
-        .map(e => e.studentId)
+      _preAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
     );
     const _absentLessons = _preAbsentIds.size > 0
       ? result.lessons.filter(l => !l.isBandSession && !l.isGroup && _preAbsentIds.has(l.studentId))
@@ -1195,7 +1200,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_preAbsentIds.has(l.studentId))
       : result.lessons;
     const allMissed = [...result.missed, ..._absentLessons.map(l => {
-      const tallyEntry = tallyEntries.find(e => e.weekKey === weekKey && e.studentId === l.studentId && ["informed_absence", "extended_absence"].includes(e.reason));
+      const tallyEntry = _preAbsentEntries.find(e => e.studentId === l.studentId);
       return { ...l, reason: tallyEntry?.reason || "informed_absence" };
     })];
 
@@ -1240,10 +1245,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const result = generateWeeklyTimetable(
         filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks
       );
+      const _allPreAbsentEntries = getMissedEntries({
+        weeklyTimetables,
+        weekKey,
+        schoolId: school.id,
+        reasons: ["informed_absence", "extended_absence"],
+      });
       const _allPreAbsentIds = new Set(
-        tallyEntries
-          .filter(e => e.weekKey === weekKey && e.status === "missed" && ["informed_absence", "extended_absence"].includes(e.reason) && e.studentId && e.schoolId === school.id)
-          .map(e => e.studentId)
+        _allPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
       );
       const _allAbsentLessons = _allPreAbsentIds.size > 0
         ? result.lessons.filter(l => !l.isBandSession && !l.isGroup && _allPreAbsentIds.has(l.studentId))
@@ -1252,7 +1261,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_allPreAbsentIds.has(l.studentId))
         : result.lessons;
       const _allMissed = [...result.missed, ..._allAbsentLessons.map(l => {
-        const tallyEntry = tallyEntries.find(e => e.weekKey === weekKey && e.studentId === l.studentId && ["informed_absence", "extended_absence"].includes(e.reason));
+        const tallyEntry = _allPreAbsentEntries.find(e => e.studentId === l.studentId);
         return { ...l, reason: tallyEntry?.reason || "informed_absence" };
       })];
       setWeeklyTimetables(prev => ({
@@ -1459,10 +1468,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     );
 
     // Skip students with a pre-marked informed_absence or extended_absence for this week
+    const _dayPreAbsentEntries = getMissedEntries({
+      weeklyTimetables,
+      weekKey,
+      schoolId: selectedSchool,
+      reasons: ["informed_absence", "extended_absence"],
+    });
     const _dayPreAbsentIds = new Set(
-      tallyEntries
-        .filter(e => e.weekKey === weekKey && e.status === "missed" && ["informed_absence", "extended_absence"].includes(e.reason) && e.studentId && e.schoolId === selectedSchool)
-        .map(e => e.studentId)
+      _dayPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
     );
     const _rawNewDayLessons = result.lessons.filter(l => l.day === targetDay);
     const _dayAbsentLessons = _dayPreAbsentIds.size > 0
@@ -1482,7 +1495,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const newDayMissed = [
       ...result.missed.filter(m => m.day === targetDay),
       ..._dayAbsentLessons.map(l => {
-        const tallyEntry = tallyEntries.find(e => e.weekKey === weekKey && e.studentId === l.studentId && ["informed_absence", "extended_absence"].includes(e.reason));
+        const tallyEntry = _dayPreAbsentEntries.find(e => e.studentId === l.studentId);
         return { ...l, reason: tallyEntry?.reason || "informed_absence" };
       }),
     ];
@@ -1865,10 +1878,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (notify) notify(`${lesson.studentName} — catch-up forfeited`);
   };
 
-  // Missed tally grouped by student+instrument — derived from tallyEntries
+  // Missed tally grouped by student+instrument — derived from WTT.missed across all weeks.
+  // WTT.missed entries don't carry a `status` field (status is implicit from the
+  // missed array itself), so no status filter is needed. weekLabel is also absent
+  // on WTT.missed; weeks[] degrades to weekKey only (audit-acknowledged).
   const tallyByStudent = {};
-  for (const e of tallyEntries) {
-    if (e.status !== "missed") continue;
+  for (const e of getMissedEntries({ weeklyTimetables })) {
     if (e.schoolId === "__private__") continue; // private students have their own tally panel
     const k = `${e.studentId}|${e.instrument}`;
     if (!tallyByStudent[k]) tallyByStudent[k] = { ...e, count: 0, weeks: [] };
@@ -2572,11 +2587,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "hidden" }}>
               {(() => {
                 const sId = contextMenu.schoolId;
-                // Build one row per (student, instrument) pair that has owed make-ups
-                const eligibleEntries = tallyEntries.filter(e =>
-                  e.status === "missed" && e.makeupEligible && !e.madeUp &&
-                  students.some(s => s.id === e.studentId && s.schoolId === sId)
-                );
+                // Build one row per (student, instrument) pair that has owed make-ups.
+                // schoolId filter is on the missed entry's schoolId (audit decision:
+                // theoretical-only shift vs students-table school join).
+                const eligibleEntries = findOpenCatchups({ weeklyTimetables, schoolId: sId })
+                  .map(r => ({ ...r.missed, weekKey: r.weekKey }));
                 // Group by studentId + instrument
                 const pairMap = {};
                 for (const e of eligibleEntries) {
@@ -2681,21 +2696,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               scheduledCountMap[k] = (scheduledCountMap[k] || 0) + 1;
             });
             // Count total owed per student+instrument pair
+            const allOpen = findOpenCatchups({ weeklyTimetables });
             const owedCountMap = {};
-            for (const e of tallyEntries) {
-              if (e.status !== "missed" || !e.makeupEligible || e.madeUp) continue;
-              const k = e.studentId + "|" + e.instrument;
+            for (const r of allOpen) {
+              const k = r.missed.studentId + "|" + r.missed.instrument;
               owedCountMap[k] = (owedCountMap[k] || 0) + 1;
             }
             const owedByTeacher = {};
-            for (const e of tallyEntries) {
-              if (e.status !== "missed" || !e.makeupEligible || e.madeUp) continue;
-              const k = e.studentId + "|" + e.instrument;
+            for (const r of allOpen) {
+              const m = r.missed;
+              const k = m.studentId + "|" + m.instrument;
               // Skip only when all catch-ups for this student+instrument are already scheduled
               if ((scheduledCountMap[k] || 0) >= (owedCountMap[k] || 0)) continue;
-              const tid = e.teacherId || "__none__";
+              const tid = m.teacherId || "__none__";
               if (!owedByTeacher[tid]) owedByTeacher[tid] = [];
-              owedByTeacher[tid].push(e);
+              owedByTeacher[tid].push({ ...m, weekKey: r.weekKey });
             }
             for (const tid of Object.keys(owedByTeacher)) {
               owedByTeacher[tid].sort((a, b) => a.weekKey.localeCompare(b.weekKey));
@@ -3170,7 +3185,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               {/* Add Lesson — cascading upward menu */}
               {(() => {
                 const sId = contextMenu.schoolId;
-                const schoolStudentsWithMakeup = students.filter(s => s.schoolId === sId && tallyEntries.some(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp));
+                const idsWithCatchups = new Set(
+                  findOpenCatchups({ weeklyTimetables, schoolId: sId }).map(r => r.missed.studentId)
+                );
+                const schoolStudentsWithMakeup = students.filter(s => s.schoolId === sId && idsWithCatchups.has(s.id));
                 // Exclude students already scheduled in any week
                 const scheduledStudentIds = new Set(
                   Object.values(weeklyTimetables || {}).flatMap(data => (data.lessons || []).map(l => l.studentId))
@@ -3190,7 +3208,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             );
             const hasPending = students.some(s => s.schoolId === sId && s.status === "pending");
                 if (!hasCatchup && !hasTrial && missing.length === 0 && !hasPending) return null;
-                const makeupCount = (s) => tallyEntries.filter(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp).length;
+                const makeupCount = (s) => findOpenCatchups({ weeklyTimetables, studentId: s.id }).length;
                 const scoreStudent = (s) => {
                   let score = 0;
                   const weekDayDate = (weekDates || []).find(wd => wd.day === contextMenu.day)?.date;
@@ -3293,13 +3311,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           {(() => {
                             // Build one row per (student, instrument) pair
                             const eligiblePairMap = {};
-                            for (const e of tallyEntries) {
-                              if (e.status !== "missed" || !e.makeupEligible || e.madeUp) continue;
+                            for (const r of findOpenCatchups({ weeklyTimetables })) {
+                              const e = r.missed;
                               const s = students.find(st => st.id === e.studentId && st.schoolId === sId);
                               if (!s) continue;
                               const key = e.studentId + "|" + e.instrument;
                               if (!eligiblePairMap[key]) eligiblePairMap[key] = { student: s, instrument: e.instrument, entries: [] };
-                              eligiblePairMap[key].entries.push(e);
+                              eligiblePairMap[key].entries.push({ ...e, weekKey: r.weekKey });
                             }
                             const eligiblePairs = Object.values(eligiblePairMap).sort((a, b) => {
                               const cDiff = b.entries.length - a.entries.length;
@@ -4148,7 +4166,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
           {/* ── Holiday Catch-Up Grid ── */}
           {isHolidayWeek && (() => {
-            const owedTotal = tallyEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
+            const owedTotal = findOpenCatchups({ weeklyTimetables }).length;
             const scheduledTotal = (catchupData.lessons || []).length;
             const allTeachers = teachers.filter(t => t.id);
             return (
