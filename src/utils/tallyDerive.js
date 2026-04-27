@@ -280,23 +280,30 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 
 /**
  * Test whether weeklyTimetables contains a missed entry for the given
- * student on the given day in the given week. Solo-only — group
- * support deferred until 6c.2 surfaces the need.
+ * student in the given week. Solo-only — group support deferred until
+ * a future call site surfaces the need.
+ *
+ * Extended in 6c.1b: `day` and `reasons` are both optional.
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables - Full WTT keyed by "<weekKey>|<schoolId>".
- * @param {string} params.studentId
- * @param {string} params.weekKey
- * @param {string} params.day
+ * @param {string} params.studentId - Required.
+ * @param {string} params.weekKey - Required.
+ * @param {string} [params.day] - Optional. If omitted, matches any day in the week.
+ * @param {string[]} [params.reasons] - Optional allowlist on m.reason. If omitted,
+ *   matches any reason (preserves the audit-drafted "any missed entry" semantics).
  * @returns {boolean}
  */
-export function hasMissedEntry({ weeklyTimetables, studentId, weekKey, day }) {
+export function hasMissedEntry({ weeklyTimetables, studentId, weekKey, day, reasons }) {
   if (!weeklyTimetables) return false;
   for (const sk of Object.keys(weeklyTimetables)) {
     if (!sk.startsWith(weekKey + "|")) continue;
     const data = weeklyTimetables[sk];
     for (const m of (data?.missed || [])) {
-      if (m.studentId === studentId && m.day === day) return true;
+      if (m.studentId !== studentId) continue;
+      if (day !== undefined && m.day !== day) continue;
+      if (reasons !== undefined && !reasons.includes(m.reason)) continue;
+      return true;
     }
   }
   return false;
@@ -312,6 +319,55 @@ export function hasMissedEntry({ weeklyTimetables, studentId, weekKey, day }) {
  */
 export function getMissedForWeek(weeklyData) {
   return weeklyData?.missed || [];
+}
+
+/**
+ * Return a flat array of WTT.missed entries matching the given filters,
+ * each decorated with the `weekKey` it came from at the top level alongside
+ * the original missed-entry fields. Callers can read e.weekKey, e.studentId,
+ * e.reason, etc. directly, or spread (...e) without losing the source week.
+ *
+ * All filters are optional except weeklyTimetables. Filters apply
+ * conjunctively (AND across all provided filters):
+ *   - weekKey:   if provided, restrict to that week; if omitted, all weeks.
+ *   - studentId: positive match on m.studentId.
+ *   - schoolId:  positive match on m.schoolId (the missed entry's schoolId,
+ *                NOT the current student's — same semantics as findOpenCatchups,
+ *                behavioural shift is theoretical only per audit).
+ *   - reasons:   string[] allowlist on m.reason.
+ *   - day:       positive match on m.day.
+ *
+ * Subsumes some single-week use cases of getMissedForWeek; the latter
+ * remains for callers who already hold a slot reference and want zero
+ * indirection. Does not bake in the open-catchup predicate — pair with
+ * findOpenCatchups when makeup-eligibility filtering is wanted.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} [params.weekKey]
+ * @param {string} [params.studentId]
+ * @param {string} [params.schoolId]
+ * @param {string[]} [params.reasons]
+ * @param {string} [params.day]
+ * @returns {Object[]} Each entry is the original missed object with weekKey
+ *   added at the top level.
+ */
+export function getMissedEntries({ weeklyTimetables, weekKey, studentId, schoolId, reasons, day } = {}) {
+  const out = [];
+  if (!weeklyTimetables) return out;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const skWeekKey = sk.split("|")[0];
+    if (weekKey !== undefined && skWeekKey !== weekKey) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (studentId !== undefined && m.studentId !== studentId) continue;
+      if (schoolId !== undefined && m.schoolId !== schoolId) continue;
+      if (reasons !== undefined && !reasons.includes(m.reason)) continue;
+      if (day !== undefined && m.day !== day) continue;
+      out.push({ ...m, weekKey: skWeekKey });
+    }
+  }
+  return out;
 }
 
 /**
