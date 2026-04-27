@@ -17,7 +17,22 @@
 // comes from the MTT card or student record; never resolves to
 // "__catchup__" (a synthetic key for the catch-up subsystem
 // deferred to Spec 3).
+//
+// Commit 6c.1 added 8 read-side helpers consumed by App.js,
+// WeeklyAdjustments.js, and Dashboard.js (migrated in 6c.2–6c.4).
+// All helpers are pure functions of weeklyTimetables (the WTT map
+// keyed by "<weekKey>|<schoolId>"). None mutate.
 // ============================================================
+
+import { getTermWeekLabel } from "./helpers";
+
+// Internal predicate — single source of "open catch-up" semantics.
+// Mirrors the audit's banked follow-up #1 (single-source predicate)
+// for the helpers added in 6c.1. Consumers that today inline the
+// same check can converge on this through their helper of choice.
+function isOpenCatchup(m) {
+  return !!m && !!m.makeupEligible && !m.madeUp;
+}
 
 // Derive a single cell's state for a given enrolment + week + WTT entry.
 // Returns one of: "inactive", "blank", "completed", "missed-makeup-owed",
@@ -256,4 +271,239 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
   });
 
   return { tallyRows, entryMap };
+}
+
+// ============================================================
+// 6c.1 helpers — pure read-side derives over weeklyTimetables.
+// Consumers migrate in 6c.2 (WA), 6c.3 (Dashboard), 6c.4 (App.js).
+// ============================================================
+
+/**
+ * Test whether weeklyTimetables contains a missed entry for the given
+ * student on the given day in the given week. Solo-only — group
+ * support deferred until 6c.2 surfaces the need.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables - Full WTT keyed by "<weekKey>|<schoolId>".
+ * @param {string} params.studentId
+ * @param {string} params.weekKey
+ * @param {string} params.day
+ * @returns {boolean}
+ */
+export function hasMissedEntry({ weeklyTimetables, studentId, weekKey, day }) {
+  if (!weeklyTimetables) return false;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    if (!sk.startsWith(weekKey + "|")) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (m.studentId === studentId && m.day === day) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Return the flat array of missed entries for a single week's WTT slot.
+ * Caller passes the slot directly (i.e. weeklyTimetables[storageKey]),
+ * not the full WTT map. Caller groups / decorates as needed.
+ *
+ * @param {{missed?: Object[]}} weeklyData - One WTT slot.
+ * @returns {Object[]}
+ */
+export function getMissedForWeek(weeklyData) {
+  return weeklyData?.missed || [];
+}
+
+/**
+ * Find all open catch-ups (makeupEligible && !madeUp) across WTT.
+ * Optional studentId / schoolId filters narrow by the missed entry's
+ * own field — schoolId filter is on the missed entry, not the
+ * current student record (audit decision: moved-student behavioural
+ * shift is theoretical only because Matt's workflow archives and
+ * recreates rather than editing).
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} [params.studentId]
+ * @param {string} [params.schoolId]
+ * @returns {{weekKey: string, missed: Object}[]}
+ */
+export function findOpenCatchups({ weeklyTimetables, studentId, schoolId } = {}) {
+  const out = [];
+  if (!weeklyTimetables) return out;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (!isOpenCatchup(m)) continue;
+      if (studentId !== undefined && m.studentId !== studentId) continue;
+      if (schoolId !== undefined && m.schoolId !== schoolId) continue;
+      out.push({ weekKey, missed: m });
+    }
+  }
+  return out;
+}
+
+/**
+ * Count missed entries for a specific weekKey + day across all schools.
+ * Used by App.js's rerunAutoTallyForDate manual-count notification.
+ * WTT.missed entries are all user-initiated (no autoRecorded field
+ * exists on WTT.missed), so this is a straight count.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.weekKey
+ * @param {string} params.day
+ * @returns {number}
+ */
+export function countMissedForDate({ weeklyTimetables, weekKey, day }) {
+  if (!weeklyTimetables) return 0;
+  let count = 0;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    if (!sk.startsWith(weekKey + "|")) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (m.day === day) count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Group missed entries by studentId+instrument and return rows where
+ * the student has 2+ missed entries with weekKey >= sinceWeekKey.
+ *
+ * NOTE: signature uses sinceWeekKey rather than sinceDate because
+ * WTT.missed entries do not carry a recordedAt timestamp (they did
+ * on legacy tallyEntries). Caller computes the cutoff weekKey from
+ * its date window. Granularity drops from timestamp to week, which
+ * is acceptable for a 14-day rolling window.
+ *
+ * Row shape mirrors Dashboard:247's existing tallyEntries grouping
+ * minus schoolName (caller resolves schoolName from schools).
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.sinceWeekKey - Inclusive lower bound on weekKey.
+ * @returns {{studentId: string, studentName: string, instrument: string, schoolId: string, count: number}[]}
+ */
+export function getMissedSince({ weeklyTimetables, sinceWeekKey }) {
+  if (!weeklyTimetables) return [];
+  const byKey = {};
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < sinceWeekKey) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      const k = `${m.studentId || ""}|${m.instrument || ""}`;
+      if (!byKey[k]) {
+        byKey[k] = {
+          studentId: m.studentId || "",
+          studentName: m.studentName || "",
+          instrument: m.instrument || "",
+          schoolId: m.schoolId || "",
+          count: 0,
+        };
+      }
+      byKey[k].count++;
+    }
+  }
+  return Object.values(byKey).filter(r => r.count >= 2);
+}
+
+/**
+ * Return raw WTT.missed entries at the given weekKey whose reason is
+ * "informed_absence". Caller groups, formats labels, and constructs
+ * any Set / count it needs. Predicate mirrors Dashboard:1385 / 2671
+ * (informed_absence only — extended_absence is not part of these
+ * consumer filters today).
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.weekKey
+ * @returns {Object[]}
+ */
+export function getInformedAbsencesForWeek({ weeklyTimetables, weekKey }) {
+  const out = [];
+  if (!weeklyTimetables) return out;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    if (!sk.startsWith(weekKey + "|")) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (m.reason === "informed_absence") out.push(m);
+    }
+  }
+  return out;
+}
+
+/**
+ * All weekKeys present in weeklyTimetables that have any activity
+ * (lessons OR missed entries), sorted ascending. Used by App.js's
+ * buildClaudeSystemPrompt to enumerate term weeks for AI context.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @returns {string[]}
+ */
+export function getWttWeekKeysWithActivity({ weeklyTimetables }) {
+  if (!weeklyTimetables) return [];
+  const weeks = new Set();
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const data = weeklyTimetables[sk];
+    if ((data?.lessons?.length || 0) > 0 || (data?.missed?.length || 0) > 0) {
+      weeks.add(sk.split("|")[0]);
+    }
+  }
+  return [...weeks].sort();
+}
+
+/**
+ * Per-week tally summary for the AI prompt. Returns:
+ *   completed: aggregate count of WTT.lessons across all schools for
+ *              this weekKey (lesson-event count — for groups/bands
+ *              this counts the slot once, not per-student; this is
+ *              a semantic shift from legacy tallyEntries which
+ *              counted per-student).
+ *   missed:    decorated rows from WTT.missed across all schools.
+ *   label:     getTermWeekLabel(weekKey, termBreaks), falling back
+ *              to weekKey if termBreaks does not resolve.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.weekKey
+ * @param {Array}  params.schools
+ * @param {Array}  params.termBreaks
+ * @returns {{completed: number, missed: Object[], label: string}}
+ */
+export function getWeekTallySummary({ weeklyTimetables, weekKey, schools, termBreaks }) {
+  let completed = 0;
+  const missed = [];
+  if (weeklyTimetables) {
+    for (const sk of Object.keys(weeklyTimetables)) {
+      if (!sk.startsWith(weekKey + "|")) continue;
+      const data = weeklyTimetables[sk];
+      completed += (data?.lessons?.length || 0);
+      for (const m of (data?.missed || [])) {
+        const schoolName = (schools || []).find(s => s.id === m.schoolId)?.name || "";
+        missed.push({
+          studentName: m.studentName || "",
+          instrument: m.instrument || "",
+          schoolId: m.schoolId || "",
+          schoolName,
+          day: m.day || "",
+          makeupEligible: !!m.makeupEligible,
+          madeUp: !!m.madeUp,
+          reason: m.reason || "",
+        });
+      }
+    }
+  }
+  let label = weekKey;
+  try {
+    const computed = getTermWeekLabel(weekKey, termBreaks);
+    if (computed) label = computed;
+  } catch {
+    label = weekKey;
+  }
+  return { completed, missed, label };
 }
