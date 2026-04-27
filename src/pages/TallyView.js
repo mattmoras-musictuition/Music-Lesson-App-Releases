@@ -20,7 +20,7 @@ function buildPreferredDisplayName(name) {
   return surname ? `${prefFirst} ${surname}` : prefFirst;
 }
 
-export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, tallyEntries, setTallyEntries, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
@@ -149,7 +149,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     return weeks;
   }, [activeTerm, termBreaks]);
 
-  // ── Term-filtered entries (tallyEntries is now App-level state) ───────────
+  // ── Term-filtered entries — derived from WTT ──────────────────────────────
 
   // ── Lessons from master timetable ─────────────────────────
   const schoolLessons = useMemo(() => {

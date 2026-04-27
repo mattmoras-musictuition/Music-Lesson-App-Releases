@@ -30,7 +30,7 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, contacts, specialists, tallyEntries, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
   // Source is derived from sourceTab + selectedPastWeek
