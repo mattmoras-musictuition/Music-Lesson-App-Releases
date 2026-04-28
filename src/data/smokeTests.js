@@ -34,12 +34,6 @@ export function runSmokeTests(logErrorFn) {
   assert("migrate student status default", migrated.status, "active");
   assert("migrate student instruments preserved", migrated.instruments[0].name, "Piano");
 
-  // migrateData — tallyEntries weekLabel backfill
-  const rawEntry = { id: "t1", weekKey: "2026-01-19", studentId: "s", instrument: "Piano", status: "missed", madeUp: false };
-  const migratedEntry = migrateData("tallyEntries", [rawEntry])[0];
-  assertTruthy("migrate tally weekLabel backfill", migratedEntry.weekLabel);
-  assert("migrate tally makeupEligible default", migratedEntry.makeupEligible, true);
-
   // generateMasterTimetable basic smoke — one school, one student, one teacher
   try {
     const school = { id: "s1", name: "Test School", classNames: ["3A"], slots: defaultSlots() };

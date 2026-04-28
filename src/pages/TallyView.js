@@ -2,25 +2,34 @@
 // TALLYVIEW — extracted from App.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, TALLY_REASONS } from "../constants";
-import { uid, toLocalDateStr, melbourneNow, melbourneToday, getTermWeekLabel, to12h, timeToMin, getInstColor, getSchoolAcronym, _getMondayOf, getParentEmails, openCompose } from "../utils/helpers";
-import { computeTermWeekNum, computeTermKey, getTermWeeksList } from "../utils/tallyHelpers";
-import { getEmailTemplates, resolveTemplate, preferredFirstName } from "../utils/emailTemplates";
-import { ExportIcon } from "../components/ExportDialog";
-import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, PAGE_COLORS } from "../components/ui/SharedUI";
+import React, { useState, useMemo } from "react";
+import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "lucide-react";
+import { useTheme } from "../context/ThemeContext";
+import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose } from "../utils/helpers";
+import { deriveTallyRows } from "../utils/tallyDerive";
+import { preferredFirstName } from "../utils/emailTemplates";
+import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function TallyView({ timetable, schools, students, teachers, interruptions, tallyEntries, setTallyEntries, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
+// "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
+function buildPreferredDisplayName(name) {
+  if (!name) return name;
+  const match = name.match(/\(([^)]+)\)/);
+  if (!match) return name;
+  const prefFirst = match[1];
+  const surname = name.replace(/^[^\s(]+\s*\([^)]+\)\s*/, "").trim();
+  return surname ? `${prefFirst} ${surname}` : prefFirst;
+}
+
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+  const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
   const groupBy = (viewState || {}).groupBy || "day_school";
   const setGroupBy = (v) => setViewState(prev => ({ ...prev, groupBy: v }));
-  const [editCell, setEditCell] = useState(null);
-  const [editForm, setEditForm] = useState({ status: "completed", reason: "", notes: "", makeupEligible: false, madeUp: false });
-  const [madeUpPopup, setMadeUpPopup] = useState(null);
   const [tallyTooltip, setTallyTooltip] = useState(null);
   const [hoveredWeekKey, setHoveredWeekKey] = useState(null);
   const [tallySearch, setTallySearch] = useState("");
+  const [hoveredNameKey, setHoveredNameKey] = useState(null);
 
   // ── Term calculation ──────────────────────────────────────────
   const termBreaks = useMemo(() =>
@@ -81,12 +90,19 @@ export function TallyView({ timetable, schools, students, teachers, interruption
 
   const currentTerm = useMemo(() => {
     const now = melbourneNow();
-    return getTerms.find(t => now >= t.start && now <= t.end) || getTerms.find(t => now < t.start) || getTerms[getTerms.length - 1];
+    // During a term: show that term
+    const inTerm = getTerms.find(t => now >= t.start && now <= t.end);
+    if (inTerm) return inTerm;
+    // During holidays: show the most recently completed term (not the upcoming one)
+    const pastTerms = getTerms.filter(t => now > t.end);
+    if (pastTerms.length > 0) return pastTerms[pastTerms.length - 1];
+    // Before any term starts: show the first upcoming term
+    return getTerms.find(t => now < t.start) || getTerms[getTerms.length - 1];
   }, [getTerms]);
 
   const activeTerm = currentTerm;
 
-  // ── Term weeks list ────────────────────────────────────────
+  // ── Term weeks list (including holiday weeks after term) ────
   const termWeeks = useMemo(() => {
     if (!activeTerm) return [];
     const weeks = [];
@@ -109,10 +125,31 @@ export function TallyView({ timetable, schools, students, teachers, interruption
       weekNum++;
       w = new Date(w); w.setDate(w.getDate() + 7);
     }
+    // Append holiday weeks from the break following this term (H1, H2, …)
+    const nextBreak = termBreaks.find(tb => {
+      const bs = new Date(tb.date + "T00:00:00");
+      return bs > activeTerm.end;
+    });
+    if (nextBreak) {
+      const breakStart = nextBreak.date;
+      const breakEnd = nextBreak.endDate || nextBreak.date;
+      const breakStartMon = getMondayOf(new Date(breakStart + "T00:00:00"));
+      let hw = new Date(breakStartMon);
+      let hNum = 1;
+      while (toLocalDateStr(hw) <= breakEnd) {
+        const hwStr = toLocalDateStr(hw);
+        // Only include if this Monday actually falls within the break period
+        if (hwStr >= breakStart) {
+          weeks.push({ weekKey: hwStr, weekNum: hNum, label: `H${hNum}`, isHoliday: true });
+          hNum++;
+        }
+        hw = new Date(hw); hw.setDate(hw.getDate() + 7);
+      }
+    }
     return weeks;
   }, [activeTerm, termBreaks]);
 
-  // ── Term-filtered entries (tallyEntries is now App-level state) ───────────
+  // ── Term-filtered entries — derived from WTT ──────────────────────────────
 
   // ── Lessons from master timetable ─────────────────────────
   const schoolLessons = useMemo(() => {
@@ -122,146 +159,73 @@ export function TallyView({ timetable, schools, students, teachers, interruption
       : timetable.lessons.filter(l => l.schoolId === selectedSchool);
   }, [timetable, selectedSchool]);
 
-  // Unique lesson identifiers: one row per student/group+instrument
-  const lessonRows = useMemo(() => {
-    const seen = new Set();
-    const rows = [];
-    for (const l of schoolLessons) {
-      const key = l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push({ ...l, lessonKey: key });
-    }
-    rows.sort((a, b) => {
-      const nameA = (a.isGroup ? (a.groupName || "") : (a.studentName || "")).toLowerCase();
-      const nameB = (b.isGroup ? (b.groupName || "") : (b.studentName || "")).toLowerCase();
-      return nameA.localeCompare(nameB);
+  // ── Tally rows + entryMap (derived from WTT via tallyDerive helper) ──
+  // Replaces today's lessonRows + entryMap useMemos as of Commit 5a.
+  // The helper returns BOTH the canonical tallyRows shape (which 5b's cycle
+  // handler and 5c's edit modal will read) AND a transitional entryMap shim
+  // synthesized from WTT data so existing render code (CellIcon, tooltips,
+  // stats, makeups filter, holiday-rendering branches) keeps working
+  // unmodified through 5a–5c.
+  const { tallyRows, entryMap } = useMemo(() => {
+    if (!activeTerm) return { tallyRows: [], entryMap: {} };
+    return deriveTallyRows({
+      enrolments,
+      students,
+      termWeeks,
+      weeklyTimetables,
+      timetable,
+      schoolFilter: selectedSchool,
     });
-    return rows;
-  }, [schoolLessons]);
+  }, [enrolments, students, termWeeks, weeklyTimetables, timetable, selectedSchool, activeTerm]);
+  const lessonRows = tallyRows;
 
-  // ── Entry lookup ────────────────────────────────────────────
-  const entryMap = useMemo(() => {
-    if (!activeTerm) return {};
-    // Build set of valid weekKeys for this term so we only show relevant entries
-    const validWeekKeys = new Set(termWeeks.map(w => w.weekKey));
+  // ── Private students (stub) ─────────────────────────────────
+  // TODO Spec 7 — private students use the enrolments collection too once
+  // that spec resolves Type-A pending + private. Today's privateStudents
+  // filter is preserved (gates the panel render); rows / entryMap / stats
+  // are stubbed empty since student.instruments is empty post-Commit-3.
+  const privateStudents = useMemo(() =>
+    students.filter(s => s.schoolId === "__private__" && (s.status === "active" || s.status === "pending" || s.status === "trial")),
+    [students]
+  );
+  const privateLessonRows = [];
+  const privateEntryMap = {};
+  const privateStats = { totalCells: 0, completed: 0, missed: 0, makeupOwed: 0, madeUp: 0 };
+
+  // ── Holiday lesson map: which cells have a catch-up card on the timetable ──
+  const holidayLessonMap = useMemo(() => {
     const map = {};
-    for (const e of tallyEntries) {
-      if (selectedSchool !== "all" && e.schoolId !== selectedSchool) continue;
-      if (!validWeekKeys.has(e.weekKey)) continue;
-      map[`${e.lessonKey}|${e.weekKey}`] = e;
+    if (!weeklyTimetables) return map;
+    const holidayWeekKeys = new Set(termWeeks.filter(w => w.isHoliday).map(w => w.weekKey));
+    if (holidayWeekKeys.size === 0) return map;
+    for (const [sk, weeklyData] of Object.entries(weeklyTimetables)) {
+      const parts = sk.split("|");
+      const wk = parts[0];
+      if (!holidayWeekKeys.has(wk)) continue;
+      for (const lesson of (weeklyData.lessons || [])) {
+        if (!lesson.studentId) continue;
+        if (!lesson.isMakeup) continue; // only catch-up cards make a holiday cell non-blank
+        const lessonKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
+        map[`${lessonKey}|${wk}`] = true;
+      }
     }
     return map;
-  }, [tallyEntries, activeTerm, selectedSchool, termWeeks]);
+  }, [weeklyTimetables, termWeeks]);
 
-  // ── Cycle status on left click ─────────────────────────────
-  // Order: unchecked → completed → missed+catchup owed → caught up (↺) → missed no catchup → inactive → unchecked
-  const quickComplete = (lesson, week) => {
-    const key = `${lesson.lessonKey}|${week.weekKey}`;
-    const existing = entryMap[key];
-    const baseEntry = {
-      lessonKey: lesson.lessonKey, lessonId: lesson.id,
-      isGroup: lesson.isGroup || false, groupName: lesson.groupName || "",
-      studentId: lesson.studentId || "",
-      studentName: lesson.isGroup ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group") : lesson.studentName,
-      studentNames: lesson.studentNames || [],
-      instrument: lesson.instrument, schoolId: lesson.schoolId,
-      teacherId: lesson.teacherId, teacherName: lesson.teacherName,
-      weekKey: week.weekKey, weekLabel: week.label, weekNum: week.weekNum,
-      termKey: activeTerm?.key, day: lesson.day,
-      notes: existing?.notes || "",
-      recordedAt: new Date().toISOString(),
-    };
-    const upsert = (patch) => {
-      const entry = { id: existing?.id || uid(), ...baseEntry, ...patch };
-      setTallyEntries(prev => [...prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== key), entry]);
-    };
-    const status = existing?.status;
-    if (!existing || status === "removed") {
-      // unchecked (or inactive) → completed
-      upsert({ status: "completed", reason: null, makeupEligible: false, madeUp: false });
-    } else if (status === "completed") {
-      // completed → missed + catch-up owed
-      upsert({ status: "missed", reason: null, makeupEligible: true, madeUp: false });
-    } else if (status === "missed" && existing.makeupEligible && !existing.madeUp) {
-      // missed+catchup owed → caught up (↺)
-      upsert({ status: "missed", reason: existing.reason || null, makeupEligible: true, madeUp: true });
-    } else if (status === "missed" && existing.madeUp) {
-      // caught up → missed no catchup
-      upsert({ status: "missed", reason: existing.reason || null, makeupEligible: false, madeUp: false });
-    } else if (status === "missed" && !existing.makeupEligible) {
-      // missed no catchup → inactive (removed)
-      upsert({ status: "removed", reason: "inactive", makeupEligible: false, madeUp: false });
-    } else {
-      // any other state → unchecked
-      setTallyEntries(prev => prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== key));
-    }
-  };
-
-  // ── Edit cell ───────────────────────────────────────────────
-  const openEdit = (lesson, week) => {
-    const key = `${lesson.lessonKey}|${week.weekKey}`;
-    const existing = entryMap[key];
-    setEditCell({ lesson, week, key });
-    setEditForm(existing ? {
-      status: existing.status,
-      reason: existing.reason || "",
-      notes: existing.notes || "",
-      makeupEligible: existing.makeupEligible || false,
-      madeUp: existing.madeUp || false,
-    } : { status: "completed", reason: "", notes: "", makeupEligible: false, madeUp: false });
-  };
-
-  const saveEdit = () => {
-    if (!editCell) return;
-    const { lesson, week, key } = editCell;
-    const reasonObj = TALLY_REASONS.find(r => r.value === editForm.reason);
-    const makeupEligible = reasonObj?.makeupEligible === null ? editForm.makeupEligible : (reasonObj?.makeupEligible || false);
-    const newEntry = {
-      id: uid(),
-      lessonKey: lesson.lessonKey,
-      lessonId: lesson.id,
-      isGroup: lesson.isGroup || false,
-      groupName: lesson.groupName || "",
-      studentId: lesson.studentId || "",
-      studentName: lesson.isGroup ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group") : lesson.studentName,
-      studentNames: lesson.studentNames || [],
-      instrument: lesson.instrument,
-      schoolId: lesson.schoolId,
-      teacherId: lesson.teacherId,
-      teacherName: lesson.teacherName,
-      weekKey: week.weekKey,
-      weekNum: week.weekNum,
-      termKey: activeTerm.key,
-      day: lesson.day,
-      status: "missed",
-      reason: editForm.reason,
-      notes: editForm.notes.trim(),
-      makeupEligible,
-      madeUp: makeupEligible ? editForm.madeUp : false,
-      recordedAt: new Date().toISOString(),
-    };
-    setTallyEntries(prev => [...prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== key), newEntry]);
-    setEditCell(null);
-  };
-
-  const clearEntry = () => {
-    if (!editCell) return;
-    setTallyEntries(prev => prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== editCell.key));
-    setEditCell(null);
-  };
-
-  // ── Summary stats ───────────────────────────────────────────
+  // ── Summary stats (term weeks only — holiday weeks excluded) ─────
+  const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
   const stats = useMemo(() => {
-    const marked = Object.values(entryMap);
-    const removed = marked.filter(e => e.status === "removed").length;
-    const totalCells = lessonRows.length * termWeeks.length - removed;
-    const completed = marked.filter(e => e.status === "completed").length;
-    const missed = marked.filter(e => e.status === "missed").length;
-    const makeupOwed = marked.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
-    const madeUp = marked.filter(e => e.madeUp).length;
+    const lessonKeySet = new Set(lessonRows.map(r => r.lessonKey));
+    const visibleEntries = Object.values(entryMap).filter(e => lessonKeySet.has(e.lessonKey) && termWeekKeys.has(e.weekKey));
+    const removed = visibleEntries.filter(e => e.status === "removed").length;
+    const termWeekCount = termWeeks.filter(w => !w.isHoliday).length;
+    const totalCells = lessonRows.length * termWeekCount - removed;
+    const completed = visibleEntries.filter(e => e.status === "completed").length;
+    const missed = visibleEntries.filter(e => e.status === "missed").length;
+    const makeupOwed = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
+    const madeUp = visibleEntries.filter(e => e.madeUp).length;
     return { totalCells, completed, missed, makeupOwed, madeUp, unmarked: totalCells - completed - missed };
-  }, [entryMap, lessonRows, termWeeks]);
+  }, [entryMap, lessonRows, termWeeks, termWeekKeys]);
 
   // ── Grouping ────────────────────────────────────────────────
   const groupedRows = useMemo(() => {
@@ -326,17 +290,25 @@ export function TallyView({ timetable, schools, students, teachers, interruption
     return [["All Students", lessonRows]];
   }, [lessonRows, groupBy, schools, entryMap]);
 
+  // Flat ordered list of all rendered rows — used for cross-row drag range
+  const flatRows = useMemo(() => groupedRows.flatMap(([, rows]) => rows), [groupedRows]);
+  const flatRowKeyToIdx = useMemo(() => {
+    const m = new Map();
+    flatRows.forEach((r, i) => m.set(r.lessonKey, i));
+    return m;
+  }, [flatRows]);
+
   // ── Cell render ─────────────────────────────────────────────
   const CellIcon = ({ entry, isFuture }) => {
     if (!entry) {
-      return <span style={{ color: isFuture ? "#9CA3AF" : "#4B5563", fontSize: 16, lineHeight: 1 }}>○</span>;
+      return <span style={{ color: isFuture ? "#9CA3AF" : "#C4C9D4", display: "inline-flex", alignItems: "center" }}><span style={{ width: 12, height: 12, borderRadius: "50%", border: `1.5px solid currentColor`, display: "inline-block" }} /></span>;
     }
     if (entry.status === "removed") return <span style={{ color: "#D1D5DB", fontSize: 14, fontWeight: 700, lineHeight: 1 }}>—</span>;
-    if (entry.status === "completed") return <span style={{ color: "#16A34A", fontSize: 16 }}>✓</span>;
+    if (entry.status === "completed") return <span style={{ color: colors.success, display: "inline-flex", alignItems: "center" }}><Check size={14} /></span>;
     if (entry.status === "missed") {
-      if (entry.madeUp) return <span style={{ color: colors.sidebarActive, fontSize: 16, lineHeight: 1 }}>↺</span>;
-      if (entry.makeupEligible) return <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: "#D97706" }} />;
-      return <span style={{ color: "#DC2626", fontSize: 14, fontWeight: 700 }}>✕</span>;
+      if (entry.madeUp) return <span style={{ color: colors.sidebarActive, display: "inline-flex", alignItems: "center" }}><RotateCcw size={13} /></span>;
+      if (entry.makeupEligible) return <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: colors.accent }} />;
+      return <span style={{ color: colors.danger, display: "inline-flex", alignItems: "center" }}><X size={13} /></span>;
     }
     return null;
   };
@@ -346,23 +318,19 @@ export function TallyView({ timetable, schools, students, teachers, interruption
 
   // ── Render ──────────────────────────────────────────────────
   const pageColor = PAGE_COLORS.tally;
-  const headerBg = colors.sidebarActive;
+  const headerBg = colors.sidebarHover;
 
   if (!timetable) {
     return (
       <div>
         <PageTitle subtitle="Track lesson completion across all schools and teachers" pageColor={PAGE_COLORS.tally}>Master Tally</PageTitle>
-        <div style={{ padding: 40, textAlign: "center", color: "#6B7280" }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
-          <div style={{ fontWeight: 600, fontSize: 16 }}>No master timetable yet</div>
-          <div style={{ fontSize: 13, marginTop: 6 }}>Generate a master timetable first to use the Tally.</div>
-        </div>
+        <EmptyState icon={<ClipboardCheck size={32} />} title="No master timetable yet" subtitle="Generate a master timetable first to use the Tally." />
       </div>
     );
   }
 
   return (
-    <div onClick={() => editCell && setEditCell(null)}>
+    <div>
       <PageTitle subtitle={activeTerm ? activeTerm.label : "Track lesson completion across all schools and teachers"}
         pageColor={PAGE_COLORS.tally}
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
@@ -370,20 +338,23 @@ export function TallyView({ timetable, schools, students, teachers, interruption
           {schools.map(s => {
             const abbr = getSchoolAcronym(s);
             const active = selectedSchool === s.id;
+            const schoolColor = s.color || colors.sidebarActive;
             return (
               <Btn key={s.id} onClick={() => setSelectedSchool(active ? "all" : s.id)}
-                variant={active ? "primary" : "secondary"}>🏫 {abbr}</Btn>
+                variant={active ? "primary" : "secondary"}
+                style={active ? { background: schoolColor, borderColor: schoolColor, color: "#fff" } : {}}
+              ><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Building2 size={12} /> {abbr}</span></Btn>
             );
           })}
           <select value={groupBy} onChange={e => setGroupBy(e.target.value)}
-            style={{ height: 34, padding: "0 12px", border: `2px solid ${colors.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: colors.white, fontWeight: 600, cursor: "pointer", boxSizing: "border-box", marginTop: -2 }}>
+            style={{ height: 34, padding: "0 12px", border: `2px solid ${colors.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, fontWeight: 600, cursor: "pointer", boxSizing: "border-box", marginTop: -2 }}>
             <option value="day_school">Day &amp; School</option>
             <option value="teacher">By Teacher</option>
             <option value="day">By Day</option>
             <option value="school">By School</option>
             <option value="makeups">Makeups Owed</option>
           </select>
-          {onExport && <Btn onClick={() => onExport(null, "", "tally")}>{ExportIcon}Export</Btn>}
+          {onExport && <Btn onClick={() => onExport(null, "", "tally")}><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Send size={13} /> Export</span></Btn>}
         </div>}>
         Master Tally
       </PageTitle>
@@ -391,15 +362,15 @@ export function TallyView({ timetable, schools, students, teachers, interruption
       {/* Summary cards */}
       <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "nowrap", overflowX: "auto" }}>
         {[
-          { label: "Not Yet Marked", value: stats.unmarked, color: "#6B7280", bg: "#F9FAFB", icon: "○" },
-          { label: "Completed", value: stats.completed, color: "#16A34A", bg: "#F0FDF4", icon: "✓" },
-          { label: "Absent (no makeup)", value: stats.missed - stats.makeupOwed - stats.madeUp, color: "#DC2626", bg: "#FEF2F2", icon: "✕" },
-          { label: "Makeup Owed", value: stats.makeupOwed, color: "#D97706", bg: "#FFFBEB", icon: "●" },
+          { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○" },
+          { label: "Completed", value: stats.completed, color: colors.success, bg: `${colors.success}18`, icon: "✓" },
+          { label: "Absent (no makeup)", value: stats.missed - stats.makeupOwed - stats.madeUp, color: colors.danger, bg: colors.redLight, icon: "✕" },
+          { label: "Makeup Owed", value: stats.makeupOwed, color: colors.accent, bg: colors.accentLight, icon: "●" },
           { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺" },
         ].map(s => (
           <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 18px", flex: "1 1 0", minWidth: 0, display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
             <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, flexShrink: 0 }}>{s.value}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#374151", lineHeight: 1.3 }}>{s.label}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: colors.gray700, lineHeight: 1.3 }}>{s.label}</div>
           </div>
         ))}
       </div>
@@ -411,17 +382,17 @@ export function TallyView({ timetable, schools, students, teachers, interruption
           placeholder="Search student…"
           style={{ padding: "6px 12px", border: `1.5px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", width: 180, flexShrink: 0 }}
         />
-        <div style={{ display: "flex", gap: 16, fontSize: 12, color: "#6B7280", flexWrap: "wrap", flex: 1, justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", gap: 16, fontSize: 12, color: colors.gray500, flexWrap: "wrap", flex: 1, justifyContent: "flex-end" }}>
           {[
-            { icon: "○", color: "#9CA3AF", label: "Unmarked" },
-            { icon: "✓", color: "#16A34A", label: "Completed" },
-            { icon: "●", color: "#D97706", label: "Makeup owed" },
-            { icon: "↺", color: colors.sidebarActive, label: "Caught up" },
-            { icon: "✕", color: "#DC2626", label: "No catch-up" },
-            { icon: "—", color: "#D1D5DB", label: "Inactive" },
+            { icon: <span style={{ width: 11, height: 11, borderRadius: "50%", border: "1.5px solid #9CA3AF", display: "inline-block" }} />, color: "#9CA3AF", label: "Unmarked" },
+            { icon: <Check size={13} />, color: colors.success, label: "Completed" },
+            { icon: <span style={{ width: 10, height: 10, borderRadius: "50%", background: colors.accent, display: "inline-block" }} />, color: colors.accent, label: "Makeup owed" },
+            { icon: <RotateCcw size={12} />, color: colors.sidebarActive, label: "Caught up" },
+            { icon: <X size={13} />, color: colors.danger, label: "No catch-up" },
+            { icon: <span style={{ fontSize: 13, lineHeight: 1, color: "#D1D5DB", fontWeight: 700 }}>—</span>, color: "#D1D5DB", label: "Inactive" },
           ].map(l => (
-            <span key={l.label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ color: l.color, fontWeight: 700, fontSize: 14 }}>{l.icon}</span> {l.label}
+            <span key={l.label} style={{ display: "inline-flex", alignItems: "center", gap: 4, color: l.color }}>
+              {l.icon} <span style={{ color: colors.gray500 }}>{l.label}</span>
             </span>
           ))}
         </div>
@@ -429,118 +400,212 @@ export function TallyView({ timetable, schools, students, teachers, interruption
 
       {/* Grid */}
       {Object.keys(weeklyTimetables || {}).length === 0 ? (
-        <div style={{ padding: 48, textAlign: "center", color: "#9CA3AF" }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>📅</div>
-          <div style={{ fontWeight: 600, fontSize: 15, color: "#6B7280", marginBottom: 6 }}>No weekly timetables generated yet</div>
-          <div style={{ fontSize: 13 }}>Head to the <strong>Weekly Adjustments</strong> tab and generate a week to start tracking lessons.</div>
-        </div>
+        <EmptyState icon={<ClipboardCheck size={32} />} title="No weekly timetables generated yet" subtitle={<>Head to the <strong>Weekly Adjustments</strong> tab and generate a week to start tracking lessons.</>} />
       ) : lessonRows.length === 0 ? (
-        <div style={{ padding: 40, textAlign: "center", color: "#9CA3AF" }}>No lessons scheduled at this school.</div>
+        <EmptyState icon={<ClipboardCheck size={32} />} title="No lessons at this school" subtitle="No lessons are scheduled here in the master timetable." />
       ) : (
-        <div style={{ overflowX: "auto", overflowY: "auto", borderRadius: 10, border: "1px solid #E5E7EB", maxHeight: "calc(100vh - 212px)" }}>
-          <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", minWidth: 600 }}>
-            <thead style={{ position: "sticky", top: 0, zIndex: 4 }}>
+        <div style={{ overflowX: "auto", overflowY: "auto", borderRadius: 10, border: `1px solid ${colors.border}`, maxHeight: "calc(100vh - 212px)", position: "relative" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 0, width: `calc(100% + ${termWeeks.filter(w => w.isHoliday).length * 44}px)`, tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: 200 }} />
+              <col style={{ width: 110 }} />
+              {termWeeks.map(w => w.isHoliday
+                ? <col key={w.weekKey} style={{ width: 44 }} />
+                : <col key={w.weekKey} />
+              )}
+              <col style={{ width: 110 }} />
+              <col style={{ width: 60 }} />
+            </colgroup>
+            <thead style={{ position: "sticky", top: 0, zIndex: 6 }}>
               <tr style={{ background: headerBg }}>
-                <th style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: colors.white, borderBottom: `2px solid ${colors.sidebarHover}`, position: "sticky", left: 0, background: headerBg, zIndex: 2, minWidth: 180, whiteSpace: "nowrap" }}>
+                <th style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: colors.cardBg, borderBottom: `2px solid ${colors.sidebarHover}`, position: "sticky", left: 0, background: headerBg, zIndex: 5, whiteSpace: "nowrap" }}>
                   Student / Group
                 </th>
-                <th style={{ padding: "10px 8px", textAlign: "center", fontWeight: 600, fontSize: 11, color: "rgba(255,255,255,0.7)", borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap" }}>
+                <th style={{ padding: "10px 8px", textAlign: "center", fontWeight: 600, fontSize: 11, color: "rgba(255,255,255,0.7)", borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", left: 200, background: headerBg, zIndex: 5, borderRight: `1px solid rgba(255,255,255,0.1)` }}>
                   Instrument
                 </th>
                 {termWeeks.map(w => (
-                  <th key={w.weekKey} style={{ padding: "8px 4px", textAlign: "center", fontWeight: 600, fontSize: 11, color: isFutureWeek(w.weekKey) ? "rgba(255,255,255,0.3)" : colors.white, borderBottom: `2px solid ${colors.sidebarHover}`, minWidth: 36, background: hoveredWeekKey === w.weekKey ? colors.sidebarHover : headerBg, transition: "background 0.1s" }}
+                  <th key={w.weekKey} style={{ padding: "8px 4px", textAlign: "center", fontWeight: 600, fontSize: 11, color: w.isHoliday ? "rgba(255,200,200,0.85)" : isFutureWeek(w.weekKey) ? "rgba(255,255,255,0.3)" : colors.cardBg, borderBottom: `2px solid ${colors.sidebarHover}`, minWidth: 36, background: w.isHoliday ? "#6B3030" : hoveredWeekKey === w.weekKey ? colors.sidebarHover : headerBg, transition: "background 0.1s" }}
                     onMouseEnter={() => setHoveredWeekKey(w.weekKey)}
                     onMouseLeave={() => setHoveredWeekKey(null)}>
                     {w.label}
                   </th>
                 ))}
-                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 600, fontSize: 11, color: colors.white, borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap" }}>
+                <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 600, fontSize: 11, color: colors.white, borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", right: 60, background: headerBg, zIndex: 5, borderLeft: `1px solid rgba(255,255,255,0.1)` }}>
                   Summary
+                </th>
+                <th style={{ padding: "10px 10px", textAlign: "center", fontWeight: 600, fontSize: 11, color: "rgba(255,255,255,0.7)", borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", right: 0, background: headerBg, zIndex: 5 }}>
+                  Email
                 </th>
               </tr>
             </thead>
             <tbody>
               {groupedRows.map(([groupLabel, rows]) => {
                 const filteredRows = tallySearch.trim()
-                  ? rows.filter(r => (r.studentName || r.groupName || "").toLowerCase().includes(tallySearch.trim().toLowerCase()))
+                  ? rows.filter(r => {
+                      const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
+                      const name = r.isGroup
+                        ? (r.groupName || "")
+                        : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
+                      return name.toLowerCase().includes(tallySearch.trim().toLowerCase());
+                    })
                   : rows;
                 if (filteredRows.length === 0) return null;
                 return (
                 <React.Fragment key={groupLabel}>
                   {groupBy !== "none" && groupBy !== "makeups" && (
                     <tr>
-                      <td colSpan={termWeeks.length + 3} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 700, color: "#fff", background: pageColor, letterSpacing: "0.05em", textTransform: "uppercase", position: "sticky", top: 36, zIndex: 3, borderBottom: `1px solid ${colors.sidebarHover}` }}>
+                      <td colSpan={termWeeks.length + 4} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 700, color: "#fff", background: (() => { const sid = rows[0]?.schoolId; const sc = (groupBy === "day_school" || groupBy === "school") ? schools.find(s => s.id === sid) : null; return sc?.color || pageColor; })(), letterSpacing: "0.05em", textTransform: "uppercase", position: "sticky", top: 36, zIndex: 3, borderBottom: `1px solid ${colors.sidebarHover}` }}>
                         {groupLabel}
                       </td>
                     </tr>
                   )}
                   {groupBy === "makeups" && (
                     <tr>
-                      <td colSpan={termWeeks.length + 3} style={{ padding: "8px 14px 4px", fontSize: 11, fontWeight: 700, color: "#fff", background: colors.warning, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                      <td colSpan={termWeeks.length + 4} style={{ padding: "8px 14px 4px", fontSize: 11, fontWeight: 700, color: "#fff", background: colors.accent, letterSpacing: "0.05em", textTransform: "uppercase" }}>
                         {groupLabel}
                       </td>
                     </tr>
                   )}
                   {filteredRows.map((lesson, ri) => {
+                    // Resolve live name from students prop so renames immediately reflect in the tally
+                    const liveStudent = lesson.isGroup ? null : students.find(s => s.id === lesson.studentId);
                     const displayName = lesson.isGroup
                       ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group")
-                      : lesson.studentName;
-                    const student = lesson.isGroup ? null : students.find(s => s.id === lesson.studentId);
+                      : buildPreferredDisplayName(liveStudent?.name || lesson.studentName);
+                    const student = liveStudent;
                     const className = student?.className || "";
                     const rowEntries = termWeeks.map(w => entryMap[`${lesson.lessonKey}|${w.weekKey}`] || null);
                     const rowCompleted = rowEntries.filter(e => e?.status === "completed").length;
                     const rowMissed = rowEntries.filter(e => e?.status === "missed").length;
                     const rowMakeup = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
                     const rowMadeUp = rowEntries.filter(e => e?.madeUp).length;
-                    const rowBg = ri % 2 === 0 ? "#fff" : "#F9FAFB";
+                    const rowBg = ri % 2 === 0 ? colors.cardBg : (darkMode ? colors.bg : "#F9FAFB");
                     return (
                       <tr key={lesson.lessonKey} style={{ background: rowBg }}>
-                        <td style={{ padding: "8px 14px", borderBottom: "1px solid #F3F4F6", position: "sticky", left: 0, background: rowBg, zIndex: 1 }}>
-                          <div style={{ fontWeight: 500, fontSize: 13, color: "#111827" }}>{displayName}</div>
-                          {selectedSchool === "all" && <div style={{ fontSize: 10, color: "#6366F1", fontWeight: 600 }}>{getSchoolAcronym(schools.find(s => s.id === lesson.schoolId))}</div>}
-                          {selectedSchool !== "all" && className && <div style={{ fontSize: 11, color: "#9CA3AF" }}>{className}</div>}
+                      <td style={{ padding: "8px 14px", borderBottom: `1px solid ${colors.border}`, position: "sticky", left: 0, background: rowBg, zIndex: 1 }}>
+                          <div
+                            style={{ fontWeight: 500, fontSize: 13, color: hoveredNameKey === lesson.lessonKey ? colors.warning : colors.text, cursor: (!lesson.isGroup && onViewStudent) ? "pointer" : "default", transition: "color 0.12s", display: "inline-block" }}
+                            onClick={e => { if (!lesson.isGroup && onViewStudent) { e.stopPropagation(); onViewStudent(lesson.studentId); } }}
+                            onMouseEnter={() => { if (!lesson.isGroup && onViewStudent) setHoveredNameKey(lesson.lessonKey); }}
+                            onMouseLeave={() => setHoveredNameKey(null)}
+                          >{displayName}</div>
+                          {selectedSchool === "all" && <div style={{ fontSize: 10, color: schools.find(s => s.id === lesson.schoolId)?.color || colors.sidebarActive, fontWeight: 600 }}>{getSchoolAcronym(schools.find(s => s.id === lesson.schoolId))}</div>}
+                          {selectedSchool !== "all" && className && <div style={{ fontSize: 11, color: colors.textMuted }}>{className}</div>}
                         </td>
-                        <td style={{ padding: "8px 8px", borderBottom: "1px solid #F3F4F6", textAlign: "center", fontSize: 12, color: "#6B7280", whiteSpace: "nowrap" }}>
+                        <td style={{ padding: "8px 8px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", fontSize: 12, color: colors.textLight, whiteSpace: "nowrap", position: "sticky", left: 200, background: rowBg, zIndex: 1, borderRight: `1px solid ${colors.border}` }}>
                           {lesson.instrument}
-                          <div style={{ fontSize: 10, color: "#D1D5DB" }}>{lesson.day}</div>
+                          <div style={{ fontSize: 10, color: colors.textMuted }}>{lesson.day}</div>
                         </td>
                         {termWeeks.map((w, wi) => {
                           const entry = rowEntries[wi];
                           const future = isFutureWeek(w.weekKey);
-                          const isEditing = editCell?.key === `${lesson.lessonKey}|${w.weekKey}`;
+                          const cellKey = `${lesson.lessonKey}|${w.weekKey}`;
+                          const isHoliday = !!w.isHoliday;
+                          // For holiday cells: only show entries explicitly created as holiday catch-ups
+                          const holidayEntry = isHoliday ? (entry?.isHolidayCatchup ? entry : null) : entry;
+                          const holidayHasLesson = isHoliday && (!!holidayEntry || !!holidayLessonMap[cellKey]);
+                          const holidayBlank = isHoliday && !holidayHasLesson;
+                          const displayEntry = isHoliday ? holidayEntry : entry;
+
                           return (
-                            <td key={w.weekKey} style={{ padding: "6px 2px", borderBottom: "1px solid #F3F4F6", textAlign: "center", cursor: (future && !entry) ? "default" : "pointer", position: "relative", background: hoveredWeekKey === w.weekKey ? "#F3F4F6" : "transparent", transition: "background 0.1s" }}
-                              onClick={e => { e.stopPropagation(); if (!future || entry) quickComplete(lesson, w); }}
-                              onContextMenu={e => { e.preventDefault(); e.stopPropagation(); if (entry?.madeUp) { setMadeUpPopup({ x: e.clientX, y: e.clientY, weekNum: w.label }); } else if (!future || entry) openEdit(lesson, w); }}
+                            <td key={w.weekKey}
+                              style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center",
+                                cursor: "default", position: "relative",
+                                background: holidayBlank ? (darkMode ? "rgba(180,80,80,0.10)" : "rgba(248,113,113,0.08)")
+                                  : isHoliday ? (darkMode ? "rgba(180,80,80,0.15)" : "rgba(248,113,113,0.13)")
+                                  : hoveredWeekKey === w.weekKey ? (darkMode ? colors.sidebarHover : "#F3F4F6") : "transparent",
+                                transition: "background 0.1s",
+                                userSelect: "none" }}
                               onMouseEnter={e => {
                                 setHoveredWeekKey(w.weekKey);
+                                if (holidayBlank) return;
                                 const r = e.currentTarget.getBoundingClientRect();
-                                const madeUpWeekLabel = entry?.madeUp && entry?.madeUpWeekKey
-                                  ? (termWeeks.find(tw => tw.weekKey === (entry.madeUpWeekKey || "").split("|")[0])?.label || null)
+                                const madeUpWeekLabel = displayEntry?.madeUp && displayEntry?.madeUpWeekKey
+                                  ? (termWeeks.find(tw => tw.weekKey === (displayEntry.madeUpWeekKey || "").split("|")[0])?.label || null)
                                   : null;
-                                const text = entry?.status === "removed"
-                                  ? "Inactive (click to cycle to completed)"
-                                  : entry?.status === "completed" ? (entry.bandSession ? (entry.notes || "Band Session") : "Completed" + (entry.notes ? " — " + entry.notes : ""))
-                                  : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
-                                  : entry?.status === "missed" && entry?.makeupEligible ? ("Missed — catch-up owed")
-                                  : entry?.status === "missed" ? ("Missed — no catch-up")
+                                const text = isHoliday
+                                  ? (displayEntry?.status === "completed" ? "Holiday — Completed" : displayEntry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
+                                  : displayEntry?.status === "removed" ? "Inactive"
+                                  : displayEntry?.status === "completed" ? (displayEntry.bandSession ? (displayEntry.notes || "Band Session") : "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : ""))
+                                  : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
+                                  : displayEntry?.status === "missed" && displayEntry?.makeupEligible ? "Missed — catch-up owed"
+                                  : displayEntry?.status === "missed" ? "Missed — no catch-up"
                                   : future ? "Future week" : "Unmarked";
-                                setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6 });
+                                setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: displayEntry?.status === "missed" });
                               }}
                               onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
-                              <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: isEditing ? "rgba(52,69,101,0.07)" : entry ? (entry.status === "completed" ? "#F0FDF4" : entry.status === "removed" ? "#F9FAFB" : entry.madeUp ? "rgba(52,69,101,0.07)" : entry.makeupEligible ? "#FFFBEB" : "#FEF2F2") : "transparent", border: isEditing ? "2px solid #3B82F6" : "none" }}>
-                                <CellIcon entry={entry} isFuture={future} />
-                              </div>
+                              {!holidayBlank && (
+                                <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: displayEntry ? (displayEntry.status === "completed" ? `${colors.success}18` : displayEntry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : displayEntry.madeUp ? "rgba(52,69,101,0.07)" : displayEntry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                                  <CellIcon entry={displayEntry} isFuture={future} />
+                                </div>
+                              )}
                             </td>
                           );
                         })}
-                        <td style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", whiteSpace: "nowrap" }}>
+                        <td style={{ padding: "8px 12px", borderBottom: `1px solid ${colors.border}`, whiteSpace: "nowrap", position: "sticky", right: 60, background: rowBg, zIndex: 1, borderLeft: `1px solid ${colors.border}` }}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", fontSize: 11 }}>
-                            <span style={{ color: "#16A34A", fontWeight: 600 }}>{rowCompleted}✓</span>
-                            {(rowMissed - rowMakeup - rowMadeUp) > 0 && <span style={{ color: "#DC2626", fontWeight: 600 }}>{rowMissed - rowMakeup - rowMadeUp}✕</span>}
-                            {rowMakeup > 0 && <span style={{ color: "#D97706", fontWeight: 600 }}>{rowMakeup}●</span>}
-                            {rowMadeUp > 0 && <span style={{ color: colors.sidebarActive, fontWeight: 600 }}>{rowMadeUp}↺</span>}
+                            <span style={{ color: colors.success, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowCompleted}<Check size={11} /></span>
+                            {(rowMissed - rowMakeup - rowMadeUp) > 0 && <span style={{ color: colors.danger, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMissed - rowMakeup - rowMadeUp}<X size={11} /></span>}
+                            {rowMakeup > 0 && <span style={{ color: colors.accent, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMakeup}<span style={{ width: 8, height: 8, borderRadius: "50%", background: colors.accent, display: "inline-block" }} /></span>}
+                            {rowMadeUp > 0 && <span style={{ color: colors.sidebarActive, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMadeUp}<RotateCcw size={11} /></span>}
                           </div>
+                        </td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", position: "sticky", right: 0, background: rowBg, zIndex: 1 }}>
+                          {(() => {
+                            const school = schools.find(s => s.id === lesson.schoolId);
+                            let emails = [];
+                            if (lesson.isGroup) {
+                              // Collect one primary parent email per group member via name matching
+                              emails = (lesson.studentNames || []).flatMap(sName => {
+                                const st = students.find(s => s.name === sName);
+                                return st ? getParentEmails(st) : [];
+                              }).filter((e, i, arr) => arr.indexOf(e) === i);
+                            } else {
+                              const st = students.find(s => s.id === lesson.studentId);
+                              emails = st ? getParentEmails(st) : [];
+                            }
+                            if (!emails.length) return null;
+                            const hasMissed = rowMissed > 0;
+                            return (
+                              <button
+                                title={hasMissed ? "Email parents — missed lesson summary" : "Email parents"}
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  const termLabel = activeTerm?.label || "";
+                                  const missedLines = termWeeks
+                                    .map((w, wi) => ({ w, entry: rowEntries[wi] }))
+                                    .filter(({ entry }) => entry?.status === "missed")
+                                    .map(({ w, entry }) => {
+                                      const cat = entry.reason === "informed_absence" ? "Informed absence"
+                                        : entry.reason === "uninformed_absence" ? "Uninformed absence"
+                                        : entry.reason === "teacher_absent" ? "Teacher absent"
+                                        : "Missed";
+                                      const detail = entry.reasonDetail ? ` (${entry.reasonDetail})` : "";
+                                      return `  • ${w.label}${detail ? ` — ${cat}${detail}` : ` — ${cat}`}`;
+                                    });
+                                  const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
+                                  if (lesson.isGroup) {
+                                    const groupLabel = lesson.groupName || "Group";
+                                    const subject = `${groupLabel} — ${lesson.instrument} lessons — ${termLabel} summary`;
+                                    const body = `Hi,\n\nI wanted to reach out with a summary of the ${groupLabel} ${lesson.instrument} group lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
+                                    openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
+                                  } else {
+                                    const st = students.find(s => s.id === lesson.studentId);
+                                    const parentName = preferredFirstName(st?.parents?.[0]?.name || "") || "there";
+                                    const subject = `${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons — ${termLabel} summary`;
+                                    const body = `Hi ${parentName},\n\nI wanted to reach out with a summary of ${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
+                                    openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
+                                  }
+                                }}
+                                style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", borderRadius: 5, color: hasMissed ? colors.accent : colors.textMuted, display: "inline-flex", alignItems: "center", opacity: hasMissed ? 1 : 0.45 }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}
+                              >
+                                <Mail size={13} />
+                              </button>
+                            );
+                          })()}
                         </td>
                       </tr>
                     );
@@ -553,15 +618,6 @@ export function TallyView({ timetable, schools, students, teachers, interruption
         </div>
       )}
 
-      {/* Made-up popup on right-click */}
-      {madeUpPopup && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 999 }} onClick={() => setMadeUpPopup(null)}>
-          <div style={{ position: "fixed", top: madeUpPopup.y, left: madeUpPopup.x, zIndex: 1000, background: "rgba(52,69,101,0.07)", border: "1px solid rgba(52,69,101,0.25)", borderRadius: 8, padding: "10px 16px", fontSize: 13, color: colors.sidebarActive, fontWeight: 600, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", whiteSpace: "nowrap" }}
-            onClick={e => e.stopPropagation()}>
-            ↺ Caught up in {madeUpPopup.weekNum}
-          </div>
-        </div>
-      )}
       {/* Instant tooltip for removed cells */}
       {tallyTooltip && (
         <div style={{ position: "fixed", left: tallyTooltip.x, top: tallyTooltip.y, transform: "translate(-50%, -100%)", background: "rgba(30,30,30,0.92)", color: "#fff", fontSize: 12, padding: "4px 9px", borderRadius: 6, pointerEvents: "none", zIndex: 9999, whiteSpace: "nowrap" }}>
@@ -569,206 +625,174 @@ export function TallyView({ timetable, schools, students, teachers, interruption
         </div>
       )}
 
-      {/* Edit modal */}
-      {editCell && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={() => setEditCell(null)}>
-          <div style={{ background: "#fff", borderRadius: 14, padding: 24, width: 340, boxShadow: "0 20px 60px rgba(0,0,0,0.2)", maxHeight: "90vh", overflowY: "auto" }}
-            onClick={e => e.stopPropagation()}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>
-              {editCell.lesson.isGroup ? (editCell.lesson.groupName || "Group") : editCell.lesson.studentName}
+      {/* Private Students Tally Panel */}
+      {privateStudents.length > 0 && (
+        <div style={{ marginTop: 36 }}>
+          {/* Panel header */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: colors.text }}>Private Students</div>
+            <span style={{ fontSize: 11, fontWeight: 700, color: colors.accent, background: colors.accentLight, borderRadius: 4, padding: "2px 8px" }}>Private</span>
+            <div style={{ display: "flex", gap: 12, marginLeft: 4, fontSize: 12 }}>
+              <span style={{ color: colors.success, display: "inline-flex", alignItems: "center", gap: 3 }}><Check size={12} />{privateStats.completed}</span>
+              {(privateStats.missed - privateStats.makeupOwed - privateStats.madeUp) > 0 && (
+                <span style={{ color: colors.danger, display: "inline-flex", alignItems: "center", gap: 3 }}><X size={12} />{privateStats.missed - privateStats.makeupOwed - privateStats.madeUp}</span>
+              )}
+              {privateStats.makeupOwed > 0 && (
+                <span style={{ color: colors.accent, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: colors.accent, display: "inline-block" }} />{privateStats.makeupOwed} owed
+                </span>
+              )}
+              {privateStats.madeUp > 0 && (
+                <span style={{ color: colors.sidebarActive, display: "inline-flex", alignItems: "center", gap: 3 }}><RotateCcw size={12} />{privateStats.madeUp}</span>
+              )}
             </div>
-            <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 18 }}>
-              {editCell.lesson.instrument} · {editCell.lesson.day} · {editCell.week.label} ({activeTerm?.label})
-            </div>
+          </div>
 
-            {/* Notes */}
-            <div style={{ marginBottom: 14 }}>
-              <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
-                placeholder="Notes (optional) — e.g. Will catch up Thursday lunch…"
-                style={{ width: "100%", padding: "8px 10px", border: "1px solid #D1D5DB", borderRadius: 7, fontSize: 13, fontFamily: "inherit", resize: "vertical", minHeight: 52, boxSizing: "border-box", color: "#374151" }} />
-              <button onClick={() => {
-                const existing = entryMap[editCell.key];
-                if (existing) {
-                  setTallyEntries(prev => prev.map(e => `${e.lessonKey}|${e.weekKey}` === editCell.key ? { ...e, notes: editForm.notes.trim() } : e));
-                } else {
-                  // Save as completed with just a note
-                  const newEntry = {
-                    id: uid(),
-                    lessonKey: editCell.lesson.lessonKey, lessonId: editCell.lesson.id,
-                    isGroup: editCell.lesson.isGroup || false, groupName: editCell.lesson.groupName || "",
-                    studentId: editCell.lesson.studentId || "",
-                    studentName: editCell.lesson.isGroup ? (editCell.lesson.groupName || editCell.lesson.studentNames?.join(", ") || "Group") : editCell.lesson.studentName,
-                    studentNames: editCell.lesson.studentNames || [],
-                    instrument: editCell.lesson.instrument, schoolId: editCell.lesson.schoolId,
-                    teacherId: editCell.lesson.teacherId, teacherName: editCell.lesson.teacherName,
-                    weekKey: editCell.week.weekKey, weekLabel: editCell.week.label, weekNum: editCell.week.weekNum,
-                    termKey: activeTerm?.key, day: editCell.lesson.day,
-                    status: "completed", reason: "",
-                    notes: editForm.notes.trim(),
-                    makeupEligible: false, madeUp: false,
-                    recordedAt: new Date().toISOString(),
-                  };
-                  setTallyEntries(prev => [...prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== editCell.key), newEntry]);
-                }
-                setEditCell(null);
-              }} style={{ marginTop: 6, width: "100%", padding: "7px 0", borderRadius: 7, background: "#F0FDF4", color: "#16A34A", fontWeight: 600, fontSize: 13, border: "1px solid #BBF7D0", cursor: "pointer", fontFamily: "inherit" }}>
-                Save note
-              </button>
-            </div>
-
-            {/* Missed reasons */}
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Why was this lesson missed?</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-              {TALLY_REASONS.filter(r => !r.invisible).map(r => {
-                const makeupElig = r.makeupEligible === null ? editForm.makeupEligible : (r.makeupEligible || false);
-                const isCurrentReason = entryMap[editCell.key]?.reason === r.value;
-                return (
-                  <button key={r.value} onClick={() => {
-                        const newEntry = {
-                          id: uid(),
-                          lessonKey: editCell.lesson.lessonKey, lessonId: editCell.lesson.id,
-                          isGroup: editCell.lesson.isGroup || false, groupName: editCell.lesson.groupName || "",
-                          studentId: editCell.lesson.studentId || "",
-                          studentName: editCell.lesson.isGroup ? (editCell.lesson.groupName || editCell.lesson.studentNames?.join(", ") || "Group") : editCell.lesson.studentName,
-                          studentNames: editCell.lesson.studentNames || [],
-                          instrument: editCell.lesson.instrument, schoolId: editCell.lesson.schoolId,
-                          teacherId: editCell.lesson.teacherId, teacherName: editCell.lesson.teacherName,
-                          weekKey: editCell.week.weekKey, weekLabel: editCell.week.label, weekNum: editCell.week.weekNum,
-                          termKey: activeTerm?.key, day: editCell.lesson.day,
-                          status: "missed", reason: r.value,
-                          notes: editForm.notes.trim(),
-                          makeupEligible: makeupElig, madeUp: false,
-                          recordedAt: new Date().toISOString(),
-                        };
-                        setTallyEntries(prev => [...prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== editCell.key), newEntry]);
-                        if (setWeeklyTimetables) {
-                          const wKey = editCell.week.weekKey;
-                          const reasonLabel = TALLY_REASONS.find(tr => tr.value === r.value)?.label || r.value;
-                          setWeeklyTimetables(prev => {
-                            const next = { ...prev };
-                            for (const storeKey of Object.keys(next)) {
-                              if (!storeKey.startsWith(wKey + "|")) continue;
-                              const ent = next[storeKey];
-                              if (!ent?.missed) continue;
-                              next[storeKey] = { ...ent, missed: ent.missed.map(m => {
-                                const mKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-                                return mKey === editCell.lesson.lessonKey ? { ...m, reason: reasonLabel } : m;
-                              })};
-                            }
-                            return next;
-                          });
-                        }
-                        setEditCell(null);
-                      }}
-                      style={{ padding: "9px 12px", borderRadius: 7, border: isCurrentReason ? "2px solid " + colors.accentDark : "1.5px solid #E5E7EB", background: isCurrentReason ? colors.accentLight : "#fff", color: isCurrentReason ? colors.accentDark : "#374151", fontWeight: isCurrentReason ? 700 : 400, fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                      onMouseEnter={e => { if (!isCurrentReason) e.currentTarget.style.background = colors.accentLight; }}
-                      onMouseLeave={e => { if (!isCurrentReason) e.currentTarget.style.background = "#fff"; }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        {isCurrentReason && <span style={{ fontSize: 10, color: colors.accentDark }}>✓</span>}
-                        {r.label}
-                      </span>
-                      {r.makeupEligible === true && <span style={{ fontSize: 11, color: "#D97706", fontWeight: 600 }}>● makeup owed</span>}
-                      {r.makeupEligible === false && <span style={{ fontSize: 11, color: "#9CA3AF" }}>no makeup</span>}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Remove from tally section */}
-            <div style={{ borderTop: "1px solid #F3F4F6", paddingTop: 12, marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#6B7280", marginBottom: 8 }}>Remove from tally entirely</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {TALLY_REASONS.filter(r => r.invisible).map(r => {
-                  const isCurrentReason = entryMap[editCell.key]?.reason === r.value;
+          {/* Private grid */}
+          <div style={{ overflowX: "auto", borderRadius: 10, border: `1px solid ${colors.border}`, position: "relative" }}>
+            <table style={{ borderCollapse: "separate", borderSpacing: 0, width: `calc(100% + ${termWeeks.filter(w => w.isHoliday).length * 44}px)`, tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: 200 }} />
+                <col style={{ width: 110 }} />
+                {termWeeks.map(w => w.isHoliday
+                  ? <col key={w.weekKey} style={{ width: 44 }} />
+                  : <col key={w.weekKey} />
+                )}
+                <col style={{ width: 110 }} />
+                <col style={{ width: 60 }} />
+              </colgroup>
+              <thead style={{ position: "sticky", top: 0, zIndex: 6 }}>
+                <tr style={{ background: headerBg }}>
+                  <th style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, fontSize: 12, color: colors.cardBg, borderBottom: `2px solid ${colors.sidebarHover}`, position: "sticky", left: 0, background: headerBg, zIndex: 5, minWidth: 180, whiteSpace: "nowrap" }}>
+                    Student
+                  </th>
+                  <th style={{ padding: "10px 8px", textAlign: "center", fontWeight: 600, fontSize: 11, color: "rgba(255,255,255,0.7)", borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", left: 200, background: headerBg, zIndex: 5, borderRight: `1px solid rgba(255,255,255,0.1)` }}>
+                    Instrument
+                  </th>
+                  {termWeeks.map(w => (
+                    <th key={w.weekKey} style={{ padding: "8px 4px", textAlign: "center", fontWeight: 600, fontSize: 11, color: w.isHoliday ? "rgba(255,200,200,0.85)" : isFutureWeek(w.weekKey) ? "rgba(255,255,255,0.3)" : colors.cardBg, borderBottom: `2px solid ${colors.sidebarHover}`, minWidth: 36, background: w.isHoliday ? "#6B3030" : hoveredWeekKey === w.weekKey ? colors.sidebarHover : headerBg, transition: "background 0.1s" }}
+                      onMouseEnter={() => setHoveredWeekKey(w.weekKey)}
+                      onMouseLeave={() => setHoveredWeekKey(null)}>
+                      {w.label}
+                    </th>
+                  ))}
+                  <th style={{ padding: "10px 12px", textAlign: "center", fontWeight: 600, fontSize: 11, color: colors.white, borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", right: 60, background: headerBg, zIndex: 5, borderLeft: `1px solid rgba(255,255,255,0.1)` }}>
+                    Summary
+                  </th>
+                  <th style={{ padding: "10px 10px", textAlign: "center", fontWeight: 600, fontSize: 11, color: "rgba(255,255,255,0.7)", borderBottom: `2px solid ${colors.sidebarHover}`, whiteSpace: "nowrap", position: "sticky", right: 0, background: headerBg, zIndex: 5 }}>
+                    Email
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {privateLessonRows.map((lesson, ri) => {
+                  const rowEntries = termWeeks.map(w => privateEntryMap[`${lesson.lessonKey}|${w.weekKey}`] || null);
+                  const rowCompleted = rowEntries.filter(e => e?.status === "completed").length;
+                  const rowMissed   = rowEntries.filter(e => e?.status === "missed").length;
+                  const rowMakeup   = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
+                  const rowMadeUp   = rowEntries.filter(e => e?.madeUp).length;
+                  const rowBg = ri % 2 === 0 ? colors.cardBg : (darkMode ? colors.bg : "#F9FAFB");
                   return (
-                    <button key={r.value} onClick={() => {
-                          const newEntry = {
-                            id: uid(),
-                            lessonKey: editCell.lesson.lessonKey, lessonId: editCell.lesson.id,
-                            isGroup: editCell.lesson.isGroup || false, groupName: editCell.lesson.groupName || "",
-                            studentId: editCell.lesson.studentId || "",
-                            studentName: editCell.lesson.isGroup ? (editCell.lesson.groupName || editCell.lesson.studentNames?.join(", ") || "Group") : editCell.lesson.studentName,
-                            studentNames: editCell.lesson.studentNames || [],
-                            instrument: editCell.lesson.instrument, schoolId: editCell.lesson.schoolId,
-                            teacherId: editCell.lesson.teacherId, teacherName: editCell.lesson.teacherName,
-                            weekKey: editCell.week.weekKey, weekLabel: editCell.week.label, weekNum: editCell.week.weekNum,
-                            termKey: activeTerm?.key, day: editCell.lesson.day,
-                            status: "removed", reason: r.value,
-                            notes: editForm.notes.trim(),
-                            makeupEligible: false, madeUp: false,
-                            recordedAt: new Date().toISOString(),
-                          };
-                          setTallyEntries(prev => [...prev.filter(e => `${e.lessonKey}|${e.weekKey}` !== editCell.key), newEntry]);
-                          setEditCell(null);
-                        }}
-                      style={{ padding: "9px 12px", borderRadius: 7, border: isCurrentReason ? "2px solid #6B7280" : "1.5px solid #E5E7EB", background: isCurrentReason ? "#F3F4F6" : "#fff", color: "#374151", fontWeight: isCurrentReason ? 700 : 400, fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                      onMouseEnter={e => { if (!isCurrentReason) e.currentTarget.style.background = "#F9FAFB"; }}
-                      onMouseLeave={e => { if (!isCurrentReason) e.currentTarget.style.background = "#fff"; }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        {isCurrentReason && <span style={{ fontSize: 10, color: "#6B7280" }}>✓</span>}
-                        {r.label}
-                      </span>
-                      <span style={{ fontSize: 11, color: "#9CA3AF" }}>not counted</span>
-                    </button>
+                    <tr key={lesson.lessonKey} style={{ background: rowBg }}>
+                      <td style={{ padding: "8px 14px", borderBottom: `1px solid ${colors.border}`, position: "sticky", left: 0, background: rowBg, zIndex: 1 }}>
+                        <div
+                          style={{ fontWeight: 500, fontSize: 13, color: hoveredNameKey === lesson.lessonKey ? colors.warning : colors.text, cursor: onViewStudent ? "pointer" : "default", transition: "color 0.12s", display: "inline-block" }}
+                          onClick={e => { if (onViewStudent) { e.stopPropagation(); onViewStudent(lesson.studentId); } }}
+                          onMouseEnter={() => { if (onViewStudent) setHoveredNameKey(lesson.lessonKey); }}
+                          onMouseLeave={() => setHoveredNameKey(null)}
+                        >{buildPreferredDisplayName(lesson.studentName)}</div>
+                      </td>
+                      <td style={{ padding: "8px 8px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", fontSize: 12, color: colors.textLight, whiteSpace: "nowrap", position: "sticky", left: 200, background: rowBg, zIndex: 1, borderRight: `1px solid ${colors.border}` }}>
+                        {lesson.instrument}
+                        {lesson.day && <div style={{ fontSize: 10, color: colors.textMuted }}>{lesson.day}</div>}
+                      </td>
+                      {termWeeks.map((w, wi) => {
+                        const entry = rowEntries[wi];
+                        const future = isFutureWeek(w.weekKey);
+                        const isHoliday = !!w.isHoliday;
+
+                        return (
+                          <td key={w.weekKey}
+                            style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", cursor: "default", position: "relative",
+                              background: isHoliday ? (darkMode ? "rgba(180,80,80,0.15)" : "rgba(248,113,113,0.13)")
+                                : hoveredWeekKey === w.weekKey ? (darkMode ? colors.sidebarHover : "#F3F4F6") : "transparent",
+                              transition: "background 0.1s",
+                              userSelect: "none" }}
+                            onMouseEnter={e => {
+                              setHoveredWeekKey(w.weekKey);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              const madeUpWeekLabel = entry?.madeUp && entry?.madeUpWeekKey
+                                ? (termWeeks.find(tw => tw.weekKey === (entry.madeUpWeekKey || "").split("|")[0])?.label || null)
+                                : null;
+                              const text = isHoliday
+                                ? (entry?.status === "completed" ? "Holiday — Completed" : entry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
+                                : entry?.status === "removed" ? "Inactive"
+                                : entry?.status === "completed" ? "Completed" + (entry.notes ? " — " + entry.notes : "")
+                                : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
+                                : entry?.status === "missed" && entry?.makeupEligible ? "Missed — catch-up owed"
+                                : entry?.status === "missed" ? "Missed — no catch-up"
+                                : future ? "Future" : "Unmarked";
+                              setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: entry?.status === "missed" });
+                            }}
+                            onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
+                            <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                              <CellIcon entry={entry} isFuture={future} />
+                            </div>
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "8px 12px", borderBottom: `1px solid ${colors.border}`, whiteSpace: "nowrap", position: "sticky", right: 60, background: rowBg, zIndex: 1, borderLeft: `1px solid ${colors.border}` }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", fontSize: 11 }}>
+                          <span style={{ color: colors.success, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowCompleted}<Check size={11} /></span>
+                          {(rowMissed - rowMakeup - rowMadeUp) > 0 && <span style={{ color: colors.danger, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMissed - rowMakeup - rowMadeUp}<X size={11} /></span>}
+                          {rowMakeup > 0 && <span style={{ color: colors.accent, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMakeup}<span style={{ width: 8, height: 8, borderRadius: "50%", background: colors.accent, display: "inline-block" }} /></span>}
+                          {rowMadeUp > 0 && <span style={{ color: colors.sidebarActive, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMadeUp}<RotateCcw size={11} /></span>}
+                        </div>
+                      </td>
+                      <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", position: "sticky", right: 0, background: rowBg, zIndex: 1 }}>
+                        {(() => {
+                          const st = students.find(s => s.id === lesson.studentId);
+                          const emails = st ? getParentEmails(st) : [];
+                          if (!emails.length) return null;
+                          const hasMissed = rowMissed > 0;
+                          const termLabel = activeTerm?.label || "";
+                          return (
+                            <button
+                              title={hasMissed ? "Email parent — missed lesson summary" : "Email parent"}
+                              onClick={e => {
+                                e.stopPropagation();
+                                const parentName = preferredFirstName(st?.parents?.[0]?.name || "") || "there";
+                                const missedLines = termWeeks
+                                  .map((w, wi) => ({ w, entry: rowEntries[wi] }))
+                                  .filter(({ entry }) => entry?.status === "missed")
+                                  .map(({ w, entry }) => {
+                                    const cat = entry.reason === "informed_absence" ? "Informed absence"
+                                      : entry.reason === "uninformed_absence" ? "Uninformed absence"
+                                      : entry.reason === "teacher_absent" ? "Teacher absent"
+                                      : "Missed";
+                                    const detail = entry.reasonDetail ? ` (${entry.reasonDetail})` : "";
+                                    return `  • ${w.label}${detail ? ` — ${cat}${detail}` : ` — ${cat}`}`;
+                                  });
+                                const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
+                                const subject = `${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons — ${termLabel} summary`;
+                                const body = `Hi ${parentName},\n\nI wanted to reach out with a summary of ${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
+                                openCompose(emails, { subject, body, triggerId: "tally_end_of_term", forceTo: true });
+                              }}
+                              style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", borderRadius: 5, color: hasMissed ? colors.accent : colors.textMuted, display: "inline-flex", alignItems: "center", opacity: hasMissed ? 1 : 0.45 }}
+                              onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
+                              onMouseLeave={e => e.currentTarget.style.background = "none"}
+                            >
+                              <Mail size={13} />
+                            </button>
+                          );
+                        })()}
+                      </td>
+                    </tr>
                   );
                 })}
-              </div>
-            </div>
-
-            {/* Email parent — shown when entry is a recorded missed lesson for an individual student */}
-            {(() => {
-              const current = entryMap[editCell.key];
-              if (!current || current.status !== "missed" || editCell.lesson.isGroup) return null;
-              const st = students.find(s => s.id === editCell.lesson.studentId);
-              const emails = st ? getParentEmails(st) : [];
-              if (!emails.length) return null;
-              const school = schools.find(s => s.id === editCell.lesson.schoolId);
-              const reasonValue = current.reason || "other";
-              const tmpl = getEmailTemplates()[reasonValue] || getEmailTemplates().other;
-              const parentName = (st?.parents?.[0]?.name || "").split(" ")[0] || "there";
-              const resolved = resolveTemplate(tmpl, {
-                studentName: preferredFirstName(editCell.lesson.studentName),
-                parentName: preferredFirstName(parentName) || 'there',
-                instrument: editCell.lesson.instrument || "",
-                day: editCell.lesson.day || "",
-                weekLabel: editCell.week.label || "",
-                teacherName: editCell.lesson.teacherName || "",
-                schoolName: school?.name || "",
-              });
-              const tallyEditMergeCtx = {
-                student_name: editCell.lesson.studentName || "",
-                parent_name: preferredFirstName(parentName) || "there",
-                instrument: editCell.lesson.instrument || "",
-                day: editCell.lesson.day || "",
-                lesson_time: editCell.lesson.start || "",
-                week_label: editCell.week.label || "",
-                absence_reason: current.reason || "",
-                teacher_name: editCell.lesson.teacherName || "",
-                school_name: school?.name || "",
-                class_name: st?.className || "",
-              };
-              return (
-                <button
-                  onClick={() => { openCompose(emails, { subject: resolved.subject, body: resolved.body, from: school?.senderEmail || "", triggerId: "tally_missed", mergeCtx: tallyEditMergeCtx }); }}
-                  style={{ width: "100%", marginTop: 8, padding: "9px 0", borderRadius: 8, background: colors.accentLight, color: colors.accentDark, fontWeight: 600, fontSize: 13, border: `1.5px solid ${colors.accent}`, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
-                  onMouseEnter={e => e.currentTarget.style.background = colors.accent + "33"}
-                  onMouseLeave={e => e.currentTarget.style.background = colors.accentLight}>
-                  <span style={{ fontSize: 17, lineHeight: 1 }}>✉</span> Email Parent
-                </button>
-              );
-            })()}
-            {/* Clear / Cancel */}
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              {entryMap[editCell.key] && (
-                <button onClick={clearEntry} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#FEF2F2", color: "#DC2626", fontWeight: 600, fontSize: 13, border: "1px solid #FECACA", cursor: "pointer", fontFamily: "inherit" }}>
-                  Clear entry
-                </button>
-              )}
-              <button onClick={() => setEditCell(null)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
-                Cancel
-              </button>
-            </div>
+              </tbody>
+            </table>
           </div>
         </div>
       )}

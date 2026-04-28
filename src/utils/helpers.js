@@ -4,6 +4,7 @@
 // ============================================================
 
 import { DAYS, instruments_colors } from "../constants";
+import { supabase } from "../supabaseClient";
 
 // ── ID generation ─────────────────────────────────────────────────────────────
 
@@ -31,13 +32,16 @@ export const clampMenuPos = (x, y, estW = 200, estH = 300, side = null) => {
 
 // ── Date & time helpers ───────────────────────────────────────────────────────
 
-// Melbourne timezone helpers — hardcoded to Australia/Melbourne
-const TIMEZONE = "Australia/Melbourne";
+// Timezone helpers — reads from localStorage (set in Settings), defaults to Melbourne.
+const getTimezone = () => {
+  try { return localStorage.getItem("mt-timezone") || "Australia/Melbourne"; } catch { return "Australia/Melbourne"; }
+};
 
-// Get current time in Melbourne regardless of browser/system timezone.
-// Uses Intl.DateTimeFormat to extract Melbourne date/time parts correctly,
+// Get current time in the user's configured timezone.
+// Uses Intl.DateTimeFormat to extract date/time parts correctly,
 // then constructs a plain Date with those values so .getHours(), .getDay() etc. work.
 export const melbourneNow = () => {
+  const TIMEZONE = getTimezone();
   const now = new Date();
   const parts = new Intl.DateTimeFormat("en-AU", {
     timeZone: TIMEZONE,
@@ -156,7 +160,10 @@ export const getLiveTeacherName = (lesson, students, teachers) => {
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherName || "";
   const student = students.find(s => s.id === lesson.studentId);
   if (student) {
-    const inst = (student.instruments || []).find(i => i.name === lesson.instrument);
+    // Try the stored instrument first; if the student's instrument has changed,
+    // fall back to their current primary non-group instrument.
+    const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
+      || (student.instruments || []).find(i => !i.isGroup);
     if (inst) {
       if (!inst.teacherId) return "Unassigned";
       const teacher = teachers.find(t => t.id === inst.teacherId);
@@ -166,19 +173,79 @@ export const getLiveTeacherName = (lesson, students, teachers) => {
   return lesson.teacherName || "";
 };
 
+// Returns the live teacher ID for a lesson, derived from current student data.
+// Use this when checking teacher conflicts between lessons so stale stored teacherIds
+// don't cause false positives or missed warnings after teacher reassignments.
+export const getLiveTeacherId = (lesson, students) => {
+  if (lesson.isGroup || lesson.isBandSession) return lesson.teacherId;
+  const student = students.find(s => s.id === lesson.studentId);
+  if (!student) return lesson.teacherId;
+  const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
+    || (student.instruments || []).find(i => !i.isGroup);
+  return inst?.teacherId || lesson.teacherId || null;
+};
+
 // Returns true if the lesson's instrument has no assigned teacher in current student data.
 export const isLessonUnassigned = (lesson, students) => {
   if (lesson.isGroup || lesson.isBandSession) return false;
   const student = students.find(s => s.id === lesson.studentId);
   if (!student) return false;
-  const inst = (student.instruments || []).find(i => i.name === lesson.instrument);
+  const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
+    || (student.instruments || []).find(i => !i.isGroup);
   return inst ? !inst.teacherId : false;
 };
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 
-export const getInstColor = (inst, isGroup) =>
-  isGroup ? instruments_colors.Group : (instruments_colors[inst] || instruments_colors.default);
+// ── Instrument colour overrides (user-customised, synced to Supabase) ────
+
+let _instColorOverrides = null;
+
+const _loadInstColorOverrides = () => {
+  if (_instColorOverrides !== null) return _instColorOverrides;
+  try { _instColorOverrides = JSON.parse(localStorage.getItem("mt-instrument-colors") || "{}"); }
+  catch { _instColorOverrides = {}; }
+  return _instColorOverrides;
+};
+
+// Called by SettingsManager whenever the user changes or resets an instrument colour.
+// Updates the in-memory cache, persists to localStorage, AND syncs to Supabase.
+export const setInstColorOverrides = (map) => {
+  _instColorOverrides = { ...map };
+  try { localStorage.setItem("mt-instrument-colors", JSON.stringify(map)); } catch {}
+  // Fire-and-forget Supabase upsert
+  supabase.from("app_settings")
+    .upsert({ key: "instrument_colors", value: map }, { onConflict: "key" })
+    .then(({ error }) => { if (error) console.warn("[sync] instrument colours save failed:", error.message); });
+};
+
+// Load instrument colours from Supabase (called once on app mount).
+// Falls back to localStorage if Supabase is unavailable.
+export const loadInstColorsFromSupabase = async () => {
+  try {
+    const { data, error } = await supabase
+      .from("app_settings")
+      .select("value")
+      .eq("key", "instrument_colors")
+      .maybeSingle();
+    if (error) throw error;
+    if (data?.value && typeof data.value === "object") {
+      _instColorOverrides = data.value;
+      try { localStorage.setItem("mt-instrument-colors", JSON.stringify(data.value)); } catch {}
+      return data.value;
+    }
+  } catch (err) {
+    console.warn("[sync] instrument colours load failed, using localStorage:", err.message);
+  }
+  // Fall back to localStorage
+  return _loadInstColorOverrides();
+};
+
+export const getInstColor = (inst, isGroup) => {
+  if (isGroup) return instruments_colors.Group;
+  const overrides = _loadInstColorOverrides();
+  return overrides[inst] || instruments_colors[inst] || instruments_colors.default;
+};
 
 // ── Name / school helpers ─────────────────────────────────────────────────────
 
@@ -213,12 +280,12 @@ export const getClassTeacher = (student, contacts) => {
 
 // Open the in-app email compose modal.
 // Falls back to Gmail web URL if Electron API not available.
-export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null } = {}) => {
+export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, bccGroup = false, forceTo = false, threadMessages = null } = {}) => {
   if (!emails || emails.length === 0) return;
   const unique = [...new Set(emails.filter(Boolean))];
   if (unique.length === 0) return;
   if (window._openComposeModal) {
-    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments });
+    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments, bccGroup, forceTo, threadMessages });
   } else {
     let url = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(unique.join(","));
     if (subject) url += "&su=" + encodeURIComponent(subject);

@@ -4,7 +4,8 @@
 // ============================================================
 
 import React, { useRef } from "react";
-import { colors, HEADER_HEIGHT } from "../../constants";
+import { HEADER_HEIGHT } from "../../constants";
+import { useTheme } from "../../context/ThemeContext";
 import { getXLSX } from "../../utils/api";
 
 // ── Page layout ───────────────────────────────────────────────────────────────
@@ -18,7 +19,10 @@ export const PAGE_COLORS = {
 };
 
 export function PageTitle({ children, subtitle, action, pageColor, navButtons }) {
+  const { colors, darkMode } = useTheme();
   const bg = pageColor || colors.sidebarActive;
+  const titleColor = darkMode ? colors.sidebar : "#fff";
+  const subtitleColor = darkMode ? colors.sidebar : "rgba(255,255,255,0.55)";
   return (
     <div style={{
       marginLeft: -36, marginRight: -36, marginTop: -28, marginBottom: 20,
@@ -28,9 +32,9 @@ export function PageTitle({ children, subtitle, action, pageColor, navButtons })
     }}>
       <div style={{ padding: "0 36px", minHeight: HEADER_HEIGHT, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
-          <h1 style={{ fontSize: 26, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", margin: 0, color: colors.white, lineHeight: 1.1, textTransform: "uppercase", whiteSpace: "nowrap" }}>{children}</h1>
+          <h1 style={{ fontSize: 26, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", margin: 0, color: titleColor, lineHeight: 1.1, textTransform: "uppercase", whiteSpace: "nowrap" }}>{children}</h1>
           {subtitle && (
-            <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 500, color: "rgba(255,255,255,0.55)", lineHeight: 1, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.08em", display: "block", whiteSpace: "nowrap" }}>
+            <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 500, color: subtitleColor, lineHeight: 1, marginTop: 3, textTransform: "uppercase", letterSpacing: "0.08em", display: "block", whiteSpace: "nowrap" }}>
               {subtitle}
             </span>
           )}
@@ -70,6 +74,7 @@ export function ActionBar({ children }) {
 // ── Cards ─────────────────────────────────────────────────────────────────────
 
 export function Card({ children, style, onClick, ...rest }) {
+  const { colors } = useTheme();
   return (
     <div onClick={onClick} {...rest} style={{ background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, padding: 24, cursor: onClick ? "pointer" : undefined, ...style }}>
       {children}
@@ -93,6 +98,7 @@ export function FrozenCard({ children, style }) {
 // ── Buttons & inputs ──────────────────────────────────────────────────────────
 
 export function Btn({ children, onClick, variant = "primary", style, disabled }) {
+  const { colors } = useTheme();
   const base = {
     height: 34, padding: "0 16px", border: "2px solid transparent", borderRadius: 8, fontSize: 13,
     fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
@@ -100,16 +106,17 @@ export function Btn({ children, onClick, variant = "primary", style, disabled })
     alignItems: "center", gap: 6, boxSizing: "border-box", flexShrink: 0, marginTop: -2
   };
   const variants = {
-    primary: { background: colors.accent, color: colors.white },
+    primary: { background: colors.accent, color: "#fff" },
     secondary: { background: colors.tagBg, color: colors.text, borderColor: colors.border },
-    danger: { background: "#FEE", color: colors.danger, borderColor: "#FCC" },
-    success: { background: "#EFE", color: colors.success, borderColor: "#CEC" },
+    danger: { background: colors.redLight, color: colors.danger, border: `1px solid ${colors.danger}50` },
+    success: { background: `${colors.success}18`, color: colors.success, border: `1px solid ${colors.success}50` },
     ghost: { background: "transparent", color: colors.textLight }
   };
   return <button onClick={onClick} disabled={disabled} style={{ ...base, ...variants[variant], ...style }}>{children}</button>;
 }
 
 export function Input({ label, value, onChange, type = "text", placeholder, style, options, multiline }) {
+  const { colors } = useTheme();
   const inputStyle = {
     width: "100%", padding: "9px 12px", border: `1px solid ${colors.inputBorder}`,
     borderRadius: 8, fontSize: 14, fontFamily: "inherit", background: colors.inputBg,
@@ -133,6 +140,7 @@ export function Input({ label, value, onChange, type = "text", placeholder, styl
 }
 
 export function Checkbox({ label, checked, onChange }) {
+  const { colors } = useTheme();
   return (
     <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer", marginBottom: 8 }}>
       <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{ accentColor: colors.accent, width: 16, height: 16 }} />
@@ -143,9 +151,11 @@ export function Checkbox({ label, checked, onChange }) {
 
 // ── Tags & status ─────────────────────────────────────────────────────────────
 
-export function Tag({ children, color = colors.accent, onRemove }) {
+export function Tag({ children, color, onRemove }) {
+  const { colors } = useTheme();
+  const tagColor = color || colors.accent;
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: color + "18", color: color, fontSize: 12, fontWeight: 600, padding: "3px 10px", borderRadius: 6, margin: "2px 4px 2px 0" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: tagColor + "18", color: tagColor, fontSize: 12, fontWeight: 600, padding: "3px 10px", borderRadius: 6, margin: "2px 4px 2px 0" }}>
       {children}
       {onRemove && <span onClick={onRemove} style={{ cursor: "pointer", marginLeft: 2, opacity: 0.7 }}>×</span>}
     </span>
@@ -153,6 +163,7 @@ export function Tag({ children, color = colors.accent, onRemove }) {
 }
 
 export function EmptyState({ icon, title, subtitle, action, onAction }) {
+  const { colors } = useTheme();
   return (
     <div style={{ textAlign: "center", padding: "60px 20px", color: colors.textMuted }}>
       <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.5 }}>{icon}</div>
@@ -193,7 +204,7 @@ export function FileUpload({ onData, accept = ".csv,.xlsx,.xls", label = "Import
   return (
     <>
       <input ref={ref} type="file" accept={accept} onChange={handleFile} style={{ display: "none" }} />
-      <Btn variant="secondary" onClick={() => ref.current?.click()}>📁 {label}</Btn>
+      <Btn variant="secondary" onClick={() => ref.current?.click()}>{ label}</Btn>
     </>
   );
 }
@@ -201,15 +212,16 @@ export function FileUpload({ onData, accept = ".csv,.xlsx,.xls", label = "Import
 // ── Memory input ──────────────────────────────────────────────────────────────
 
 export function AddMemoryInput({ onAdd }) {
+  const { colors } = useTheme();
   const [val, setVal] = React.useState("");
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
       <input value={val} onChange={e => setVal(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter" && val.trim()) { onAdd(val.trim()); setVal(""); } }}
         placeholder="Add a new memory…"
-        style={{ flex: 1, padding: "6px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: colors.text, outline: "none" }} />
+        style={{ flex: 1, padding: "6px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: colors.text, outline: "none", background: colors.inputBg }} />
       <button onClick={() => { if (val.trim()) { onAdd(val.trim()); setVal(""); } }}
-        style={{ padding: "6px 14px", border: "none", borderRadius: 6, background: colors.accent, color: colors.white, fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}>
+        style={{ padding: "6px 14px", border: "none", borderRadius: 6, background: colors.accent, color: "#fff", fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}>
         Add
       </button>
     </div>

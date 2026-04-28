@@ -3,9 +3,11 @@
 // ============================================================
 
 import React, { useState, useEffect, useMemo } from "react";
-import { colors } from "../constants";
+import { ChevronUp, ChevronDown, Printer, PalmtreeIcon, X, AlertTriangle } from "lucide-react";
+import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
-import { PageTitle, NavButtons } from "../components/ui/SharedUI";
+import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
+import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
 
 // ---- Constants ----
 const WEEK_DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -13,11 +15,12 @@ const MONTH_NAMES = ["January","February","March","April","May","June","July","A
 const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 const EVENT_TYPE_META = {
-  personal:       { label: "Personal / Admin", bg: "#E8EDF5", border: "#6B82A8", text: "#3B4E6E" },
-  performance:    { label: "Performance",      bg: "#EEE9F5", border: "#8B7AAF", text: "#5C4A80" },
-  interruption:   { label: "Interruption",     bg: "#FEF3E2", border: "#D4882A", text: "#7A4E10" },
-  school_event:   { label: "School Event",     bg: "#E8F4F0", border: "#4A8C7A", text: "#1E5C4A" },
-  public_holiday: { label: "Public Holiday",   bg: "#FEE8E8", border: "#C45454", text: "#7A1A1A" },
+  personal:       { label: "Personal / Admin", bg: "#E8EDF5", darkBg: "rgba(107,130,168,0.18)", border: "#6B82A8", text: "#3B4E6E" },
+  performance:    { label: "Performance",      bg: "#EEE9F5", darkBg: "rgba(139,122,175,0.18)", border: "#8B7AAF", text: "#5C4A80" },
+  interruption:   { label: "Interruption",     bg: "#FEF3E2", darkBg: "rgba(212,136,42,0.18)",  border: "#D4882A", text: "#7A4E10" },
+  school_event:   { label: "School Event",     bg: "#E8F4F0", darkBg: "rgba(74,140,122,0.18)",  border: "#4A8C7A", text: "#1E5C4A" },
+  public_holiday: { label: "Public Holiday",   bg: "#FEE8E8", darkBg: "rgba(196,84,84,0.18)",   border: "#C45454", text: "#7A1A1A" },
+  teacher_event:  { label: "Staff Event",      bg: "#F0EEFF", darkBg: "rgba(124,58,237,0.18)",  border: "#7C3AED", text: "#4C1D95" },
 };
 
 const INTERRUPTION_SUBTYPES = [
@@ -90,6 +93,7 @@ function getAppToday() {
 // MINI MONTH COMPONENT
 // ============================================================
 function MiniMonth({ year, month, todayDs, eventMap, termBreaks, displayYear, displayMonth, onClick, hoveredDs, hoveredRange }) {
+  const { colors, darkMode } = useTheme();
   const base  = new Date(year, month, 1);
   const start = getMondayOf(base);
   const weeks = [];
@@ -131,11 +135,11 @@ function MiniMonth({ year, month, todayDs, eventMap, termBreaks, displayYear, di
           const hoveredEvMeta = isInHoveredRange && hoveredRange.type
             ? EVENT_TYPE_META[hoveredRange.type]
             : null;
-          const borderColor = hoveredEvMeta?.border || evMeta?.border || CORAL;
+          const borderColor = isInHoveredRange ? colors.sidebarActive : CORAL;
           const bg = isToday           ? NAVY
-                   : evMeta            ? evMeta.bg
-                   : tb && inMonth     ? "#FFF9E0"
-                   : isWknd && inMonth ? "#E8EDF5"
+                   : evMeta            ? (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.10)")
+                   : tb && inMonth     ? (darkMode ? "#2A2810" : "#FFF9E0")
+                   : isWknd && inMonth ? (darkMode ? "#252232" : "#E8EDF5")
                    : "transparent";
           return (
             <div key={i} style={{ textAlign: "center", fontSize: 9, borderRadius: 3,
@@ -157,6 +161,7 @@ function MiniMonth({ year, month, todayDs, eventMap, termBreaks, displayYear, di
 // MAIN COMPONENT
 // ============================================================
 export function CalendarManager({ interruptions, setInterruptions, schools, specialists, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, scanPreview, setScanPreview }) {
+  const { colors, darkMode } = useTheme();
 
   // ---- View state ----
   const monthOffset    = (viewState || {}).monthOffset ?? 0;
@@ -178,6 +183,47 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   const [activeFilters,     setActiveFilters]      = useState([]);   // [] = All
   const [hoverPopover,      setHoverPopover]       = useState(null);
   const showWeekNums = true;
+
+  // ---- Fetch Term Dates ----
+  const [fetchingTermDates, setFetchingTermDates] = useState(false);
+  const fetchTermDatesAndHolidays = async () => {
+    setFetchingTermDates(true);
+    try {
+      const yr = new Date().getFullYear();
+      const response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: getAnthropicHeaders(),
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: [{ role: "user", content:
+            `Search for Victorian (Australia) school term dates for ${yr} and ${yr+1}, plus all Victorian public holidays for those years.\n\nReturn ONLY a JSON array, no other text, no markdown backticks. Each entry:\n- date: "YYYY-MM-DD"\n- endDate: "YYYY-MM-DD" (same as date for single-day events; full break span for term breaks)\n- title: descriptive name\n- type: "public_holiday" or "term_break"\n\nFor term breaks, use the full holiday period between terms. Return the JSON array only.`
+          }]
+        })
+      });
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      const data  = await response.json();
+      const text  = (data.content || []).filter(c => c.type === "text").map(c => c.text).join("");
+      const clean = text.replace(/```json|```/g, "").trim();
+      const match = clean.match(/\[[\s\S]*\]/);
+      let entries;
+      try { entries = match ? JSON.parse(match[0]) : JSON.parse(clean); }
+      catch { const last = clean.lastIndexOf("}"); if (last > 0) { let rec = clean.slice(0, last+1); if (!rec.trim().endsWith("]")) rec += "]"; if (!rec.trim().startsWith("[")) rec = "[" + rec; entries = JSON.parse(rec); } else throw new Error("Could not parse response"); }
+      if (!Array.isArray(entries) || !entries.length) { notify("Could not find term dates. Try again later.", "warning"); return; }
+      const today = new Date().toISOString().slice(0, 10);
+      const existing = new Set(interruptions.map(i => `${i.date}|${i.title}`));
+      const newEntries = entries
+        .map(e => ({ id: uid(), schoolId: "all", date: e.date||"", endDate: e.endDate||e.date||"", title: e.title||"", type: e.type||"public_holiday", affectsClasses: "all", startTime: "", endTime: "", notes: "", source: "auto-fetched" }))
+        .filter(e => e.date && !existing.has(`${e.date}|${e.title}`) && (e.endDate||e.date) >= today);
+      if (!newEntries.length) { notify("Term dates and holidays are already up to date!", "success"); return; }
+      setInterruptions(prev => [...prev, ...newEntries]);
+      const termCount = newEntries.filter(e => e.type === "term_break").length;
+      const holCount  = newEntries.filter(e => e.type === "public_holiday").length;
+      notify(`Added ${termCount} term break${termCount !== 1 ? "s" : ""} and ${holCount} public holiday${holCount !== 1 ? "s" : ""}. These now appear on the Calendar.`);
+    } catch (err) {
+      notify("Failed to fetch term dates: " + err.message, "danger");
+    }
+    setFetchingTermDates(false);
+  };
   const [showMiniMonths,    setShowMiniMonths]     = useState(() => localStorage.getItem("mt-cal-minimonths") === "1");
   const [upcomingExpanded,  setUpcomingExpanded]   = useState(false);
   const [hoveredDs,         setHoveredDs]          = useState(null);
@@ -343,11 +389,17 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     for (const ev of calEvents) {
       const start = ev.startDate || ev.date;
       if (!start) continue;
-      add(start, { ...ev, _store: "cal" });
+      // Skip private teacher events (is_private true) — only show shared ones
+      if (ev.type === "teacher_event" && ev.is_private) continue;
+      // For teacher events, enrich the meta label with teacher name
+      const evWithMeta = ev.type === "teacher_event"
+        ? { ...ev, _store: "cal", _teacherEventMeta: { ...EVENT_TYPE_META.teacher_event, label: `${ev.teacher_name || "Staff"} Event`, border: ev.teacher_color || "#7C3AED" } }
+        : { ...ev, _store: "cal" };
+      add(start, evWithMeta);
       if (ev.endDate && ev.endDate > start) {
         const cur = new Date(start + "T00:00:00");
         cur.setDate(cur.getDate() + 1);
-        while (toDS(cur) <= ev.endDate) { add(toDS(cur), { ...ev, _store: "cal", _cont: true }); cur.setDate(cur.getDate() + 1); }
+        while (toDS(cur) <= ev.endDate) { add(toDS(cur), { ...evWithMeta, _cont: true }); cur.setDate(cur.getDate() + 1); }
       }
     }
     for (const intr of interruptions) {
@@ -510,11 +562,11 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   };
 
   // ---- Colour constants ----
-  const SLATE_BLUE  = "#6B82A8";
+  const SLATE_BLUE  = colors.sidebarHover;
   const NAVY        = colors.sidebarActive;  // #344565
   const CORAL       = colors.accent;         // #C47A6A
-  const CORAL_LITE  = colors.accentLight;    // #F0DEDA  ← hover
-  const WEEKEND_BG  = "#E8EDF5";             // pale blue matching calendar palette
+  const CORAL_LITE  = colors.accentLight;
+  const WEEKEND_BG  = darkMode ? "#252232" : "#E8EDF5";
 
   // ---- Span position ----
   const getSpanPos = (ev, ds) => {
@@ -529,7 +581,14 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
 
   // ---- Event chip ----
   const renderChip = (ev, idx, ds) => {
-    const meta    = EVENT_TYPE_META[ev._displayType || ev.type] || EVENT_TYPE_META.personal;
+    const meta    = ev._teacherEventMeta || EVENT_TYPE_META[ev._displayType || ev.type] || EVENT_TYPE_META.personal;
+    const isTeacherEvent = ev.type === "teacher_event";
+    const teacherColor = isTeacherEvent ? (ev.teacher_color || "#7C3AED") : null;
+    const isSchoolIntr = (ev._displayType === "interruption" || ev._displayType === "school_event" || ev.type === "interruption" || ev.type === "school_event") && ev.schoolId && ev.schoolId !== "all";
+    const schoolColor = isSchoolIntr ? schools.find(s => s.id === ev.schoolId)?.color : null;
+    const chipBorder = teacherColor || schoolColor || SLATE_BLUE;
+    const chipBg     = teacherColor ? (darkMode ? `${teacherColor}22` : `${teacherColor}18`) : schoolColor ? (darkMode ? `${schoolColor}22` : `${schoolColor}18`) : (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.08)");
+    const chipText   = teacherColor || schoolColor || (darkMode ? "rgba(255,255,255,0.85)" : colors.sidebarActive);
     const spanPos = getSpanPos(ev, ds);
     const isBar   = spanPos === "mid" || spanPos === "end";
     const brLeft  = (spanPos === "start" || spanPos === "single") ? 3 : 0;
@@ -539,7 +598,6 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
 
     return (
       <div key={`${ev.id}-${idx}`}
-        title={ev.title}
         onClick={e => { e.stopPropagation(); openEditEvent(ev); }}
         onMouseEnter={e => {
           if (!isBar) {
@@ -571,11 +629,11 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
           marginBottom:  2,
           marginLeft:    mLeft,
           marginRight:   mRight,
-          background:    meta.bg,
-          color:         isBar ? "transparent" : meta.text,
-          borderLeft:    (spanPos === "start" || spanPos === "single") ? `3px solid ${meta.border}` : "none",
-          borderTop:     isBar ? `2px solid ${meta.border}` : "none",
-          borderBottom:  isBar ? `2px solid ${meta.border}` : "none",
+          background:    chipBg,
+          color:         isBar ? "transparent" : chipText,
+          borderLeft:    (spanPos === "start" || spanPos === "single") ? `3px solid ${chipBorder}` : "none",
+          borderTop:     isBar ? `2px solid ${chipBorder}` : "none",
+          borderBottom:  isBar ? `2px solid ${chipBorder}` : "none",
           whiteSpace:    "nowrap",
           overflow:      "hidden",
           cursor:        "pointer",
@@ -585,7 +643,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
         {!isBar && (ev._cont ? "↳ " : "") + ev.title}
         {!isBar && (
           <span className="chip-fade" style={{ position:"absolute", top:0, right:0, bottom:0, width:22,
-            background:`linear-gradient(to right, transparent, ${meta.bg})`, pointerEvents:"none" }} />
+            background:`linear-gradient(to right, transparent, ${chipBg})`, pointerEvents:"none" }} />
         )}
       </div>
     );
@@ -595,6 +653,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   const renderHoverPopover = () => {
     if (!hoverPopover || eventForm) return null;
     const { ev, rect, meta } = hoverPopover;
+    const isTeacherEv2 = ev.type === "teacher_event";
+    const isSchoolIntr2 = (ev._displayType === "interruption" || ev._displayType === "school_event" || ev.type === "interruption" || ev.type === "school_event") && ev.schoolId && ev.schoolId !== "all";
+    const popColor = isTeacherEv2 ? (ev.teacher_color || "#7C3AED") : isSchoolIntr2 ? (schools.find(s => s.id === ev.schoolId)?.color || SLATE_BLUE) : SLATE_BLUE;
     const start   = ev.startDate || ev.date;
     const end     = ev.endDate;
     const isMulti = end && end !== start;
@@ -606,12 +667,12 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     return (
       <div style={{ position:"fixed", left: Math.min(rect.left, window.innerWidth - 235),
         [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
-        zIndex:2000, background:colors.white, borderRadius:10,
-        boxShadow:"0 4px 20px rgba(0,0,0,0.15)", border:`1.5px solid ${meta.border}`,
+        zIndex:2000, background:colors.cardBg, borderRadius:10,
+        boxShadow:"0 4px 20px rgba(0,0,0,0.15)", border:`1.5px solid ${popColor}`,
         padding:"10px 13px", width:222, pointerEvents:"none", fontFamily:"inherit" }}>
         <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:5 }}>
-          <span style={{ width:8, height:8, borderRadius:"50%", background:meta.border, flexShrink:0 }} />
-          <span style={{ fontSize:10, fontWeight:700, color:meta.text, textTransform:"uppercase", letterSpacing:0.4 }}>{meta.label}</span>
+          <span style={{ width:8, height:8, borderRadius:"50%", background:popColor, flexShrink:0 }} />
+          <span style={{ fontSize:10, fontWeight:700, color:popColor, textTransform:"uppercase", letterSpacing:0.4 }}>{meta.label}</span>
         </div>
         <div style={{ fontSize:13, fontWeight:700, color:colors.text, marginBottom:4, lineHeight:1.3 }}>{ev.title}</div>
         <div style={{ fontSize:11, color:colors.textLight }}>{isMulti ? `${fmtDate(start)} – ${fmtDate(end)}` : fmtDate(start)}</div>
@@ -624,10 +685,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   // ---- Holiday badge ----
   const HolidayBadge = ({ tb }) => (
     <div title={tb.title || "School Holidays"}
-      style={{ position:"absolute", top:4, right:5, fontSize:11, lineHeight:1, cursor:"default", userSelect:"none", opacity:0.45, transition:"opacity 0.15s" }}
+      style={{ position:"absolute", top:4, right:5, lineHeight:1, cursor:"default", userSelect:"none", opacity:0.45, transition:"opacity 0.15s", display:"inline-flex", alignItems:"center" }}
       onMouseEnter={e => e.currentTarget.style.opacity = "0.9"}
       onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}>
-      🏖
+      <PalmtreeIcon size={11} />
     </div>
   );
 
@@ -638,18 +699,24 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
         ? <div style={{ fontSize:12, color:colors.textMuted, padding:"4px 0", fontStyle:"italic" }}>No upcoming events in the next two months.</div>
         : upcomingEvents.map((ev, i) => {
             const meta    = EVENT_TYPE_META[ev.type] || EVENT_TYPE_META.personal;
+            const isTeacherEv = ev.type === "teacher_event";
+            const teacherEvColor = isTeacherEv ? (ev.teacher_color || "#7C3AED") : null;
+            const isSchoolIntr = (ev._displayType === "interruption" || ev._displayType === "school_event" || ev.type === "interruption" || ev.type === "school_event") && ev.schoolId && ev.schoolId !== "all";
+            const schoolColor = isSchoolIntr ? schools.find(s => s.id === ev.schoolId)?.color : null;
+            const dotColor = teacherEvColor || schoolColor || SLATE_BLUE;
+            const hoverBg  = teacherEvColor ? (darkMode ? `${teacherEvColor}22` : `${teacherEvColor}18`) : schoolColor ? (darkMode ? `${schoolColor}22` : `${schoolColor}18`) : (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.08)");
             const tmw     = addDays(today, 1);
             const lbl     = ev.ds === today ? "Today" : ev.ds === tmw ? "Tomorrow" : fmtDate(ev.ds);
             const timeStr = ev.startTime ? ` · ${ev.startTime}${ev.endTime ? `–${ev.endTime}` : ""}` : "";
             return (
               <div key={i}
-                onMouseEnter={e => { e.currentTarget.style.background = meta.bg; setHoveredDs(ev.ds); }}
+                onMouseEnter={e => { e.currentTarget.style.background = hoverBg; setHoveredDs(ev.ds); }}
                 onMouseLeave={e => { e.currentTarget.style.background = "transparent"; setHoveredDs(null); }}
                 style={{ display:"flex", gap:10, padding:"5px 6px", margin:"0 -6px",
                   borderRadius:6,
                   borderBottom: i < upcomingEvents.length - 1 ? `1px solid ${colors.borderLight}` : "none",
                   alignItems:"center", cursor:"default", transition:"background 0.1s" }}>
-                <span style={{ width:7, height:7, borderRadius:"50%", background:meta.border, flexShrink:0 }} />
+                <span style={{ width:7, height:7, borderRadius:"50%", background:dotColor, flexShrink:0 }} />
                 <span style={{ flex:1, fontSize:12, fontWeight:600, color:colors.text }}>{ev.title}{timeStr && <span style={{ fontWeight:400, color:colors.textMuted }}>{timeStr}</span>}</span>
                 <span style={{ fontSize:11, color:colors.textMuted, flexShrink:0, whiteSpace:"nowrap" }}>{lbl}</span>
               </div>
@@ -669,27 +736,27 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     <div ref={calendarRef} onClick={() => { setSelectedDays(new Set()); selectionAnchorRef.current = null; }}>
 
       {/* ── 3px navy border wrapper ── */}
-      <div style={{ border:`3px solid ${NAVY}`, borderRadius:14 }}>
+      <div style={{ border:`3px solid ${colors.sidebarHover}`, borderRadius:14 }}>
 
         {/* ── Unified header, rounded top ── */}
         <div style={{ borderRadius:"11px 11px 0 0", overflow:"hidden" }}>
 
           {/* Navy control bar */}
-          <div onClick={e => e.stopPropagation()} style={{ background:NAVY, padding:"10px 14px", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:colors.sidebarHover, padding:"10px 14px", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
 
             {/* Stacked nav arrows */}
             <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:26, gap:1, flexShrink:0 }}>
               <button onClick={() => setMonthOffset(v => v - 1)} title="Previous month"
                 style={{ width:18, height:12, padding:0, border:"none", borderRadius:3, background:"none",
-                  color:"rgba(255,255,255,0.85)", cursor:"pointer", fontSize:10,
+                  color:"rgba(255,255,255,0.85)", cursor:"pointer",
                   fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>
-                ▲
+                <ChevronUp size={12} />
               </button>
               <button onClick={() => setMonthOffset(v => v + 1)} title="Next month"
                 style={{ width:18, height:12, padding:0, border:"none", borderRadius:3, background:"none",
-                  color:"rgba(255,255,255,0.85)", cursor:"pointer", fontSize:10,
+                  color:"rgba(255,255,255,0.85)", cursor:"pointer",
                   fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", lineHeight:1 }}>
-                ▼
+                <ChevronDown size={12} />
               </button>
             </div>
             <span style={{ fontWeight:700, fontSize:15, color:CORAL, height:26, display:"inline-flex", alignItems:"center", whiteSpace:"nowrap", textTransform:"uppercase", letterSpacing:"0.06em" }}>
@@ -726,10 +793,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                       cursor:"pointer", transition:"all 0.12s",
                       height:26, display:"inline-flex", alignItems:"center",
                       fontWeight: isActive ? 700 : 500,
-                      border:`1.5px solid ${meta.border}`,
-                      background: isActive ? meta.border : meta.bg,
-                      color: isActive ? "#fff" : meta.text,
-                      opacity: isActive ? 1 : 0.88,
+                      border:`1.5px solid ${isActive ? SLATE_BLUE : "rgba(255,255,255,0.45)"}`,
+                      background: isActive ? SLATE_BLUE : "rgba(255,255,255,0.14)",
+                      color: isActive ? "#fff" : "rgba(255,255,255,0.85)",
                       boxShadow: isActive ? "0 0 0 2px rgba(255,255,255,0.25)" : "none" }}>
                     {meta.label}
                   </button>
@@ -758,10 +824,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                 style={{ background:"none", border:"1px solid rgba(255,255,255,0.22)",
                   color:"rgba(255,255,255,0.8)", fontSize:10, fontWeight:600,
                   borderRadius:6, padding:"0 8px", cursor:"pointer", fontFamily:"inherit",
-                  height:26, display:"inline-flex", alignItems:"center", transition:"color 0.15s" }}
+                  height:26, display:"inline-flex", alignItems:"center", gap:5, transition:"color 0.15s" }}
                 onMouseEnter={e => e.currentTarget.style.color = CORAL}
                 onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.8)"}>
-                🖨️ Print
+                <Printer size={12} /> Print
               </button>
             </div>
           </div>
@@ -816,7 +882,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
         </div>
 
         {/* ── Calendar grid ── */}
-        <div style={{ position:"relative", background:colors.white, borderRadius:"0 0 11px 11px", overflow:"hidden" }}>
+        <div style={{ position:"relative", background:colors.cardBg, borderRadius:"0 0 11px 11px", overflow:"hidden" }}>
           {monthGrid.map((week, wi) => {
             const mondayDs  = toDS(week[0]);
             const wkInfo    = showWeekNums ? getTermWeekInfo(mondayDs) : null;
@@ -836,7 +902,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                     )}
                     {wkInfo?.type === "holiday" && (
                       <>
-                        <span style={{ fontSize:11, lineHeight:1 }}>🏖</span>
+                        <span style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", color:"rgba(255,255,255,0.85)", lineHeight:1 }}><PalmtreeIcon size={11} /></span>
                         <span style={{ fontSize:8, fontWeight:700, color:"rgba(255,255,255,0.75)" }}>H{wkInfo.weekNum}</span>
                       </>
                     )}
@@ -864,10 +930,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                     const evEnd   = match.endDate || match.ds;
                     return ds >= evStart && ds <= evEnd;
                   })();
-                  const baseBg  = tb ? "#FFFEF7" : isWeekend ? WEEKEND_BG : colors.white;
-                  const hoverBg = isToday ? "#EDF2FF" : tb ? "#FFF9E0" : isWeekend ? "#D8E2F0" : CORAL_LITE;
+                  const baseBg  = tb ? (darkMode ? "#2A2810" : "#FFFEF7") : isWeekend ? WEEKEND_BG : colors.cardBg;
+                  const hoverBg = isToday ? colors.blueLight : tb ? (darkMode ? "#332F10" : "#FFF9E0") : isWeekend ? (darkMode ? "#2C2A3A" : "#D8E2F0") : CORAL_LITE;
                   const cellBg  = isHovered
-                    ? (EVENT_TYPE_META[upcomingEvents.find(e => e.ds === hoveredDs)?.type]?.bg || CORAL_LITE)
+                    ? (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.08)")
                     : baseBg;
                   const allDayEvs   = eventMap[ds] || [];
                   const dayEvs      = activeFilters.length > 0
@@ -910,7 +976,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                         background: cellBg,
                         boxShadow: selectedDays.has(ds)
                           ? `inset 0 0 0 2px ${CORAL}`
-                          : isHovered ? `inset 0 0 0 2px ${EVENT_TYPE_META[upcomingEvents.find(e => e.ds === hoveredDs)?.type]?.border || colors.accent}` : "none",
+                          : isHovered ? `inset 0 0 0 2px ${SLATE_BLUE}` : "none",
                         borderLeft: di === 0 && showWeekNums ? `1px solid ${colors.borderLight}` : "none",
                         borderRight: di < 6 ? `1px solid ${colors.borderLight}` : "none",
                         opacity: isCurrMonth ? 1 : 0.35, cursor:"default",
@@ -987,10 +1053,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
         <div onClick={() => { setEventForm(null); setSelectedDays(new Set()); }} style={{ position:"fixed", inset:0, zIndex:1000, background:"rgba(0,0,0,0.25)" }} />
         <div style={{ position:"fixed",
           left: typeof modalCenter.x === "number" ? modalCenter.x : "50%",
-          top:  typeof modalCenter.y === "number" ? modalCenter.y : "50%",
+          top:  typeof modalCenter.y === "number" ? Math.max(300, Math.min(modalCenter.y, window.innerHeight - 300)) : "50%",
           transform:`translate(calc(-50% + ${modalOffset.x}px), calc(-50% + ${modalOffset.y}px))`,
-          zIndex:1001, background:colors.white, borderRadius:14, boxShadow:"0 8px 40px rgba(0,0,0,0.18)",
-          width:440, maxWidth:"92vw", maxHeight:"90vh", overflowY:"auto", padding:24, fontFamily:"inherit" }}>
+          zIndex:1001, background:colors.cardBg, borderRadius:14, boxShadow:"0 8px 40px rgba(0,0,0,0.18)",
+          width:600, maxWidth:"94vw", maxHeight:"90vh", overflowY:"auto", padding:24, fontFamily:"inherit" }}>
           <div
             onMouseDown={e => {
               const start = { x: e.clientX, y: e.clientY, ox: modalOffset.x, oy: modalOffset.y };
@@ -1005,9 +1071,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
             }}
             style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18, cursor:"grab", userSelect:"none" }}>
             <div style={{ fontWeight:700, fontSize:16 }}>{isEdit ? "Edit Event" : "New Event"}</div>
-            <button onClick={() => { setEventForm(null); setSelectedDays(new Set()); }} style={{ border:"none", background:"none", fontSize:20, color:colors.textMuted, cursor:"pointer", lineHeight:1 }}>×</button>
+            <button onClick={() => { setEventForm(null); setSelectedDays(new Set()); }} style={{ border:"none", background:"none", color:colors.textMuted, cursor:"pointer", lineHeight:1, display:"inline-flex", alignItems:"center" }}><X size={16} /></button>
           </div>
-          {f._readOnly && <div style={{ padding:"8px 12px", background:"#FFF8E6", border:"1px solid #E8C878", borderRadius:8, fontSize:12, color:"#7A5520", marginBottom:14 }}>⚠ This event was imported from a newsletter scan. You can still edit it here.</div>}
+          {f._readOnly && <div style={{ padding:"8px 12px", background:"#FFF8E6", border:"1px solid #E8C878", borderRadius:8, fontSize:12, color:"#7A5520", marginBottom:14, display:"flex", alignItems:"center", gap:7 }}><AlertTriangle size={13} style={{ flexShrink:0 }} /> This event was imported from a newsletter scan. You can still edit it here.</div>}
           {/* Type */}
           <div style={{ marginBottom:14 }}>
             <label style={lbl}>Type</label>
@@ -1016,9 +1082,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                 <button key={key} onClick={() => setEventForm(p => ({ ...p, type: key }))}
                   style={{ padding:"5px 12px", borderRadius:7, fontSize:12, fontWeight: f.type === key ? 700 : 400,
                     fontFamily:"inherit", cursor:"pointer",
-                    border:`1.5px solid ${f.type === key ? meta.border : colors.border}`,
-                    background: f.type === key ? meta.bg : colors.white,
-                    color: f.type === key ? meta.text : colors.textMuted }}>
+                    border:`1.5px solid ${f.type === key ? colors.sidebarHover : colors.border}`,
+                    background: f.type === key ? colors.sidebarHover : colors.cardBg,
+                    color: f.type === key ? "#fff" : colors.textMuted }}>
                   {meta.label}
                 </button>
               ))}
@@ -1061,7 +1127,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                 {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
-            {schoolClasses.length > 0 && (
+            {schoolClasses.length > 0 && f.schoolId && f.schoolId !== "all" && (
               <div style={{ marginBottom:12 }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
                   <label style={lbl}>Affects Classes</label>
@@ -1081,9 +1147,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                       <button key={cls} onClick={() => toggleClass(cls)}
                         style={{ padding:"3px 10px", borderRadius:6, fontSize:12,
                           fontWeight: sel ? 700 : 400, fontFamily:"inherit", cursor:"pointer",
-                          border:`1.5px solid ${sel ? tm.border : colors.border}`,
-                          background: sel ? tm.bg : colors.white,
-                          color: sel ? tm.text : colors.textMuted }}>
+                          border:`1.5px solid ${sel ? colors.sidebarHover : colors.border}`,
+                          background: sel ? colors.sidebarHover : colors.cardBg,
+                          color: sel ? "#fff" : colors.textMuted }}>
                         {cls}
                       </button>
                     );
@@ -1102,7 +1168,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
           {/* Buttons */}
           <div style={{ display:"flex", gap:8 }}>
             <button onClick={saveEvent}
-              style={{ flex:1, padding:"10px 0", borderRadius:8, background:tm.border, color:"#fff", fontWeight:700, fontSize:13, border:"none", cursor:"pointer", fontFamily:"inherit" }}>
+              style={{ flex:1, padding:"10px 0", borderRadius:8, background:colors.sidebarHover, color:"#fff", fontWeight:700, fontSize:13, border:"none", cursor:"pointer", fontFamily:"inherit" }}>
               {isEdit ? "Save Changes" : "Add Event"}
             </button>
             {isEdit && (
@@ -1126,8 +1192,15 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   // ============================================================
   return (
     <div>
-      <PageTitle navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>
-        📅 Calendar
+      <PageTitle navButtons={
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Btn onClick={fetchTermDatesAndHolidays} disabled={fetchingTermDates} style={{ fontSize: 12, height: 30, padding: "0 14px" }}>
+            {fetchingTermDates ? "Fetching…" : "Fetch Term Dates"}
+          </Btn>
+          <NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />
+        </div>
+      }>
+        Calendar
       </PageTitle>
       {renderMonth()}
       {renderEventForm()}

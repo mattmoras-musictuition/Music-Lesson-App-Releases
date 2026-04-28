@@ -2,10 +2,14 @@
 // DASHBOARD — extracted from App.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from "../constants";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
+import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput } from "lucide-react";
+import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getLiveTeacherName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "../utils/tallyHelpers";
+import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, findOpenCatchups } from "../utils/tallyDerive";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
@@ -13,12 +17,104 @@ import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
 import { ExportDialog } from "../components/ExportDialog";
+import { supabase } from "../supabaseClient";
 
-export function Dashboard({ schools, students, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, contacts, bands, resources, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef }) {
+// Strip leading Re:/RE:/Fwd:/FW: before prepending a prefix — prevents "Re: Re: ..."
+const reSubject  = s => `Re: ${(s || "").replace(/^(re|fwd?)\s*:\s*/i, "").trim()}`;
+const fwdSubject = s => `Fwd: ${(s || "").replace(/^(re|fwd?)\s*:\s*/i, "").trim()}`;
+
+// Parses date ranges from reminder text — e.g. "20 April to 8 May" → { date, endDate }
+function parseReminderDates(text) {
+  if (!text) return {};
+  const MONTHS = {
+    jan:0,january:0, feb:1,february:1, mar:2,march:2, apr:3,april:3, may:4,
+    jun:5,june:5, jul:6,july:6, aug:7,august:7, sep:8,september:8,
+    oct:9,october:9, nov:10,november:10, dec:11,december:11
+  };
+  const pad = (y,m,d) => `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  function parseOne(str) {
+    const s = str.trim().toLowerCase();
+    const yr = new Date().getFullYear();
+    let m;
+    m = s.match(/^(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?$/);
+    if (m && MONTHS[m[2]] !== undefined) return pad(m[3]?+m[3]:yr, MONTHS[m[2]], +m[1]);
+    m = s.match(/^([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?$/);
+    if (m && MONTHS[m[1]] !== undefined) return pad(m[3]?+m[3]:yr, MONTHS[m[1]], +m[2]);
+    return null;
+  }
+  const D = '(?:\\d{1,2}\\s+[A-Za-z]+|[A-Za-z]+\\s+\\d{1,2})(?:\\s+\\d{4})?';
+  const rangeRe = new RegExp(`(${D})\\s*(?:to|–|-|—)\\s*(${D})`, 'i');
+  let m = text.match(rangeRe);
+  if (m) {
+    const start = parseOne(m[1]), end = parseOne(m[2]);
+    if (start || end) return { ...(start?{date:start}:{}), ...(end?{endDate:end}:{}) };
+  }
+  const singleRe = new RegExp(`(${D})`, 'i');
+  m = text.match(singleRe);
+  if (m) { const d = parseOne(m[1]); if (d) return { date: d }; }
+  return {};
+}
+
+// ── Instrument synonym map — maps what parents write to canonical teacher names ──
+const INSTRUMENT_SYNONYMS = {
+  "singing": "Voice", "voice": "Voice", "vocals": "Voice", "vocal": "Voice",
+  "piano": "Piano", "keyboard": "Piano", "keys": "Piano", "pianoforte": "Piano",
+  "guitar": "Guitar", "acoustic guitar": "Guitar", "electric guitar": "Guitar", "classical guitar": "Guitar", "nylon guitar": "Guitar",
+  "bass guitar": "Bass Guitar", "bass": "Bass Guitar", "electric bass": "Bass Guitar",
+  "violin": "Violin", "fiddle": "Violin",
+  "viola": "Viola",
+  "cello": "Cello",
+  "double bass": "Double Bass", "upright bass": "Double Bass", "contrabass": "Double Bass",
+  "drums": "Drums", "drum kit": "Drums", "drumkit": "Drums", "percussion": "Drums", "drum": "Drums",
+  "flute": "Flute",
+  "trumpet": "Trumpet",
+  "trombone": "Trombone",
+  "ukulele": "Ukulele", "uke": "Ukulele",
+  "recorder": "Recorder",
+  "saxophone": "Saxophone", "alto saxophone": "Saxophone", "tenor saxophone": "Saxophone", "sax": "Saxophone",
+  "clarinet": "Clarinet",
+  "french horn": "French Horn", "horn": "French Horn",
+  "oboe": "Oboe",
+  "bassoon": "Bassoon",
+};
+
+// Resolves a raw instrument word/phrase from email text to the exact name a teacher offers.
+// Returns "" if no match found — prevents unrecognised instruments being pre-filled.
+function resolveInstrument(text, teacherInstrumentNames) {
+  if (!text || !teacherInstrumentNames || !teacherInstrumentNames.length) return "";
+  // Try each synonym in longest-first order (so "bass guitar" beats "bass")
+  const sorted = Object.entries(INSTRUMENT_SYNONYMS).sort((a, b) => b[0].length - a[0].length);
+  for (const [synonym, canonical] of sorted) {
+    const pattern = new RegExp(`\\b${synonym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}s?\\b`, "i");
+    if (pattern.test(text)) {
+      const match = teacherInstrumentNames.find(n => n.toLowerCase() === canonical.toLowerCase());
+      if (match) return match;
+    }
+  }
+  // Direct match against teacher instrument names (catches anything not in synonym map)
+  for (const name of teacherInstrumentNames) {
+    const pattern = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}s?\\b`, "i");
+    if (pattern.test(text)) return name;
+  }
+  return "";
+}
+
+// Returns the previewable type for a given filename
+function getAttachmentType(filename) {
+  const ext = (filename || "").split(".").pop().toLowerCase();
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext)) return "image";
+  if (ext === "pdf") return "pdf";
+  if (["txt", "csv", "md", "log", "json", "xml", "html", "htm", "css", "js"].includes(ext)) return "text";
+  return "other";
+}
+
+export function Dashboard({ schools, students, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+  const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
   const [calendarWeekOffset, setCalendarWeekOffset] = useState(0);
   const [hoveredDay, setHoveredDay] = useState(null);
+  const [selectedDay, setSelectedDay] = useState(null); // persists after click
   const [calendarEvents, setCalendarEvents] = useState(() => { try { return JSON.parse(localStorage.getItem("mt-calendar-events") || "[]"); } catch { return []; } });
   const saveCalendarEvents = (evs) => { setCalendarEvents(evs); try { localStorage.setItem("mt-calendar-events", JSON.stringify(evs)); } catch {} };
   const [calEventMenu, setCalEventMenu] = useState(null); // { x, y, date, time, prefill }
@@ -145,21 +241,18 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     return { ...wd, teacherSchools, dayInterruptions, weeklyStatus, studentsWithNotes, pendingOnDay };
   });
 
-  // Students with 2+ missed lessons in the last 14 days — derived from tallyEntries
+  // Students with 2+ missed lessons in the last 14 days — derived from WTT.missed.
+  // Helper applies the count >= 2 threshold internally; cutoff snaps to the
+  // containing Monday since WTT.missed lacks recordedAt (audit-acknowledged).
   const recentCutoff = new Date(today);
   recentCutoff.setDate(today.getDate() - 14);
-  const missedByStudent = {};
-  for (const e of tallyEntries) {
-    if (e.status !== "missed") continue;
-    if (new Date(e.recordedAt) < recentCutoff) continue;
-    const k = `${e.studentId}|${e.instrument}`;
-    if (!missedByStudent[k]) missedByStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: e.schoolId, schoolName: schools.find(s => s.id === e.schoolId)?.name || "", count: 0 };
-    missedByStudent[k].count++;
-  }
-  const missedList = Object.values(missedByStudent).filter(m => m.count >= 2);
+  const sinceWeekKey = toLocalDateStr(_getMondayOf(recentCutoff));
+  const missedList = getMissedSince({ weeklyTimetables, sinceWeekKey })
+    .map(r => ({ ...r, schoolName: schools.find(s => s.id === r.schoolId)?.name || "" }));
 
   // Unacknowledged timetable warnings
-  const unschedCount = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned").length : 0;
+  const archivedStudentIds = new Set(students.filter(s => s.status === "archived").map(s => s.id));
+  const unschedCount = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)).length : 0;
   const unassignedCount = students.filter(s => s.status === "active" && (s.instruments || []).some(i => !i.isGroup && !i.teacherId)).length;
   const [bannerTip, setBannerTip] = React.useState(null);
   const [dashPanels, setDashPanels] = React.useState(() => { try { return { emails: false, todo: false, alerts: false, ...JSON.parse(localStorage.getItem(STORAGE_KEYS.dashPanels) || "{}") }; } catch { return { emails: false, todo: false, alerts: false }; } });
@@ -168,6 +261,38 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   // ── Reminders ─────────────────────────────────────────────────
   const [reminders, setReminders] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-reminders") || "[]"); } catch { return []; } });
   const saveReminders = (r) => { setReminders(r); try { localStorage.setItem("mt-reminders", JSON.stringify(r)); } catch {} };
+
+  // Sync reminders if BrowserPanel saves one externally
+  React.useEffect(() => {
+    const handler = () => { try { setReminders(JSON.parse(localStorage.getItem("mt-reminders") || "[]")); } catch {} };
+    window.addEventListener("mt-reminders-updated", handler);
+    return () => window.removeEventListener("mt-reminders-updated", handler);
+  }, []);
+
+  // Close the reminders panel, saving any pending typed input and any open expanded form
+  const handleRemindersToggle = () => {
+    if (!remindersOpen) { setRemindersOpen(true); return; }
+    let arr = [...reminders];
+    const t = remindersInput.trim();
+    if (t) {
+      const entry = { id: uid(), text: t, createdAt: new Date().toISOString() };
+      if (remindersInputMentions.length) entry.mentions = remindersInputMentions;
+      arr = [entry, ...arr];
+      setRemindersInput("");
+      setRemindersInputMentions([]);
+    }
+    if (remindersMetaModal && remindersMetaForm) {
+      const f = remindersMetaForm;
+      arr = arr.map(x => x.id === remindersMetaModal
+        ? { ...x, ...f, text: f.text || x.text, mentions: f.mentions || x.mentions || [], week: f.week ? String(parseInt(f.week)) : "" }
+        : x);
+      setRemindersMetaModal(null);
+      setRemindersMetaForm(null);
+      setRemindersMentionQuery(null);
+    }
+    saveReminders(arr);
+    setRemindersOpen(false);
+  };
   const [remindersOpen, setRemindersOpen] = React.useState(false);
   const [remindersPanelSize, setRemindersPanelSize] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-reminders-size") || '{"w":300,"h":480}'); } catch { return { w: 300, h: 480 }; } });
   const saveRemindersPanelSize = (s) => { setRemindersPanelSize(s); try { localStorage.setItem("mt-reminders-size", JSON.stringify(s)); } catch {} };
@@ -178,14 +303,36 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const [remindersMetaModal, setRemindersMetaModal] = React.useState(null);
   const [remindersMetaForm, setRemindersMetaForm] = React.useState(null);
   const [remindersInput, setRemindersInput] = React.useState("");
+  const [remindersInputMentions, setRemindersInputMentions] = React.useState([]);
   const remindersBtnRef = React.useRef(null);
   const remindersPanelRef = React.useRef(null);
   const remindersTypeRef = React.useRef(null);
+  const dragSourceEmailRef = React.useRef(null);
   const [studentDropOpen, setStudentDropOpen] = React.useState(false);
   const bannerWrapperRef = React.useRef(null);
   const [splitRatio, setSplitRatio] = React.useState(() => { try { return parseFloat(localStorage.getItem("mt-dash-split-ratio") || "0.5"); } catch { return 0.5; } });
   const panelCardRef = React.useRef(null);
   const panelDividerDragging = React.useRef(false);
+  const alertsPillRef = React.useRef(null);
+  const [pillW, setPillW] = React.useState(90);
+  React.useEffect(() => {
+    if (!alertsPillRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) setPillW(Math.round(e.contentRect.width + 20)); // +20 for horizontal padding
+    });
+    ro.observe(alertsPillRef.current);
+    return () => ro.disconnect();
+  }, []);
+  // Track reminders button width so the right-side fade always clears the button
+  const [remindersBtnW, setRemindersBtnW] = React.useState(100);
+  React.useEffect(() => {
+    if (!remindersBtnRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      for (const e of entries) setRemindersBtnW(Math.round(e.contentRect.width + 20));
+    });
+    ro.observe(remindersBtnRef.current);
+    return () => ro.disconnect();
+  }, []);
   const saveSplitRatio = (r) => { const c = Math.min(0.7, Math.max(0.3, r)); setSplitRatio(c); try { localStorage.setItem("mt-dash-split-ratio", String(c)); } catch {} return c; };
   const handleDividerMouseDown = React.useCallback((e) => {
     e.preventDefault();
@@ -224,10 +371,21 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   }, []);
 
   const [inboxEmails, setInboxEmails] = React.useState(() => { try { const c = JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxCache) || "null"); return Array.isArray(c?.emails) ? c.emails.map(preprocessEmail) : []; } catch { return []; } });
-  const [emailFolder, setEmailFolder] = React.useState("inbox"); // "inbox" | "sent"
+  const inboxEmailsRef = React.useRef(inboxEmails);
+  React.useEffect(() => { inboxEmailsRef.current = inboxEmails; }, [inboxEmails]);
+  const onNewEmailRef = React.useRef(onNewEmail);
+  React.useEffect(() => { onNewEmailRef.current = onNewEmail; }, [onNewEmail]);
+  const [emailFolder, setEmailFolder] = React.useState(() => { try { return localStorage.getItem("mt-email-folder") || "inbox"; } catch { return "inbox"; } }); // "inbox" | "sent"
+  const setEmailFolderPersist = (v) => { setEmailFolder(v); try { localStorage.setItem("mt-email-folder", v); } catch {} };
   const [sentEmails, setSentEmails] = React.useState([]);
   const [sentLoading, setSentLoading] = React.useState(false);
   const [inboxLastFetched, setInboxLastFetched] = React.useState(() => { try { const c = JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxCache) || "null"); return c?.ts || 0; } catch { return 0; } });
+  const [gmailRateLimitUntil, setGmailRateLimitUntil] = React.useState(() => {
+    try { return parseInt(localStorage.getItem("mt-gmail-rate-limit-until") || "0", 10); } catch { return 0; }
+  });
+  // Ref so fetchInbox/fetchSent can read rate-limit state without being in their dep arrays
+  const gmailRateLimitUntilRef = React.useRef(gmailRateLimitUntil);
+  React.useEffect(() => { gmailRateLimitUntilRef.current = gmailRateLimitUntil; }, [gmailRateLimitUntil]);
   const [inboxLoading, setInboxLoading] = React.useState(false);
   const [inboxError, setInboxError] = React.useState(null);
   const [inboxSelected, setInboxSelected] = React.useState(null);
@@ -284,14 +442,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   }, [todoUndoRef]);
   const [emailHistoryExpanded, setEmailHistoryExpanded] = React.useState(new Set());
   const [threadMsgSelected, setThreadMsgSelected] = React.useState({}); // threadId -> messageId
-  const [emailContextMenu, setEmailContextMenu] = React.useState(null); // { x, y, text, emailId }
+  const [emailContextMenu, setEmailContextMenu] = React.useState(null); // { x, y, text, emailId, email?, fromAddr?, fromName?, isSenderCtx? }
+  const [emailContextSubMenu, setEmailContextSubMenu] = React.useState(null); // "contacts" | null
   const [emailCategoryFilter, setEmailCategoryFilter] = React.useState(new Set()); // ★ | parent | teacher | staff | admin | enquiry | other
   const [emailCategoryOverrides, setEmailCategoryOverrides] = React.useState(() => { try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.emailCategoryOverrides) || "{}"); } catch { return {}; } });
   const [emailNoReplyOverrides, setEmailNoReplyOverrides] = React.useState(() => { try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.emailNoReplyOverrides) || "[]")); } catch { return new Set(); } });
   const [emailMoveToOpen, setEmailMoveToOpen] = React.useState(null); // emailId of open Move To popup
   const [bulkMoveOpen, setBulkMoveOpen] = React.useState(false);
   const [emailSchoolFilter, setEmailSchoolFilter] = React.useState(new Set()); // school:id
-  const [emailSearch, setEmailSearch] = React.useState("");
+  const [emailSearch, setEmailSearch] = React.useState(() => { try { return localStorage.getItem("mt-email-search") || ""; } catch { return ""; } });
+  const setEmailSearchPersist = (v) => { setEmailSearch(v); try { localStorage.setItem("mt-email-search", v); } catch {} };
+  const [emailSuggestOpen, setEmailSuggestOpen] = React.useState(false);
+  const [gmailSearchResults, setGmailSearchResults] = React.useState(null); // null = inactive, [] or [...] = active
+  const [gmailSearchLoading, setGmailSearchLoading] = React.useState(false);
+  const gmailSearchTimerRef = React.useRef(null);
   const [emailReadIds, setEmailReadIds] = React.useState(() => { try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxReadIds) || "[]")); } catch { return new Set(); } });
   const [emailSwipeState, setEmailSwipeState] = React.useState({}); // emailId -> deltaX (for swipe animation)
   const emailSwipeRef = React.useRef({}); // tracks ongoing swipe per email { [id]: dx, [lock_id]: dir, [t_id]: timer }
@@ -307,7 +471,302 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const [triageDraft, setTriageDraft] = React.useState({}); // emailId -> string
   const [emailDragging, setEmailDragging] = React.useState(null);
   const [attachmentDragging, setAttachmentDragging] = React.useState(null); // { att, messageId }
+  const [attachmentPreview, setAttachmentPreview] = React.useState(null); // { att, messageId, loading, base64, blobUrl, error }
+  const [previewPos,  setPreviewPos]  = React.useState({ x: 0, y: 0 });
+  const [previewSize, setPreviewSize] = React.useState({ w: 820, h: 600 });
+  const previewPosRef  = React.useRef({ x: 0, y: 0 });
+  const previewSizeRef = React.useRef({ w: 820, h: 600 });
+  React.useEffect(() => { previewPosRef.current  = previewPos;  }, [previewPos]);
+  React.useEffect(() => { previewSizeRef.current = previewSize; }, [previewSize]);
+
+  // ── Save attachment to Documents/Resources ───────────────────
+  const SAVE_ATT_DOC_TYPES  = ["Insurance", "WWCC", "License Agreement", "Policy", "Other"];
+  const SAVE_ATT_RES_CATS   = ["Book", "Equipment", "Website", "Sheet Music", "Video", "Other"];
+  const [attCtxMenu,       setAttCtxMenu]       = React.useState(null); // { att, messageId, x, y }
+  const [saveAttachModal,  setSaveAttachModal]  = React.useState(null); // { att, messageId }
+  const [saveAttachSection,setSaveAttachSection]= React.useState("documents");
+  const [saveAttachForm,   setSaveAttachForm]   = React.useState({});
+  const attCtxRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!attCtxMenu) return;
+    const close = (e) => { if (attCtxRef.current && attCtxRef.current.contains(e.target)) return; setAttCtxMenu(null); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [attCtxMenu]);
+  const openSaveAttachModal = (att, messageId) => {
+    setAttCtxMenu(null);
+    setSaveAttachSection("documents");
+    setSaveAttachForm({ label: att.filename || "", type: "Other", teacherId: "", schoolId: "", expiryDate: "", notes: "", category: "Other", description: "" });
+    setSaveAttachModal({ att, messageId });
+  };
+  const confirmSaveAttach = () => {
+    if (!saveAttachModal || !setDocuments || !setResources) return;
+    const { att, messageId } = saveAttachModal;
+    const gmailRef = { messageId, attachmentId: att.attachmentId, filename: att.filename, mimeType: att.mimeType || "" };
+    const id = uid();
+    if (saveAttachSection === "documents") {
+      const doc = { id, label: saveAttachForm.label || att.filename, type: saveAttachForm.type, teacherId: saveAttachForm.teacherId, schoolId: saveAttachForm.schoolId, expiryDate: saveAttachForm.expiryDate, url: "", notes: saveAttachForm.notes, gmailRef };
+      setDocuments(prev => [doc, ...prev]);
+      notify("Saved to Documents");
+    } else {
+      const res = { id, label: saveAttachForm.label || att.filename, url: "", category: saveAttachForm.category, description: saveAttachForm.description, gmailRef };
+      setResources(prev => [res, ...prev]);
+      notify("Saved to Resources");
+    }
+    setSaveAttachModal(null);
+  };
+
+  const closeAttachmentPreview = React.useCallback(() => {
+    setAttachmentPreview(prev => {
+      if (prev?.blobUrl) URL.revokeObjectURL(prev.blobUrl);
+      return null;
+    });
+  }, []);
+
+  // Centre the window on screen when opening
+  const initPreviewLayout = React.useCallback(() => {
+    const w = Math.min(820, Math.round(window.innerWidth * 0.82));
+    const h = Math.min(680, Math.round(window.innerHeight * 0.85));
+    setPreviewSize({ w, h });
+    setPreviewPos({ x: Math.round((window.innerWidth - w) / 2), y: Math.round((window.innerHeight - h) / 2) });
+  }, []);
+
+  // Drag the modal by its header
+  const handlePreviewDragStart = React.useCallback((e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const { x: ox, y: oy } = previewPosRef.current;
+    const onMove = (ev) => setPreviewPos({ x: ox + ev.clientX - startX, y: oy + ev.clientY - startY });
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  // Resize from any edge or corner — n/s/e/w flags indicate which edges move
+  const startResize = React.useCallback((e, n, s, east, w) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY;
+    const { x: ox, y: oy } = previewPosRef.current;
+    const { w: ow, h: oh } = previewSizeRef.current;
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      let nx = ox, ny = oy, nw = ow, nh = oh;
+      if (east) nw = Math.max(420, ow + dx);
+      if (w)    { nw = Math.max(420, ow - dx); nx = ox + ow - nw; }
+      if (s)    nh = Math.max(300, oh + dy);
+      if (n)    { nh = Math.max(300, oh - dy); ny = oy + oh - nh; }
+      setPreviewPos({ x: nx, y: ny });
+      setPreviewSize({ w: nw, h: nh });
+    };
+    const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  const handlePreviewAttachment = React.useCallback(async (att, messageId) => {
+    initPreviewLayout();
+    const type = getAttachmentType(att.filename);
+    // For unsupported types, open modal immediately without fetching
+    if (type === "other") {
+      setAttachmentPreview({ att, messageId, loading: false, base64: null, blobUrl: null, error: null });
+      return;
+    }
+    setAttachmentPreview({ att, messageId, loading: true, base64: null, blobUrl: null, error: null });
+    try {
+      if (!window.electronAPI?.gmailFetchAttachment) throw new Error("Preview is only available in the desktop app.");
+      const result = await window.electronAPI.gmailFetchAttachment(messageId, att.attachmentId);
+      if (!result.ok) throw new Error(result.error || "Failed to fetch attachment.");
+      const base64 = result.base64;
+      let blobUrl = null;
+      if (type === "pdf") {
+        const bytes = atob(base64);
+        const arr = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        const blob = new Blob([arr], { type: "application/pdf" });
+        blobUrl = URL.createObjectURL(blob);
+      }
+      setAttachmentPreview(prev => prev ? { ...prev, loading: false, base64, blobUrl } : prev);
+    } catch (e) {
+      setAttachmentPreview(prev => prev ? { ...prev, loading: false, error: e.message } : prev);
+    }
+  }, [initPreviewLayout]);
   const [alertDragging, setAlertDragging] = React.useState(null); // { text, tag } being dragged from alert chip
+  // Teacher notes alert tracking — stores { id, seenAt } for notes already seen
+  const [seenTeacherNoteIds, setSeenTeacherNoteIds] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("mt-seen-teacher-note-ids") || "[]")); } catch { return new Set(); }
+  });
+  const dismissTeacherNoteAlert = (noteId) => {
+    setSeenTeacherNoteIds(prev => {
+      const next = new Set([...prev, noteId]);
+      localStorage.setItem("mt-seen-teacher-note-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  const dismissAllTeacherNoteAlerts = (noteIds) => {
+    setSeenTeacherNoteIds(prev => {
+      const next = new Set([...prev, ...noteIds]);
+      localStorage.setItem("mt-seen-teacher-note-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  // Staff document alert tracking — stores seen uploaded doc IDs
+  const [seenStaffDocIds, setSeenStaffDocIds] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("mt-seen-staff-doc-ids") || "[]")); } catch { return new Set(); }
+  });
+  const dismissStaffDocAlert = (docId) => {
+    setSeenStaffDocIds(prev => {
+      const next = new Set([...prev, docId]);
+      localStorage.setItem("mt-seen-staff-doc-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  const dismissAllStaffDocAlerts = (docIds) => {
+    setSeenStaffDocIds(prev => {
+      const next = new Set([...prev, ...docIds]);
+      localStorage.setItem("mt-seen-staff-doc-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  // Load recent staff-uploaded documents from Supabase
+  const [staffUploadedDocs, setStaffUploadedDocs] = React.useState([]);
+  React.useEffect(() => {
+    async function loadStaffDocs() {
+      try {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - 30); // show uploads from last 30 days
+        const { data } = await supabase
+          .from("documents")
+          .select("id, label, type, file_name, teacher_id, uploaded_at")
+          .not("teacher_id", "is", null)
+          .gte("uploaded_at", cutoff.toISOString())
+          .order("uploaded_at", { ascending: false });
+        setStaffUploadedDocs(data || []);
+      } catch (err) {
+        console.error("Dashboard: failed to load staff docs", err);
+      }
+    }
+    loadStaffDocs();
+  }, []);
+
+  // ── Invoice alert tracking ─────────────────────────────────
+  const [submittedInvoices, setSubmittedInvoices] = React.useState([]);
+  const [seenInvoiceIds, setSeenInvoiceIds] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("mt-seen-invoice-ids") || "[]")); } catch { return new Set(); }
+  });
+  const dismissInvoiceAlert = (id) => {
+    setSeenInvoiceIds(prev => {
+      const next = new Set([...prev, id]);
+      localStorage.setItem("mt-seen-invoice-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  const dismissAllInvoiceAlerts = (ids) => {
+    setSeenInvoiceIds(prev => {
+      const next = new Set([...prev, ...ids]);
+      localStorage.setItem("mt-seen-invoice-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  React.useEffect(() => {
+    async function loadInvoices() {
+      try {
+        const { data } = await supabase
+          .from("invoices")
+          .select("id, teacher_id, period_start, period_end, total_hours, total_amount, submitted_at")
+          .eq("status", "submitted")
+          .order("submitted_at", { ascending: false })
+          .limit(50);
+        setSubmittedInvoices(data || []);
+      } catch (e) { console.warn("Dashboard: failed to load invoices", e); }
+    }
+    loadInvoices();
+    const interval = setInterval(loadInvoices, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ── Classroom teacher email alert tracking ─────────────────
+  // Cache of { emailId: { type, summary } } — persisted to localStorage
+  const [teacherEmailAlerts, setTeacherEmailAlerts] = React.useState(() => {
+    try { return JSON.parse(localStorage.getItem("mt-teacher-email-alerts") || "{}"); } catch { return {}; }
+  });
+  const [seenTeacherEmailAlertIds, setSeenTeacherEmailAlertIds] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("mt-seen-teacher-email-alert-ids") || "[]")); } catch { return new Set(); }
+  });
+  const dismissTeacherEmailAlert = (emailId) => {
+    setSeenTeacherEmailAlertIds(prev => {
+      const next = new Set([...prev, emailId]);
+      localStorage.setItem("mt-seen-teacher-email-alert-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  const dismissAllTeacherEmailAlerts = (emailIds) => {
+    setSeenTeacherEmailAlertIds(prev => {
+      const next = new Set([...prev, ...emailIds]);
+      localStorage.setItem("mt-seen-teacher-email-alert-ids", JSON.stringify([...next]));
+      return next;
+    });
+  };
+  // Build list of classroom/specialist teacher contacts with their emails
+  const teacherContacts = React.useMemo(() =>
+    contacts.filter(c => c.role === "Classroom Teacher" || c.role === "Specialist Teacher").filter(c => c.email),
+  [contacts]);
+  // Analyse any unprocessed emails from classroom/specialist teachers via Claude API
+  React.useEffect(() => {
+    if (!inboxEmails.length || !teacherContacts.length) return;
+    const teacherEmailSet = new Set(teacherContacts.map(c => c.email.toLowerCase()));
+    const unprocessed = inboxEmails.filter(em => {
+      const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase();
+      return teacherEmailSet.has(fromAddr) && !teacherEmailAlerts[em.id];
+    });
+    if (!unprocessed.length) return;
+    // Process one at a time to avoid hammering the API
+    (async () => {
+      const updated = { ...teacherEmailAlerts };
+      for (const em of unprocessed.slice(0, 5)) { // max 5 per render cycle
+        const contact = teacherContacts.find(c => {
+          const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase();
+          return c.email.toLowerCase() === fromAddr;
+        });
+        if (!contact) continue;
+        // Build student list for this teacher's class
+        const classStudents = students.filter(s => s.schoolId === contact.schoolId && s.className === contact.className && s.status === "active").map(s => s.name);
+        const emailText = `Subject: ${em.subject || ""}\n${em.snippet || em.body || ""}`.slice(0, 600);
+        try {
+          const res = await anthropicFetch("/v1/messages", {
+            method: "POST",
+            headers: getAnthropicHeaders(),
+            body: JSON.stringify({
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 120,
+              system: `You classify emails from classroom teachers to a music tutor. 
+Known students in this teacher's class: ${classStudents.join(", ") || "unknown"}.
+Reply ONLY with valid JSON: {"type":"absence"|"class_change"|"other","summary":"short label max 6 words"}
+For absences use format: "Name away today" or "Name went home sick".
+For class changes: "Subject moved to HH:MM" or "Class cancelled today".
+For other: {"type":"other","summary":""}`,
+              messages: [{ role: "user", content: emailText }],
+            }),
+          });
+          const txt = res?.content?.[0]?.text || "";
+          const clean = txt.replace(/```json|```/g, "").trim();
+          const parsed = JSON.parse(clean);
+          if (parsed.type && parsed.type !== "other" && parsed.summary) {
+            updated[em.id] = { type: parsed.type, summary: parsed.summary, emailId: em.id };
+          } else {
+            updated[em.id] = { type: "other", summary: "", emailId: em.id };
+          }
+        } catch (e) {
+          updated[em.id] = { type: "other", summary: "", emailId: em.id };
+        }
+      }
+      setTeacherEmailAlerts(updated);
+      try { localStorage.setItem("mt-teacher-email-alerts", JSON.stringify(updated)); } catch {}
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxEmails, teacherContacts]);
+
   const [alertDropdown, setAlertDropdown] = React.useState(null); // { rect, title, borderColor, items: [{label, dragPayload, chipColor}] }
   // Wrapper: converts chip's viewport rect to absolute coords in scroll container at hover time,
   // so the dropdown stays locked to the chip as the page scrolls.
@@ -335,6 +794,25 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     return () => document.removeEventListener("mousedown", handler);
   }, [missedContactMenu, catchupContactMenu]);
   const saveInboxCache = (emails) => { try { localStorage.setItem(STORAGE_KEYS.inboxCache, JSON.stringify({ emails, ts: Date.now() })); } catch {} };
+
+  // Parse a "Retry after <ISO timestamp>" string from a Gmail 429 error and store
+  // the blocked-until time so all subsequent calls skip the API until it clears.
+  // A 5-minute cooldown buffer is added on top of Gmail's specified window — this
+  // prevents the background poll from firing the instant the window technically
+  // expires and immediately triggering another 429 before Gmail is fully ready.
+  const GMAIL_RATE_LIMIT_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
+  const applyGmailRateLimit = React.useCallback((errorStr) => {
+    const match = (errorStr || "").match(/Retry after ([^\s]+)/i);
+    if (match) {
+      const gmailUntil = new Date(match[1]).getTime();
+      if (!isNaN(gmailUntil) && gmailUntil > Date.now()) {
+        const until = gmailUntil + GMAIL_RATE_LIMIT_BUFFER_MS;
+        setGmailRateLimitUntil(until);
+        gmailRateLimitUntilRef.current = until;
+        try { localStorage.setItem("mt-gmail-rate-limit-until", String(until)); } catch {}
+      }
+    }
+  }, []);
   const [emailArchivedIds, setEmailArchivedIds] = React.useState(() => { try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxArchivedIds) || "[]")); } catch { return new Set(); } });
   const markArchived = React.useCallback((emailId) => {
     setEmailArchivedIds(prev => { const next = new Set(prev); next.add(emailId); try { localStorage.setItem(STORAGE_KEYS.inboxArchivedIds, JSON.stringify([...next])); } catch {} return next; });
@@ -342,16 +820,86 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   }, []);
   const markRead = (emailId) => { const next = new Set(emailReadIds); next.add(emailId); setEmailReadIds(next); try { localStorage.setItem(STORAGE_KEYS.inboxReadIds, JSON.stringify([...next])); } catch {} };
 
-  // To Do state
-  const [todoItems, setTodoItems] = React.useState(() => { try { const v = JSON.parse(localStorage.getItem(STORAGE_KEYS.todoItems) || "[]"); todoItemsRef.current = v; return v; } catch { return []; } });
-  const [todoInput, setTodoInput] = React.useState("");
-  const [todoDragIdx, setTodoDragIdx] = React.useState(null);
-  const todoDragIdxRef = React.useRef(null);
-  const [todoDropZoneIdx, setTodoDropZoneIdx] = React.useState(null); // index of gap being hovered (0 = before item 0, 1 = between 0 and 1, etc.)
+  // To Do state — todoItemsRef MUST be declared before todoItems useState so the lazy
+  // initializer can set todoItemsRef.current = v without a ReferenceError (which would
+  // be swallowed by try/catch and return [] every mount, losing all saved items).
   const todoItemsRef = React.useRef([]); // always-current mirror of todoItems for drop handlers
   const todoUndoStack = React.useRef([]); // stack of previous todoItems states for Ctrl+Z
+  const [todoItems, setTodoItems] = React.useState(() => { try { const v = JSON.parse(localStorage.getItem(STORAGE_KEYS.todoItems) || "[]"); todoItemsRef.current = v; return v; } catch { return []; } });
+
+  // Sync todo list if Claude panel adds an item externally
+  React.useEffect(() => {
+    const handler = () => {
+      try {
+        const v = JSON.parse(localStorage.getItem(STORAGE_KEYS.todoItems) || "[]");
+        setTodoItems(v);
+        todoItemsRef.current = v;
+      } catch {}
+    };
+    window.addEventListener("mt-todos-updated", handler);
+    return () => window.removeEventListener("mt-todos-updated", handler);
+  }, []);
+  const [todoInput, setTodoInput] = React.useState("");
+  const [todoCategories, setTodoCategories] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-todo-categories") || "[]"); } catch { return []; } });
+  const [todoFilterCategory, setTodoFilterCategory] = React.useState(new Set());
+  const saveTodoCategories = (cats) => { setTodoCategories(cats); try { localStorage.setItem("mt-todo-categories", JSON.stringify(cats)); } catch {} };
+  React.useEffect(() => { const h = () => { try { setTodoCategories(JSON.parse(localStorage.getItem("mt-todo-categories") || "[]")); } catch {} }; window.addEventListener("mt-todo-categories-updated", h); return () => window.removeEventListener("mt-todo-categories-updated", h); }, []);
+  const [todoDragIdx, setTodoDragIdx] = React.useState(null);
+  const todoDragIdxRef = React.useRef(null);
+  const todoDragItemIdRef = React.useRef(null); // id of item being dragged — stable across preview shuffles
+  const [todoDragHoverItemId, setTodoDragHoverItemId] = React.useState(null);
+  const todoDragHoverIdxRef = React.useRef(null); // hover idx in activeTodo, always-current mirror
+  const [todoDropZoneIdx, setTodoDropZoneIdx] = React.useState(null); // kept for email/alert drop visual
+  const [todoSelectedIds, setTodoSelectedIds] = React.useState(new Set()); // shift+click multi-select
+  const [todoContextMenu, setTodoContextMenu] = React.useState(null); // { x, y, itemId }
   const todoSubDragRef = React.useRef(null); // { parentId, subId, subItem } when dragging a sub-item out
   const [todoEditId, setTodoEditId] = React.useState(null); // id of item being inline-edited
+  const [todoSubEditId, setTodoSubEditId] = React.useState(null); // { itemId, subId } for sub-item edit
+  const [todoSubEditValue, setTodoSubEditValue] = React.useState("");
+  const [todoEditValue, setTodoEditValue] = React.useState(""); // controlled value for inline edit
+  const [todoSubInput, setTodoSubInput] = React.useState(""); // sub-item add field
+  const [todoMentionQuery, setTodoMentionQuery] = React.useState(null); // { query, anchorPos, field, top, left, width }
+  const [todoMentionIndex, setTodoMentionIndex] = React.useState(0);
+  const [todoEditMentions, setTodoEditMentions] = React.useState([]); // { name, email } for current inline edit
+  const [todoAddMentions, setTodoAddMentions] = React.useState([]);   // { name, email } for main add field
+
+  // ── Quick-add modals (Cmd+Shift+T / Cmd+Shift+R from any page) ──────────
+  const [quickTodoOpen, setQuickTodoOpen] = React.useState(false);
+  const [quickTodoInput, setQuickTodoInput] = React.useState("");
+  const [quickTodoCategory, setQuickTodoCategory] = React.useState(null); // category id or null
+  const quickTodoInputRef = React.useRef(null);
+  const [quickReminderOpen, setQuickReminderOpen] = React.useState(false);
+  const [quickReminderInput, setQuickReminderInput] = React.useState("");
+  const quickReminderInputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!quickAddTodoTrigger) return;
+    setQuickTodoOpen(prev => {
+      if (prev) return false; // already open → toggle closed
+      setQuickTodoInput("");
+      setQuickTodoCategory(null);
+      setTimeout(() => quickTodoInputRef.current?.focus(), 50);
+      return true;
+    });
+  }, [quickAddTodoTrigger]);
+
+  React.useEffect(() => {
+    if (!quickAddReminderTrigger) return;
+    setQuickReminderOpen(prev => {
+      if (prev) return false; // already open → toggle closed
+      setQuickReminderInput("");
+      setTimeout(() => quickReminderInputRef.current?.focus(), 50);
+      return true;
+    });
+  }, [quickAddReminderTrigger]);
+  const [todoSubMentions, setTodoSubMentions] = React.useState([]);   // { name, email } for sub-item add field
+  const [todoNotesValue, setTodoNotesValue] = React.useState("");     // controlled notes textarea value
+  const [todoNotesItemId, setTodoNotesItemId] = React.useState(null); // which item's notes are focused
+  const [todoNotesMentions, setTodoNotesMentions] = React.useState([]); // { name, email } for notes field
+  const todoNotesRef = React.useRef(null);
+  const todoInputRef = React.useRef(null);
+  const todoEditInputRef = React.useRef(null);
+  const todoSubInputRef = React.useRef(null);
   const [todoDropTarget, setTodoDropTarget] = React.useState(false); // email being dragged over todo panel
   const [todoExpanded, setTodoExpanded] = React.useState(new Set()); // Set of item IDs that are expanded
 
@@ -363,7 +911,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     // Removed-and-readded items get a fresh stamp because their ID is gone from prevIds.
     const prevIds = new Set(todoItemsRef.current.map(t => t.id));
     const today = melbourneToday();
-    const stamped = items.map(t => prevIds.has(t.id) ? t : { ...t, todoDate: today });
+    const stamped = items.map(t => prevIds.has(t.id) ? t : { ...t, todoDate: today, ...(todoFilterCategory.size === 1 && !t.category ? { category: [...todoFilterCategory][0] } : {}) });
     setTodoItems(stamped); todoItemsRef.current = stamped;
     try { localStorage.setItem(STORAGE_KEYS.todoItems, JSON.stringify(stamped)); } catch {}
   };
@@ -585,6 +1133,9 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     const isPinned = emailPinned.includes(emailId);
     const next = isPinned ? emailPinned.filter(id => id !== emailId) : [...emailPinned, emailId];
     setEmailPinned(next);
+    // Reset swipe so the pinned email doesn't stay showing the action buttons
+    emailSwipeRef.current[emailId] = 0;
+    setEmailSwipeState(prev => ({ ...prev, [emailId]: 0 }));
     try { localStorage.setItem(STORAGE_KEYS.emailPinned, JSON.stringify(next)); } catch {}
   };
 
@@ -706,7 +1257,22 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     try {
       const schoolList = schools.map(s => s.name).join(", ");
       const teacherList = teachers.map(t => t.name).join(", ");
-      const prompt = `You are helping a music tuition coordinator reply to an email. Draft a concise, professional reply.\n\nContext:\n- Schools: ${schoolList}\n- Teachers: ${teacherList}\n- Active students: ${students.filter(s => s.status === "active").length}\n\nEmail:\nFrom: ${email.from}\nSubject: ${email.subject}\nBody: ${email.body || email.snippet}\n\nWrite ONLY the reply body. No subject line, no sign-off placeholder, no explanation.`;
+      const prompt = `You are helping a music tuition coordinator reply to an email. Draft a concise reply that matches the coordinator's writing style.
+
+Context:
+- Schools: ${schoolList}
+- Teachers: ${teacherList}
+- Active students: ${students.filter(s => s.status === "active").length}
+${emailStyle && emailStyle.trim() ? `
+Writing style guide (match this closely):
+${emailStyle.trim()}
+` : ""}
+Email:
+From: ${email.from}
+Subject: ${email.subject}
+Body: ${email.body || email.snippet}
+
+Write ONLY the reply body. No subject line, no sign-off placeholder, no explanation.`;
       const res = await anthropicFetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: getAnthropicHeaders(),
@@ -718,7 +1284,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       setTriageDraft(prev => ({ ...prev, [email.id]: draft }));
     } catch {}
     setTriageLoading(prev => ({ ...prev, [email.id]: false }));
-  }, [schools, teachers, students, recordUsage]);
+  }, [schools, teachers, students, recordUsage, emailStyle]);
 
   // Alert dismissals — keyed by groupType, reset at midnight
   const [alertDismissals, setAlertDismissals] = React.useState(() => {
@@ -736,6 +1302,115 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const isAlertDismissed = (key) => !!alertDismissals.dismissed[key];
   const pendingDismissed = isAlertDismissed("alert-pending");
   const trialDismissed = isAlertDismissed("alert-trial");
+
+  // Reset dismissals when the calendar date changes (handles app left running overnight)
+  React.useEffect(() => {
+    setAlertDismissals(prev => {
+      if (prev.date !== todayStr) {
+        const reset = { date: todayStr, dismissed: {} };
+        try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(reset)); } catch {}
+        return reset;
+      }
+      return prev;
+    });
+  }, [todayStr]);
+
+  // ── Sidebar badge counts ────────────────────────────────────
+  const unreadEmailCount = useMemo(() =>
+    inboxEmails.filter(e => !emailReadIds.has(e.id)).length,
+  [inboxEmails, emailReadIds]);
+
+  const sidebarAlertCount = useMemo(() => {
+    const dismissed = (key) => !!alertDismissals?.dismissed?.[key];
+    const todayStr2 = melbourneToday();
+    const mon = getCurrentWeekMonday();
+    const currentWeekKey = toLocalDateStr(mon);
+    const nextWeekKey = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 7); return d; })());
+    const alertIntrEnd = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 14); return d; })());
+    const startOfToday = new Date(todayStr2 + "T00:00:00").getTime();
+    const startOfYesterday = startOfToday - 86400000;
+    const emailAgeMs2 = (e) => e.internalDate || (e.date ? new Date(e.date).getTime() : 0);
+
+    const incompleteCount = students.filter(s =>
+      s.status === "active" && (!s.schoolId || !s.className || !(s.parents || []).some(p => p.email || p.phone))
+    ).length;
+
+    const missedThisWeekCount = new Set(
+      getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })
+        .map(e => `${e.studentId}|${e.instrument}`)
+    ).size;
+
+    // Note: helper requires !!makeupEligible (true only). Legacy accepted true OR undefined,
+    // but WTT.missed writers always set the field explicitly — no live entries affected.
+    const catchupTotal = findOpenCatchups({ weeklyTimetables })
+      .filter(r => r.weekKey !== currentWeekKey)
+      .length;
+
+    const allRR = inboxEmails.filter(e => {
+      if (emailNoReplyOverrides.has(e.id)) return false;
+      const cached = emailSummaries[`${e.threadId || e.id}-${e.id}`];
+      if (!(typeof cached === "object" ? !!cached?.needsReply : false)) return false;
+      // Exclude emails already replied to
+      const msgs = e.threadMessages || [];
+      if (msgs.some(m => m.isSent)) return false;
+      if (sentEmails.length > 0) {
+        const tid = e.threadId || e.id;
+        const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
+        if (sentEmails.some(s => {
+          if (s.threadId && s.threadId === e.threadId) return true;
+          if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
+          return (s.threadId || s.id) === tid;
+        })) return false;
+      }
+      return true;
+    });
+    const rrRed = allRR.filter(e => emailAgeMs2(e) < startOfYesterday);
+    const rrYellow = allRR.filter(e => emailAgeMs2(e) >= startOfYesterday && emailAgeMs2(e) < startOfToday);
+    const rrBlue = allRR.filter(e => emailAgeMs2(e) >= startOfToday);
+
+    const pendingOnly = students.filter(s => s.status === "pending").reduce((s, st) => s + Math.max(1, (st.instruments || []).filter(i => !i.isGroup).length), 0);
+    const trialOnly = students.filter(s => s.status === "trial").reduce((s, st) => s + Math.max(1, (st.instruments || []).filter(i => !i.isGroup).length), 0);
+
+    const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr2 && i.date <= alertIntrEnd);
+
+    const lcKeywords = ["reschedul","change","swap","move","different time","different day","can't make","cannot make","won't be","will not be","away","absent","cancel","conflict","clash"];
+    const lcEmails = inboxEmails.filter(e => {
+      const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
+      if (!students.some(s => (s.parents || []).some(p => p.email?.toLowerCase() === addr))) return false;
+      const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
+      return lcKeywords.some(kw => text.includes(kw));
+    });
+
+    const upcomingAbsences = new Set(
+      getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })
+        .map(e => `${e.studentId || e.studentName}|${e.instrument}`)
+    ).size;
+
+    let count = 0;
+    if (unassignedCount > 0 && !dismissed("alert-unassigned")) count++;
+    if (unschedCount > 0 && !dismissed("alert-unscheduled")) count++;
+    if (incompleteCount > 0 && !dismissed("alert-incomplete")) count++;
+    if (missedThisWeekCount > 0 && !dismissed("alert-missed-week")) count++;
+    if (rrRed.length > 0 && !dismissed("alert-response-red")) count++;
+    if (rrYellow.length > 0 && !dismissed("alert-response-yellow")) count++;
+    if (rrBlue.length > 0 && !dismissed("alert-response-blue")) count++;
+    if (upcomingInterruptions.filter(i => !dismissed(`alert-interruption-${i.id}`)).length > 0) count++;
+    if (catchupTotal > 0 && !dismissed("alert-catchup")) count++;
+    if (pendingOnly > 0 && !dismissed("alert-pending")) count++;
+    if (trialOnly > 0 && !dismissed("alert-trial")) count++;
+    if (lcEmails.length > 0 && !dismissed("alert-lesson-change")) count++;
+    if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
+    const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
+    const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && (s.instruments || []).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
+    if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
+    return count;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unassignedCount, unschedCount, students, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
+
+  useEffect(() => {
+    if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
+  }, [sidebarAlertCount, unreadEmailCount, setDashBadges]);
+  // ── End sidebar badge counts ────────────────────────────────
 
   // Parse metadata from an enquiry email (client-side, no API call)
   const parseEnquiryMeta = React.useCallback((email) => {
@@ -791,11 +1466,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     const meta = parseEnquiryMeta(email);
     const fromAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
     const fullText = `${email.subject || ""} ${email.snippet || ""} ${email.body || ""}`;
-    let instrument = meta.instrument || "";
-    if (!instrument) {
-      const m = fullText.match(/\b(piano|guitar|violin|viola|cello|double bass|drums?|voice|singing|flute|trumpet|trombone|bass guitar|ukulele|recorder|saxophone|clarinet|french horn|oboe|bassoon)\b/i);
-      if (m) instrument = m[1];
-    }
+    const _teacherInstrs = [...new Set(teachers.flatMap(t => (t.instruments || []).map(i => i.name)))];
+    let instrument = resolveInstrument(meta.instrument || "", _teacherInstrs) || resolveInstrument(fullText, _teacherInstrs);
     let enquirySchool = meta.school || "";
     if (!enquirySchool) {
       const rawTo = email.deliveredTo || email.to || "";
@@ -821,10 +1493,10 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       schoolId: schools.find(s => s.name === enquirySchool)?.id || "",
       className: meta.className || "",
       instruments: instrument
-        ? [{ name: instrument.charAt(0).toUpperCase() + instrument.slice(1), teacherId: "" }]
+        ? [{ name: instrument, teacherId: "" }]
         : [{ name: "", teacherId: "" }],
     };
-  }, [parseEnquiryMeta, schools, contacts]);
+  }, [parseEnquiryMeta, schools, contacts, teachers]);
 
   // Drop an email onto the To Do list — fully structured output.
   const dropEmailToTodo = React.useCallback((email, currentItems) => {
@@ -865,7 +1537,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       const mFirst = preferredFirstName(mName) || mName.split(" ")[0];
       return { id: uid(), text: `Reply to ${mFirst}`, fullName: mName, replyTo: mAddr,
         replyEmailId: email.id, senderName: mFirst, done: false, emailId: email.id,
-        composeSubject: email.subject ? `Re: ${email.subject}` : "",
+        composeSubject: email.subject ? reSubject(email.subject) : "",
         meta: { parentName: mName }, tag: "email", createdAt: new Date().toISOString() };
     };
 
@@ -885,7 +1557,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         ? `Contact parents re: ${cleanSubject || "(no subject)"} — ${nonSentMsgs.length}`
         : `Contact ${senderFirstNames.slice(0, 3).join(", ")}${senderFirstNames.length > 3 ? ` +${senderFirstNames.length - 3}` : ""} re: ${cleanSubject || "(no subject)"}`;
       return [{ id: uid(), text: groupText, done: false, tag: "email", emailId: email.id,
-        composeSubject: email.subject ? `Re: ${email.subject}` : "",
+        composeSubject: email.subject ? reSubject(email.subject) : "",
         meta, subItems, replyAddrs, createdAt: new Date().toISOString() }, ...currentItems];
     }
 
@@ -893,17 +1565,15 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     if (isEnquiry) {
       const enquiryFirst = preferredFirstName(meta.parentName) || meta.parentName;
       const fullText = `${email.subject || ""} ${email.snippet || ""} ${email.body || ""}`;
-      const INSTRUMENTS_LC = ["piano","guitar","violin","viola","cello","double bass","drums","voice","singing","flute","trumpet","trombone","bass guitar","ukulele","recorder","saxophone","clarinet","french horn","oboe","bassoon"];
+      const _teacherInstrs2 = [...new Set(teachers.flatMap(t => (t.instruments || []).map(i => i.name)))];
       // Try to extract instrument — subject first (e.g. "Emerson Murphy – Piano"), then body
       let instrument = "";
       const instrMatch = cleanSubject.match(/[–—-]\s*([A-Za-z\s]+)$/);
       if (instrMatch) {
-        const candidate = instrMatch[1].trim();
-        if (INSTRUMENTS_LC.some(i => candidate.toLowerCase().includes(i))) instrument = candidate;
+        instrument = resolveInstrument(instrMatch[1].trim(), _teacherInstrs2);
       }
       if (!instrument) {
-        const bodyInstrMatch = fullText.match(/\b(piano|guitar|violin|viola|cello|double bass|drums?|voice|singing|flute|trumpet|trombone|bass guitar|ukulele|recorder|saxophone|clarinet|french horn|oboe|bassoon)\b/i);
-        if (bodyInstrMatch) instrument = bodyInstrMatch[1];
+        instrument = resolveInstrument(fullText, _teacherInstrs2);
       }
       // Try to parse school — multiple strategies
       let enquirySchool = meta.school || "";
@@ -932,8 +1602,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         if (matchedSchool) enquirySchool = matchedSchool.name;
       }
       const itemText = meta.studentName
-        ? `Contact ${enquiryFirst} re: ${meta.studentName}${instrument ? `, ${instrument.charAt(0).toUpperCase() + instrument.slice(1)} enquiry` : ""}`
-        : instrument ? `Contact ${enquiryFirst} re: ${instrument.charAt(0).toUpperCase() + instrument.slice(1)} enquiry`
+        ? `Contact ${enquiryFirst} re: ${meta.studentName}${instrument ? `, ${instrument} enquiry` : ""}`
+        : instrument ? `Contact ${enquiryFirst} re: ${instrument} enquiry`
         : `Contact ${enquiryFirst} — new enquiry`;
       const prefill = {
         name: meta.studentName || "",
@@ -941,13 +1611,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         parents: [{ name: meta.parentName, email: fromAddr }],
         schoolId: schools.find(s => s.name === enquirySchool)?.id || "",
         className: meta.className || "",
-        instruments: instrument ? [{ name: instrument.charAt(0).toUpperCase() + instrument.slice(1), teacherId: "" }] : [{ name: "", teacherId: "" }]
+        instruments: instrument ? [{ name: instrument, teacherId: "" }] : [{ name: "", teacherId: "" }]
       };
       const subItems = [
         { id: uid(), text: "Add to pending students", done: false, tag: "admin", navigateTo: "students", studentPrefill: prefill, createdAt: new Date().toISOString() },
         { id: uid(), text: "Schedule trial lesson", done: false, tag: "admin", navigateTo: "students", studentPrefill: { ...prefill, status: "trial" }, createdAt: new Date().toISOString() },
       ];
-      return [{ id: uid(), text: itemText, done: false, tag: "email", groupType: "enquiry", emailId: email.id, replyTo: fromAddr, senderName: enquiryFirst, composeSubject: email.subject ? `Re: ${email.subject}` : "", meta, subItems, createdAt: new Date().toISOString() }, ...currentItems];
+      return [{ id: uid(), text: itemText, done: false, tag: "email", groupType: "enquiry", emailId: email.id, replyTo: fromAddr, senderName: enquiryFirst, composeSubject: email.subject ? reSubject(email.subject) : "", meta, subItems, createdAt: new Date().toISOString() }, ...currentItems];
     }
 
     // === KNOWN PARENT with linked student ===
@@ -962,7 +1632,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       itemExtra = { groupType: isParent ? "parent-reply" : undefined, replyTo: fromAddr, senderName: firstName, fullName: fromName };
     }
 
-    const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, composeSubject: email.subject ? `Re: ${email.subject}` : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
+    const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, composeSubject: email.subject ? reSubject(email.subject) : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
 
     // Auto-group by subject if a matching item already exists
     if (cleanSubject) {
@@ -978,10 +1648,10 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         const target = currentItems[matchIdx];
         const newSubItem = { id: newItem.id, text: `Reply to ${firstName}`, fullName: fromName,
           replyTo: fromAddr, replyEmailId: email.id, senderName: firstName, done: false, emailId: email.id,
-          composeSubject: email.subject ? `Re: ${email.subject}` : "", meta };
+          composeSubject: email.subject ? reSubject(email.subject) : "", meta };
         const prevSubItems = target.subItems || [{ id: uid(), text: target.senderName ? `Reply to ${target.senderName}` : target.text,
           fullName: target.fullName, replyTo: target.replyTo, replyEmailId: target.emailId,
-          composeSubject: target.composeSubject ?? (target.emailId ? (inboxEmails.find(e => e.id === target.emailId)?.subject ? `Re: ${inboxEmails.find(e => e.id === target.emailId).subject}` : "") : ""),
+          composeSubject: target.composeSubject ?? (target.emailId ? (target.emailId ? reSubject(inboxEmails.find(e => e.id === target.emailId)?.subject || "") : "") : ""),
           senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta }];
         const newSubItems = [...prevSubItems, newSubItem];
         const allParents = newSubItems.every(s => s.replyTo &&
@@ -1020,19 +1690,19 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       // Find linked student for parent emails
       const linkedStudent = (isParent || isEnquiry) ? students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr0.toLowerCase())) : null;
       // Extract instrument from any subject in the group
-      const INSTRUMENTS_LC = ["piano","guitar","violin","viola","cello","drums","voice","singing","flute","trumpet","trombone","bass","ukulele","recorder","saxophone","clarinet"];
+      const _teacherInstrs3 = [...new Set(teachers.flatMap(t => (t.instruments || []).map(i => i.name)))];
       let instrument = "";
       for (const e of group) {
         const m = (e.subject || "").match(/[–—-]\s*([A-Za-z\s]+)$/);
-        if (m) { const c = m[1].trim(); if (INSTRUMENTS_LC.some(i => c.toLowerCase().includes(i))) { instrument = c; break; } }
-        const bm = `${e.subject || ""} ${e.snippet || ""}`.match(/\b(piano|guitar|violin|viola|cello|drums?|voice|singing|flute|trumpet|trombone|bass|ukulele|recorder|saxophone|clarinet)\b/i);
-        if (bm) { instrument = bm[1]; break; }
+        if (m) { instrument = resolveInstrument(m[1].trim(), _teacherInstrs3); if (instrument) break; }
+        instrument = resolveInstrument(`${e.subject || ""} ${e.snippet || ""}`, _teacherInstrs3);
+        if (instrument) break;
       }
       const studentLabel = linkedStudent ? linkedStudent.name.split(" ")[0] : null;
-      const instrLabel = instrument ? `, ${instrument.charAt(0).toUpperCase() + instrument.slice(1)} enquiry` : "";
+      const instrLabel = instrument ? `, ${instrument} enquiry` : "";
       const groupText = studentLabel
         ? `Contact ${firstName} re: ${studentLabel}${instrLabel}`
-        : `Contact ${firstName} re:${instrument ? ` ${instrument.charAt(0).toUpperCase() + instrument.slice(1)} enquiry` : ` ${group.length} emails`}`;
+        : `Contact ${firstName} re:${instrument ? ` ${instrument} enquiry` : ` ${group.length} emails`}`;
       const subItems = group.map(e => ({
         id: uid(), text: e.subject?.replace(/^(re:\s*)+/gi, "").trim() || "(no subject)",
         fullName: fromName, replyTo: fromAddr0, replyEmailId: e.id, senderName: firstName,
@@ -1045,6 +1715,172 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     });
     return result;
   }, [dropEmailToTodo, classifyEmailFull, contacts, students]);
+
+  // ── Open an email in the inbox panel ─────────────────────────
+  const openEmail = React.useCallback((emailId) => {
+    saveDashPanels({ ...dashPanels, emails: true });
+    setInboxSelected(emailId);
+    setTimeout(() => {
+      const el = emailListRef.current?.querySelector(`[data-emailid="${emailId}"]`);
+      if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, 80);
+  }, [dashPanels, emailListRef]); // eslint-disable-line
+
+  // ── Resolve email sender → parent / student ──────────────────
+  const resolveEmailSender = React.useCallback((addr) => {
+    if (!addr) return {};
+    const lAddr = addr.toLowerCase();
+    for (const student of students) {
+      for (const parent of student.parents || []) {
+        if (parent.email && parent.email.toLowerCase() === lAddr) {
+          return { parentName: parent.name || parent.email, studentName: student.name, studentId: student.id };
+        }
+      }
+    }
+    for (const contact of contacts) {
+      if (contact.email && contact.email.toLowerCase() === lAddr) {
+        const linked = students.find(s => s.id === contact.studentId);
+        return { parentName: contact.name, studentName: linked?.name || null, studentId: linked?.id || null };
+      }
+    }
+    return {};
+  }, [students, contacts]);
+
+  // ── All people with email addresses (for @ mentions) ─────────
+  const allEmailContacts = React.useMemo(() => {
+    const seen = new Set();
+    const result = [];
+    for (const student of students) {
+      for (const parent of (student.parents || [])) {
+        if (parent.email && !seen.has(parent.email.toLowerCase())) {
+          seen.add(parent.email.toLowerCase());
+          result.push({ name: parent.name || parent.email, email: parent.email, sub: student.name });
+        }
+      }
+    }
+    for (const contact of contacts) {
+      if (contact.email && !seen.has(contact.email.toLowerCase())) {
+        seen.add(contact.email.toLowerCase());
+        const linked = students.find(s => s.id === contact.studentId);
+        const sub = linked?.name || ([contact.role, contact.className].filter(Boolean).join(" · ")) || null;
+        result.push({ name: contact.name, email: contact.email, sub });
+      }
+    }
+    return result;
+  }, [students, contacts]);
+
+  // Mention autocomplete state
+  const [remindersMentionQuery, setRemindersMentionQuery] = React.useState(null);
+  const [remindersMentionIndex, setRemindersMentionIndex] = React.useState(0);
+
+  // Render reminder text — @mentions show as first name, clickable
+  const renderReminderText = (text, mentions) => {
+    if (!mentions?.length) return <span>{text}</span>;
+    const parts = [];
+    let pos = 0, key = 0;
+    const sorted = mentions
+      .map(m => ({ m, idx: text.indexOf(`@${m.name}`) }))
+      .filter(x => x.idx >= 0)
+      .sort((a, b) => a.idx - b.idx);
+    for (const { m, idx } of sorted) {
+      if (idx < pos) continue;
+      if (idx > pos) parts.push(<span key={key++}>{text.slice(pos, idx)}</span>);
+      const displayName = m.name.split(" ")[0]; // first name only
+      parts.push(
+        <button key={key++} onClick={e => { e.stopPropagation(); openCompose([m.email]); }}
+          style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:colors.accent, fontFamily:"inherit", fontSize:"inherit", lineHeight:"inherit", fontWeight:500, textDecoration:"underline", textDecorationStyle:"dotted" }}>
+          {displayName}
+        </button>
+      );
+      pos = idx + `@${m.name}`.length;
+    }
+    if (pos < text.length) parts.push(<span key={key++}>{text.slice(pos)}</span>);
+    return <>{parts}</>;
+  };
+
+  // Render todo item text — single source of truth from item.text, with contact name linkified
+  const renderTodoItemText = (item) => {
+    const text = item.text;
+    const linkStyle = { color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" };
+
+    // Group summary items with dynamic counts
+    if (item.pendingOrTrialStudents) {
+      const activeCount = (item.subItems || []).filter(s => !s.done).length;
+      const label = (item.groupType || "").includes("pending") ? "pending" : "trial";
+      return <span>{`Follow up ${activeCount} ${label} student${activeCount !== 1 ? "s" : ""}`}</span>;
+    }
+    if (item.catchupStudents) {
+      const remaining = (item.subItems || []).filter(s => !s.done).length;
+      const base = text.replace(/\s*\(\d+ remaining\)$/, "");
+      const cm = base.match(/^(Contact\s+.+?)(\s+re:\s|$)/);
+      if (cm) {
+        return (
+          <>
+            <span onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCatchupContactMenu({ x: r.left, y: r.bottom + 4, item }); }} style={linkStyle}>
+              {cm[1]}
+            </span>
+            {base.slice(cm[1].length)}{" ("}{remaining}{" remaining)"}
+          </>
+        );
+      }
+      return <span>{base} ({remaining} remaining)</span>;
+    }
+
+    // Determine click handler
+    let onClick = null;
+    let style = linkStyle;
+    if (item.missedLessons) {
+      onClick = (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMissedContactMenu({ x: r.left, y: r.bottom + 4, item }); };
+    } else if (item.missedLesson?.parentEmail) {
+      onClick = (e) => { e.stopPropagation(); openCompose([item.missedLesson.parentEmail], { triggerId: "todo_missed_lesson" }); };
+    } else if (item.catchupLesson?.isGroup) {
+      onClick = (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCatchupContactMenu({ x: r.left, y: r.bottom + 4, item }); };
+    } else if (item.catchupLesson?.parentEmail) {
+      onClick = (e) => { e.stopPropagation(); openCompose([item.catchupLesson.parentEmail], { triggerId: "todo_catchup" }); };
+    } else if (item.pendingOrTrialLesson?.parentEmail) {
+      onClick = (e) => { e.stopPropagation(); openCompose([item.pendingOrTrialLesson.parentEmail], { triggerId: "todo_pending" }); };
+      style = { ...linkStyle, color: colors.sidebarActive };
+    } else if (item.replyAddrs) {
+      onClick = (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setEmailGroupContactMenu({ x: r.left, y: r.bottom + 4, item }); };
+    } else if (item.replyTo) {
+      onClick = (e) => { e.stopPropagation(); openCompose([item.replyTo], { subject: item.composeSubject ?? (item.emailId ? reSubject(inboxEmails.find(e2 => e2.id === item.emailId)?.subject || "") : ""), triggerId: "todo_email" }); };
+    }
+
+    if (!onClick) {
+      if (item.mentions?.length) return renderReminderText(text, item.mentions);
+      return <span>{text}</span>;
+    }
+
+    // Extract the specific name to linkify from metadata (individual items only)
+    let linkName = null;
+    if (item.missedLesson) {
+      linkName = preferredFirstName(item.missedLesson.parentName) || (item.missedLesson.parentName || "").split(" ")[0];
+    } else if (item.catchupLesson && !item.catchupLesson.isGroup) {
+      linkName = preferredFirstName(item.catchupLesson.parentName) || (item.catchupLesson.parentName || "").split(" ")[0];
+    } else if (item.pendingOrTrialLesson) {
+      linkName = preferredFirstName(item.pendingOrTrialLesson.parentName) || (item.pendingOrTrialLesson.parentName || "").split(" ")[0];
+    } else if (item.senderName) {
+      linkName = item.senderName;
+    }
+
+    // Individual items — find the name in text and linkify just that name
+    if (linkName) {
+      const idx = text.indexOf(linkName);
+      if (idx >= 0) {
+        return <>{text.slice(0, idx)}<span onClick={onClick} style={style}>{linkName}</span>{text.slice(idx + linkName.length)}</>;
+      }
+      // Name was edited out — show plain text, no link
+      return <span>{text}</span>;
+    }
+
+    // Group items (missedLessons, catchupLesson.isGroup, replyAddrs) — link "Contact [names]" prefix
+    const m = text.match(/^(Contact\s+.+?)(\s+re:\s|\s+—\s|$)/);
+    if (m) {
+      return <><span onClick={onClick} style={style}>{m[1]}</span>{text.slice(m[1].length)}</>;
+    }
+
+    return <span>{text}</span>;
+  };
 
   // ── Sorted + filtered reminders ───────────────────────────────
   const sortedReminders = React.useMemo(() => {
@@ -1074,6 +1910,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       return null;
     };
     const active = reminders.filter(r => {
+      // Has both a start date and an event week — show between start date and end of event week
+      if (r.date && r.week) return r.date <= todayStr && weekToFriday(parseInt(r.week)) >= todayStr;
       const sd = getSortDate(r);
       if (!sd) return true;
       if (r.week && !r.date) return weekToFriday(parseInt(r.week)) >= todayStr;
@@ -1087,28 +1925,50 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
   const fetchInbox = React.useCallback(async (opts = {}) => {
     if (!window.electronAPI) return;
     const { silent = false } = opts;
+    // Respect rate limit — don't hit the API while blocked
+    if (gmailRateLimitUntilRef.current > Date.now()) return;
     if (!silent) { setInboxLoading(true); setInboxError(null); }
     try {
       const res = await window.electronAPI.gmailListInbox();
-      if (!res.ok) { if (!silent) setInboxError(res.error || "Failed to fetch emails."); return; }
+      if (!res.ok) {
+        applyGmailRateLimit(res.error); // parse + store rate limit time if present
+        if (!silent) setInboxError(res.error || "Failed to fetch emails.");
+        return;
+      }
       const fetched = res.emails || [];
+      // Compute new threads BEFORE the state update, using the ref for current state
+      let archived = new Set();
+      try { archived = new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxArchivedIds) || "[]")); } catch {}
+      const allowed = fetched.filter(e => !archived.has(e.id));
+      const fetchedIds = new Set(allowed.map(e => e.id));
+      const existingIds = new Set(inboxEmailsRef.current.map(e => e.id));
+      const newThreads = allowed.filter(e => !existingIds.has(e.id));
+      // Fire side effects outside the state updater
+      if (newThreads.length > 0) generateSummaries(newThreads);
+      if (newThreads.length > 0 && onNewEmailRef.current) {
+        const readIds = (() => { try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxReadIds) || "[]")); } catch { return new Set(); } })();
+        console.log("[email-sound] new threads:", newThreads.length, "unread:", newThreads.filter(e => !readIds.has(e.id)).length, "callback:", !!onNewEmailRef.current);
+        if (newThreads.some(e => !readIds.has(e.id))) onNewEmailRef.current();
+      } else if (newThreads.length === 0) {
+        console.log("[email-sound] poll ran — no new threads detected");
+      } else {
+        console.log("[email-sound] new threads found but onNewEmailRef.current is null");
+      }
+      // Pure state update — no side effects inside
       setInboxEmails(prev => {
-        let archived = new Set();
-        try { archived = new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxArchivedIds) || "[]")); } catch {}
-        const allowed = fetched.filter(e => !archived.has(e.id));
-        // Always replace existing threads with fresh data (new replies change threadCount/body)
-        // Prepend genuinely new threads, preserve order of others
-        const fetchedIds = new Set(allowed.map(e => e.id));
-        const existingIds = new Set(prev.map(e => e.id));
-        const newThreads = allowed.filter(e => !existingIds.has(e.id));
+        let arc = new Set();
+        try { arc = new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxArchivedIds) || "[]")); } catch {}
+        const prevAllowed = fetched.filter(e => !arc.has(e.id));
+        const fIds = new Set(prevAllowed.map(e => e.id));
+        const eIds = new Set(prev.map(e => e.id));
+        const newT = prevAllowed.filter(e => !eIds.has(e.id));
         const merged = [
-          ...newThreads,
+          ...newT,
           ...prev
-            .filter(e => !archived.has(e.id))
-            .map(old => fetchedIds.has(old.id) ? allowed.find(f => f.id === old.id) : old)
+            .filter(e => !arc.has(e.id))
+            .map(old => fIds.has(old.id) ? prevAllowed.find(f => f.id === old.id) : old)
         ].map(preprocessEmail);
         saveInboxCache(merged);
-        if (newThreads.length > 0) generateSummaries(newThreads);
         return merged;
       });
       setInboxLastFetched(Date.now());
@@ -1118,6 +1978,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
 
   const fetchSent = React.useCallback(async () => {
     if (!window.electronAPI) return;
+    if (gmailRateLimitUntilRef.current > Date.now()) return;
     setSentLoading(true);
     try {
       const res = await window.electronAPI.gmailListSent();
@@ -1126,9 +1987,15 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     setSentLoading(false);
   }, []);
 
-  // On first mount: if cache is stale (>5min) or empty, full-fetch. Otherwise use cache silently.
+  // On first mount: if rate-limited, use cache as-is. If cache is stale (>5min) or
+  // empty, full-fetch. Otherwise use cache silently and re-run any pending summaries.
   // Also silently pre-fetch sent emails so reply indicators and attachment logic have thread data.
   useEffect(() => {
+    if (gmailRateLimitUntilRef.current > Date.now()) {
+      // Still rate-limited from a previous session — don't touch the API
+      generateSummaries(inboxEmails);
+      return;
+    }
     const cacheAge = Date.now() - inboxLastFetched;
     if (inboxEmails.length === 0 || cacheAge > 5 * 60 * 1000) {
       fetchInbox();
@@ -1149,9 +2016,45 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
     return () => clearInterval(interval);
   }, [fetchInbox, fetchSent]);
 
+  // Full-history Gmail search — debounced 600ms, fires when search bar has a value
+  useEffect(() => {
+    if (gmailSearchTimerRef.current) clearTimeout(gmailSearchTimerRef.current);
+    if (!emailSearch.trim() || emailSearch.trim().length < 5 || !window.electronAPI?.gmailSearch) {
+      setGmailSearchResults(null);
+      setGmailSearchLoading(false);
+      return;
+    }
+    setGmailSearchLoading(true);
+    gmailSearchTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await window.electronAPI.gmailSearch(emailSearch.trim(), emailFolder);
+        if (res.ok) {
+          setGmailSearchResults(res.emails || []);
+        } else {
+          setGmailSearchResults([]);
+          setInboxError(res.error || "Search failed — try refreshing Gmail.");
+        }
+      } catch { setGmailSearchResults([]); }
+      setGmailSearchLoading(false);
+    }, 600);
+  }, [emailSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div>
-      <PageTitle subtitle={_rollFwd ? "Monday" : todayDayName} pageColor={PAGE_COLORS.dashboard} navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>{getTermWeekLabel(effectiveTodayStr, interruptions.filter(i => i.type === "term_break")).toUpperCase()}</PageTitle>
+      <PageTitle subtitle={_rollFwd ? "Monday" : todayDayName} pageColor={PAGE_COLORS.dashboard} navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>{(() => {
+          const termBreaksForTitle = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
+          const hBreak = termBreaksForTitle.find(tb => effectiveTodayStr >= tb.date && effectiveTodayStr <= (tb.endDate || tb.date));
+          if (hBreak) {
+            const breakStart = new Date(hBreak.date + "T00:00:00");
+            const dow = breakStart.getDay();
+            const firstMonday = new Date(breakStart);
+            firstMonday.setDate(breakStart.getDate() + (dow === 1 ? 0 : dow === 0 ? 1 : 8 - dow));
+            const curMonday = _getMondayOf(new Date(effectiveTodayStr + "T00:00:00"));
+            const wkNum = Math.max(1, Math.round((curMonday - firstMonday) / (7 * 24 * 60 * 60 * 1000)) + 1);
+            return `Holidays Week ${wkNum}`;
+          }
+          return getTermWeekLabel(effectiveTodayStr, termBreaksForTitle);
+        })().toUpperCase()}</PageTitle>
       {/* ── Week calendar strip ── */}
       {(() => {
         const teacherColorMap = {};
@@ -1167,8 +2070,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         });
         // When offset=0, mirror the rolling visibleDays; otherwise full Mon-Fri of offset week
         const stripDays = calendarWeekOffset === 0 ? visibleDays : fullWeekDays;
-        const calWeekLabel = getTermWeekLabel(fullWeekDays[0].date, termBreaksForStrip);
-        const activeDay = hoveredDay !== null ? hoveredDay : (stripDays[0]?.day || todayDayName);
+        const calWeekLabel = (() => {
+          const hBreak = termBreaksForStrip.find(tb => fullWeekDays[0].date >= tb.date && fullWeekDays[0].date <= (tb.endDate || tb.date));
+          if (hBreak) {
+            const breakStart = new Date(hBreak.date + "T00:00:00");
+            const dow = breakStart.getDay();
+            const firstMonday = new Date(breakStart);
+            firstMonday.setDate(breakStart.getDate() + (dow === 1 ? 0 : dow === 0 ? 1 : 8 - dow));
+            const curMonday = _getMondayOf(new Date(fullWeekDays[0].date + "T00:00:00"));
+            const wkNum = Math.max(1, Math.round((curMonday - firstMonday) / (7 * 24 * 60 * 60 * 1000)) + 1);
+            return `Holidays Week ${wkNum}`;
+          }
+          return getTermWeekLabel(fullWeekDays[0].date, termBreaksForStrip);
+        })();
+        const activeDay = hoveredDay !== null ? hoveredDay : selectedDay !== null ? selectedDay : (stripDays[0]?.day || todayDayName);
 
         const renderDayCell = (wd) => {
           const isActive = activeDay === wd.day;
@@ -1222,17 +2137,14 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
             <div key={wd.date}
               onMouseEnter={() => setHoveredDay(wd.day)}
               onMouseLeave={() => setHoveredDay(null)}
-              onClick={() => setExpandedDays(prev => { const next = new Set(prev); next.has(wd.date) ? next.delete(wd.date) : next.add(wd.date); return next; })}
+              onClick={() => { setExpandedDays(prev => { const next = new Set(prev); next.has(wd.date) ? next.delete(wd.date) : next.add(wd.date); return next; }); setSelectedDay(prev => prev === wd.day ? null : wd.day); }}
               onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: wd.date, endDate: wd.date, type: "personal", title: "", startTime: "", endTime: "", schoolId: "", affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
               style={{
-                borderRadius: 10,
-                borderTop: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
-                borderRight: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
-                borderBottom: `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
-                borderLeft: wd.isNextWeek ? `4px solid ${colors.textMuted}` : `2px solid ${isActive ? colors.sidebarActive : "transparent"}`,
-                outline: (isActive || wd.isNextWeek) ? "none" : `1px solid ${colors.border}`,
-                outlineOffset: -1,
-                background: isTermBreak ? "#F5F0FF" : isExpanded ? "#E8EDF5" : isActive ? "#E8EDF5" : colors.white,
+                borderRadius: 0,
+                borderBottom: `2px solid ${(isActive || isExpanded) ? colors.sidebarActive : "transparent"}`,
+                borderRight: `1px solid ${colors.border}`,
+                borderLeft: wd.isNextWeek ? `3px solid ${colors.textMuted}` : "none",
+                background: isTermBreak ? colors.purpleLight : (isActive || isExpanded) ? (darkMode ? `${colors.sidebarActive}18` : colors.blueLight) : colors.cardBg,
                 padding: "10px 10px",
                 minHeight: 90,
                 transition: "border-color 0.15s, background 0.15s",
@@ -1240,21 +2152,54 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 display: "flex", flexDirection: "column",
               }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? colors.sidebarActive : colors.textLight, textTransform: "uppercase", letterSpacing: "0.05em" }}>{wd.day.slice(0, 3)}</span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? (darkMode ? "#fff" : colors.sidebarActive) : colors.textLight, textTransform: "uppercase", letterSpacing: "0.05em" }}>{wd.day.slice(0, 3)}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   {hasDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: dayInterrupts.length > 0 ? EVENT_TYPE_META.interruption.dot : (dayEvents[0]?.type ? (EVENT_TYPE_META[dayEvents[0].type]?.dot || EVENT_TYPE_META.personal.dot) : EVENT_TYPE_META.personal.dot), display: "inline-block", flexShrink: 0 }} />}
                   {hasReminderDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: colors.accent, display: "inline-block", flexShrink: 0 }} />}
-                  <span style={{ fontSize: 11, color: isActive ? colors.sidebarActive : colors.textMuted }}>{wd.dayNum}{isToday ? " ●" : ""}</span>
+                  <span style={{ fontSize: 11, color: isActive ? (darkMode ? "#fff" : colors.sidebarActive) : colors.textMuted }}>{wd.dayNum}{isToday ? " ●" : ""}</span>
                 </div>
               </div>
               {isTermBreak ? (
-                <div style={{ fontSize: 9, fontWeight: 700, color: colors.warning, letterSpacing: "0.03em" }}>School Holidays</div>
+                <div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: colors.warning, letterSpacing: "0.03em", marginBottom: 2 }}>School Holidays</div>
+                  {(() => {
+                    const wdDate = new Date(wd.date + "T00:00:00");
+                    const wdDow = wdDate.getDay();
+                    const wdMon = new Date(wdDate); wdMon.setDate(wdDate.getDate() - (wdDow === 0 ? 6 : wdDow - 1));
+                    const lessons = (weeklyTimetables[toLocalDateStr(wdMon) + "|__catchup__"]?.lessons || []).filter(l => l.day === wd.day);
+                    if (lessons.length === 0) return null;
+                    const byTeacher = {};
+                    for (const l of lessons) {
+                      if (!byTeacher[l.teacherId]) byTeacher[l.teacherId] = [];
+                      byTeacher[l.teacherId].push(l);
+                    }
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
+                        {Object.entries(byTeacher).map(([tid, tLessons]) => {
+                          const sorted = tLessons.sort((a, b) => a.start.localeCompare(b.start));
+                          const first = sorted[0];
+                          const lastStart = sorted[sorted.length - 1].start;
+                          const [lh, lm] = lastStart.split(":").map(Number);
+                          const endMin = lh * 60 + lm + 30;
+                          const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
+                          const tName = teachers.find(tc => tc.id === tid)?.name || first.teacherName || "";
+                          return (
+                            <span key={tid} style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 4px" }}>
+                              {tName.split(" ").map(w => w[0]).join("")}
+                              <span style={{ fontWeight: 400, opacity: 0.9 }}>{toTimeLabel(first.start)}–{toTimeLabel(endStr)}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
               ) : (
                 <>
                   {dayInterrupts.length > 0 && (
                     <div style={{ marginBottom: 4 }}>
                       {dayInterrupts.slice(0, 2).map((intr, ii) => (
-                        <div key={ii} style={{ fontSize: 9, background: "#FEF3C7", color: "#92400E", borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{intr.title}</div>
+                        <div key={ii} style={{ fontSize: 9, background: colors.amberLight, color: "#92400E", borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{intr.title}</div>
                       ))}
                     </div>
                   )}
@@ -1277,7 +2222,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                   {schoolGroups.map(({ school, teachers: ts }) => (
                     <div key={school.id}>
                       <div style={{ display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 9, color: colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{school.name.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase()}</span>
+                        <span style={{ fontSize: 9, color: school.color || colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{school.name.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("") || school.name.slice(0, 4).toUpperCase()}</span>
                         {ts.map(({ teacher: t, firstLesson, lastLesson }) => (
                           <span key={t.id} style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: 700, color: "#fff", background: teacherColorMap[t.id], borderRadius: 3, padding: "1px 4px" }}>
                             {t.name.split(" ").map(w => w[0]).join("")}
@@ -1341,27 +2286,60 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
             return { ...wd, isTermBreak, dayInterrupts, dayEvents, schoolGroups, weeklyStatus, pendingTrialOnDay };
           });
 
+        // Auto-append Saturday/Sunday catch-up strips during holiday weeks (no tile, not dismissable)
+        const isHolidayWeek = termBreaksForStrip.some(tb => fullWeekDays[0].date >= tb.date && fullWeekDays[0].date <= (tb.endDate || tb.date));
+        if (isHolidayWeek) {
+          const friDate = new Date(fullWeekDays[4].date + "T00:00:00");
+          const catchupKey = calMondayStr + "|__catchup__";
+          const allCatchupLessons = weeklyTimetables[catchupKey]?.lessons || [];
+          ["Saturday", "Sunday"].forEach((dayName, i) => {
+            const wkendDate = new Date(friDate); wkendDate.setDate(friDate.getDate() + 1 + i);
+            const dateStr = toLocalDateStr(wkendDate);
+            const lessons = allCatchupLessons.filter(l => l.day === dayName);
+            if (lessons.length > 0) {
+              expandedStripData.push({
+                day: dayName, date: dateStr, dayNum: wkendDate.getDate(), isNextWeek: false,
+                isTermBreak: true, isWeekendCatchup: true,
+                dayInterrupts: [], dayEvents: [], schoolGroups: [], weeklyStatus: {}, pendingTrialOnDay: []
+              });
+            }
+          });
+        }
+
         const linkStyle = { color: colors.accentDark, fontWeight: 600, textDecoration: "underline", cursor: "pointer", fontSize: 12 };
         const sectionLabel = { fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 };
 
         return (
           <div style={{ marginBottom: 0 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(" + stripDays.length + ", 1fr)", gap: 6, marginBottom: 10 }}>
-              {stripDays.map(wd => renderDayCell(wd))}
+            <div style={{ background: colors.sidebarHover, borderRadius: "8px 8px 0 0", padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontWeight: 600, fontSize: 13, color: "#fff" }}>Upcoming</span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {calendarWeekOffset !== 0 && (
+                  <button onClick={() => setCalendarWeekOffset(0)}
+                    style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 6, padding: "2px 10px", cursor: "pointer", color: "#fff", fontSize: 11, fontFamily: "inherit" }}>
+                    Today
+                  </button>
+                )}
+                <button onClick={() => setCalendarWeekOffset(o => o - 1)}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", display: "flex", alignItems: "center", padding: "2px 4px" }}><ChevronLeft size={15} /></button>
+                <span style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", minWidth: 60, textAlign: "center" }}>
+                  {calWeekLabel}
+                </span>
+                <button onClick={() => setCalendarWeekOffset(o => o + 1)}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", display: "flex", alignItems: "center", padding: "2px 4px" }}><ChevronRight size={15} /></button>
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 4, marginBottom: expandedStripData.length > 0 ? 10 : 16 }}>
-              <button onClick={() => setCalendarWeekOffset(o => o - 1)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: colors.sidebarActive, fontWeight: 700, fontSize: 18, padding: "0 4px", lineHeight: 1 }}>‹</button>
-              <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, letterSpacing: "0.05em" }}>
-                {calWeekLabel}
-              </span>
-              <button onClick={() => setCalendarWeekOffset(o => o + 1)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: colors.sidebarActive, fontWeight: 700, fontSize: 18, padding: "0 4px", lineHeight: 1 }}>›</button>
+            <div style={{ background: colors.cardBg, border: "1px solid rgba(74,85,104,0.18)", borderTop: "none", borderRadius: expandedStripData.length > 0 ? 0 : "0 0 8px 8px", overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(" + stripDays.length + ", 1fr)", background: "rgba(74,85,104,0.06)" }}>
+                {stripDays.map(wd => renderDayCell(wd))}
+              </div>
             </div>
 
-            {/* ── Expanded day strips ── */}
-            {expandedStripData.map(sd => (
-              <div key={sd.date} style={{ marginBottom: 10, background: colors.white, border: `1px solid ${colors.border}`, borderLeft: `4px solid ${colors.sidebarActive}`, borderRadius: 10, padding: "14px 18px" }}
+            {/* ── Expanded day rows (connected table style) ── */}
+            {expandedStripData.length > 0 && (
+              <div style={{ border: "1px solid rgba(74,85,104,0.18)", borderTop: "none", borderRadius: "0 0 8px 8px", overflow: "hidden", marginBottom: 0 }}>
+                {expandedStripData.map((sd, sdIdx) => (
+              <div key={sd.date} style={{ background: colors.cardBg, borderTop: sdIdx > 0 ? `1px solid ${colors.border}` : "none", padding: "14px 18px" }}
                 onContextMenu={e => { e.preventDefault(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "personal", title: "", startTime: "", endTime: "", schoolId: "", affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}>
                 {/* Strip header */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: sd.isTermBreak ? 8 : 12 }}>
@@ -1371,12 +2349,61 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                     {sd.date === todayStr && <span style={{ fontSize: 10, fontWeight: 700, background: colors.sidebarActive, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Today</span>}
                     {sd.isNextWeek && <span style={{ fontSize: 10, fontWeight: 700, background: colors.textMuted, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Next week</span>}
                   </div>
-                  <button onClick={e => { e.stopPropagation(); setExpandedDays(prev => { const next = new Set(prev); next.delete(sd.date); return next; }); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>✕</button>
+                  {!sd.isWeekendCatchup && (
+                    <button onClick={e => { e.stopPropagation(); setExpandedDays(prev => { const next = new Set(prev); next.delete(sd.date); return next; }); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: "0 2px", display: "flex", alignItems: "center" }}><X size={14} /></button>
+                  )}
                 </div>
 
                 {sd.isTermBreak ? (
-                  <div style={{ fontSize: 13, color: colors.warning, fontWeight: 600 }}>School Holidays</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div style={{ fontSize: 13, color: colors.warning, fontWeight: 600 }}>School Holidays</div>
+                    {(() => {
+                      const sdDate = new Date(sd.date + "T00:00:00");
+                      const sdDow = sdDate.getDay();
+                      const sdMon = new Date(sdDate); sdMon.setDate(sdDate.getDate() - (sdDow === 0 ? 6 : sdDow - 1));
+                      const lessons = (weeklyTimetables[toLocalDateStr(sdMon) + "|__catchup__"]?.lessons || []).filter(l => l.day === sd.day);
+                      if (lessons.length === 0) return null;
+                      const byTeacher = {};
+                      for (const l of lessons) {
+                        if (!byTeacher[l.teacherId]) byTeacher[l.teacherId] = { lessons: [], name: l.teacherName };
+                        byTeacher[l.teacherId].lessons.push(l);
+                      }
+                      return (
+                        <div>
+                          <div style={sectionLabel}>Catch-up Lessons</div>
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            {Object.entries(byTeacher).map(([tid, { lessons: tLessons, name: tName }]) => {
+                              const sorted = tLessons.sort((a, b) => a.start.localeCompare(b.start));
+                              const first = sorted[0];
+                              const lastStart = sorted[sorted.length - 1].start;
+                              const [lh, lm] = lastStart.split(":").map(Number);
+                              const endMin = lh * 60 + lm + 30;
+                              const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
+                              const teacher = teachers.find(tc => tc.id === tid);
+                              const displayName = teacher?.name || tName || "Teacher";
+                              return (
+                                <div key={tid} style={{ padding: "8px 14px", background: `${teacherColorMap[tid] || colors.accent}12`, borderRadius: 8, border: `1px solid ${teacherColorMap[tid] || colors.accent}30`, fontSize: 12, minWidth: 160 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                                    <span style={{ fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 5px", fontSize: 11 }}>{displayName.split(" ")[0]}</span>
+                                    <span style={{ fontSize: 11, color: colors.textMuted }}>{toTimeLabel(first.start)}–{toTimeLabel(endStr)}</span>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: colors.text }}>({sorted.length})</span>
+                                  </div>
+                                  {sorted.map(l => (
+                                    <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 11 }}>
+                                      <span style={{ color: colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{toTimeLabel(l.start)}</span>
+                                      <span style={{ color: colors.text }}>{l.studentName}</span>
+                                      {l.instrument && <span style={{ color: colors.textMuted }}>· {l.instrument}</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
@@ -1394,9 +2421,9 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                 <span style={{ fontSize: 13, color: tm.text, fontWeight: 600, flex: 1 }}>{ev.title}</span>
                                 {ev.details && <span style={{ fontSize: 11, color: tm.text, opacity: 0.7, flex: 1 }}>{ev.details}</span>}
                                 <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: ev.id, sourceStore: "calendar", type: ev.type || "personal", title: ev.title, startDate: ev.startDate || ev.date, endDate: ev.endDate || ev.startDate || ev.date, startTime: ev.startTime || ev.time || "", endTime: ev.endTime || "", schoolId: ev.schoolId || "", affectsClasses: ev.affectsClasses || "all", interruptionSubtype: ev.interruptionSubtype || "other", details: ev.details || "", x: null, y: null }); }}
-                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 12, opacity: 0.5, padding: "0 2px", flexShrink: 0 }} title="Edit">✎</button>
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: "0 2px", flexShrink: 0, display: "flex", alignItems: "center" }} title="Edit"><Pencil size={12} /></button>
                                 <button onClick={e => { e.stopPropagation(); saveCalendarEvents(calendarEvents.filter(ce => ce.id !== ev.id)); }}
-                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 13, opacity: 0.5, padding: 0, flexShrink: 0 }} title="Delete">✕</button>
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }} title="Delete"><X size={12} /></button>
                               </div>
                             );
                           })}
@@ -1425,11 +2452,11 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                 </span>
                                 {isCalSource && (
                                   <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: intr.id, sourceStore: "interruptions", type: "interruption", title: intr.title, startDate: intr.date, endDate: intr.endDate || intr.date, startTime: intr.startTime || "", endTime: intr.endTime || "", schoolId: intr.schoolId || "", affectsClasses: intr.affectsClasses || "all", interruptionSubtype: intr.type || "other", details: intr.notes || "", x: null, y: null }); }}
-                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 12, opacity: 0.5, padding: "0 2px", flexShrink: 0 }} title="Edit">✎</button>
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: "0 2px", flexShrink: 0, display: "flex", alignItems: "center" }} title="Edit"><Pencil size={12} /></button>
                                 )}
                                 {isCalSource && (
                                   <button onClick={e => { e.stopPropagation(); setInterruptions(prev => prev.filter(ii => ii.id !== intr.id)); }}
-                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, fontSize: 13, opacity: 0.5, padding: 0, flexShrink: 0 }} title="Delete">✕</button>
+                                    style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }} title="Delete"><X size={12} /></button>
                                 )}
                               </div>
                             );
@@ -1448,8 +2475,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           {sd.schoolGroups.map(gs => (
                             <div key={gs.school.id}
                               onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "interruption", title: "", startTime: "", endTime: "", schoolId: gs.school.id, affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
-                              style={{ padding: "8px 14px", background: "#F5F3EF", borderRadius: 8, border: `1px solid ${colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu" }}>
-                              <div style={{ fontWeight: 600, marginBottom: 6, color: colors.text }}>🏫 {gs.school.name}</div>
+                              style={{ padding: "8px 14px", background: gs.school.color ? `${gs.school.color}12` : colors.bg, borderRadius: 8, border: `1px solid ${gs.school.color ? `${gs.school.color}30` : colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu" }}>
+                              <div style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5 }}><Building2 size={13} /> {gs.school.name}</div>
                               {gs.teachers.map(t => (
                                 <div key={t.teacher.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: teacherColorMap[t.teacher.id], borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>
@@ -1479,12 +2506,16 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       <div>
                         <div style={sectionLabel}>Pending & Trial</div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          {sd.pendingTrialOnDay.map(s => (
-                            <span key={s.id} onClick={() => onNavigate("pending")}
-                              style={{ fontSize: 11, fontWeight: 600, color: colors.sidebarActive, background: colors.blueLight, padding: "3px 10px", borderRadius: 10, cursor: "pointer", border: `1px solid ${colors.sidebarActive}40` }}>
-                              {s.name} <span style={{ opacity: 0.6, fontWeight: 400 }}>({s.status})</span>
-                            </span>
-                          ))}
+                          {sd.pendingTrialOnDay.map(s => {
+                            const sc = schools.find(sc2 => sc2.id === s.schoolId);
+                            const scColor = sc?.color || colors.sidebarActive;
+                            return (
+                              <span key={s.id} onClick={() => onNavigate("pending")}
+                                style={{ fontSize: 11, fontWeight: 600, color: scColor, background: `${scColor}18`, padding: "3px 10px", borderRadius: 10, cursor: "pointer", border: `1px solid ${scColor}40` }}>
+                                {s.name} <span style={{ opacity: 0.6, fontWeight: 400 }}>({s.status})</span>
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     )}
@@ -1493,6 +2524,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 )}
               </div>
             ))}
+              </div>
+            )}
 
             {/* ── Term progress bar ── */}
             {(() => {
@@ -1538,14 +2571,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       {(() => {
         // Alerts data
         const unassignedStudents = students.filter(s => s.status === "active" && (s.instruments || []).some(i => !i.isGroup && !i.teacherId));
-        const unschedEntries = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned") : [];
+        // Unassigned group students — active/pending/trial students with a group instrument not yet placed in any group
+        const assignedGroupStudentIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
+        const unassignedGroupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && (s.instruments || []).some(i => i.isGroup) && !assignedGroupStudentIds.has(s.id));
+        const unassignedGroupCount = unassignedGroupStudents.length;
+        const unschedEntries = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)) : [];
         // Incomplete student profiles — missing school, class, or parent contact
         const incompleteStudents = students.filter(s => {
           if (s.status !== "active" && s.status !== "pending") return false;
+          const isPrivate = s.schoolId === "__private__";
+          const hasParent = (s.parents || []).some(p => (p.email || "").trim() || (p.phone || "").trim());
+          if (isPrivate) return !hasParent; // private students only need a parent contact
           const hasSchool = !!s.schoolId;
           const rawClass = (s.className || "").trim().toLowerCase();
           const hasClass = !!rawClass && !/^class\s*(times?|info|information|schedule|details?)?$/i.test(rawClass);
-          const hasParent = (s.parents || []).some(p => (p.email || "").trim() || (p.phone || "").trim());
           return !hasSchool || !hasClass || !hasParent;
         });
         // Response required — tiered by age: red (2+ days), yellow (1 day), blue (today)
@@ -1556,7 +2595,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           if (emailNoReplyOverrides.has(e.id)) return false;
           const cacheKey = `${e.threadId || e.id}-${e.id}`;
           const cached = emailSummaries[cacheKey];
-          return typeof cached === "object" ? !!cached?.needsReply : false;
+          if (!(typeof cached === "object" ? !!cached?.needsReply : false)) return false;
+          // Exclude emails already replied to
+          const msgs = e.threadMessages || [];
+          if (msgs.some(m => m.isSent)) return false;
+          if (sentEmails.length > 0) {
+            const tid = e.threadId || e.id;
+            const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
+            if (sentEmails.some(s => {
+              if (s.threadId && s.threadId === e.threadId) return true;
+              if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
+              return (s.threadId || s.id) === tid;
+            })) return false;
+          }
+          return true;
         });
         const responseRequiredRed = allResponseRequired.filter(e => emailAgeMs(e) < startOfYesterday);
         const responseRequiredYellow = allResponseRequired.filter(e => emailAgeMs(e) >= startOfYesterday && emailAgeMs(e) < startOfToday);
@@ -1568,24 +2620,24 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr && i.date <= alertIntrEnd);
         // Missed lessons: split this week (red) vs prior weeks (coral)
         const currentWeekKey = toLocalDateStr(monday);
-        const missedThisWeek = Object.values((() => {
+        const nextWeekKey = toLocalDateStr((() => { const d = new Date(monday); d.setDate(d.getDate() + 7); return d; })());
+        const missedThisWeek = (() => {
           const byStudent = {};
-          for (const e of tallyEntries) {
-            if (e.status !== "missed" || e.weekKey !== currentWeekKey) continue;
+          for (const e of getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })) {
             const k = `${e.studentId}|${e.instrument}`;
-            if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, count: 0 };
+            if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: e.schoolId || "", count: 0 };
             byStudent[k].count++;
           }
-          return byStudent;
-        })());
+          return Object.values(byStudent);
+        })();
         const missedPriorSorted = (() => {
-          // All makeup-eligible, un-made-up misses from prior weeks — no 14-day cap, no 2+ filter
+          // All makeup-eligible, un-made-up misses from prior weeks — no 14-day cap, no 2+ filter.
+          // Predicate-shift: helper requires !!makeupEligible (true only); legacy accepted true OR
+          // undefined, but WTT.missed writers always set the field explicitly — no live entries affected.
           const byKey = {};
-          for (const e of tallyEntries) {
-            if (e.status !== "missed") continue;
-            if (e.weekKey === currentWeekKey) continue;
-            if (e.makeupEligible === false) continue;
-            if (e.madeUp === true) continue;
+          for (const r of findOpenCatchups({ weeklyTimetables })) {
+            if (r.weekKey === currentWeekKey) continue;
+            const e = r.missed;
             const k = `${e.studentId}|${e.instrument}`;
             if (!byKey[k]) {
               const st = students.find(s => s.id === e.studentId);
@@ -1613,6 +2665,24 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
           return lessonChangeKeywords.some(kw => text.includes(kw));
         });
+        // Upcoming absences: informed_absence entries for NEXT week (alert fires the week before)
+        const upcomingAbsences = (() => {
+          // weekLabel is absent on WTT.missed; the || nextWeekKey fallback always resolves
+          // to nextWeekKey post-migration (audit-acknowledged degradation).
+          const byStudent = {};
+          for (const e of getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })) {
+            const k = `${e.studentId || e.studentName}|${e.instrument}`;
+            if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, weekLabel: e.weekLabel || nextWeekKey, count: 0 };
+            byStudent[k].count++;
+          }
+          return Object.values(byStudent);
+        })();
+        // Reminder alerts — reminders whose event week fires an alert the week before
+        const termBreaksForAlerts = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date.localeCompare(b.date));
+        const currentTermWeekNum = computeTermWeekNum(currentWeekKey, termBreaksForAlerts);
+        const upcomingReminderAlerts = currentTermWeekNum
+          ? sortedReminders.filter(r => r.week && parseInt(r.week) - 1 === currentTermWeekNum)
+          : [];
         const warningCount = (unassignedCount > 0 && !isAlertDismissed("alert-unassigned") ? 1 : 0) + (unschedCount > 0 && !isAlertDismissed("alert-unscheduled") ? 1 : 0) + (incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") ? 1 : 0) + (missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") ? 1 : 0) + (responseRequiredRed.length > 0 && !isAlertDismissed("alert-response-red") ? 1 : 0);
         const totalAlerts = warningCount
           + (responseRequiredYellow.length > 0 && !isAlertDismissed("alert-response-yellow") ? 1 : 0)
@@ -1621,14 +2691,54 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           + (catchupTotal > 0 && !isAlertDismissed("alert-catchup") ? 1 : 0)
           + (pendingOnly > 0 && !pendingDismissed ? 1 : 0)
           + (trialOnly > 0 && !trialDismissed ? 1 : 0)
-          + (lessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0);
+          + (lessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
+          + (upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") ? 1 : 0)
+          + (unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") ? 1 : 0)
+          + (upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") ? 1 : 0);
+        // Teacher notes alert
+        const newTeacherNotes = students.flatMap(s =>
+          (s.teacher_notes || []).map(n => ({ ...n, studentId: s.id, studentName: s.name }))
+        ).filter(n => !seenTeacherNoteIds.has(n.id));
+        const hasNewTeacherNotes = newTeacherNotes.length > 0;
+        // Staff document uploads
+        const newStaffDocs = staffUploadedDocs.filter(d => !seenStaffDocIds.has(d.id));
+        const hasNewStaffDocs = newStaffDocs.length > 0;
+        // Invoice alerts — submitted invoices not yet seen
+        const newInvoices = submittedInvoices.filter(inv => !seenInvoiceIds.has(inv.id));
+        const hasNewInvoices = newInvoices.length > 0;
+        // Classroom/specialist teacher email alerts
+        const newTeacherEmailAlerts = Object.values(teacherEmailAlerts)
+          .filter(a => a.type !== "other" && a.summary && !seenTeacherEmailAlertIds.has(a.emailId));
+        const hasTeacherEmailAlerts = newTeacherEmailAlerts.length > 0;
+        const totalAlertsWithTeacherNotes = totalAlerts + (hasNewTeacherNotes ? 1 : 0) + (hasNewStaffDocs ? 1 : 0) + (hasNewInvoices ? 1 : 0) + (hasTeacherEmailAlerts ? 1 : 0);
 
         const bothOpen = dashPanels.emails && dashPanels.todo;
         const anyPanelOpen = dashPanels.emails || dashPanels.todo || dashPanels.alerts;
         const togglePanel = (key) => saveDashPanels({ ...dashPanels, [key]: !dashPanels[key] });
+        const dismissAllActive = () => {
+          const keys = {};
+          if (unassignedCount > 0) keys["alert-unassigned"] = true;
+          if (unschedCount > 0) keys["alert-unscheduled"] = true;
+          if (incompleteStudents.length > 0) keys["alert-incomplete"] = true;
+          if (missedThisWeek.length > 0) keys["alert-missed-week"] = true;
+          if (responseRequiredRed.length > 0) keys["alert-response-red"] = true;
+          if (responseRequiredYellow.length > 0) keys["alert-response-yellow"] = true;
+          if (responseRequiredBlue.length > 0) keys["alert-response-blue"] = true;
+          upcomingInterruptions.forEach(intr => { keys[`alert-interruption-${intr.id}`] = true; });
+          if (catchupTotal > 0) keys["alert-catchup"] = true;
+          if (pendingOnly > 0) keys["alert-pending"] = true;
+          if (trialOnly > 0) keys["alert-trial"] = true;
+          if (lessonChangeEmails.length > 0) keys["alert-lesson-change"] = true;
+          if (upcomingAbsences.length > 0) keys["alert-upcoming-absences"] = true;
+          if (unassignedGroupCount > 0) keys["alert-unassigned-groups"] = true;
+          if (upcomingReminderAlerts.length > 0) keys["alert-reminder-upcoming"] = true;
+          const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...keys } };
+          setAlertDismissals(next);
+          try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
+        };
 
         const CATEGORY_FILTERS = [
-          { key: "pinned", label: "★" },
+          { key: "pinned", label: <Pin size={12} /> },
           { key: "parent", label: "Parents" },
           { key: "teacher", label: "Teachers" },
           { key: "staff", label: "Staff" },
@@ -1636,18 +2746,31 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           { key: "enquiry", label: "Enquiries" },
           { key: "other", label: "Other" },
         ];
-        const SCHOOL_FILTERS = schools.map(s => ({ key: `school:${s.id}`, label: s.name.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("").toUpperCase() || s.name.slice(0, 4).toUpperCase() }));
+        const SCHOOL_FILTERS = schools.map(s => ({ key: `school:${s.id}`, label: s.name.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("").toUpperCase() || s.name.slice(0, 4).toUpperCase(), color: s.color || null }));
+
+        // Email address autocomplete suggestions — drawn from parents, contacts, teachers
+        const emailSuggestions = (() => {
+          const q = emailSearch.toLowerCase().trim();
+          if (!q) return [];
+          const seen = new Set();
+          const results = [];
+          const add = (name, email) => {
+            if (!email) return;
+            const ek = email.toLowerCase();
+            if (seen.has(ek)) return;
+            if (!name.toLowerCase().includes(q) && !ek.includes(q)) return;
+            seen.add(ek);
+            results.push({ name, email });
+          };
+          for (const s of students) for (const p of (s.parents || [])) add(p.name || "", p.email || "");
+          for (const c of contacts) add(c.name || "", c.email || "");
+          for (const t of teachers) add(t.name || "", t.email || "");
+          return results.slice(0, 8);
+        })();
 
         const filteredEmails = (() => {
-          // Use sent or inbox depending on folder, newest first
+          // Always start with local emails — substring filter works on partial names (e.g. "karm" → "Karmen")
           let sorted = emailFolder === "sent" ? [...sentEmails] : [...inboxEmails];
-          sorted.sort((a, b) => {
-            const da = a.internalDate || (a.date ? new Date(a.date).getTime() : 0);
-            const db = b.internalDate || (b.date ? new Date(b.date).getTime() : 0);
-            return db - da;
-          });
-          // Text search — searches active folder; also searches sentEmails for inbox so
-          // you can find threads by what you wrote, not just what was received.
           if (emailSearch.trim()) {
             const q = emailSearch.toLowerCase();
             const matchEmail = e => {
@@ -1664,26 +2787,26 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 sentEmails.filter(matchEmail).map(s => s.threadId || s.id).filter(Boolean)
               );
               if (matchedThreadIds.size > 0) {
-                // Re-add inbox emails from matching threads that were filtered out
-                const allInbox = [...inboxEmails];
-                allInbox.sort((a, b) => {
-                  const da = a.internalDate || (a.date ? new Date(a.date).getTime() : 0);
-                  const db = b.internalDate || (b.date ? new Date(b.date).getTime() : 0);
-                  return db - da;
-                });
                 const extraIds = new Set(sorted.map(e => e.id));
-                const extras = allInbox.filter(e =>
+                const extras = [...inboxEmails].filter(e =>
                   matchedThreadIds.has(e.threadId || e.id) && !extraIds.has(e.id)
                 );
                 sorted = [...sorted, ...extras];
-                sorted.sort((a, b) => {
-                  const da = a.internalDate || (a.date ? new Date(a.date).getTime() : 0);
-                  const db = b.internalDate || (b.date ? new Date(b.date).getTime() : 0);
-                  return db - da;
-                });
               }
             }
+            // Merge in full-history Gmail search results — surfaces older emails not in local 50
+            // Gmail uses whole-word matching so this complements (not replaces) the substring filter
+            if (gmailSearchResults !== null && gmailSearchResults.length > 0) {
+              const localIds = new Set(sorted.map(e => e.threadId || e.id));
+              const extras = gmailSearchResults.filter(e => !localIds.has(e.threadId) && !localIds.has(e.id));
+              sorted = [...sorted, ...extras];
+            }
           }
+          sorted.sort((a, b) => {
+            const da = a.internalDate || (a.date ? new Date(a.date).getTime() : 0);
+            const db = b.internalDate || (b.date ? new Date(b.date).getTime() : 0);
+            return db - da;
+          });
           // Category + school filters apply to both inbox and sent
           if (emailCategoryFilter.size > 0) {
             sorted = sorted.filter(e => {
@@ -1729,29 +2852,27 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         })();
         filteredEmailsRef.current = filteredEmails; // keep ref in sync for keyboard nav
 
-        // Overdue level for a todo item: 0=today, 1=1 day overdue (coral), 2+=2+ days (red)
-        // Uses todoDate (Melbourne YYYY-MM-DD stamped by saveTodo), not createdAt, so the
-        // clock starts from when the item entered the list — not when the email was received.
-        const todoOverdueLevel = (item) => {
-          if (item.done || !item.todoDate) return 0;
-          const todayDateStr = melbourneToday();
-          if (item.todoDate >= todayDateStr) return 0;
-          const diffDays = Math.round((new Date(todayDateStr + "T00:00:00").getTime() - new Date(item.todoDate + "T00:00:00").getTime()) / 86400000);
-          return diffDays >= 2 ? 2 : 1;
-        };
+        // Overdue level always returns 0 — age-based colouring removed (session 69)
+        const todoOverdueLevel = (_item) => 0;
 
-        const activeTodo = (() => {
-          const raw = todoItems.filter(t => !t.done);
-          // Stable sort: red (2+) → coral (1) → normal (0), preserving relative order within each tier
-          const red    = raw.filter(t => todoOverdueLevel(t) >= 2);
-          const coral  = raw.filter(t => todoOverdueLevel(t) === 1);
-          const normal = raw.filter(t => todoOverdueLevel(t) === 0);
-          return [...red, ...coral, ...normal];
-        })();
+        const activeTodo = todoItems.filter(t => !t.done);
         const doneTodo = todoItems.filter(t => t.done);
 
-        // ungroupSub: pull a sub-item out of a group and insert as standalone
-        const ungroupSub = (insertAtIdx) => {
+        // Preview order during todo-to-todo drag — items shuffle as you hover
+        const previewActiveTodo = (() => {
+          const srcIdx = todoDragIdx;
+          const hoverIdx = todoDragHoverItemId ? activeTodo.findIndex(t => t.id === todoDragHoverItemId) : -1;
+          if (srcIdx === null || hoverIdx < 0 || hoverIdx === srcIdx) return activeTodo;
+          const arr = [...activeTodo];
+          const [moved] = arr.splice(srcIdx, 1);
+          arr.splice(hoverIdx, 0, moved);
+          return arr;
+        })();
+        const displayActiveTodo = todoFilterCategory.size > 0 ? previewActiveTodo.filter(t => (todoFilterCategory.has("__other__") && !t.category) || todoFilterCategory.has(t.category)) : previewActiveTodo;
+        const displayDoneTodo = todoFilterCategory.size > 0 ? doneTodo.filter(t => (todoFilterCategory.has("__other__") && !t.category) || todoFilterCategory.has(t.category)) : doneTodo;
+
+        // ungroupSub: pull a sub-item out of a group and prepend as standalone
+        const ungroupSub = () => {
           const drag = todoSubDragRef.current;
           if (!drag) return false;
           todoSubDragRef.current = null;
@@ -1772,9 +2893,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           }
           const active = updated.filter(t => !t.done);
           const done = updated.filter(t => t.done);
-          const clampedIdx = Math.max(0, Math.min(insertAtIdx, active.length));
-          active.splice(clampedIdx, 0, standalone);
-          saveTodo([...active, ...done]);
+          saveTodo([standalone, ...active, ...done]);
           return true;
         };
 
@@ -1789,19 +2908,45 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
             {/* Generic alert dropdown panel */}
             {alertDropdown && (() => {
               const { rect, title, borderColor, items, sections } = alertDropdown;
-              const renderItem = (item, i) => (
-                <div
-                  key={i}
-                  draggable={!!item.dragPayload}
-                  onDragStart={item.dragPayload ? () => { clearTimeout(alertDropdownTimer.current); setAlertDragging(item.dragPayload); } : undefined}
-                  onDragEnd={item.dragPayload ? () => { setAlertDragging(null); setAlertDropdown(null); } : undefined}
-                  style={{ padding: "4px 10px", background: item.chipBg || "#FEF2F2", border: `1px solid ${item.chipBorder || borderColor || colors.danger}`, borderRadius: 16, fontSize: 11, cursor: item.dragPayload ? "grab" : "default", display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", userSelect: "none" }}>
-                  <span style={{ color: item.chipColor || colors.danger, fontWeight: 700 }}>{item.label}</span>
-                </div>
-              );
+              const removeDropdownItem = (idx, sectionIdx) => {
+                setAlertDropdown(prev => {
+                  if (!prev) return prev;
+                  if (prev.sections) {
+                    const newSections = prev.sections.map((s, si) => si === sectionIdx ? { ...s, items: s.items.filter((_, ii) => ii !== idx) } : s).filter(s => s.items.length > 0);
+                    return newSections.length > 0 ? { ...prev, sections: newSections } : null;
+                  }
+                  const newItems = (prev.items || []).filter((_, ii) => ii !== idx);
+                  return newItems.length > 0 ? { ...prev, items: newItems } : null;
+                });
+              };
+              const renderItem = (item, i, sectionIdx) => {
+                const isClickable = !!(item.composeData || item.navigateTo || item.openEmailId || item.navigateToStudent);
+                return (
+                  <div
+                    key={i}
+                    draggable={!!item.dragPayload}
+                    onDragStart={item.dragPayload ? () => { clearTimeout(alertDropdownTimer.current); setAlertDragging(item.dragPayload); } : undefined}
+                    onDragEnd={item.dragPayload ? () => { setAlertDragging(null); setAlertDropdown(null); } : undefined}
+                    onClick={isClickable ? () => {
+                      if (item.openEmailId) { openEmail(item.openEmailId); setAlertDropdown(null); }
+                      else if (item.navigateToStudent) { if (onViewStudent) { onViewStudent(item.navigateToStudent); } else { onNavigate("students"); } setAlertDropdown(null); }
+                      else if (item.composeData) { openCompose([item.composeData.addr], { subject: item.composeData.subject, triggerId: item.composeData.triggerId }); setAlertDropdown(null); }
+                      else if (item.navigateTo) { onNavigate(item.navigateTo); setAlertDropdown(null); }
+                    } : undefined}
+                    style={{ padding: "4px 10px", background: item.chipBg || (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2"), border: `1px solid ${item.chipBorder || borderColor || colors.danger}`, borderRadius: 16, fontSize: 11, cursor: item.dragPayload ? "grab" : isClickable ? "pointer" : "default", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", userSelect: "none", width: "100%", boxSizing: "border-box" }}>
+                    <span style={{ color: item.chipColor || colors.danger, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</span>
+                    <span onClick={e => { e.stopPropagation(); if (item.dismissKey) dismissAlert(item.dismissKey); removeDropdownItem(i, sectionIdx); }}
+                      style={{ color: item.chipColor || colors.danger, opacity: 0.4, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", flexShrink: 0, marginLeft: "auto" }}
+                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                      onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>
+                      <X size={10} />
+                    </span>
+                  </div>
+                );
+              };
               return (
                 <div
-                  style={{ position: "absolute", left: alertDropdown.absLeft, top: (alertDropdown.absBottom || 0) + 6, zIndex: 49, background: colors.white, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
+                  style={{ position: "absolute", left: alertDropdown.absLeft, top: (alertDropdown.absBottom || 0) + 6, zIndex: 49, background: colors.cardBg, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
                   onMouseEnter={() => clearTimeout(alertDropdownTimer.current)}
                   onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}>
                   {title && <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, marginBottom: 2, letterSpacing: "0.04em" }}>{title}</div>}
@@ -1812,7 +2957,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           draggable
                           onDragStart={() => { clearTimeout(alertDropdownTimer.current); setAlertDragging(section.headingDragPayload); }}
                           onDragEnd={() => { setAlertDragging(null); setAlertDropdown(null); }}
-                          style={{ padding: "4px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}60`, borderRadius: 16, fontSize: 11, fontWeight: 700, cursor: "grab", display: "inline-flex", alignItems: "center", color: colors.sidebarActive, userSelect: "none", marginBottom: 4 }}>
+                          onClick={section.headingComposeEmails?.length ? () => { openCompose(section.headingComposeEmails, { subject: "Catch-ups", triggerId: "alert_catchup", bccGroup: true }); setAlertDropdown(null); } : undefined}
+                          style={{ padding: "4px 10px", background: section.headingColor ? `${section.headingColor}18` : colors.blueLight, border: `1px solid ${section.headingColor ? `${section.headingColor}60` : `${darkMode ? colors.blue600 : colors.sidebarActive}60`}`, borderRadius: 16, fontSize: 11, fontWeight: 700, cursor: section.headingComposeEmails?.length ? "pointer" : "grab", display: "inline-flex", alignItems: "center", color: section.headingColor || (darkMode ? colors.blue600 : colors.sidebarActive), userSelect: "none", marginBottom: 4 }}>
                           {section.heading.split(" ").filter(w => /^[A-Z]/.test(w)).map(w => w[0]).join("").toUpperCase() || section.heading.slice(0, 4).toUpperCase()}
                         </div>
                       )}
@@ -1820,7 +2966,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         <div style={{ fontSize: 9, fontWeight: 700, color: colors.textMuted, letterSpacing: "0.06em", textTransform: "uppercase", paddingBottom: 2, borderBottom: `1px solid ${colors.borderLight}`, marginBottom: 4 }}>{section.heading}</div>
                       )}
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {section.items.map(renderItem)}
+                        {section.items.map((item, ii) => renderItem(item, ii, si))}
                       </div>
                     </div>
                   )) : (items || []).map(renderItem)}
@@ -1841,20 +2987,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               const btnStyle = { display: "block", width: "100%", padding: "8px 14px", background: "none", border: "none", textAlign: "left", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: colors.text, borderRadius: 6 };
               return (
                 <div
-                  style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
+                  style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
                   onMouseDown={e => e.stopPropagation()}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, padding: "4px 12px 6px", letterSpacing: "0.04em" }}>CONTACT ALL PARENTS</div>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}
-                    onClick={() => { if (allEmails.length) openCompose(allEmails, { triggerId: "todo_missed_group" }); setMissedContactMenu(null); }}>
-                    📧 Send as group (all in To)
+                    onClick={() => { if (allEmails.length) openCompose(allEmails, { triggerId: "todo_missed_group", bccGroup: true }); setMissedContactMenu(null); }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send as group (all in To)</span>
                   </button>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}
                     onClick={() => { if (perStudentItems.length) window._openComposeQueue && window._openComposeQueue(perStudentItems); setMissedContactMenu(null); }}>
-                    📧 Send individually (preview each)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send individually (preview each)</span>
                   </button>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
@@ -1863,7 +3009,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       if (allEmails.length) { const richBatch = (item.missedLessons || []).filter(ml => ml.parentEmail).map(ml => ({ addr: ml.parentEmail, ctx: { parent_name: preferredFirstName(ml.parentName) || "", student_name: (ml.studentName || "").split(" ")[0], school_name: "" } })); window._openComposeModal && window._openComposeModal({ to: [], batchTo: richBatch, subject: "", body: "" }); }
                       setMissedContactMenu(null);
                     }}>
-                    ⚡ Send individually (compose once → auto-send)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Zap size={13} /> Send individually (compose once → auto-send)</span>
                   </button>
                 </div>
               );
@@ -1883,20 +3029,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               const btnStyle = { display: "block", width: "100%", padding: "8px 14px", background: "none", border: "none", textAlign: "left", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: colors.text, borderRadius: 6 };
               return (
                 <div
-                  style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
+                  style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
                   onMouseDown={e => e.stopPropagation()}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, padding: "4px 12px 6px", letterSpacing: "0.04em" }}>CONTACT RE: CATCH-UPS</div>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}
-                    onClick={() => { if (allEmails.length) openCompose(allEmails, { triggerId: "todo_catchup_group" }); setCatchupContactMenu(null); }}>
-                    📧 Send as group (all in To)
+                    onClick={() => { if (allEmails.length) openCompose(allEmails, { triggerId: "todo_catchup_group", bccGroup: true }); setCatchupContactMenu(null); }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send as group (all in To)</span>
                   </button>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}
                     onClick={() => { if (perParentItems.length) window._openComposeQueue && window._openComposeQueue(perParentItems); setCatchupContactMenu(null); }}>
-                    📧 Send individually (preview each)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send individually (preview each)</span>
                   </button>
                   <button style={btnStyle}
                     onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
@@ -1905,7 +3051,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       if (allEmails.length) { const richBatch = Object.values(byParent).filter(p => p.parentEmail).map(p => ({ addr: p.parentEmail, ctx: { parent_name: preferredFirstName(p.parentName) || "", student_name: "" } })); window._openComposeModal && window._openComposeModal({ to: [], batchTo: richBatch, subject: "Catch-up lesson", body: "" }); }
                       setCatchupContactMenu(null);
                     }}>
-                    ⚡ Send individually (compose once → auto-send)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Zap size={13} /> Send individually (compose once → auto-send)</span>
                   </button>
                 </div>
               );
@@ -1916,7 +3062,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               // Resolve compose subject: prefer stored composeSubject, fall back to live inbox lookup
               const resolveSubject = (src) =>
                 src?.composeSubject ??
-                (src?.emailId ? (inboxEmails.find(e => e.id === src.emailId)?.subject ? `Re: ${inboxEmails.find(e => e.id === src.emailId).subject}` : "") : "");
+                (src?.emailId ? reSubject(inboxEmails.find(e => e.id === src.emailId)?.subject || "") : "");
               const groupSubject = resolveSubject(item);
               const perItems = addrs.map(addr => {
                 const sub = (item.subItems || []).find(s => s.replyTo === addr);
@@ -1924,20 +3070,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               }).filter(p => p.to[0]);
               const btnStyle = { display: "block", width: "100%", padding: "8px 14px", background: "none", border: "none", textAlign: "left", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: colors.text, borderRadius: 6 };
               return (
-                <div style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
+                <div style={{ position: "fixed", left: x, top: y, zIndex: 9995, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 9, boxShadow: "0 4px 18px rgba(0,0,0,0.14)", padding: "6px 4px", minWidth: 220 }}
                   onMouseDown={e => e.stopPropagation()}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, padding: "4px 12px 6px", letterSpacing: "0.04em" }}>CONTACT — {addrs.length} RECIPIENTS</div>
                   <button style={btnStyle} onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = "none"}
-                    onClick={() => { openCompose(addrs, { subject: groupSubject }); setEmailGroupContactMenu(null); }}>
-                    📧 Send as group (all in To)
+                    onClick={() => { openCompose(addrs, { subject: groupSubject, bccGroup: true }); setEmailGroupContactMenu(null); }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send as group (all in To)</span>
                   </button>
                   <button style={btnStyle} onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = "none"}
                     onClick={() => { if (perItems.length) window._openComposeQueue && window._openComposeQueue(perItems); setEmailGroupContactMenu(null); }}>
-                    📧 Send individually (preview each)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> Send individually (preview each)</span>
                   </button>
                   <button style={btnStyle} onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = "none"}
                     onClick={() => { if (perItems.length) { const richBatch = addrs.map(addr => { const sub = (item.subItems || []).find(s => s.replyTo === addr); return { addr, ctx: { parent_name: sub?.senderName || "", student_name: "" } }; }); window._openComposeModal && window._openComposeModal({ to: [], batchTo: richBatch, subject: groupSubject, body: "" }); } setEmailGroupContactMenu(null); }}>
-                    ⚡ Send individually (compose once → auto-send)
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Zap size={13} /> Send individually (compose once → auto-send)</span>
                   </button>
                 </div>
               );
@@ -1955,32 +3101,42 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 const DismissBtn = ({ groupType, color, onClick: customOnClick }) => (
                   <span
                     onClick={e => { e.stopPropagation(); customOnClick ? customOnClick() : dismissAlert(groupType); }}
-                    style={{ marginLeft: 3, color: color || colors.danger, opacity: 0.45, fontSize: 13, lineHeight: 1, cursor: "pointer", padding: "0 1px", userSelect: "none" }}
+                    style={{ marginLeft: 3, color: color || colors.danger, opacity: 0.45, fontSize: 13, lineHeight: 1, cursor: "pointer", padding: "0 1px", userSelect: "none", display: "inline-flex", alignItems: "center" }}
                     onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                     onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}
-                  >×</span>
+                  ><X size={11} /></span>
                 );
                 return (
                   <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: alertsH, zIndex: 0,
                     background: "rgba(196,84,84,0.08)", border: `2px solid ${colors.danger}`, borderRadius: 12 }}>
-                    <div style={{ padding: "0 12px 0 104px", display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: "linear-gradient(to right, transparent 90px, black 102px, black calc(100% - 112px), transparent calc(100% - 100px))", WebkitMaskImage: "linear-gradient(to right, transparent 90px, black 102px, black calc(100% - 112px), transparent calc(100% - 100px))" }}>
+                    <div style={{ padding: `0 ${remindersBtnW + 30}px 0 ${pillW + 24}px`, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))`, WebkitMaskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))` }}>
                       {/* Red — blockers + urgent */}
                       {unassignedCount > 0 && !isAlertDismissed("alert-unassigned") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${(s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (setStudentsViewState) setStudentsViewState(prev => ({ ...prev, filter: { ...prev.filter, hasWarning: "any" } })); onNavigate("students"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const instrs = (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: colors.danger }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unassignedCount} unassigned</span>
                           <DismissBtn groupType="alert-unassigned" />
+                        </div>
+                      )}
+                      {unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") && (
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Place ${unassignedGroupCount} student${unassignedGroupCount !== 1 ? "s" : ""} in groups`, tag: "admin", groupType: "alert-unassigned-groups", adminItems: unassignedGroupStudents.map(s => ({ text: `${s.name} — ${(s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                          onClick={() => onNavigate("groups-bands")}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "NO GROUP ASSIGNED", borderColor: "#D97706", items: unassignedGroupStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || "#D97706"; const instrs = (s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
+                          onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: "1px solid #D97706", borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: "#D97706", fontWeight: 700 }}>{unassignedGroupCount} ungrouped</span>
+                          <DismissBtn groupType="alert-unassigned-groups" color="#D97706" />
                         </div>
                       )}
                       {unschedCount > 0 && !isAlertDismissed("alert-unscheduled") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Schedule ${unschedCount} unscheduled student${unschedCount !== 1 ? "s" : ""} in timetable`, tag: "admin", groupType: "alert-unscheduled", adminItems: unschedEntries.map(u => ({ text: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}` })) })} onDragEnd={() => setAlertDragging(null)}
                           onClick={() => { const f = unschedEntries[0]; if (f && setSharedSchool) setSharedSchool(f.student.schoolId); onNavigate("timetable"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNSCHEDULED", borderColor: colors.danger, items: unschedEntries.map(u => ({ label: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}`, chipColor: colors.danger })) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNSCHEDULED", borderColor: colors.danger, items: unschedEntries.map(u => ({ label: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}`, chipColor: colors.danger, navigateToStudent: u.student.id })) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unschedCount} unscheduled</span>
                           <DismissBtn groupType="alert-unscheduled" />
                         </div>
@@ -1988,24 +3144,24 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Complete profiles for ${incompleteStudents.length} student${incompleteStudents.length !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-incomplete", adminItems: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { text: `${s.name} — missing ${missing}` }; }) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => onNavigate("students")}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "INCOMPLETE PROFILES", borderColor: colors.danger, items: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { label: `${s.name} — missing ${missing}`, chipColor: colors.danger }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "INCOMPLETE PROFILES", borderColor: colors.danger, items: incompleteStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { label: `${s.name} — missing ${missing}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60` }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{incompleteStudents.length} incomplete profile{incompleteStudents.length !== 1 ? "s" : ""}</span>
                           <DismissBtn groupType="alert-incomplete" />
                         </div>
                       )}
                       {/* Response required — red (2+ days old) */}
-                      {responseRequiredRed.length > 0 && !isAlertDismissed("alert-response-red") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredRed.length} overdue email${responseRequiredRed.length !== 1 ? "s" : ""} requiring response`, tag: "email", groupType: "alert-response-red", responseEmails: responseRequiredRed })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                      {(() => { const visibleResponseRed = responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseRed.length > 0 && !isAlertDismissed("alert-response-red") && (
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseRed.length} overdue email${visibleResponseRed.length !== 1 ? "s" : ""} requiring response`, tag: "email", groupType: "alert-response-red", responseEmails: responseRequiredRed })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const senderEmail = em.from?.includes("<") ? em.from.match(/<(.+)>/)?.[1] || "" : em.from || ""; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: colors.danger, fontWeight: 700 }}>↩ {responseRequiredRed.length} response overdue</span>
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: colors.danger, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseRed.length} response overdue</span>
                           <DismissBtn groupType="alert-response-red" />
                         </div>
-                      )}
+                      ); })()}
                       {missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") && (() => {
                         const missedWithParents = missedThisWeek.map(m => {
                           const st = students.find(s => s.id === m.studentId);
@@ -2017,25 +3173,48 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                             draggable
                             onDragStart={() => { clearTimeout(alertDropdownTimer.current); setAlertDragging({ text: "Contact all re: missed lessons", tag: "lesson", groupType: "alert-missed-week", missedLessons: missedWithParents }); }}
                             onDragEnd={() => { setAlertDragging(null); setAlertDropdown(null); }}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "MISSED THIS WEEK", borderColor: colors.danger, items: missedWithParents.map(m => ({ label: `${m.studentName} — ${m.count}`, chipColor: colors.danger, dragPayload: { text: `Contact ${(m.parentName || "parent").split(" ")[0]} re: ${(m.studentName || "").split(" ")[0]}'s ${m.count === 1 ? "missed lesson" : `${m.count} missed lessons`}`, tag: "lesson", groupType: `alert-missed-student-${m.studentId}`, missedLesson: m } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "MISSED THIS WEEK", borderColor: colors.danger, items: missedWithParents.map(m => { const sc = schools.find(s => s.id === m.schoolId); const scColor = sc?.color || colors.danger; return { label: `${m.studentName} — ${m.count}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor, ...(m.parentEmail ? { composeData: { addr: m.parentEmail, subject: `Re: ${m.studentName}'s lesson`, triggerId: "alert_missed" } } : {}), dragPayload: { text: `Contact ${(m.parentName || "parent").split(" ")[0]} re: ${(m.studentName || "").split(" ")[0]}'s ${m.count === 1 ? "missed lesson" : `${m.count} missed lessons`}`, tag: "lesson", groupType: `alert-missed-student-${m.studentId}`, missedLesson: m } }; }) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                            style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.danger, fontWeight: 700 }}>{missedThisWeek.length} missed this week</span>
                             <DismissBtn groupType="alert-missed-week" />
-                          </div>
+                        </div>
                         );
                       })()}
-                      {/* Yellow — response required yesterday */}
-                      {responseRequiredYellow.length > 0 && !isAlertDismissed("alert-response-yellow") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredYellow.length} email${responseRequiredYellow.length !== 1 ? "s" : ""} awaiting response`, tag: "email", groupType: "alert-response-yellow", responseEmails: responseRequiredYellow })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
-                          onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.warning, items: responseRequiredYellow.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.amberDark, chipBg: colors.amberLight, chipBorder: colors.warning, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                      {/* Upcoming informed absences — fires the week before */}
+                      {upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") && (
+                        <div
+                          draggable
+                          onDragStart={() => setAlertDragging({ text: `${upcomingAbsences.length} informed absence${upcomingAbsences.length !== 1 ? "s" : ""} next week`, tag: "lesson", groupType: "alert-upcoming-absences" })}
+                          onDragEnd={() => { setAlertDragging(null); setAlertDropdown(null); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "ABSENCES NEXT WEEK", borderColor: colors.purple700, items: upcomingAbsences.map(m => ({ label: `${m.studentName}${m.instrument ? ` — ${m.instrument}` : ""}`, chipColor: colors.purple700, chipBg: colors.purpleLight, chipBorder: `${colors.purple700}40`, navigateTo: "calendar", dragPayload: { text: `${m.studentName} away — ${m.weekLabel}`, tag: "lesson", groupType: `alert-upcoming-absence-${m.studentId}` } })) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: colors.amberLight, border: `1px solid ${colors.warning}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: colors.amberDark, fontWeight: 700 }}>↩ {responseRequiredYellow.length} response pending</span>
-                          <DismissBtn groupType="alert-response-yellow" color={colors.warning} />
+                          onClick={() => onNavigate("tally")}
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(124,58,237,0.15)" : colors.purpleLight, border: `1px solid ${colors.purple700}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: colors.purple700, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><CalendarCheck size={11} /> {upcomingAbsences.length} away next week</span>
+                          <DismissBtn groupType="alert-upcoming-absences" color={colors.purple700} />
                         </div>
                       )}
+                      {upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") && (
+                        <div
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "REMINDERS — NEXT WEEK", borderColor: "#D97706", items: upcomingReminderAlerts.map(rem => ({ label: rem.text + (rem.studentName ? ` — ${rem.studentName}` : ""), chipColor: "#D97706", chipBg: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", chipBorder: "#D97706" })) }); }}
+                          onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: "1px solid #D97706", borderRadius: 20, fontSize: 11, cursor: "default", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: "#D97706", fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Bell size={11} /> {upcomingReminderAlerts.length === 1 ? upcomingReminderAlerts[0].text.slice(0, 40) + (upcomingReminderAlerts[0].text.length > 40 ? "…" : "") : `${upcomingReminderAlerts.length} reminders next week`}</span>
+                          <DismissBtn groupType="alert-reminder-upcoming" color="#D97706" />
+                        </div>
+                      )}
+                      {/* Yellow — response required yesterday */}
+                      {(() => { const visibleResponseYellow = responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseYellow.length > 0 && !isAlertDismissed("alert-response-yellow") && (
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseYellow.length} email${visibleResponseYellow.length !== 1 ? "s" : ""} awaiting response`, tag: "email", groupType: "alert-response-yellow", responseEmails: responseRequiredYellow })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                          onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.accent, items: responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: darkMode ? colors.accent : colors.accentDark, chipBg: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, chipBorder: colors.accent, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseYellow.length} response pending</span>
+                          <DismissBtn groupType="alert-response-yellow" color={colors.accent} />
+                        </div>
+                      ); })()}
                       {/* Coral — catch-ups + interruptions */}
                       {catchupTotal > 0 && !isAlertDismissed("alert-catchup") && (() => {
                         const catchupStudents = missedPriorSorted.map(m => {
@@ -2046,9 +3225,9 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Arrange ${catchupTotal} catch-up${catchupTotal !== 1 ? "s" : ""} owed`, tag: "lesson", groupType: "alert-catchup", catchupStudents })} onDragEnd={() => setAlertDragging(null)}
                           onClick={() => onNavigate("weekly")}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); const bySchool = {}; for (const s of catchupStudents) { const school = schools.find(sc => sc.id === s.schoolId); const key = school?.name || "Other"; if (!bySchool[key]) bySchool[key] = []; bySchool[key].push(s); } const sections = Object.entries(bySchool).map(([schoolName, sts]) => { const schoolStudents = sts; const schoolDragPayload = { text: `Arrange catch-ups — ${schoolName}`, tag: "lesson", groupType: `alert-catchup-school-${schoolName}`, catchupStudents: schoolStudents }; return { heading: schoolName, headingDragPayload: schoolDragPayload, items: sts.map(s => ({ label: `${s.studentName} — ${s.instrument || ""} (${s.count})`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: colors.accent, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s catch-up${s.count !== 1 ? "s" : ""}`, tag: "lesson", groupType: `alert-catchup-student-${s.studentId}-${s.instrument}`, catchupLesson: s } })) }; }); openAlertDropdown({ rect: r, title: "CATCH-UPS OWED", borderColor: colors.accent, sections }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); const bySchool = {}; for (const s of catchupStudents) { const school = schools.find(sc => sc.id === s.schoolId); const key = school?.name || "Other"; if (!bySchool[key]) bySchool[key] = { students: [], color: school?.color || null }; bySchool[key].students.push(s); } const sections = Object.entries(bySchool).map(([schoolName, { students: sts, color: schoolColor }]) => { const schoolStudents = sts; const allParentEmails = [...new Set(schoolStudents.filter(s => s.parentEmail).map(s => s.parentEmail))]; const schoolDragPayload = { text: `Arrange catch-ups — ${schoolName}`, tag: "lesson", groupType: `alert-catchup-school-${schoolName}`, catchupStudents: schoolStudents }; return { heading: schoolName, headingColor: schoolColor, headingDragPayload: schoolDragPayload, headingComposeEmails: allParentEmails, items: sts.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark); return { label: `${s.studentName} — ${s.instrument || ""} (${s.count})`, chipColor: scColor, chipBg: darkMode ? `${scColor}22` : `${scColor}18`, chipBorder: scColor, ...(s.parentEmail ? { composeData: { addr: s.parentEmail, subject: "Catch-ups", triggerId: "alert_catchup" } } : {}), dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s catch-up${s.count !== 1 ? "s" : ""}`, tag: "lesson", groupType: `alert-catchup-student-${s.studentId}-${s.instrument}`, catchupLesson: s } }; }) }; }); openAlertDropdown({ rect: r, title: "CATCH-UPS OWED", borderColor: colors.accent, sections }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FEF2F2", border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.accentDark, fontWeight: 700 }}>{catchupTotal} catch-up{catchupTotal !== 1 ? "s" : ""} owed</span>
                           <DismissBtn groupType="alert-catchup" color={colors.accentDark} />
                         </div>
@@ -2090,7 +3269,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           const d = new Date(intr.date + "T00:00:00");
                           return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
                         };
-                        const chipStyle = (bg, border, color) => ({ padding: "3px 10px", background: bg, border: `1px solid ${border}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" });
+                        const chipStyle = (bg, border, color) => ({ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : bg, border: `1px solid ${border}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" });
+                        const intrChipBg = darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2";
                         return (
                           <>
                             {/* Public holidays — single chip or grouped */}
@@ -2098,8 +3278,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                               <div draggable
                                 onDragStart={() => setAlertDragging(singleIntrPayload(publicHols[0]))}
                                 onDragEnd={() => { setAlertDragging(null); }}
-                                style={chipStyle("#FEF2F2", colors.danger, colors.danger)}>
-                                <span style={{ color: colors.danger, fontWeight: 700 }}>📅 {publicHols[0].title} — {dateLabel(publicHols[0])}</span>
+                                style={chipStyle(intrChipBg, colors.danger, colors.danger)}>
+                                <span style={{ color: colors.danger, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><CalendarOff size={11} /> {publicHols[0].title} — {dateLabel(publicHols[0])}</span>
                                 <DismissBtn groupType={`alert-interruption-${publicHols[0].id}`} color={colors.danger} />
                               </div>
                             )}
@@ -2107,11 +3287,15 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                               <div draggable
                                 onDragStart={() => setAlertDragging(multiIntrPayload(publicHols, "Public Holidays"))}
                                 onDragEnd={() => { setAlertDragging(null); }}
-                                onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PUBLIC HOLIDAYS", borderColor: colors.danger, items: publicHols.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.danger, chipBg: "#FEF2F2", chipBorder: colors.danger, dragPayload: singleIntrPayload(i) })) }); }}
+                                onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PUBLIC HOLIDAYS", borderColor: colors.danger, items: publicHols.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.danger, chipBg: intrChipBg, chipBorder: colors.danger, navigateTo: "calendar", dismissKey: `alert-interruption-${i.id}`, dragPayload: singleIntrPayload(i) })) }); }}
                                 onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                                style={chipStyle("#FEF2F2", colors.danger, colors.danger)}>
-                                <span style={{ color: colors.danger, fontWeight: 700 }}>📅 Public Holidays — {publicHols.length}</span>
-                                <DismissBtn groupType={`alert-interruption-ph-group`} color={colors.danger} onClick={() => publicHols.forEach(i => dismissAlert(`alert-interruption-${i.id}`))} />
+                                style={chipStyle(intrChipBg, colors.danger, colors.danger)}>
+                                <span style={{ color: colors.danger, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><CalendarOff size={11} /> Public Holidays — {publicHols.length}</span>
+                                <DismissBtn groupType="alert-interruption-ph-group" color={colors.danger} onClick={() => {
+                                  const next = { ...alertDismissals, dismissed: { ...alertDismissals.dismissed, ...Object.fromEntries(publicHols.map(i => [`alert-interruption-${i.id}`, true])) } };
+                                  setAlertDismissals(next);
+                                  try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
+                                }} />
                               </div>
                             )}
                             {/* Per-school interruptions — single chip or grouped */}
@@ -2124,9 +3308,9 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                   <div key={schoolId} draggable
                                     onDragStart={() => setAlertDragging(singleIntrPayload(intr))}
                                     onDragEnd={() => { setAlertDragging(null); }}
-                                    style={chipStyle("#FEF2F2", colors.accentDark, colors.accentDark)}>
-                                    <span style={{ color: colors.accentDark, fontWeight: 700 }}>🚧 {acronym} — {intr.title}</span>
-                                    <DismissBtn groupType={`alert-interruption-${intr.id}`} color={colors.accentDark} />
+                                    style={chipStyle(intrChipBg, school?.color || colors.accentDark, school?.color || colors.accentDark)}>
+                                    <span style={{ color: school?.color || colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={11} /> {acronym} — {intr.title}</span>
+                                    <DismissBtn groupType={`alert-interruption-${intr.id}`} color={school?.color || colors.accentDark} />
                                   </div>
                                 );
                               }
@@ -2134,11 +3318,15 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                 <div key={schoolId} draggable
                                   onDragStart={() => setAlertDragging(multiIntrPayload(intrs, acronym))}
                                   onDragEnd={() => { setAlertDragging(null); }}
-                                  onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: `${acronym} INTERRUPTIONS`, borderColor: colors.accentDark, items: intrs.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: colors.accentDark, chipBg: "#FEF2F2", chipBorder: `${colors.accentDark}60`, dragPayload: singleIntrPayload(i) })) }); }}
+                                  onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: `${acronym} INTERRUPTIONS`, borderColor: school?.color || colors.accentDark, items: intrs.map(i => ({ label: `${i.title} — ${dateLabel(i)}`, chipColor: school?.color || colors.accentDark, chipBg: intrChipBg, chipBorder: `${school?.color || colors.accentDark}60`, navigateTo: "calendar", dismissKey: `alert-interruption-${i.id}`, dragPayload: singleIntrPayload(i) })) }); }}
                                   onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                                  style={chipStyle("#FEF2F2", colors.accentDark, colors.accentDark)}>
-                                  <span style={{ color: colors.accentDark, fontWeight: 700 }}>🚧 {acronym} — {intrs.length} events</span>
-                                  <DismissBtn groupType={`alert-interruption-school-${schoolId}`} color={colors.accentDark} onClick={() => intrs.forEach(i => dismissAlert(`alert-interruption-${i.id}`))} />
+                                  style={chipStyle(intrChipBg, school?.color || colors.accentDark, school?.color || colors.accentDark)}>
+                                  <span style={{ color: school?.color || colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={11} /> {acronym} — {intrs.length} events</span>
+                                  <DismissBtn groupType={`alert-interruption-school-${schoolId}`} color={school?.color || colors.accentDark} onClick={() => {
+                                    const next = { ...alertDismissals, dismissed: { ...alertDismissals.dismissed, ...Object.fromEntries(intrs.map(i => [`alert-interruption-${i.id}`, true])) } };
+                                    setAlertDismissals(next);
+                                    try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
+                                  }} />
                                 </div>
                               );
                             })}
@@ -2149,11 +3337,11 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       {responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredBlue.length} email${responseRequiredBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: darkMode ? colors.blue600 : colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${darkMode ? colors.blue600 : colors.sidebarActive}40`, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>↩ {responseRequiredBlue.length} question{responseRequiredBlue.length !== 1 ? "s" : ""} today</span>
-                          <DismissBtn groupType="alert-response-blue" color={colors.sidebarActive} />
+                          style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${darkMode ? colors.blue600 : colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {responseRequiredBlue.length} question{responseRequiredBlue.length !== 1 ? "s" : ""} today</span>
+                          <DismissBtn groupType="alert-response-blue" color={darkMode ? colors.blue600 : colors.sidebarActive} />
                         </div>
                       )}
                       {/* Lesson change requests from parents */}
@@ -2162,55 +3350,190 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           onDragStart={() => setAlertDragging({ text: `Review ${lessonChangeEmails.length} lesson change request${lessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: lessonChangeEmails })}
                           onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set(["parent"])); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.warning, items: lessonChangeEmails.slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: colors.warning, chipBg: "#FFF7ED", chipBorder: `${colors.warning}60`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.accent, items: lessonChangeEmails.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase(); const parentStudent = students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr)); const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null; const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark); return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: "#FFF7ED", border: `1px solid ${colors.warning}60`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: colors.amberDark, fontWeight: 700 }}>🔄 {lessonChangeEmails.length} lesson change{lessonChangeEmails.length !== 1 ? "s" : ""}</span>
-                          <DismissBtn groupType="alert-lesson-change" color={colors.amberDark} />
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><RefreshCw size={11} /> {lessonChangeEmails.length} lesson change{lessonChangeEmails.length !== 1 ? "s" : ""}</span>
+                          <DismissBtn groupType="alert-lesson-change" color={colors.accent} />
                         </div>
                       )}
                       {pendingOnly > 0 && !pendingDismissed && (() => {
                         const pendingStudents = students.filter(s => s.status === "pending").flatMap(s =>
                           (s.instruments || []).filter(i => !i.isGroup).map(i => ({
-                            studentId: s.id, studentName: s.name, instrument: i.name,
+                            studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
                             parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
                           }))
                         );
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${pendingOnly} pending student${pendingOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-pending", pendingOrTrialStudents: pendingStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PENDING STUDENTS", borderColor: `${colors.sidebarActive}80`, items: pendingStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s pending enrolment (${s.instrument})`, tag: "admin", groupType: `alert-pending-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "PENDING STUDENTS", borderColor: `${colors.sidebarActive}80`, items: pendingStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || (darkMode ? colors.blue600 : colors.sidebarActive); return { label: `${s.studentName} — ${s.instrument}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}40`, navigateToStudent: s.studentId, dismissKey: `alert-pending-student-${s.studentId}`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s pending enrolment (${s.instrument})`, tag: "admin", groupType: `alert-pending-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } }; }) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                            style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                            <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>{pendingOnly} pending</span>
-                            <DismissBtn groupType="alert-pending" color={colors.sidebarActive} />
-                          </div>
+                            style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${darkMode ? colors.blue600 : colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700 }}>{pendingOnly} pending</span>
+                            <DismissBtn groupType="alert-pending" color={darkMode ? colors.blue600 : colors.sidebarActive} />
+                        </div>
                         );
                       })()}
                       {trialOnly > 0 && !trialDismissed && (() => {
                         const trialStudents = students.filter(s => s.status === "trial").flatMap(s =>
                           (s.instruments || []).filter(i => !i.isGroup).map(i => ({
-                            studentId: s.id, studentName: s.name, instrument: i.name,
+                            studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
                             parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
                           }))
                         );
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${trialOnly} trial student${trialOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-trial", pendingOrTrialStudents: trialStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
-                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "TRIAL STUDENTS", borderColor: `${colors.sidebarActive}80`, items: trialStudents.map(s => ({ label: `${s.studentName} — ${s.instrument}`, chipColor: colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${colors.sidebarActive}40`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s trial (${s.instrument})`, tag: "admin", groupType: `alert-trial-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } })) }); }}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "TRIAL STUDENTS", borderColor: `${colors.sidebarActive}80`, items: trialStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || (darkMode ? colors.blue600 : colors.sidebarActive); return { label: `${s.studentName} — ${s.instrument}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}40`, navigateToStudent: s.studentId, dismissKey: `alert-trial-student-${s.studentId}`, dragPayload: { text: `Contact ${preferredFirstName(s.parentName) || "parent"} re: ${preferredFirstName(s.studentName)}'s trial (${s.instrument})`, tag: "admin", groupType: `alert-trial-student-${s.studentId}-${s.instrument}`, pendingOrTrialLesson: s } }; }) }); }}
                             onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                            style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                            <span style={{ color: colors.sidebarActive, fontWeight: 700 }}>{trialOnly} trial</span>
-                            <DismissBtn groupType="alert-trial" color={colors.sidebarActive} />
+                            style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${darkMode ? colors.blue600 : colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700 }}>{trialOnly} trial</span>
+                            <DismissBtn groupType="alert-trial" color={darkMode ? colors.blue600 : colors.sidebarActive} />
+                        </div>
+                        );
+                      })()}
+                      {/* ── Teacher notes chip ── */}
+                      {hasNewTeacherNotes && (() => {
+                        const noteColor = "#7C3AED";
+                        const chipItems = newTeacherNotes.map(n => ({
+                          label: `${n.studentName} — ${n.teacherName || "Teacher"}${n.editedAt ? " (edited)" : ""}`,
+                          chipColor: n.teacherColor || noteColor,
+                          navigateToStudent: n.studentId,
+                          dismissKey: n.id,
+                        }));
+                        return (
+                          <div
+                            onMouseEnter={e => {
+                              clearTimeout(alertDropdownTimer.current);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              openAlertDropdown({
+                                rect: r,
+                                title: "NEW TEACHER NOTES",
+                                borderColor: noteColor,
+                                items: chipItems,
+                                onDismissAll: () => dismissAllTeacherNoteAlerts(newTeacherNotes.map(n => n.id)),
+                                onDismissItem: (key) => dismissTeacherNoteAlert(key),
+                              });
+                            }}
+                            onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(124,58,237,0.15)" : "#F5F3FF", border: `1px solid ${noteColor}40`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                            <span style={{ color: noteColor, fontWeight: 700 }}>📝 {newTeacherNotes.length} teacher note{newTeacherNotes.length !== 1 ? "s" : ""}</span>
+                            <span onClick={e => { e.stopPropagation(); dismissAllTeacherNoteAlerts(newTeacherNotes.map(n => n.id)); }} title="Dismiss all" style={{ marginLeft: 2, color: noteColor, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
+                          </div>
+                        );
+                      })()}
+                      {/* ── Staff document uploads chip ── */}
+                      {hasNewStaffDocs && (() => {
+                        const docColor = "#0369A1"; // blue-700
+                        const chipItems = newStaffDocs.map(d => {
+                          const teacher = teachers.find(t => t.id === d.teacher_id);
+                          const teacherName = teacher?.name || "Staff";
+                          return {
+                            label: `${teacherName} — ${d.type || "Document"}${d.file_name ? ` (${d.file_name})` : ""}`,
+                            chipColor: docColor,
+                            navigateTo: "resources",
+                            dismissKey: d.id,
+                          };
+                        });
+                        return (
+                          <div
+                            onMouseEnter={e => {
+                              clearTimeout(alertDropdownTimer.current);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              openAlertDropdown({
+                                rect: r,
+                                title: "NEW STAFF DOCUMENTS",
+                                borderColor: docColor,
+                                items: chipItems,
+                                onDismissAll: () => dismissAllStaffDocAlerts(newStaffDocs.map(d => d.id)),
+                                onDismissItem: (key) => dismissStaffDocAlert(key),
+                              });
+                            }}
+                            onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(3,105,161,0.15)" : "#E0F2FE", border: `1px solid ${docColor}40`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                            <span style={{ color: docColor, fontWeight: 700 }}>📄 {newStaffDocs.length} staff doc{newStaffDocs.length !== 1 ? "s" : ""}</span>
+                            <span onClick={e => { e.stopPropagation(); dismissAllStaffDocAlerts(newStaffDocs.map(d => d.id)); }} title="Dismiss all" style={{ marginLeft: 2, color: docColor, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
+                          </div>
+                        );
+                      })()}
+                      {/* ── Classroom teacher email alerts chip (red — high priority) ── */}
+                      {hasTeacherEmailAlerts && (() => {
+                        const chipItems = newTeacherEmailAlerts.map(a => {
+                          const em = inboxEmails.find(e => e.id === a.emailId);
+                          return {
+                            label: a.summary,
+                            chipColor: colors.danger,
+                            openEmailId: a.emailId,
+                            dismissKey: a.emailId,
+                          };
+                        });
+                        const single = newTeacherEmailAlerts.length === 1;
+                        return (
+                          <div
+                            onClick={single ? () => { openEmail(newTeacherEmailAlerts[0].emailId); } : undefined}
+                            onMouseEnter={!single ? e => {
+                              clearTimeout(alertDropdownTimer.current);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              openAlertDropdown({ rect: r, title: "CLASSROOM UPDATES", borderColor: colors.danger, items: chipItems });
+                            } : undefined}
+                            onMouseLeave={!single ? () => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); } : undefined}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                            <span style={{ color: colors.danger, fontWeight: 700 }}>
+                              {single ? `🏫 ${newTeacherEmailAlerts[0].summary}` : `🏫 ${newTeacherEmailAlerts.length} classroom updates`}
+                            </span>
+                            <span onClick={e => { e.stopPropagation(); dismissAllTeacherEmailAlerts(newTeacherEmailAlerts.map(a => a.emailId)); }} title="Dismiss all" style={{ marginLeft: 2, color: colors.danger, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
+                          </div>
+                        );
+                      })()}
+                      {/* ── Invoice received chip ── */}
+                      {hasNewInvoices && (() => {
+                        const invColor = "#0D9488"; // teal-600
+                        const invBg = darkMode ? "rgba(13,148,136,0.15)" : "#CCFBF1";
+                        const chipItems = newInvoices.map(inv => {
+                          const teacher = teachers.find(t => t.id === inv.teacher_id);
+                          const teacherName = teacher?.name || "Teacher";
+                          const periodLabel = inv.period_start
+                            ? `${new Date(inv.period_start + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}–${new Date(inv.period_end + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`
+                            : "";
+                          return {
+                            label: `${teacherName}${periodLabel ? ` — ${periodLabel}` : ""}${inv.total_amount ? ` ($${Number(inv.total_amount).toFixed(2)})` : ""}`,
+                            chipColor: invColor,
+                            chipBg: invBg,
+                            chipBorder: invColor,
+                            navigateTo: "teachers",
+                            dismissKey: inv.id,
+                          };
+                        });
+                        const single = newInvoices.length === 1;
+                        const singleInv = single ? newInvoices[0] : null;
+                        const singleTeacher = singleInv ? teachers.find(t => t.id === singleInv.teacher_id) : null;
+                        const singleLabel = singleTeacher
+                          ? `${singleTeacher.name}${singleInv.period_start ? ` — ${new Date(singleInv.period_start + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}–${new Date(singleInv.period_end + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` : ""}`
+                          : "New invoice";
+                        return (
+                          <div
+                            onClick={single ? () => { onNavigate("teachers"); } : undefined}
+                            onMouseEnter={!single ? e => {
+                              clearTimeout(alertDropdownTimer.current);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              openAlertDropdown({ rect: r, title: "INVOICES RECEIVED", borderColor: invColor, items: chipItems });
+                            } : undefined}
+                            onMouseLeave={!single ? () => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); } : undefined}
+                            style={{ padding: "3px 10px", background: invBg, border: `1px solid ${invColor}60`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                            <span style={{ color: invColor, fontWeight: 700 }}>
+                              {single ? `🧾 ${singleLabel}` : `🧾 ${newInvoices.length} invoices received`}
+                            </span>
+                            <span onClick={e => { e.stopPropagation(); dismissAllInvoiceAlerts(newInvoices.map(inv => inv.id)); }} title="Dismiss all" style={{ marginLeft: 2, color: invColor, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
                           </div>
                         );
                       })()}
                       {/* ── Reminders chip ── */}
                       {sortedReminders.length > 0 && (
                         <div
-                          onClick={() => setRemindersOpen(o => !o)}
-                          style={{ padding: "3px 10px", background: "#FDF0ED", border: `1.5px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
-                          <span style={{ color: colors.accentDark, fontWeight: 700 }}>🔔 {sortedReminders.length} reminder{sortedReminders.length !== 1 ? "s" : ""}</span>
+                          onClick={handleRemindersToggle}
+                          style={{ padding: "3px 10px", background: colors.bg, border: `1.5px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                          <span style={{ color: colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Bell size={11} /> {sortedReminders.length} reminder{sortedReminders.length !== 1 ? "s" : ""}</span>
                         </div>
                       )}
                     </div>
@@ -2222,23 +3545,33 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               <div style={{ height: dashPanels.alerts ? 42 : 0, transition: "height 0.28s ease" }} />
 
               {/* Alerts pill — fixed to outer wrapper top, never moves */}
-              <div onClick={() => togglePanel("alerts")}
+              <div ref={alertsPillRef} onClick={() => togglePanel("alerts")}
                 style={{ position: "absolute", left: 10, top: 9, zIndex: 5,
                   display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 12,
-                  background: dashPanels.alerts ? colors.danger : totalAlerts > 0 ? colors.danger : colors.sidebarActive,
+                  background: dashPanels.alerts ? colors.danger : totalAlertsWithTeacherNotes > 0 ? colors.danger : colors.sidebarActive,
                   cursor: "pointer", transition: "background 0.15s", userSelect: "none",
                   boxShadow: "0 1px 4px rgba(0,0,0,0.3)" }}
                 onMouseEnter={e => { e.currentTarget.style.background = colors.accentDark; }}
-                onMouseLeave={e => { e.currentTarget.style.background = dashPanels.alerts ? colors.danger : totalAlerts > 0 ? colors.danger : colors.sidebarActive; }}>
+                onMouseLeave={e => { e.currentTarget.style.background = dashPanels.alerts ? colors.danger : totalAlertsWithTeacherNotes > 0 ? colors.danger : colors.sidebarActive; }}>
                 <span style={{ fontWeight: 700, fontSize: 11, color: "#fff", letterSpacing: "0.03em" }}>Alerts</span>
-                {totalAlerts > 0 && <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "0px 5px" }}>{totalAlerts}</span>}
-                {totalAlerts === 0 && Object.keys(alertDismissals.dismissed).length > 0 && (
+                {totalAlertsWithTeacherNotes > 0 && <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "0px 5px" }}>{totalAlertsWithTeacherNotes}</span>}
+                {totalAlertsWithTeacherNotes > 0 && (
+                  <span
+                    onClick={e => { e.stopPropagation(); dismissAllActive(); }}
+                    title="Dismiss all alerts"
+                    style={{ fontSize: 12, color: "#fff", opacity: 0.75, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center" }}
+                    onMouseEnter={e => { e.stopPropagation(); e.currentTarget.style.opacity = "1"; }}
+                    onMouseLeave={e => { e.stopPropagation(); e.currentTarget.style.opacity = "0.75"; }}>
+                    <X size={12} />
+                  </span>
+                )}
+                {Object.keys(alertDismissals.dismissed).length > 0 && (
                   <span
                     onClick={e => { e.stopPropagation(); const reset = { date: todayStr, dismissed: {} }; setAlertDismissals(reset); try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(reset)); } catch {} }}
                     title="Restore dismissed alerts"
-                    style={{ fontSize: 12, color: "#fff", opacity: 0.85, lineHeight: 1, cursor: "pointer" }}
+                    style={{ fontSize: 12, color: "#fff", opacity: 0.75, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center" }}
                     onMouseEnter={e => { e.stopPropagation(); e.currentTarget.style.opacity = "1"; }}
-                    onMouseLeave={e => { e.stopPropagation(); e.currentTarget.style.opacity = "0.85"; }}>↺</span>
+                    onMouseLeave={e => { e.stopPropagation(); e.currentTarget.style.opacity = "0.75"; }}><RotateCcw size={12} /></span>
                 )}
               </div>
 
@@ -2247,7 +3580,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 <Card style={{ marginBottom: 0, padding: 0, overflow: "hidden" }}>
 
                   {/* ── Header bar ── */}
-                  <div style={{ background: colors.sidebarActive, borderRadius: anyPanelOpen ? "12px 12px 0 0" : 12, display: "flex", alignItems: "stretch", userSelect: "none", position: "relative" }}>
+                  <div style={{ background: colors.sidebarHover, borderRadius: anyPanelOpen ? "12px 12px 0 0" : 12, display: "flex", alignItems: "stretch", userSelect: "none", position: "relative" }}>
 
                     {/* Emails tab */}
                     <div onClick={() => togglePanel("emails")}
@@ -2296,10 +3629,15 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
 
                         {/* ── Folder toggle + Search + refresh ── */}
                         <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
+                          {/* Compose button */}
+                          <button onClick={() => window._openComposeModal && window._openComposeModal({ to: [], from: "", subject: "", body: "" })}
+                            style={{ padding: "5px 12px", borderRadius: 7, border: `1.5px solid ${colors.border}`, background: colors.cardBg, color: colors.text, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                            Compose
+                          </button>
                           {/* Inbox / Sent pills */}
                           {["inbox", "sent"].map(folder => (
                             <button key={folder} onClick={() => {
-                              setEmailFolder(folder);
+                              setEmailFolderPersist(folder);
                               if (folder === "sent" && sentEmails.length === 0) fetchSent();
                               // Drop inbox-only filter chips (★ pinned, enquiry) when entering sent
                               if (folder === "sent") {
@@ -2311,39 +3649,62 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                 });
                               }
                             }}
-                              style={{ padding: "5px 12px", borderRadius: 7, border: emailFolder === folder ? `1.5px solid ${colors.sidebarActive}` : `1px solid ${colors.border}`, background: emailFolder === folder ? colors.blueLight : colors.white, color: emailFolder === folder ? colors.sidebarActive : colors.textLight, fontSize: 12, fontWeight: emailFolder === folder ? 700 : 400, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                              style={{ padding: "5px 12px", borderRadius: 7, border: emailFolder === folder ? `1.5px solid ${colors.sidebarActive}` : `1.5px solid ${colors.border}`, background: emailFolder === folder ? colors.blueLight : colors.cardBg, color: emailFolder === folder ? colors.sidebarActive : colors.textLight, fontSize: 12, fontWeight: emailFolder === folder ? 700 : 400, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
                               {folder === "inbox" ? "Inbox" : "Sent"}
                             </button>
                           ))}
                           {/* Auto-send undo toast — replaces search+fetch space when active */}
                           {autoSendQueue.length > 0 ? (
                             <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 6, background: colors.amberLight, border: `1px solid ${colors.warning}`, borderRadius: 7, padding: "5px 10px", minWidth: 0 }}>
-                              <span style={{ fontSize: 11, color: colors.amberDark, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                ↻ Sending {autoSendQueue[0]?.label || autoSendQueue[0]?.to?.[0] || "email"}{autoSendQueue.length > 1 ? ` (+${autoSendQueue.length - 1} queued)` : ""}…
+                              <span style={{ fontSize: 11, color: colors.amberDark, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 5 }}>
+                                <Loader2 size={11} style={{ animation: "spin 1s linear infinite", flexShrink: 0 }} /> Sending {autoSendQueue[0]?.label || autoSendQueue[0]?.to?.[0] || "email"}{autoSendQueue.length > 1 ? ` (+${autoSendQueue.length - 1} queued)` : ""}…
                               </span>
                               <button onClick={() => { clearTimeout(autoSendTimerRef.current); autoSendActiveRef.current = false; setAutoSendQueue([]); notify("Auto-send cancelled", "warning"); }}
-                                style={{ padding: "2px 8px", borderRadius: 5, border: `1px solid ${colors.warning}`, background: colors.white, color: colors.amberDark, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                                style={{ padding: "2px 8px", borderRadius: 5, border: `1px solid ${colors.warning}`, background: colors.cardBg, color: colors.amberDark, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
                                 Undo
                               </button>
                             </div>
                           ) : (
                             <div style={{ position: "relative", flex: 1 }}>
-                              <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: colors.textMuted, pointerEvents: "none" }}>🔍</span>
-                              <input value={emailSearch} onChange={e => setEmailSearch(e.target.value)}
+                              <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: colors.textMuted, pointerEvents: "none", display: "flex", alignItems: "center" }}><Search size={13} /></span>
+                              <input value={emailSearch} onChange={e => { setEmailSearchPersist(e.target.value); setEmailSuggestOpen(true); }}
+                                onFocus={() => setEmailSuggestOpen(true)}
+                                onBlur={() => setTimeout(() => setEmailSuggestOpen(false), 150)}
+                                onKeyDown={e => { if (e.key === "Escape") { setEmailSearchPersist(""); setEmailSuggestOpen(false); } }}
                                 placeholder="Search…"
-                                style={{ width: "100%", boxSizing: "border-box", paddingLeft: 30, paddingRight: emailSearch ? 26 : 8, paddingTop: 6, paddingBottom: 6, border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", color: colors.text, outline: "none", background: colors.white }} />
+                                style={{ width: "100%", boxSizing: "border-box", paddingLeft: 30, paddingRight: emailSearch ? 26 : 8, paddingTop: 6, paddingBottom: 6, border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", color: colors.text, outline: "none", background: colors.cardBg }} />
                               {emailSearch && (
-                                <button onClick={() => setEmailSearch("")}
+                                <button onClick={() => { setEmailSearchPersist(""); setEmailSuggestOpen(false); }}
                                   style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: colors.textMuted, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}>
-                                  ×
+                                  <X size={12} />
                                 </button>
+                              )}
+                              {/* Suggestion dropdown */}
+                              {emailSuggestOpen && emailSuggestions.length > 0 && (
+                                <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 9999, overflow: "hidden" }}>
+                                  {emailSuggestions.map((s, i) => (
+                                    <button key={i} onMouseDown={() => { setEmailSearchPersist(s.email); setEmailSuggestOpen(false); }}
+                                      style={{ display: "flex", flexDirection: "column", width: "100%", padding: "7px 12px", background: "none", border: "none", borderBottom: i < emailSuggestions.length - 1 ? `1px solid ${colors.border}` : "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+                                      onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                      <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{s.name}</span>
+                                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.email}</span>
+                                    </button>
+                                  ))}
+                                </div>
                               )}
                             </div>
                           )}
                           <button onClick={() => emailFolder === "sent" ? fetchSent() : fetchInbox()} disabled={inboxLoading || sentLoading} title="Refresh"
-                            style={{ padding: "5px 10px", borderRadius: 7, border: `1px solid ${colors.border}`, background: (inboxLoading || sentLoading) ? colors.bg : colors.white, color: (inboxLoading || sentLoading) ? colors.textMuted : colors.text, cursor: (inboxLoading || sentLoading) ? "default" : "pointer", fontSize: 14, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
-                            <span style={{ display: "inline-block", animation: (inboxLoading || sentLoading) ? "spin 1s linear infinite" : "none" }}>↻</span>
-                            {inboxError && <span onClick={() => console.error('Inbox error:', inboxError)} style={{ fontSize: 11, color: colors.danger, cursor: "pointer" }} title={inboxError}>Error ⓘ</span>}
+                            style={{ padding: "5px 10px", borderRadius: 7, border: `1px solid ${colors.border}`, background: (inboxLoading || sentLoading) ? colors.bg : colors.cardBg, color: (inboxLoading || sentLoading) ? colors.textMuted : colors.text, cursor: (inboxLoading || sentLoading) ? "default" : "pointer", fontSize: 14, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                            <span style={{ display: "inline-flex", animation: (inboxLoading || sentLoading) ? "spin 1s linear infinite" : "none" }}><RefreshCw size={14} /></span>
+                            {gmailRateLimitUntil > Date.now() ? (
+                              <span style={{ fontSize: 11, color: colors.warning, whiteSpace: "nowrap" }} title="Gmail rate limit active — all polling paused until this clears">
+                                ⏳ Retry after {new Date(gmailRateLimitUntil).toLocaleTimeString("en-AU", { timeZone: "Australia/Melbourne", hour: "numeric", minute: "2-digit" })}
+                              </span>
+                            ) : inboxError ? (
+                              <span onClick={() => console.error('Inbox error:', inboxError)} style={{ fontSize: 11, color: colors.danger, cursor: "pointer" }} title={inboxError}>Error ⓘ</span>
+                            ) : null}
                             {summariesLoading && <span style={{ fontSize: 11, color: colors.textMuted }}>…</span>}
                           </button>
                         </div>
@@ -2355,7 +3716,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                             return (
                               <button key={ft.key} onClick={() => setEmailCategoryFilter(prev => { const next = new Set(prev); active ? next.delete(ft.key) : next.add(ft.key); return next; })}
                                 style={{ padding: ft.key === "pinned" ? "3px 8px" : "3px 9px", borderRadius: 12,
-                                  border: active ? `1.5px solid ${colors.sidebarActive}` : `1px solid ${colors.border}`,
+                                  border: active ? `1.5px solid ${colors.sidebarActive}` : `1.5px solid ${colors.border}`,
                                   background: active ? colors.blueLight : "transparent",
                                   color: active ? colors.sidebarActive : colors.textMuted,
                                   fontSize: ft.key === "pinned" ? 13 : 11, fontWeight: active ? 700 : 400,
@@ -2368,12 +3729,14 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                             <div style={{ width: 1, height: 16, background: colors.border, margin: "0 2px", flexShrink: 0 }} />
                             {SCHOOL_FILTERS.map(ft => {
                               const active = emailSchoolFilter.has(ft.key);
+                              const chipColor = ft.color || colors.accentDark;
+                              const chipBg = ft.color ? `${ft.color}18` : colors.accentLight;
                               return (
                                 <button key={ft.key} onClick={() => setEmailSchoolFilter(prev => { const next = new Set(prev); active ? next.delete(ft.key) : next.add(ft.key); return next; })}
                                   style={{ padding: "3px 9px", borderRadius: 12,
-                                    border: active ? `1.5px solid ${colors.accent}` : `1px solid ${colors.border}`,
-                                    background: active ? colors.accentLight : "transparent",
-                                    color: active ? colors.accentDark : colors.textMuted,
+                                    border: active ? `1.5px solid ${chipColor}` : `1.5px solid ${colors.border}`,
+                                    background: active ? chipBg : "transparent",
+                                    color: active ? chipColor : colors.textMuted,
                                     fontSize: 11, fontWeight: active ? 700 : 400,
                                     cursor: "pointer", fontFamily: "inherit" }}>
                                   {ft.label}
@@ -2388,11 +3751,19 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       <div ref={emailListRef} style={{ overflowY: "auto", maxHeight: "calc(100vh - 280px)" }}
                         onMouseEnter={e => { hoveredScrollRef.current = e.currentTarget; }}
                         onMouseLeave={() => { hoveredScrollRef.current = null; }}>
-                        {filteredEmails.length === 0 ? (
+                        {/* All-mail search indicator */}
+                        {emailSearch.trim().length >= 5 && window.electronAPI?.gmailSearch && (
+                          <div style={{ fontSize: 11, color: gmailSearchLoading ? colors.accent : colors.textMuted, padding: "5px 14px 4px", fontStyle: "italic", borderBottom: `1px solid ${colors.border}` }}>
+                            {gmailSearchLoading ? "Searching all mail…" : `Showing results from all mail${filteredEmails.length > 0 ? ` — ${filteredEmails.length} result${filteredEmails.length !== 1 ? "s" : ""}` : ""}`}
+                          </div>
+                        )}
+                        {gmailSearchLoading ? null : filteredEmails.length === 0 ? (
                           <div style={{ fontSize: 13, color: colors.textMuted, fontStyle: "italic", padding: "12px 16px" }}>
-                            {emailFolder === "sent"
-                              ? (sentEmails.length === 0 ? "No sent emails loaded." : "No emails match.")
-                              : (inboxEmails.length === 0 ? (window.electronAPI ? "No emails loaded." : "Gmail not connected.") : "No emails match.")}
+                            {emailSearch.trim()
+                              ? "No emails found."
+                              : emailFolder === "sent"
+                                ? (sentEmails.length === 0 ? "No sent emails loaded." : "No emails match.")
+                                : (inboxEmails.length === 0 ? (window.electronAPI ? "No emails loaded." : "Gmail not connected.") : "No emails match.")}
                           </div>
                         ) : (
                           <div style={{ border: `1px solid ${colors.border}`, borderRadius: "0 0 8px 8px", borderTop: "none", overflow: "hidden" }}>
@@ -2408,7 +3779,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                               // Reply-all recipients: extract all To/CC addresses excluding own address
                               const allRecipients = [fromAddr, ...(email.cc || "").split(",").map(s => s.trim()).filter(Boolean)].filter(Boolean);
                               const dateObj = email.date ? new Date(email.date) : null;
-                              const dateStr = dateObj && !isNaN(dateObj) ? dateObj.toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : "";
+                              const dateStr = (() => {
+                                if (!dateObj || isNaN(dateObj)) return "";
+                                const timeStr = dateObj.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+                                const isToday = toLocalDateStr(dateObj) === todayStr;
+                                if (isToday) return timeStr;
+                                return `${dateObj.toLocaleDateString("en-AU", { day: "numeric", month: "short" })}, ${timeStr}`;
+                              })();
                               const cacheKey = `${email.threadId || email.id}-${email.id}`;
                               const summaryData = emailSummaries[cacheKey];
                               const summary = typeof summaryData === "string" ? summaryData : summaryData?.summary;
@@ -2467,7 +3844,6 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                     if (isSelected) return;
                                     if (Math.abs(e.deltaX) < Math.abs(e.deltaY) * 0.7) return;
                                     if (Math.abs(e.deltaX) < 2) return;
-                                    e.preventDefault();
                                     const id = email.id;
                                     const current = emailSwipeRef.current[id] || 0;
                                     // Ignore rightward scroll if already open
@@ -2501,7 +3877,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                         emailSwipeRef.current[email.id] = 0;
                                         setEmailSwipeState(prev => ({ ...prev, [email.id]: 0 }));
                                       }} style={{ flex: 1, background: colors.danger, border: "none", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }}>
-                                        ✕<br/>{emailFolder === "sent" ? "Dismiss" : "Archive"}
+                                        <X size={13} /><br/>{emailFolder === "sent" ? "Dismiss" : "Archive"}
                                       </button>
                                       {/* Read / Unread */}
                                       <button onClick={e => {
@@ -2513,17 +3889,17 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                         emailSwipeRef.current[email.id] = 0;
                                         setEmailSwipeState(prev => ({ ...prev, [email.id]: 0 }));
                                       }} style={{ flex: 1, background: colors.sidebarActive, border: "none", borderLeft: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }}>
-                                        {isRead ? "●" : "○"}<br/>{isRead ? "Unread" : "Read"}
+                                        {isRead ? <CircleDot size={13} /> : <Circle size={13} />}<br/>{isRead ? "Unread" : "Read"}
                                       </button>
                                       {/* Reply */}
                                       <button onClick={e => {
                                         e.stopPropagation();
                                         const replyAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
-                                        openCompose([replyAddr], { subject: `Re: ${email.subject || ""}`, body: "" });
+                                        openCompose([replyAddr], { subject: reSubject(email.subject), body: "", threadMessages: email.threadMessages });
                                         emailSwipeRef.current[email.id] = 0;
                                         setEmailSwipeState(prev => ({ ...prev, [email.id]: 0 }));
                                       }} style={{ flex: 1, background: colors.accent, border: "none", borderLeft: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }}>
-                                        ✉<br/>Reply
+                                        <Mail size={13} /><br/>Reply
                                       </button>
                                     </div>
                                   {/* Row */}
@@ -2584,7 +3960,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                     }}
                                     style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column",
                                       transform: `translateX(${swipeDx}px)`, transition: "transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
-                                      background: emailSelectedIds.has(email.id) ? "#E8EDF4" : isSelected ? "#F0F2F6" : (isPinned ? "#FFFBEB" : colors.white),
+                                      background: emailSelectedIds.has(email.id) ? (darkMode ? colors.sidebarActive : "#E8EDF4") : isSelected ? (darkMode ? colors.sidebarHover : "#F0F2F6") : (isPinned ? `rgba(255,251,235,${darkMode ? "0.06" : "0.85"}), ${colors.cardBg}` : colors.cardBg),
                                       borderLeft: emailSelectedIds.has(email.id) ? `3px solid ${colors.sidebarActive}` : "3px solid transparent",
                                       borderBottom: `1px solid ${colors.sidebarActive}22`,
                                       cursor: "pointer" }}>
@@ -2604,37 +3980,46 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                       onDragEnd={isSelected ? (() => { setEmailDragging(null); setTodoDropTarget(false); }) : undefined}
                                       style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 12px", cursor: isSelected ? "grab" : undefined }}>
                                     {/* Read/replied indicator — hidden in sent folder */}
-                                    {emailFolder !== "sent" && (
+                                    {emailFolder !== "sent" ? (
                                       <span style={{ flexShrink: 0, width: 14, display: "flex", alignItems: "flex-start", justifyContent: "center", marginTop: 3 }}>
                                         {!isRead
                                           ? <span style={{ width: 7, height: 7, borderRadius: "50%", background: colors.sidebarActive, display: "inline-block", marginTop: 2, flexShrink: 0 }} />
                                           : isReplied
-                                            ? <span title="Replied" style={{ fontSize: 11, color: colors.sidebarActive, lineHeight: 1, opacity: 0.75 }}>↩</span>
+                                            ? <span title="Replied" style={{ fontSize: 11, color: colors.sidebarActive, lineHeight: 1, opacity: 0.75, display: "inline-flex", alignItems: "center" }}><Reply size={11} /></span>
                                             : null
                                         }
                                       </span>
+                                    ) : (
+                                      <span style={{ flexShrink: 0, width: 14 }} />
                                     )}
                                     <div style={{ flex: 1, minWidth: 0 }}>
                                       {/* Sender / Recipient row */}
                                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                                        <span style={{ fontWeight: 700, fontSize: 13, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        <span
+                                          onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setEmailContextMenu({ x: e.clientX, y: e.clientY, text: "", emailId: email.id, email, fromAddr, fromName, isSenderCtx: true }); }}
+                                          style={{ fontWeight: 700, fontSize: 13, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "context-menu" }}>
                                           {emailFolder === "sent" && <span style={{ fontWeight: 400, color: colors.textMuted, marginRight: 3 }}>To:</span>}
                                           {fromName}
                                         </span>
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                                          {needsReply && <span title="Response required" style={{ fontSize: 10, color: colors.danger, fontWeight: 700, lineHeight: 1 }}>↩</span>}
-                                          {hasAttachment && <span title="Has attachment" style={{ fontSize: 10, color: colors.textMuted }}>📎</span>}
+                                          {needsReply && !isReplied && <span title="Response required" style={{ fontSize: 10, color: colors.danger, fontWeight: 700, lineHeight: 1, display: "inline-flex", alignItems: "center" }}><Reply size={10} /></span>}
+                                          {hasAttachment && <span title="Has attachment" style={{ color: colors.textMuted, display: "inline-flex", alignItems: "center" }}><Paperclip size={10} /></span>}
                                           {threadCount > 1 && <span style={{ fontSize: 10, fontWeight: 700, background: colors.tagBg, color: colors.textLight, borderRadius: 8, padding: "1px 5px" }}>{threadCount}</span>}
                                           <span style={{ fontSize: 11, color: colors.textMuted }}>{dateStr}</span>
                                           {emailFolder !== "sent" && <button onClick={e => { e.stopPropagation(); togglePin(email.id); }} title={isPinned ? "Unpin" : "Pin"}
-                                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: isPinned ? colors.warning : colors.textMuted, padding: "0 2px", lineHeight: 1 }}>
-                                            {isPinned ? "★" : "☆"}
+                                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: isPinned ? colors.warning : colors.textMuted, padding: "0 2px", lineHeight: 1, display: "flex", alignItems: "center" }}>
+                                            <Pin size={12} />
                                           </button>}
-                                          <span style={{ fontSize: 11, color: colors.textMuted }}>{isSelected ? "▲" : "▼"}</span>
+                                          <span style={{ color: colors.textMuted, display: "inline-flex", alignItems: "center" }}>{isSelected ? <ChevronUp size={11} /> : <ChevronDown size={11} />}</span>
                                         </div>
                                       </div>
-                                      {/* Subject — bold, smaller */}
-                                      <div style={{ fontWeight: 600, fontSize: 12, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>{email.subject || "(no subject)"}</div>
+                                      {/* Subject — bold, smaller; prepend Re: if thread has replies and subject doesn't already show it */}
+                                      <div style={{ fontWeight: 600, fontSize: 12, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
+                                        {threadCount > 1 && !/(^re\s*:|^re\s*\[)/i.test(email.subject || "") && (
+                                          <span style={{ fontWeight: 400, color: colors.textMuted }}>Re: </span>
+                                        )}
+                                        {email.subject || "(no subject)"}
+                                      </div>
                                       {/* Snippet — plain, smaller, hidden when expanded */}
                                       {!isSelected && <div style={{ fontSize: 11, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary || decodeEntities(email.snippet)}</div>}
                                     </div>
@@ -2707,13 +4092,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                               // Clicking a collapsed chip selects the most recent message in the group
                                               return (
                                                 <button key={gi} onClick={e => { e.stopPropagation(); setThreadMsgSelected(prev => ({ ...prev, [email.id]: m.id })); }}
-                                                  style={{ padding: "3px 10px", borderRadius: 12, border: isActive ? `1.5px solid ${colors.sidebarActive}` : `1px solid ${colors.border}`,
-                                                    background: isActive ? colors.blueLight : m.isSent ? colors.bg : colors.white,
+                                                  style={{ padding: "3px 10px", borderRadius: 12, border: isActive ? `1.5px solid ${colors.sidebarActive}` : `1.5px solid ${colors.border}`,
+                                                    background: isActive ? colors.blueLight : m.isSent ? colors.bg : colors.cardBg,
                                                     color: isActive ? colors.sidebarActive : m.isSent ? colors.textMuted : colors.text,
                                                     fontSize: 11, fontWeight: isActive ? 700 : 400, cursor: "pointer", fontFamily: "inherit",
                                                     fontStyle: m.isSent ? "italic" : "normal",
                                                     display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                                  {chipReplied && <span title="Replied" style={{ fontSize: 10, opacity: 0.75, lineHeight: 1 }}>↩</span>}
+                                                  {chipReplied && <span title="Replied" style={{ fontSize: 10, opacity: 0.75, lineHeight: 1, display: "inline-flex", alignItems: "center" }}><Reply size={10} /></span>}
                                                   {m.isSent ? "You" : name}
                                                   {count > 1 && <span style={{ fontSize: 9, fontWeight: 700, background: isActive ? colors.sidebarActive : colors.border, color: isActive ? colors.white : colors.textMuted, borderRadius: 8, padding: "1px 5px", marginLeft: 1 }}>{count}</span>}
                                                 </button>
@@ -2725,10 +4110,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
 
                                       {/* Selected message sender line */}
                                       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
-                                        <span style={{ fontWeight: 600, color: colors.text }}>{activeFromName}</span>
+                                        <span
+                                          onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setEmailContextMenu({ x: e.clientX, y: e.clientY, text: "", emailId: email.id, email, fromAddr: activeFromAddr, fromName: activeFromName, isSenderCtx: true }); }}
+                                          style={{ fontWeight: 600, color: colors.text, cursor: "context-menu" }}>{activeFromName}</span>
                                         <span> &lt;{activeFromAddr}&gt;</span>
                                         {activeMsg?.to && <span style={{ marginLeft: 8, fontSize: 11 }}>To: {activeMsg.to}</span>}
-                                      </div>
+                                        {(() => {
+                                          const msgDate = activeMsg?.date || email.date;
+                                          const d = msgDate ? new Date(msgDate) : null;
+                                          if (!d || isNaN(d)) return null;
+                                          const isToday = toLocalDateStr(d) === todayStr;
+                                          const dayLabel = isToday ? "Today" : d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", ...(d.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}) });
+                                          const timeLabel = d.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+                                          return <span style={{ marginLeft: 8, fontSize: 11 }}>{dayLabel} at {timeLabel}</span>;
+                                        })()}                                      </div>
 
                                       {/* Thread participants note */}
                                       {!isThread && email.cc && (
@@ -2743,7 +4138,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                             e.preventDefault();
                                             e.stopPropagation();
                                             const sel = window.getSelection()?.toString().trim();
-                                            if (sel) setEmailContextMenu({ x: e.clientX, y: e.clientY, text: sel, emailId: email.id });
+                                            if (sel) setEmailContextMenu({ x: e.clientX, y: e.clientY, text: sel, emailId: email.id, email, fromAddr: activeFromAddr, fromName: activeFromName });
+                                          },
+                                          onDragStart: () => {
+                                            dragSourceEmailRef.current = { emailId: email.id, fromAddr: activeFromAddr, fromName: activeFromName };
+                                          },
+                                          onDragEnd: () => {
+                                            setTimeout(() => { dragSourceEmailRef.current = null; }, 200);
                                           },
                                         };
                                         if (isWallOfText) {
@@ -2759,14 +4160,35 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                           );
                                         }
                                         if (bodyHtml) {
+                                          // Always render main content only — history is shown separately below the toggle button
+                                          const cleanedHtml = getCleanHtml(bodyHtml, { showHistory: false, showSig: false, suppressPatterns });
                                           return (
-                                            <div
+                                            <iframe
                                               key={`${activeMsgId}-${suppressPatterns.length}`}
-                                              onClick={e => { const a = e.target.closest("a"); if (a?.href) { e.preventDefault(); if (window.electronAPI?.openExternal) window.electronAPI.openExternal(a.href); else window.open(a.href, "_blank"); } }}
-                                              {...bodyContextHandlers}
-                                              className="mt-email-body"
-                                              dangerouslySetInnerHTML={{ __html: getCleanHtml(bodyHtml, { showHistory: activeMsgHistoryShown, showSig: false, suppressPatterns }) }}
-                                              style={{ fontSize: 13, color: "#1f2937", lineHeight: 1.65, marginBottom: activeMsgHasHistory ? 4 : 12, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", userSelect: "text", wordBreak: "break-word", overflowWrap: "break-word" }}
+                                              srcDoc={cleanedHtml}
+                                              sandbox="allow-same-origin"
+                                              onLoad={e => {
+                                                try {
+                                                  const doc = e.target.contentDocument;
+                                                  if (doc) {
+                                                    e.target.style.height = doc.documentElement.scrollHeight + "px";
+                                                    doc.querySelectorAll("a[href]").forEach(a => {
+                                                      a.addEventListener("click", ev => {
+                                                        ev.preventDefault();
+                                                        const href = a.getAttribute("href");
+                                                        if (href && window.electronAPI?.openExternal) window.electronAPI.openExternal(href);
+                                                        else if (href) window.open(href, "_blank");
+                                                      });
+                                                    });
+                                                  }
+                                                } catch {}
+                                              }}
+                                              style={{
+                                                width: "100%", minHeight: 80, border: "none", display: "block",
+                                                marginBottom: activeMsgHasHistory ? 4 : 12,
+                                                filter: darkMode ? "invert(1) hue-rotate(180deg)" : "none"
+                                              }}
+                                              title="email-body"
                                             />
                                           );
                                         }
@@ -2781,73 +4203,118 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                         );
                                       })()}
 
-                                      {/* Attachment badges — click to download, drag to Claude or To Do */}
+                                      {/* Attachment badges — click to preview, download icon to save */}
                                       {(activeMsg?.attachments || []).length > 0 && (
                                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, marginTop: 4 }}>
                                           {(activeMsg.attachments).map((att, i) => (
-                                            <button key={i}
+                                            <div key={i}
                                               draggable
                                               onDragStart={() => { setAttachmentDragging({ att, messageId: activeMsg.messageId || activeMsg.id }); setTodoDropTarget(true); window._pendingAttachmentDrag = { att, messageId: activeMsg.messageId || activeMsg.id }; }}
                                               onDragEnd={() => { setAttachmentDragging(null); setTodoDropTarget(false); setTimeout(() => { window._pendingAttachmentDrag = null; }, 100); }}
-                                              onClick={e => {
-                                                e.stopPropagation();
-                                                if (window.electronAPI?.gmailGetAttachment) {
-                                                  window.electronAPI.gmailGetAttachment(activeMsg.messageId || activeMsg.id, att.attachmentId, att.filename)
-                                                    .then(r => { if (!r.ok && r.error !== "Cancelled") alert("Download failed: " + r.error); });
-                                                }
-                                              }}
-                                              style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 10px", background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: 11, color: colors.textLight, cursor: "pointer", fontFamily: "inherit" }}>
-                                              <span style={{ fontSize: 13 }}>📎</span>
-                                              <span style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>
-                                              {att.size > 0 && <span style={{ color: colors.textMuted, flexShrink: 0 }}>{att.size > 1024*1024 ? `${(att.size/1024/1024).toFixed(1)}MB` : `${Math.round(att.size/1024)}KB`}</span>}
-                                            </button>
+                                              onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setAttCtxMenu({ att, messageId: activeMsg.messageId || activeMsg.id, x: e.clientX, y: e.clientY }); }}
+                                              style={{ display: "flex", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 6, overflow: "hidden", fontSize: 11 }}>
+                                              {/* Preview button */}
+                                              <button
+                                                onClick={e => { e.stopPropagation(); handlePreviewAttachment(att, activeMsg.messageId || activeMsg.id); }}
+                                                title="Click to preview"
+                                                style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 8px", background: colors.cardBg, border: "none", fontSize: 11, color: colors.textLight, cursor: "pointer", fontFamily: "inherit" }}
+                                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                                                onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
+                                                <span style={{ display: "flex", alignItems: "center" }}><Paperclip size={13} /></span>
+                                                <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>
+                                                {att.size > 0 && <span style={{ color: colors.textMuted, flexShrink: 0 }}>{att.size > 1024*1024 ? `${(att.size/1024/1024).toFixed(1)}MB` : `${Math.round(att.size/1024)}KB`}</span>}
+                                              </button>
+                                              {/* Download button */}
+                                              <button
+                                                onClick={e => {
+                                                  e.stopPropagation();
+                                                  if (window.electronAPI?.gmailGetAttachment) {
+                                                    window.electronAPI.gmailGetAttachment(activeMsg.messageId || activeMsg.id, att.attachmentId, att.filename)
+                                                      .then(r => { if (!r.ok && r.error !== "Cancelled") alert("Download failed: " + r.error); });
+                                                  }
+                                                }}
+                                                title="Download"
+                                                style={{ padding: "3px 7px", background: colors.tagBg, border: "none", borderLeft: `1px solid ${colors.border}`, cursor: "pointer", display: "flex", alignItems: "center", color: colors.textMuted }}
+                                                onMouseEnter={e => { e.currentTarget.style.background = colors.bg; e.currentTarget.style.color = colors.text; }}
+                                                onMouseLeave={e => { e.currentTarget.style.background = colors.tagBg; e.currentTarget.style.color = colors.textMuted; }}>
+                                                <Download size={11} />
+                                              </button>
+                                            </div>
                                           ))}
                                         </div>
                                       )}
 
-                                      {/* History toggle for this message */}
+                                      {/* History toggle — sits between main body and quoted replies */}
                                       {activeMsgHasHistory && (
-                                        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                                        <div style={{ display: "flex", gap: 6, marginBottom: activeMsgHistoryShown ? 6 : 10 }}>
                                           <button onClick={e => {
                                             e.stopPropagation();
                                             const id = activeMsgId || email.id;
-                                            const wasShown = activeMsgHistoryShown;
-                                            setEmailHistoryExpanded(prev => { const next = new Set(prev); wasShown ? next.delete(id) : next.add(id); return next; });
-                                            if (wasShown) {
-                                              requestAnimationFrame(() => {
-                                                const row = emailListRef.current?.querySelector(`[data-emailid="${email.id}"]`);
-                                                const list = emailListRef.current;
-                                                if (row && list) {
-                                                  const rowTop = row.getBoundingClientRect().top;
-                                                  const listTop = list.getBoundingClientRect().top;
-                                                  list.scrollTop += rowTop - listTop - 8;
-                                                }
-                                              });
-                                            }
+                                            setEmailHistoryExpanded(prev => { const next = new Set(prev); activeMsgHistoryShown ? next.delete(id) : next.add(id); return next; });
                                           }}
                                             style={{ background: "none", border: `1px solid ${colors.border}`, borderRadius: 5, fontSize: 11, color: colors.textMuted, cursor: "pointer", padding: "2px 10px", fontFamily: "inherit" }}>
-                                            {activeMsgHistoryShown ? "Hide previous messages" : "Show previous messages"}
+                                            {activeMsgHistoryShown ? "▾ Hide previous messages" : "▸ Show previous messages"}
                                           </button>
                                         </div>
                                       )}
 
+                                      {/* History content — rendered in a separate iframe below the toggle */}
+                                      {activeMsgHasHistory && activeMsgHistoryShown && (() => {
+                                        if (bodyHtml) {
+                                          const historyHtml = (() => {
+                                            try {
+                                              const doc = new DOMParser().parseFromString(bodyHtml, "text/html");
+                                              const quote = doc.querySelector('.gmail_quote') || doc.querySelector('blockquote');
+                                              if (!quote) return null;
+                                              const bg = darkMode ? "#1a1a2e" : "#ffffff";
+                                              const fg = darkMode ? "#aaaaaa" : "#666666";
+                                              return `<html><head><style>*{box-sizing:border-box;}body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;color:${fg};background:${bg};}blockquote{margin:4px 0 0 6px;padding-left:10px;border-left:2px solid #ccc;color:${fg};}a{color:inherit;pointer-events:none;}</style></head><body>${quote.outerHTML}</body></html>`;
+                                            } catch { return null; }
+                                          })();
+                                          if (historyHtml) return (
+                                            <iframe
+                                              key={`${activeMsgId}-history`}
+                                              srcDoc={historyHtml}
+                                              sandbox="allow-same-origin"
+                                              onLoad={e => {
+                                                try { if (e.target.contentDocument) e.target.style.height = e.target.contentDocument.documentElement.scrollHeight + "px"; } catch {}
+                                              }}
+                                              style={{ width: "100%", border: "none", display: "block", marginBottom: 10 }}
+                                              title="email-history"
+                                            />
+                                          );
+                                        }
+                                        // Plain-text fallback
+                                        const historyText = (() => {
+                                          const src = bodyText || "";
+                                          const idx = src.search(/\nOn .+wrote:/s);
+                                          return idx > 0 ? src.slice(idx + 1).trim() : "";
+                                        })();
+                                        if (!historyText) return null;
+                                        return (
+                                          <div style={{ fontSize: 12, color: colors.textMuted, whiteSpace: "pre-wrap", lineHeight: 1.6, marginBottom: 10, paddingLeft: 10, borderLeft: `2px solid ${colors.border}`, wordBreak: "break-word" }}>
+                                            {historyText}
+                                          </div>
+                                        );
+                                      })()}
+
                                       {/* Suggested reply draft */}
                                       {draft && (
-                                        <div style={{ background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10, fontSize: 13, color: colors.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                                        <div style={{ background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10, fontSize: 13, color: colors.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
                                           <div style={{ fontSize: 11, fontWeight: 700, color: colors.accent, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>✦ Suggested reply</div>
                                           {draft}
                                         </div>
                                       )}
 
                                       {/* Response flagged chip — dismissible */}
-                                      {needsReply && !emailNoReplyOverrides.has(email.id) && (
-                                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", background: colors.amberLight, border: `1px solid ${colors.warning}40`, borderRadius: 20, marginBottom: 10, alignSelf: "flex-start" }}>
-                                          <span style={{ fontSize: 11, color: colors.amberDark, fontWeight: 600 }}>↩ Response flagged</span>
+                                      {needsReply && !isReplied && !emailNoReplyOverrides.has(email.id) && (
+                                        <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, marginBottom: 10, alignSelf: "flex-start" }}>
+                                          <span style={{ fontSize: 11, color: darkMode ? colors.accent : colors.accentDark, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> Response flagged</span>
                                           <button onMouseDown={e => e.preventDefault()} onClick={() => {
                                             const next = new Set(emailNoReplyOverrides); next.add(email.id);
                                             setEmailNoReplyOverrides(next);
                                             try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {}
-                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.amberDark, fontSize: 13, lineHeight: 1, padding: 0, opacity: 0.7 }}>×</button>
+                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: darkMode ? colors.accent : colors.accentDark, fontSize: 13, lineHeight: 1, padding: 0, opacity: 0.7, display: "flex", alignItems: "center" }}><X size={12} /></button>
                                         </div>
                                       )}
 
@@ -2875,14 +4342,20 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                           weeklyTimetables[`${currentMonday}|${s.schoolId}`]
                                         );
                                         const lessons = hasWeeklyData ? weeklyLessons : masterLessons;
-                                        if (lessons.length === 0) return null;
+                                        // Show students with no lesson: pending/trial always; active if they have no scheduled slot
+                                        const pendingTrialWithoutLesson = linkedStudents.filter(s =>
+                                          !lessons.some(l => l.studentId === s.id) &&
+                                          (s.status === "pending" || s.status === "trial" ||
+                                           (s.status === "active"))
+                                        );
+                                        if (lessons.length === 0 && pendingTrialWithoutLesson.length === 0) return null;
                                         return (
                                           <div style={{ marginBottom: 10, padding: "8px 12px", background: colors.blueLight, borderRadius: 8, border: `1px solid ${colors.sidebarActive}30`, cursor: "pointer" }}
-                                            onClick={() => { const school = schools.find(s => s.id === lessons[0]?.schoolId); if (school) { setSharedSchool(school.id); onNavigate(hasWeeklyData ? "weekly" : "timetable"); } }}
+                                            onClick={() => { const school = schools.find(s => s.id === (lessons[0] || linkedStudents[0])?.schoolId); if (school) { setSharedSchool(school.id); onNavigate(hasWeeklyData ? "weekly" : "timetable"); } }}
                                             onMouseEnter={e => e.currentTarget.style.opacity = "0.85"}
                                             onMouseLeave={e => e.currentTarget.style.opacity = "1"}>
-                                            <div style={{ fontSize: 11, fontWeight: 700, color: colors.sidebarActive, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5 }}>
-                                              📅 {hasWeeklyData ? "This week's lessons" : "Scheduled lessons"} ↗
+                                            <div style={{ fontSize: 11, fontWeight: 700, color: colors.sidebarActive, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
+                                              <CalendarDays size={12} /> {hasWeeklyData ? "This week's lessons" : "Scheduled lessons"} <ExternalLink size={11} />
                                             </div>
                                             {lessons.map(l => {
                                               const st = linkedStudents.find(s => s.id === l.studentId);
@@ -2896,13 +4369,33 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                                 </div>
                                               );
                                             })}
+                                            {pendingTrialWithoutLesson.map(s => (
+                                              <div key={s.id}
+                                                onClick={e => { e.stopPropagation(); onViewStudent && onViewStudent(s.id); }}
+                                                style={{ fontSize: 12, color: colors.text, lineHeight: 1.6, display: "flex", alignItems: "center", gap: 6 }}>
+                                                <strong>{s.name}</strong>
+                                                <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10,
+                                                  background: s.status === "trial" ? "rgba(124,58,237,0.12)" : s.status === "pending" ? "rgba(217,119,6,0.12)" : "rgba(100,116,139,0.12)",
+                                                  color: s.status === "trial" ? "#7C3AED" : s.status === "pending" ? "#D97706" : colors.textMuted,
+                                                  textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                                                  {s.status === "trial" ? "Trial" : s.status === "pending" ? "Pending" : "Unscheduled"}
+                                                </span>
+                                                {s.instruments?.length > 0 && <span style={{ color: colors.textMuted }}>— {s.instruments.map(i => i.name).join(", ")}</span>}
+                                              </div>
+                                            ))}
                                           </div>
                                         );
                                       })()}
                                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { subject: `Re: ${email.subject}`, body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12 }}>✉ Reply{draft ? " with draft" : ""}</Btn>}
+                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { subject: reSubject(email.subject), body: draft || "", threadMessages: email.threadMessages }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply{draft ? " with draft" : ""}</Btn>}
                                         {emailFolder !== "sent" && allRecipients.length > 1 && (
-                                          <Btn variant="secondary" onClick={() => { openCompose(allRecipients, { subject: `Re: ${email.subject}`, body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12 }}>✉ Reply All</Btn>
+                                          <Btn variant="secondary" onClick={() => { openCompose(allRecipients, { subject: reSubject(email.subject), body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply All</Btn>
+                                        )}
+                                        {emailFolder !== "sent" && (
+                                          <Btn variant="secondary" onClick={() => {
+                                            const fwdBody = `<br><br><div style="border-left:2px solid #ccc;padding-left:12px;margin-top:8px;color:#999;font-size:12px"><div><strong>Forwarded message</strong> &nbsp;·&nbsp; From: ${activeFromName} &lt;${activeFromAddr}&gt; &nbsp;·&nbsp; Subject: ${email.subject || ""}</div><br>${bodyHtml || (bodyText || "").replace(/\n/g, "<br>") || ""}</div>`;
+                                            openCompose([], { subject: fwdSubject(email.subject), body: fwdBody });
+                                          }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Reply size={12} style={{ transform: "scaleX(-1)" }} /> Fwd</Btn>
                                         )}
                                         {emailFolder !== "sent" && <Btn variant="secondary" onClick={() => triageEmail(email)} disabled={isTriaging} style={{ fontSize: 12 }}>{isTriaging ? "✦ Drafting…" : draft ? "✦ Re-draft" : "✦ Triage"}</Btn>}
                                         {emailFolder !== "sent" && <Btn variant="secondary" onClick={() => {
@@ -2917,13 +4410,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                           const MOVE_CATS = ["parent", "teacher", "staff", "admin", "enquiry", "other"];
                                           return (
                                             <div style={{ position: "relative" }}>
-                                              <Btn variant="secondary" onClick={e => { e.stopPropagation(); setEmailMoveToOpen(isOpen ? null : email.id); }} style={{ fontSize: 12 }}>
-                                                📁 {currentLabel} {emailCategoryOverrides[email.id] ? "●" : ""}
+                                              <Btn variant="secondary" onClick={e => { e.stopPropagation(); setEmailMoveToOpen(isOpen ? null : email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                                <Folder size={12} /> {currentLabel} {emailCategoryOverrides[email.id] ? <CircleDot size={8} /> : ""}
                                               </Btn>
                                               {isOpen && (
                                                 <>
                                                   <div onClick={() => setEmailMoveToOpen(null)} style={{ position: "fixed", inset: 0, zIndex: 9997 }} />
-                                                  <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 9998, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 130, overflow: "hidden", fontFamily: "inherit" }}>
+                                                  <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 9998, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 130, overflow: "hidden", fontFamily: "inherit" }}>
                                                     {MOVE_CATS.map(cat => (
                                                       <button key={cat} onClick={() => {
                                                         const next = { ...emailCategoryOverrides };
@@ -2948,7 +4441,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                                       }} style={{ display: "block", width: "100%", padding: "8px 14px", background: "none", border: "none", borderTop: `1px solid ${colors.border}`, textAlign: "left", cursor: "pointer", fontSize: 11, color: colors.textMuted, fontFamily: "inherit" }}
                                                         onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                                                         onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                                        ↩ Reset to auto
+                                                        <RotateCcw size={11} /> Reset to auto
                                                       </button>
                                                     )}
                                                   </div>
@@ -2985,7 +4478,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                     const MOVE_CATS = ["parent", "teacher", "staff", "admin", "enquiry", "other"];
                     return (
                       <div style={{ position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", zIndex: 200,
-                        background: colors.sidebar, borderRadius: 10, padding: "10px 14px",
+                        background: colors.sidebarHover, borderRadius: 10, padding: "10px 14px",
                         display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
                         boxShadow: "0 4px 20px rgba(0,0,0,0.25)", minWidth: 360, maxWidth: "80vw" }}>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#fff", marginRight: 4 }}>
@@ -3003,13 +4496,13 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         {/* Move To */}
                         <div style={{ position: "relative" }}>
                           <button onClick={() => setBulkMoveOpen(v => !v)}
-                            style={{ padding: "4px 11px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.25)", background: "none", color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-                            📁 Move To ▾
+                            style={{ padding: "4px 11px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.25)", background: "none", color: "#fff", fontSize: 12, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                            <Folder size={12} /> Move To <ChevronDown size={11} />
                           </button>
                           {bulkMoveOpen && (
                             <>
                               <div onClick={() => setBulkMoveOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 9997 }} />
-                              <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 9998, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 130, overflow: "hidden" }}>
+                              <div style={{ position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 9998, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 130, overflow: "hidden" }}>
                                 {MOVE_CATS.map(cat => (
                                   <button key={cat} onClick={() => {
                                     const next = { ...emailCategoryOverrides };
@@ -3055,7 +4548,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         </button>
                         {/* Clear selection */}
                         <button onClick={() => { setEmailSelectedIds(new Set()); setBulkMoveOpen(false); }}
-                          style={{ marginLeft: "auto", background: "none", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
+                          style={{ marginLeft: "auto", background: "none", border: "none", color: "rgba(255,255,255,0.5)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px", display: "flex", alignItems: "center" }}><X size={14} /></button>
                       </div>
                     );
                   })()}
@@ -3069,6 +4562,12 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTodoDropTarget(false); }}
                       onDrop={e => {
                         e.preventDefault();
+                        // Sub-item dragged out of group — promote to standalone
+                        if (todoSubDragRef.current) {
+                          ungroupSub();
+                          setTodoDropTarget(false);
+                          return;
+                        }
                         // Attachment dropped onto todo — create a simple filename item
                         if (attachmentDragging) {
                           const { att } = attachmentDragging;
@@ -3097,22 +4596,69 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                         }
                         setEmailDragging(null); setTodoDropTarget(false);
                       }}>
-                      <div style={{ padding: "12px 16px 0" }}>
-                        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      <div style={{ padding: "12px 16px 9px" }}>
+                        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                           <div style={{ flex: 1, position: "relative" }}>
-                            <input value={todoInput} onChange={e => setTodoInput(e.target.value)}
-                              onKeyDown={e => { if (e.key === "Enter" && todoInput.trim()) { saveTodo([{ id: uid(), text: todoInput.trim(), done: false, tag: "manual", createdAt: new Date().toISOString() }, ...todoItems]); setTodoInput(""); } }}
+                            <input ref={todoInputRef} value={todoInput}
+                              onChange={e => {
+                                const val = e.target.value;
+                                setTodoInput(val);
+                                const cursor = e.target.selectionStart;
+                                const before = val.slice(0, cursor);
+                                const m = before.match(/@([\w ]*)$/);
+                                if (m) {
+                                  const rect = e.target.getBoundingClientRect();
+                                  setTodoMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, field: "main", top: rect.bottom + 4, left: rect.left, width: rect.width });
+                                  setTodoMentionIndex(0);
+                                } else { setTodoMentionQuery(null); }
+                              }}
+                              onKeyDown={e => {
+                                if (todoMentionQuery?.field === "main") {
+                                  const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(todoMentionQuery.query.toLowerCase()) || (c.sub||"").toLowerCase().includes(todoMentionQuery.query.toLowerCase())).slice(0, 6);
+                                  if (e.key === "ArrowDown") { e.preventDefault(); setTodoMentionIndex(i => Math.min(i+1, hits.length-1)); return; }
+                                  if (e.key === "ArrowUp")   { e.preventDefault(); setTodoMentionIndex(i => Math.max(i-1, 0)); return; }
+                                  if (e.key === "Enter" && hits.length) {
+                                    e.preventDefault();
+                                    const c = hits[todoMentionIndex] || hits[0];
+                                    const mq = todoMentionQuery;
+                                    const tag = preferredFirstName(c.name) || c.name.split(" ")[0];
+                                    setTodoInput(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1));
+                                    setTodoAddMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]);
+                                    setTodoMentionQuery(null); setTodoMentionIndex(0); return;
+                                  }
+                                  if (e.key === "Escape") { setTodoMentionQuery(null); return; }
+                                }
+                                if (e.key === "Enter" && todoInput.trim()) {
+                                  const item = { id: uid(), text: todoInput.trim(), done: false, tag: "manual", createdAt: new Date().toISOString() };
+                                  if (todoAddMentions.length) item.mentions = todoAddMentions;
+                                  saveTodo([item, ...todoItems]);
+                                  setTodoInput(""); setTodoAddMentions([]); setTodoMentionQuery(null);
+                                }
+                              }}
                               placeholder="Add a task… (press Enter)"
-                              style={{ width: "100%", boxSizing: "border-box", padding: "7px 28px 7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", background: colors.white }} />
+                              style={{ width: "100%", boxSizing: "border-box", padding: "6px 28px 6px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", color: colors.text, outline: "none", background: colors.cardBg }} />
                             {todoInput && (
                               <button onClick={() => setTodoInput("")}
-                                style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: colors.textMuted, lineHeight: 1, padding: 0 }}>×</button>
+                                style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: colors.textMuted, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}><X size={12} /></button>
                             )}
                           </div>
                         </div>
                         {(emailDragging || alertDragging) && (
                           <div style={{ padding: "10px", border: `2px dashed ${colors.accent}`, borderRadius: 8, marginBottom: 10, textAlign: "center", fontSize: 12, color: colors.accent, fontWeight: 600 }}>
                             Drop here to add as task
+                          </div>
+                        )}
+                        {todoCategories.length > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 0, paddingTop: 2, alignItems: "center" }}>
+                            {todoCategories.map(cat => {
+                              const active = todoFilterCategory.has(cat.id);
+                              return <button key={cat.id} onClick={() => setTodoFilterCategory(prev => { const next = new Set(prev); active ? next.delete(cat.id) : next.add(cat.id); return next; })}
+                                style={{ padding: "3px 9px", borderRadius: 12, border: active ? `1.5px solid ${cat.color}` : `1.5px solid ${colors.border}`, background: active ? `${cat.color}18` : colors.cardBg, color: active ? cat.color : colors.textMuted, fontSize: 11, fontWeight: active ? 700 : 400, cursor: "pointer", fontFamily: "inherit" }}>{cat.name}</button>;
+                            })}
+                            {(() => { const active = todoFilterCategory.has("__other__"); return (
+                              <button onClick={() => setTodoFilterCategory(prev => { const next = new Set(prev); active ? next.delete("__other__") : next.add("__other__"); return next; })}
+                                style={{ padding: "3px 9px", borderRadius: 12, border: active ? `1.5px solid ${colors.textMuted}` : `1.5px solid ${colors.border}`, background: active ? `${colors.textMuted}18` : colors.cardBg, color: colors.textMuted, fontSize: 11, fontWeight: active ? 700 : 400, cursor: "pointer", fontFamily: "inherit" }}>Other</button>
+                            ); })()}
                           </div>
                         )}
                       </div>
@@ -3123,32 +4669,8 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                           <div style={{ fontSize: 13, color: colors.textMuted, fontStyle: "italic", padding: "6px 0" }}>No tasks yet. Add one above or drag an email here.</div>
                         ) : (
                           <div>
-                            {/* ── Gap before first item ── */}
-                            {(emailDragging || alertDragging || todoDragIdxRef.current !== null || todoSubDragRef.current) && (
-                              <div
-                                onDragOver={e => { e.preventDefault(); e.stopPropagation(); setTodoDropZoneIdx(0); }}
-                                onDragLeave={() => setTodoDropZoneIdx(null)}
-                                onDrop={e => {
-                                  e.preventDefault(); e.stopPropagation();
-                                  setTodoDropZoneIdx(null);
-                                  if (todoSubDragRef.current) { ungroupSub(0); return; }
-                                  if (alertDragging) { saveTodo(handleAlertDrop(alertDragging, todoItemsRef.current)); setAlertDragging(null); setTodoDropTarget(false); return; }
-                                  const srcIdx = todoDragIdxRef.current;
-                                  if (srcIdx === null) return;
-                                  const items = todoItemsRef.current;
-                                  const active = items.filter(t => !t.done);
-                                  const done = items.filter(t => t.done);
-                                  const reordered = [...active];
-                                  const [moved] = reordered.splice(srcIdx, 1);
-                                  reordered.splice(0, 0, moved);
-                                  saveTodo([...reordered, ...done]);
-                                  setTodoDragIdx(null); todoDragIdxRef.current = null;
-                                }}
-                                style={{ height: todoDropZoneIdx === 0 ? 32 : 16, transition: "height 0.12s", display: "flex", alignItems: "center", marginBottom: 0, padding: "0 4px" }}>
-                                {todoDropZoneIdx === 0 && <div style={{ flex: 1, height: 3, borderRadius: 2, background: colors.accent }} />}
-                              </div>
-                            )}
-                            {activeTodo.map((item, idx) => {
+                            {displayActiveTodo.map((item, idx) => {
+                              const catObj = item.category ? todoCategories.find(c => c.id === item.category) : null;
                               const TAG_COLORS = { email: { bg: colors.accentLight, color: colors.accentDark }, manual: { bg: colors.tagBg, color: colors.textLight }, interruption: { bg: "#FFF7ED", color: colors.warning }, lesson: { bg: "#F0FDF4", color: colors.success }, admin: { bg: colors.tagBg, color: colors.textLight } };
                               const tc = TAG_COLORS[item.tag] || TAG_COLORS.manual;
                               const hasSubItems = Array.isArray(item.subItems) && item.subItems.length > 0;
@@ -3189,43 +4711,94 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
 
                               return (
                                 <React.Fragment key={item.id}>
-                                  {/* Item card — handles grouping only */}
+                                  <div style={{ marginBottom: 2 }}>
+                                  {/* Item card */}
                                   {(() => {
-                                    const ol = todoOverdueLevel(item);
-                                    const cardBg     = ol >= 2 ? "#FDF3F3" : ol === 1 ? "#FDF5F2" : "rgba(52,69,101,0.1)";
-                                    const cardBorder = ol >= 2 ? "#CC9999"  : ol === 1 ? "#D4A898" : "rgba(52,69,101,0.1)";
-                                    const overdueBadge = ol >= 2
-                                      ? <span style={{ fontSize: 10, fontWeight: 600, color: "#B07070", whiteSpace: "nowrap", flexShrink: 0 }}>2+ days</span>
-                                      : ol === 1
-                                      ? <span style={{ fontSize: 10, fontWeight: 600, color: "#B08878", whiteSpace: "nowrap", flexShrink: 0 }}>yesterday</span>
-                                      : null;
+                                    const ol = todoOverdueLevel(item); // always 0 — kept for any downstream refs
+                                    const cardBg     = catObj ? `${catObj.color}12` : "rgba(52,69,101,0.1)";
+                                    const cardBorder = catObj ? `${catObj.color}50` : "rgba(52,69,101,0.1)";
+                                    const overdueBadge = null;
                                   return (
                                   <div
                                     draggable={todoEditId !== item.id}
-                                    onDragStart={e => { e.stopPropagation(); setTodoDragIdx(idx); todoDragIdxRef.current = idx; }}
-                                    onDragEnd={e => { e.stopPropagation(); setTodoDragIdx(null); todoDragIdxRef.current = null; setTodoDropZoneIdx(null); }}
-                                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move"; }}
+                                    onDragStart={e => {
+                                      e.stopPropagation();
+                                      const origIdx = activeTodo.findIndex(t => t.id === item.id);
+                                      setTodoDragIdx(origIdx); todoDragIdxRef.current = origIdx;
+                                      todoDragItemIdRef.current = item.id;
+                                      setTodoDragHoverItemId(item.id);
+                                      todoDragHoverIdxRef.current = origIdx;
+                                    }}
+                                    onDragEnd={e => {
+                                      e.stopPropagation();
+                                      setTodoDragIdx(null); todoDragIdxRef.current = null;
+                                      todoDragItemIdRef.current = null;
+                                      setTodoDragHoverItemId(null); todoDragHoverIdxRef.current = null;
+                                      setTodoDropZoneIdx(null);
+                                    }}
+                                    onDragOver={e => {
+                                      e.preventDefault(); e.stopPropagation();
+                                      if (emailDragging || alertDragging) { e.dataTransfer.dropEffect = "move"; return; }
+                                      if (todoDragItemIdRef.current === null) return;
+                                      e.dataTransfer.dropEffect = "move";
+                                      if (todoDragHoverIdxRef.current !== idx) {
+                                        setTodoDragHoverItemId(item.id);
+                                        todoDragHoverIdxRef.current = idx;
+                                      }
+                                    }}
                                     onDrop={e => {
                                       e.preventDefault(); e.stopPropagation();
                                       setTodoDropZoneIdx(null);
-                                      if (emailDragging) { 
-                                        if (Array.isArray(emailDragging)) { saveTodo(dropMultipleEmailsToTodo(emailDragging, todoItemsRef.current)); } 
-                                        else { groupEmail(emailDragging); } 
-                                        setEmailDragging(null); setTodoDropTarget(false); return; 
+                                      // Sub-item dragged out of group onto another item
+                                      if (todoSubDragRef.current) { ungroupSub(); return; }
+                                      if (emailDragging) {
+                                        if (Array.isArray(emailDragging)) { saveTodo(dropMultipleEmailsToTodo(emailDragging, todoItemsRef.current)); }
+                                        else { groupEmail(emailDragging); }
+                                        setEmailDragging(null); setTodoDropTarget(false);
+                                        setTodoDragHoverItemId(null); todoDragHoverIdxRef.current = null;
+                                        return;
                                       }
                                       if (alertDragging) return;
                                       const srcIdx = todoDragIdxRef.current;
-                                      if (srcIdx === null || srcIdx === idx) { setTodoDragIdx(null); todoDragIdxRef.current = null; return; }
-                                      groupTodo(srcIdx);
-                                      setTodoDragIdx(null); todoDragIdxRef.current = null;
+                                      const hoverIdx = todoDragHoverIdxRef.current;
+                                      setTodoDragIdx(null); todoDragIdxRef.current = null; todoDragItemIdRef.current = null;
+                                      setTodoDragHoverItemId(null); todoDragHoverIdxRef.current = null;
+                                      if (srcIdx === null || hoverIdx === null || srcIdx === hoverIdx) return;
+                                      // Reorder: commit the current preview order
+                                      const items = todoItemsRef.current;
+                                      const active = items.filter(t => !t.done);
+                                      const done = items.filter(t => t.done);
+                                      const arr = [...active];
+                                      const [moved] = arr.splice(srcIdx, 1);
+                                      arr.splice(hoverIdx, 0, moved);
+                                      saveTodo([...arr, ...done]);
                                     }}
-                                    onClick={toggleExpand}
+                                    onClick={e => {
+                                      if (e.shiftKey) {
+                                        e.preventDefault(); e.stopPropagation();
+                                        setTodoSelectedIds(prev => {
+                                          const next = new Set(prev);
+                                          next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+                                          return next;
+                                        });
+                                        return;
+                                      }
+                                      toggleExpand(e);
+                                    }}
+                                    onContextMenu={e => {
+                                      e.preventDefault(); e.stopPropagation();
+                                      setTodoContextMenu({ x: e.clientX, y: e.clientY, itemId: item.id });
+                                    }}
                                     style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px",
                                       borderRadius: isExpanded ? "8px 8px 0 0" : 8,
-                                      background: cardBg,
+                                      background: todoSelectedIds.has(item.id) ? (darkMode ? `${colors.sidebarActive}66` : colors.blueLight) : cardBg,
                                       border: "none",
-                                      borderLeft: hasSubItems ? `4px solid ${ol >= 2 ? "#CC9999" : ol === 1 ? "#D4A898" : colors.sidebarActive}` : `3px solid ${cardBorder}`,
+                                      borderLeft: todoSelectedIds.has(item.id)
+                                        ? `4px solid ${colors.sidebarActive}`
+                                        : hasSubItems ? `4px solid ${colors.accent}` : `3px solid ${cardBorder}`,
                                       borderBottom: isExpanded ? `1px solid ${colors.accent}22` : undefined,
+                                      opacity: todoDragItemIdRef.current === item.id ? 0.3 : 1,
+                                      transition: "opacity 0.1s, background 0.15s, border-left 0.15s",
                                       cursor: "grab" }}>
                                     <input type="checkbox" checked={false}
                                       onChange={() => {
@@ -3239,125 +4812,55 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                     {/* Item text — editable when todoEditId matches */}
                                     {todoEditId === item.id ? (
                                       <input
+                                        ref={todoEditInputRef}
                                         autoFocus
-                                        defaultValue={item.text}
+                                        value={todoEditValue}
+                                        onChange={e => {
+                                          const val = e.target.value;
+                                          setTodoEditValue(val);
+                                          const cursor = e.target.selectionStart;
+                                          const before = val.slice(0, cursor);
+                                          const m = before.match(/@([\w ]*)$/);
+                                          if (m) {
+                                            const rect = e.target.getBoundingClientRect();
+                                            setTodoMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, field: "edit", top: rect.bottom + 4, left: rect.left, width: rect.width });
+                                            setTodoMentionIndex(0);
+                                          } else { setTodoMentionQuery(null); }
+                                        }}
                                         onClick={e => e.stopPropagation()}
-                                        onBlur={e => { saveTodo(todoItems.map(t => t.id === item.id ? { ...t, text: e.target.value.trim() || t.text } : t)); setTodoEditId(null); }}
-                                        onKeyDown={e => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setTodoEditId(null); }}
+                                        onMouseDown={e => e.stopPropagation()}
+                                        onDragStart={e => { e.stopPropagation(); e.preventDefault(); }}
+                                        onBlur={e => {
+                                          if (todoMentionQuery?.field === "edit") return;
+                                          if (e.relatedTarget === todoSubInputRef.current) return; // focus moving to sub-item — keep edit open
+                                          const updated = todoItems.map(t => t.id === item.id ? { ...t, text: todoEditValue.trim() || t.text, ...(todoEditMentions.length ? { mentions: todoEditMentions } : {}) } : t);
+                                          saveTodo(updated);
+                                          setTodoEditId(null); setTodoMentionQuery(null); setTodoEditMentions([]);
+                                        }}
+                                        onKeyDown={e => {
+                                          if (todoMentionQuery?.field === "edit") {
+                                            const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(todoMentionQuery.query.toLowerCase()) || (c.sub||"").toLowerCase().includes(todoMentionQuery.query.toLowerCase())).slice(0, 6);
+                                            if (e.key === "ArrowDown") { e.preventDefault(); setTodoMentionIndex(i => Math.min(i+1, hits.length-1)); return; }
+                                            if (e.key === "ArrowUp")   { e.preventDefault(); setTodoMentionIndex(i => Math.max(i-1, 0)); return; }
+                                            if (e.key === "Enter" && hits.length) {
+                                              e.preventDefault();
+                                              const c = hits[todoMentionIndex] || hits[0];
+                                              const mq = todoMentionQuery;
+                                              const tag = preferredFirstName(c.name) || c.name.split(" ")[0];
+                                              setTodoEditValue(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1));
+                                              setTodoEditMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]);
+                                              setTodoMentionQuery(null); setTodoMentionIndex(0); return;
+                                            }
+                                            if (e.key === "Escape") { setTodoMentionQuery(null); return; }
+                                          }
+                                          if (e.key === "Enter") { e.target.blur(); }
+                                          if (e.key === "Escape") { setTodoEditId(null); setTodoMentionQuery(null); setTodoEditMentions([]); }
+                                          if (e.key === "Tab") { e.preventDefault(); todoSubInputRef.current?.focus(); }
+                                        }}
                                         style={{ flex: 1, fontSize: 13, color: colors.text, border: "none", borderBottom: `1px solid ${colors.accent}`, outline: "none", background: "transparent", fontFamily: "inherit", lineHeight: 1.4, padding: "0 2px" }}
                                       />
-                                    ) : item.missedLessons ? (
-                                      // Group missed lesson item — "Contact all" is a link
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        <span
-                                          onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setMissedContactMenu({ x: r.left, y: r.bottom + 4, item }); }}
-                                          style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>Contact all</span>
-                                        {" re: missed lessons"}
-                                      </span>
-                                    ) : item.missedLesson ? (
-                                      // Individual missed lesson item — "Contact [Parent]" is a link
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        {item.missedLesson.parentEmail ? (
-                                          <span
-                                            onClick={e => { e.stopPropagation(); openCompose([item.missedLesson.parentEmail], { triggerId: "todo_missed_lesson" }); }}
-                                            style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                            Contact {(item.missedLesson.parentName || "parent").split(" ")[0]}
-                                          </span>
-                                        ) : (
-                                          <span style={{ color: colors.textMuted }}>Contact parent</span>
-                                        )}
-                                        {" re: "}{(item.missedLesson.studentName || "").split(" ")[0]}{"'s "}
-                                        {item.missedLesson.count === 1 ? "missed lesson" : `${item.missedLesson.count} missed lessons`}
-                                      </span>
-                                    ) : item.catchupStudents ? (
-                                      // Group catch-up item — parent names as link opening submenu
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        <span
-                                          onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCatchupContactMenu({ x: r.left, y: r.bottom + 4, item }); }}
-                                          style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                          {(() => {
-                                            const byParent = {};
-                                            for (const s of item.catchupStudents) {
-                                              const key = s.parentEmail || s.studentId;
-                                              if (!byParent[key]) byParent[key] = preferredFirstName(s.parentName) || "parent";
-                                            }
-                                            const names = Object.values(byParent);
-                                            return names.length > 2 ? `Contact ${names.slice(0,2).join(", ")} and ${names.length-2} more` : `Contact ${names.length === 2 ? `${names[0]} and ${names[1]}` : names[0]}`;
-                                          })()}
-                                        </span>
-                                        {" re: group catch-ups ("}
-                                        {(item.subItems || []).filter(s => !s.done).length}
-                                        {" remaining)"}
-                                      </span>
-                                    ) : item.catchupLesson ? (
-                                      // Catch-up item — group lesson gets special label
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        {item.catchupLesson.isGroup ? (
-                                          <span
-                                            onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setCatchupContactMenu({ x: r.left, y: r.bottom + 4, item }); }}
-                                            style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                            {item.text.replace(/ re:.*$/, "")}
-                                          </span>
-                                        ) : item.catchupLesson.parentEmail ? (
-                                          <span
-                                            onClick={e => { e.stopPropagation(); openCompose([item.catchupLesson.parentEmail], { triggerId: "todo_catchup" }); }}
-                                            style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                            Contact {preferredFirstName(item.catchupLesson.parentName) || "parent"}
-                                          </span>
-                                        ) : (
-                                          <span style={{ color: colors.textMuted }}>Contact parent</span>
-                                        )}
-                                        {item.catchupLesson.isGroup
-                                          ? " re: group catch-ups"
-                                          : <>{" re: "}{preferredFirstName(item.catchupLesson.studentName) || (item.catchupLesson.studentName || "").split(" ")[0]}{"'s "}{item.catchupLesson.count === 1 ? "catch-up" : `${item.catchupLesson.count} catch-ups`}</>
-                                        }
-                                      </span>
-                                    ) : item.interruptionStudents ? (
-                                      // Interruption group item — plain text, expand to see contacts
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>{item.text}</span>
-                                    ) : item.pendingOrTrialStudents ? (
-                                      // Pending/trial group item — count derived from active sub-items
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        {(() => {
-                                          const activeCount = (item.subItems || []).filter(s => !s.done).length;
-                                          const label = item.groupType === "alert-pending" ? "pending" : "trial";
-                                          return `Follow up ${activeCount} ${label} student${activeCount !== 1 ? "s" : ""}`;
-                                        })()}
-                                      </span>
-                                    ) : item.pendingOrTrialLesson ? (
-                                      // Individual pending/trial item — Contact [Parent] link
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        {item.pendingOrTrialLesson.parentEmail ? (
-                                          <span onClick={e => { e.stopPropagation(); openCompose([item.pendingOrTrialLesson.parentEmail], { triggerId: "todo_pending" }); }}
-                                            style={{ color: colors.sidebarActive, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                            Contact {preferredFirstName(item.pendingOrTrialLesson.parentName) || "parent"}
-                                          </span>
-                                        ) : <span style={{ color: colors.textMuted }}>Contact parent</span>}
-                                        {" re: "}{preferredFirstName(item.pendingOrTrialLesson.studentName) || (item.pendingOrTrialLesson.studentName || "").split(" ")[0]}
-                                        {"'s "}{item.pendingOrTrialLesson.groupType?.includes("pending") || item.groupType?.includes("pending") ? "pending enrolment" : "trial"}
-                                      </span>
-                                    ) : item.replyAddrs ? (
-                                      // Group email item — "Contact parents/names" opens group send menu
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        <span
-                                          onClick={e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setEmailGroupContactMenu({ x: r.left, y: r.bottom + 4, item }); }}
-                                          style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                          {item.text.replace(/\s*—\s*\d+.*$/, "")}
-                                        </span>
-                                        {item.text.match(/\s*—\s*\d+.*$/) || ""}
-                                      </span>
-                                    ) : item.replyTo ? (
-                                      // Email item with compose link — "Contact [FirstName]"
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>
-                                        <span
-                                          onClick={e => { e.stopPropagation(); openCompose([item.replyTo], { subject: item.composeSubject ?? (item.emailId ? (inboxEmails.find(e2 => e2.id === item.emailId)?.subject ? `Re: ${inboxEmails.find(e2 => e2.id === item.emailId).subject}` : "") : ""), triggerId: "todo_email" }); }}
-                                          style={{ color: colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
-                                          Contact {item.senderName || item.text.split(" ")[1] || "sender"}
-                                        </span>
-                                        {item.text.replace(/^Contact \S+/, "")}
-                                      </span>
                                     ) : (
-                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>{item.text}</span>
+                                      <span style={{ flex: 1, fontSize: 13, color: colors.text, lineHeight: 1.4 }}>{renderTodoItemText(item)}</span>
                                     )}
                                     {/* Inline controls: count badge + tag chips + edit + delete */}
                                     {hasSubItems && (
@@ -3398,14 +4901,68 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                         view
                                       </button>
                                     )}
-                                    <button title="Edit" onClick={e => { e.stopPropagation(); setTodoEditId(todoEditId === item.id ? null : item.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 12, lineHeight: 1, padding: "0 1px", flexShrink: 0, opacity: 0.6 }}>✎</button>
-                                    <button onClick={e => { e.stopPropagation(); saveTodo(todoItems.filter(t => t.id !== item.id)); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 14, lineHeight: 1, padding: 0, flexShrink: 0, marginTop: 1 }}>✕</button>
+                                    <button title="Edit" onClick={e => { e.stopPropagation(); const opening = todoEditId !== item.id; setTodoEditId(opening ? item.id : null); if (opening) { setTodoEditValue(item.text); setTodoEditMentions(item.mentions ? [...item.mentions] : []); setTodoSubInput(""); setTodoMentionQuery(null); } }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: "0 1px", flexShrink: 0, opacity: 0.6, display: "flex", alignItems: "center" }}><Pencil size={12} /></button>
+                                    <button onClick={e => { e.stopPropagation(); saveTodo(todoItems.filter(t => t.id !== item.id)); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }}><X size={12} /></button>
                                     {overdueBadge}
                                   </div>
                                   );
                                   })()}
 
-                                  {/* Expanded panel */}
+                                  {/* ── Add sub-item row — visible while editing ── */}
+                                  {todoEditId === item.id && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px 5px 36px",
+                                      background: colors.bg, borderTop: `1px solid ${colors.borderLight}`,
+                                      borderRadius: "0 0 8px 8px" }}>
+                                      <Plus size={11} style={{ color: colors.textMuted, flexShrink: 0 }} />
+                                      <input
+                                        ref={todoSubInputRef}
+                                        value={todoSubInput}
+                                        onClick={e => e.stopPropagation()}
+                                        onChange={e => {
+                                          const val = e.target.value;
+                                          setTodoSubInput(val);
+                                          const cursor = e.target.selectionStart;
+                                          const before = val.slice(0, cursor);
+                                          const m = before.match(/@([\w ]*)$/);
+                                          if (m) {
+                                            const rect = e.target.getBoundingClientRect();
+                                            setTodoMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, field: "sub", top: rect.bottom + 4, left: rect.left, width: rect.width });
+                                            setTodoMentionIndex(0);
+                                          } else { setTodoMentionQuery(null); }
+                                        }}
+                                        onKeyDown={e => {
+                                          if (todoMentionQuery?.field === "sub") {
+                                            const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(todoMentionQuery.query.toLowerCase()) || (c.sub||"").toLowerCase().includes(todoMentionQuery.query.toLowerCase())).slice(0, 6);
+                                            if (e.key === "ArrowDown") { e.preventDefault(); setTodoMentionIndex(i => Math.min(i+1, hits.length-1)); return; }
+                                            if (e.key === "ArrowUp")   { e.preventDefault(); setTodoMentionIndex(i => Math.max(i-1, 0)); return; }
+                                            if (e.key === "Enter" && hits.length) {
+                                              e.preventDefault();
+                                              const c = hits[todoMentionIndex] || hits[0];
+                                              const mq = todoMentionQuery;
+                                              const tag = preferredFirstName(c.name) || c.name.split(" ")[0];
+                                              setTodoSubInput(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1));
+                                              setTodoSubMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]);
+                                              setTodoMentionQuery(null); setTodoMentionIndex(0); return;
+                                            }
+                                            if (e.key === "Escape") { setTodoMentionQuery(null); return; }
+                                          }
+                                          if (e.key === "Enter" && todoSubInput.trim()) {
+                                            e.preventDefault();
+                                            const newSub = { id: uid(), text: todoSubInput.trim(), done: false, ...(todoSubMentions.length ? { mentions: todoSubMentions } : {}) };
+                                            const prevSubs = item.subItems || [];
+                                            const newSubs = [...prevSubs, newSub];
+                                            const newText = `${item.text.replace(/\s*\+\d+$/, "")} +${newSubs.length - 1}`;
+                                            saveTodo(todoItems.map(t => t.id === item.id ? { ...t, text: newText, subItems: newSubs } : t));
+                                            setTodoSubInput(""); setTodoSubMentions([]); setTodoMentionQuery(null);
+                                            if (!todoExpanded.has(item.id)) setTodoExpanded(prev => { const n = new Set(prev); n.add(item.id); return n; });
+                                          }
+                                          if (e.key === "Escape") { setTodoSubInput(""); setTodoSubMentions([]); setTodoMentionQuery(null); todoEditInputRef.current?.focus(); }
+                                        }}
+                                        placeholder="Add sub-item… (Enter to add, Tab to switch)"
+                                        style={{ flex: 1, fontSize: 12, color: colors.text, border: "none", borderBottom: `1px solid ${colors.borderLight}`, outline: "none", background: "transparent", fontFamily: "inherit", lineHeight: 1.5, padding: "0 2px" }}
+                                      />
+                                    </div>
+                                  )}
                                   {isExpanded && (
                                     <div style={{ border: "none", borderLeft: hasSubItems ? `4px solid ${colors.accent}` : `3px solid ${colors.accentLight}`, borderTop: "1px solid rgba(52,69,101,0.12)", borderRadius: "0 0 8px 8px", background: "rgba(52,69,101,0.1)", overflow: "hidden", opacity: 0.95 }}>
                                       {hasSubItems && item.subItems.map((sub, si) => (
@@ -3422,7 +4979,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                           }}
                                           style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "7px 10px 7px 20px",
                                             borderTop: si > 0 ? `1px solid ${colors.borderLight}` : "none",
-                                            background: sub.done ? "transparent" : colors.white,
+                                            background: sub.done ? "transparent" : colors.cardBg,
                                             cursor: "grab" }}>
                                           <input type="checkbox" checked={sub.done}
                                             onChange={() => {
@@ -3437,11 +4994,29 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                             }}
                                             style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }} />
                                           <div style={{ flex: 1, minWidth: 0 }}>
-                                            {sub.replyEmailId || sub.replyTo ? (
+                                            {todoSubEditId?.itemId === item.id && todoSubEditId?.subId === sub.id ? (
+                                              <input
+                                                autoFocus
+                                                value={todoSubEditValue}
+                                                onChange={e => setTodoSubEditValue(e.target.value)}
+                                                onClick={e => e.stopPropagation()}
+                                                onMouseDown={e => e.stopPropagation()}
+                                                onDragStart={e => { e.stopPropagation(); e.preventDefault(); }}
+                                                onBlur={() => {
+                                                  saveTodo(todoItems.map(t => t.id === item.id ? { ...t, subItems: (t.subItems || []).map(s => s.id === sub.id ? { ...s, text: todoSubEditValue.trim() || s.text } : s) } : t));
+                                                  setTodoSubEditId(null);
+                                                }}
+                                                onKeyDown={e => {
+                                                  if (e.key === "Enter") e.target.blur();
+                                                  if (e.key === "Escape") setTodoSubEditId(null);
+                                                }}
+                                                style={{ width: "100%", fontSize: 12, color: colors.text, border: "none", borderBottom: `1px solid ${colors.accent}`, outline: "none", background: "transparent", fontFamily: "inherit", lineHeight: 1.4, padding: "0 2px" }}
+                                              />
+                                            ) : sub.replyEmailId || sub.replyTo ? (
                                               // Email sub-item — "Reply to [FirstName]" opens compose, "from Full Name" below
                                               <span style={{ fontSize: 12, color: sub.done ? colors.textMuted : colors.text, lineHeight: 1.4, textDecoration: sub.done ? "line-through" : "none" }}>
                                                 <span
-                                                  onClick={e => { e.stopPropagation(); openCompose([sub.replyTo], { subject: sub.composeSubject ?? (sub.replyEmailId ? (inboxEmails.find(e2 => e2.id === sub.replyEmailId)?.subject ? `Re: ${inboxEmails.find(e2 => e2.id === sub.replyEmailId).subject}` : "") : ""), triggerId: "todo_reply" }); }}
+                                                  onClick={e => { e.stopPropagation(); openCompose([sub.replyTo], { subject: sub.composeSubject ?? (sub.replyEmailId ? reSubject(inboxEmails.find(e2 => e2.id === sub.replyEmailId)?.subject || "") : ""), triggerId: "todo_reply" }); }}
                                                   style={{ color: sub.done ? colors.textMuted : colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
                                                   {sub.senderName || "Reply"}
                                                 </span>
@@ -3469,13 +5044,18 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                                 {sub.text}
                                               </span>
                                             ) : (
-                                              <span style={{ fontSize: 12, color: sub.done ? colors.textMuted : colors.text, lineHeight: 1.4, textDecoration: sub.done ? "line-through" : "none" }}>{sub.text}</span>
+                                              <span style={{ fontSize: 12, color: sub.done ? colors.textMuted : colors.text, lineHeight: 1.4, textDecoration: sub.done ? "line-through" : "none" }}>{renderReminderText(sub.text, sub.mentions)}</span>
                                             )}
                                             {sub.emailId && !sub.replyTo && (() => {
                                               const sn = sub.fullName || (() => { const se = inboxEmails.find(e => e.id === sub.emailId); return se?.from?.includes("<") ? se.from.split("<")[0].trim().replace(/^"|"$/g, "") : se?.from; })();
                                               return sn ? <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 6 }}>from {sn}</span> : null;
                                             })()}
                                           </div>
+                                          {/* Edit button — only for plain manual sub-items */}
+                                          {!sub.replyEmailId && !sub.replyTo && !sub.parentEmail && !sub.navigateTo && (
+                                            <button title="Edit" onClick={e => { e.stopPropagation(); setTodoSubEditId({ itemId: item.id, subId: sub.id }); setTodoSubEditValue(sub.text); }}
+                                              style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: "0 1px", flexShrink: 0, opacity: 0.6, display: "flex", alignItems: "center" }}><Pencil size={11} /></button>
+                                          )}
                                           {/* Ungroup button */}
                                           <button title="Remove from group" onClick={e => { e.stopPropagation();
                                             const newSubItems = item.subItems.filter(s => s.id !== sub.id);
@@ -3490,7 +5070,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                               const newText = item.text.replace(/\s*\+\d+$/, "") + ` +${newSubItems.length - 1}`;
                                               saveTodo([standalone, ...todoItems.map(t => t.id === item.id ? { ...t, text: newText, subItems: newSubItems, count: newSubItems.length } : t)]);
                                             }
-                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 11, lineHeight: 1, padding: "0 0 0 4px", flexShrink: 0, opacity: 0.6 }}>↑</button>
+                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: "0 0 0 4px", flexShrink: 0, opacity: 0.6, display: "flex", alignItems: "center" }}><ArrowUp size={11} /></button>
                                           <button onClick={() => {
                                             const newSubItems = item.subItems.filter(s => s.id !== sub.id);
                                             if (newSubItems.length === 0) { saveTodo(todoItems.filter(t => t.id !== item.id)); }
@@ -3500,7 +5080,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                               const newText = item.text.replace(/\s*\+\d+$/, "") + ` +${newCount - 1}`;
                                               saveTodo(todoItems.map(t => t.id === item.id ? { ...t, text: newText, subItems: newSubItems, count: newCount } : t));
                                             }
-                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 13, lineHeight: 1, padding: 0, flexShrink: 0 }}>✕</button>
+                                          }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }}><X size={12} /></button>
                                         </div>
                                       ))}
                                       <div style={{ padding: "8px 12px", borderTop: hasSubItems ? `1px solid ${colors.borderLight}` : "none", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -3511,75 +5091,212 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                                       </div>
                                       <div style={{ padding: "0 12px 10px" }}>
                                         <textarea
-                                          value={item.notes || ""}
-                                          onChange={e => saveTodo(todoItems.map(t => t.id === item.id ? { ...t, notes: e.target.value } : t))}
-                                          placeholder="Add a note…"
+                                          ref={todoNotesItemId === item.id ? todoNotesRef : undefined}
+                                          value={todoNotesItemId === item.id ? todoNotesValue : (item.notes || "")}
+                                          onFocus={() => { setTodoNotesItemId(item.id); setTodoNotesValue(item.notes || ""); setTodoNotesMentions(item.noteMentions ? [...item.noteMentions] : []); }}
+                                          onChange={e => {
+                                            const val = e.target.value;
+                                            setTodoNotesValue(val);
+                                            const cursor = e.target.selectionStart;
+                                            const before = val.slice(0, cursor);
+                                            const m = before.match(/@([\w ]*)$/);
+                                            if (m) {
+                                              const rect = e.target.getBoundingClientRect();
+                                              setTodoMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, field: "notes", top: rect.bottom + 4, left: rect.left, width: rect.width });
+                                              setTodoMentionIndex(0);
+                                            } else { if (todoMentionQuery?.field === "notes") setTodoMentionQuery(null); }
+                                          }}
+                                          onClick={e => e.stopPropagation()}
+                                          onBlur={e => {
+                                            if (todoMentionQuery?.field === "notes") return;
+                                            saveTodo(todoItems.map(t => t.id === item.id ? { ...t, notes: todoNotesValue, ...(todoNotesMentions.length ? { noteMentions: todoNotesMentions } : { noteMentions: undefined }) } : t));
+                                            setTodoNotesItemId(null); setTodoNotesMentions([]);
+                                          }}
+                                          onKeyDown={e => {
+                                            if (todoMentionQuery?.field === "notes") {
+                                              const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(todoMentionQuery.query.toLowerCase()) || (c.sub||"").toLowerCase().includes(todoMentionQuery.query.toLowerCase())).slice(0, 6);
+                                              if (e.key === "ArrowDown") { e.preventDefault(); setTodoMentionIndex(i => Math.min(i+1, hits.length-1)); return; }
+                                              if (e.key === "ArrowUp")   { e.preventDefault(); setTodoMentionIndex(i => Math.max(i-1, 0)); return; }
+                                              if (e.key === "Enter" && hits.length) {
+                                                e.preventDefault();
+                                                const c = hits[todoMentionIndex] || hits[0];
+                                                const mq = todoMentionQuery;
+                                                const tag = preferredFirstName(c.name) || c.name.split(" ")[0];
+                                                setTodoNotesValue(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1));
+                                                setTodoNotesMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]);
+                                                setTodoMentionQuery(null); setTodoMentionIndex(0); return;
+                                              }
+                                              if (e.key === "Escape") { setTodoMentionQuery(null); return; }
+                                            }
+                                          }}
+                                          placeholder="Add a note… (type @ to mention a contact)"
                                           rows={2}
-                                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", fontSize: 12, fontFamily: "inherit", color: colors.text, border: `1px solid ${colors.inputBorder}`, borderRadius: 6, resize: "vertical", outline: "none", background: colors.white, lineHeight: 1.5 }} />
+                                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", fontSize: 12, fontFamily: "inherit", color: colors.text, border: `1px solid ${colors.inputBorder}`, borderRadius: 6, resize: "vertical", outline: "none", background: colors.cardBg, lineHeight: 1.5 }} />
+                                        {(item.noteMentions || []).length > 0 && (
+                                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                                            {item.noteMentions.map((m, mi) => (
+                                              <span key={mi}
+                                                onClick={e => { e.stopPropagation(); openCompose([m.email], { triggerId: "todo_note_mention" }); }}
+                                                style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: colors.accentLight, color: colors.accentDark, cursor: "pointer", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                                                @{m.name} <span style={{ fontSize: 9, opacity: 0.7 }}>✉</span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
                                   )}
 
-                                  {/* ── Gap after each item — reorder drop zone ── */}
-                                  <div
-                                    onDragOver={e => { e.preventDefault(); e.stopPropagation(); setTodoDropZoneIdx(idx + 1); }}
-                                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTodoDropZoneIdx(null); }}
-                                    onDrop={e => {
-                                      e.preventDefault(); e.stopPropagation();
-                                      setTodoDropZoneIdx(null);
-                                      if (todoSubDragRef.current) { ungroupSub(idx + 1); return; }
-                                      if (alertDragging) { saveTodo(handleAlertDrop(alertDragging, todoItemsRef.current)); setAlertDragging(null); setTodoDropTarget(false); return; }
-                                      if (emailDragging) return;
-                                      const srcIdx = todoDragIdxRef.current;
-                                      if (srcIdx === null) return;
-                                      const items = todoItemsRef.current;
-                                      const active = items.filter(t => !t.done);
-                                      const done = items.filter(t => t.done);
-                                      const reordered = [...active];
-                                      const [moved] = reordered.splice(srcIdx, 1);
-                                      const insertAt = srcIdx < idx ? idx : idx + 1;
-                                      reordered.splice(insertAt, 0, moved);
-                                      saveTodo([...reordered, ...done]);
-                                      setTodoDragIdx(null); todoDragIdxRef.current = null;
-                                    }}
-                                    style={{ height: todoDropZoneIdx === idx + 1 ? 32 : 16, transition: "height 0.12s", display: "flex", alignItems: "center", padding: "0 4px" }}>
-                                    {todoDropZoneIdx === idx + 1 && <div style={{ flex: 1, height: 3, borderRadius: 2, background: colors.accent }} />}
-                                  </div>
+                                  </div>{/* end 2px margin wrapper */}
                                 </React.Fragment>
                               );
                             })}
-                            {/* ── Bottom catch-all drop zone — covers all remaining panel space ── */}
+                            {/* ── Bottom catch-all — handles email/alert/sub drops in empty space ── */}
                             <div
-                              onDragOver={e => { e.preventDefault(); e.stopPropagation(); setTodoDropZoneIdx(-1); }}
-                              onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTodoDropZoneIdx(null); }}
+                              onDragOver={e => { e.preventDefault(); e.stopPropagation(); if (emailDragging || alertDragging || todoSubDragRef.current) e.dataTransfer.dropEffect = "move"; }}
                               onDrop={e => {
                                 e.preventDefault(); e.stopPropagation();
-                                setTodoDropZoneIdx(null);
-                                if (todoSubDragRef.current) { ungroupSub(activeTodo.length); return; }
+                                if (todoSubDragRef.current) { ungroupSub(); return; }
                                 if (alertDragging) { saveTodo(handleAlertDrop(alertDragging, todoItemsRef.current)); setAlertDragging(null); setTodoDropTarget(false); return; }
-                                if (emailDragging) return;
-                                const srcIdx = todoDragIdxRef.current;
-                                if (srcIdx === null) return;
+                              }}
+                              style={{ minHeight: 40, flex: 1 }} />
+                            {/* ── Todo context menu ── */}
+                            {todoContextMenu && (() => {
+                              const ctxItem = todoItems.find(t => t.id === todoContextMenu.itemId);
+                              const selArr = activeTodo.filter(t => todoSelectedIds.has(t.id));
+                              const ctxInSelection = todoSelectedIds.has(todoContextMenu.itemId);
+                              // Items that will be grouped: if right-clicked item is in selection, group all selected; else group right-clicked + selected
+                              const toGroup = ctxInSelection && selArr.length >= 2 ? selArr : null;
+                              const btnStyle = { display: "block", width: "100%", padding: "8px 14px", background: "none", border: "none", textAlign: "left", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: colors.text, borderRadius: 6 };
+                              const groupSelected = () => {
+                                const groupName = window.prompt("Group name:");
+                                if (!groupName || !groupName.trim()) return;
                                 const items = todoItemsRef.current;
                                 const active = items.filter(t => !t.done);
                                 const done = items.filter(t => t.done);
-                                const reordered = [...active];
-                                const [moved] = reordered.splice(srcIdx, 1);
-                                reordered.push(moved);
-                                saveTodo([...reordered, ...done]);
-                                setTodoDragIdx(null); todoDragIdxRef.current = null;
-                              }}
-                              style={{ minHeight: 40, flex: 1 }}>
-                              {todoDropZoneIdx === -1 && <div style={{ height: 3, borderRadius: 2, background: colors.accent, margin: "0 4px" }} />}
-                            </div>
-                            {doneTodo.length > 0 && (
+                                const groupIds = new Set(toGroup.map(t => t.id));
+                                // Build sub-items from all selected items, preserving their data/links
+                                const newSubItems = toGroup.map(t => {
+                                  const sub = { id: t.id, text: t.text, done: false };
+                                  if (t.emailId) sub.emailId = t.emailId;
+                                  if (t.meta) sub.meta = t.meta;
+                                  if (t.tag) sub.tag = t.tag;
+                                  if (t.replyTo) sub.replyTo = t.replyTo;
+                                  if (t.replyEmailId) sub.replyEmailId = t.replyEmailId;
+                                  if (t.composeSubject) sub.composeSubject = t.composeSubject;
+                                  if (t.senderName) sub.senderName = t.senderName;
+                                  if (t.fullName) sub.fullName = t.fullName;
+                                  if (t.parentEmail) sub.parentEmail = t.parentEmail;
+                                  if (t.parentName) sub.parentName = t.parentName;
+                                  if (t.students) sub.students = t.students;
+                                  if (t.mentions) sub.mentions = t.mentions;
+                                  // If this item already had sub-items, flatten them in
+                                  if (t.subItems && t.subItems.length > 0) {
+                                    sub.text = t.text.replace(/\s*\+\d+$/, "");
+                                    return [sub, ...t.subItems.map(s => ({ ...s }))];
+                                  }
+                                  return [sub];
+                                }).flat();
+                                const groupItem = {
+                                  id: uid(),
+                                  text: `${groupName.trim()} +${newSubItems.length}`,
+                                  done: false,
+                                  tag: toGroup[0]?.tag,
+                                  subItems: newSubItems,
+                                  createdAt: new Date().toISOString()
+                                };
+                                // Insert group at position of first selected item, remove all selected
+                                const firstIdx = active.findIndex(t => groupIds.has(t.id));
+                                const remaining = active.filter(t => !groupIds.has(t.id));
+                                remaining.splice(firstIdx >= 0 ? firstIdx : 0, 0, groupItem);
+                                saveTodo([...remaining, ...done]);
+                                setTodoSelectedIds(new Set());
+                                setTodoContextMenu(null);
+                                // Auto-expand the new group
+                                setTodoExpanded(prev => { const n = new Set(prev); n.add(groupItem.id); return n; });
+                              };
+                              const setItemCategory = (catId) => {
+                                const ids = toGroup ? new Set(toGroup.map(t => t.id)) : new Set([todoContextMenu.itemId]);
+                                saveTodo(todoItemsRef.current.map(t => ids.has(t.id) ? { ...t, category: catId || undefined } : t));
+                                setTodoSelectedIds(new Set());
+                                setTodoContextMenu(null);
+                              };
+                              return (
+                                <>
+                                  <div onMouseDown={e => e.stopPropagation()}
+                                    style={{ position: "fixed", left: todoContextMenu.x, top: todoContextMenu.y, zIndex: 9999,
+                                      background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8,
+                                      boxShadow: "0 4px 16px rgba(0,0,0,0.14)", minWidth: 180, overflow: "hidden",
+                                      fontFamily: "inherit", fontSize: 13 }}>
+                                    {toGroup && (
+                                      <>
+                                        <div style={{ padding: "6px 14px 4px", fontSize: 10, fontWeight: 700, color: colors.textMuted, letterSpacing: "0.04em" }}>
+                                          {toGroup.length} ITEMS SELECTED
+                                        </div>
+                                        <button style={btnStyle}
+                                          onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                                          onMouseLeave={e => e.currentTarget.style.background = "none"}
+                                          onClick={() => groupSelected()}>
+                                          Group items
+                                        </button>
+                                        <button style={{ ...btnStyle, color: colors.textMuted }}
+                                          onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                                          onMouseLeave={e => e.currentTarget.style.background = "none"}
+                                          onClick={() => { setTodoSelectedIds(new Set()); setTodoContextMenu(null); }}>
+                                          Clear selection
+                                        </button>
+                                        <div style={{ borderTop: `1px solid ${colors.border}`, margin: "3px 0" }} />
+                                      </>
+                                    )}
+                                    {!toGroup && (
+                                      <div style={{ padding: "6px 14px 4px", fontSize: 10, fontWeight: 700, color: colors.textMuted, letterSpacing: "0.04em" }}>
+                                        {ctxItem ? (ctxItem.text.length > 30 ? ctxItem.text.slice(0,30) + "…" : ctxItem.text).toUpperCase() : "ITEM"}
+                                      </div>
+                                    )}
+                                    {todoCategories.length > 0 && (
+                                      <>
+                                        <div style={{ padding: "4px 14px 2px", fontSize: 10, fontWeight: 700, color: colors.textMuted, letterSpacing: "0.04em" }}>CATEGORY</div>
+                                        {todoCategories.map(cat => (
+                                          <button key={cat.id} style={btnStyle}
+                                            onMouseEnter={e => e.currentTarget.style.background = `${cat.color}18`}
+                                            onMouseLeave={e => e.currentTarget.style.background = "none"}
+                                            onClick={() => setItemCategory(cat.id)}>
+                                            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                              <span style={{ width: 10, height: 10, borderRadius: 3, background: cat.color, flexShrink: 0 }} />
+                                              {cat.name}
+                                              {(toGroup ? toGroup.every(t => t.category === cat.id) : ctxItem?.category === cat.id) && <span style={{ fontSize: 11, color: colors.textMuted }}>✓</span>}
+                                            </span>
+                                          </button>
+                                        ))}
+                                        {(toGroup ? toGroup.some(t => t.category) : ctxItem?.category) && (
+                                          <button style={{ ...btnStyle, color: colors.textMuted, fontStyle: "italic" }}
+                                            onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                                            onMouseLeave={e => e.currentTarget.style.background = "none"}
+                                            onClick={() => setItemCategory(null)}>
+                                            Remove category
+                                          </button>
+                                        )}
+                                        <div style={{ borderTop: `1px solid ${colors.border}`, margin: "3px 0" }} />
+                                      </>
+                                    )}
+                                    {!toGroup && (
+                                      <div style={{ padding: "4px 14px", fontSize: 11, color: colors.textMuted, fontStyle: "italic" }}>
+                                        Shift+click to select, then right-click to group
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div onClick={() => setTodoContextMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 9998 }} />
+                                </>
+                              );
+                            })()}
+                            {displayDoneTodo.length > 0 && (
                               <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.borderLight}` }}>
                                 <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Done</div>
-                                {doneTodo.map(item => (
+                                {displayDoneTodo.map(item => (
                                   <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 7, marginBottom: 3, background: colors.bg, opacity: 0.6 }}>
                                     <input type="checkbox" checked={true} onChange={() => saveTodo(todoItems.map(t => t.id === item.id ? { ...t, done: false, doneAt: undefined } : t))} style={{ flexShrink: 0, cursor: "pointer" }} />
                                     <span style={{ flex: 1, fontSize: 12, color: colors.textMuted, textDecoration: "line-through" }}>{item.text}</span>
-                                    <button onClick={() => saveTodo(todoItems.filter(t => t.id !== item.id))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 13, lineHeight: 1, padding: 0 }}>✕</button>
+                                    <button onClick={() => saveTodo(todoItems.filter(t => t.id !== item.id))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}><X size={12} /></button>
                                   </div>
                                 ))}
                               </div>
@@ -3597,7 +5314,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               {/* Reminders button — position:absolute in outer wrapper, scrolls with banner, no JS needed */}
               <div
                 ref={remindersBtnRef}
-                onClick={() => setRemindersOpen(o => !o)}
+                onClick={handleRemindersToggle}
                 onDragEnter={e => { e.preventDefault(); setRemindersDragOver(true); setRemindersDropTarget(true); }}
                 onDragOver={e => { e.preventDefault(); setRemindersDragOver(true); setRemindersDropTarget(true); }}
                 onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) { setRemindersDragOver(false); setRemindersDropTarget(false); } }}
@@ -3614,11 +5331,11 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 }}
                 style={{ position: "absolute", right: 10, top: 9, zIndex: 48,
                   display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 12,
-                  background: remindersDragOver || (remindersGlobalDrag && !remindersOpen) ? colors.accent : remindersOpen ? colors.accentDark : colors.accentDark,
+                  background: remindersDragOver || (remindersGlobalDrag && !remindersOpen) ? colors.accent : remindersOpen || sortedReminders.length > 0 ? colors.accentDark : colors.sidebarActive,
                   cursor: "pointer", transition: "background 0.15s", userSelect: "none",
                   boxShadow: remindersDragOver ? `0 0 0 3px ${colors.accent}55, 0 2px 6px rgba(0,0,0,0.3)` : "0 2px 6px rgba(0,0,0,0.25)" }}
-                onMouseEnter={e => { e.currentTarget.style.background = colors.accentDark; }}
-                onMouseLeave={e => { e.currentTarget.style.background = remindersDragOver || remindersOpen ? colors.accentDark : colors.accentDark; }}>
+                onMouseEnter={e => { e.currentTarget.style.background = remindersOpen || sortedReminders.length > 0 ? colors.accentDark : colors.sidebarActive; }}
+                onMouseLeave={e => { e.currentTarget.style.background = remindersDragOver || remindersOpen || sortedReminders.length > 0 ? colors.accentDark : colors.sidebarActive; }}>
                 <span style={{ fontWeight: 700, fontSize: 11, color: "#fff", letterSpacing: "0.03em" }}>Reminders</span>
                 {sortedReminders.length > 0 && <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "0px 5px" }}>{sortedReminders.length}</span>}
               </div>
@@ -3633,7 +5350,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
       {remindersOpen && remindersBtnRef.current && (() => {
         const W = remindersPanelSize.w;
         const H = remindersPanelSize.h;
-        const CORAL_BG = "#FDF0ED";
+        const CORAL_BG = darkMode ? colors.accentLight : "#FDF0ED";
         const CORAL_BORDER = colors.accent;
 
         const handleResizeMouseDown = (e, type) => {
@@ -3654,8 +5371,11 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
         const addReminder = () => {
           const t = remindersInput.trim();
           if (!t) return;
-          saveReminders([{ id: uid(), text: t, createdAt: new Date().toISOString() }, ...reminders]);
+          const entry = { id: uid(), text: t, createdAt: new Date().toISOString() };
+          if (remindersInputMentions.length) entry.mentions = remindersInputMentions;
+          saveReminders([entry, ...reminders]);
           setRemindersInput("");
+          setRemindersInputMentions([]);
         };
 
         return (
@@ -3672,7 +5392,26 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
             onDrop={e => {
               e.preventDefault(); setRemindersDropTarget(false);
               const text = e.dataTransfer.getData("text/plain") || "";
-              if (text.trim()) { saveReminders([{ id: uid(), text: text.trim(), createdAt: new Date().toISOString() }, ...reminders]); return; }
+              if (text.trim()) {
+                const src = dragSourceEmailRef.current;
+                let extra = {};
+                if (src?.fromAddr) {
+                  extra.emailId = src.emailId;
+                  extra.emailFrom = src.fromName || src.fromAddr;
+                  extra.emailFromAddr = src.fromAddr;
+                  const match = resolveEmailSender(src.fromAddr);
+                  if (match.parentName) extra.parentName = match.parentName;
+                  if (match.studentName) extra.studentName = match.studentName;
+                  if (match.studentId) extra.studentId = match.studentId;
+                  const st = match.studentId ? students.find(s => s.id === match.studentId) : null;
+                  if (st?.schoolId) extra.schoolId = st.schoolId;
+                  if (st?.className) extra.className = st.className;
+                }
+                const parsedDates = parseReminderDates(text);
+                dragSourceEmailRef.current = null;
+                saveReminders([{ id: uid(), text: text.trim(), createdAt: new Date().toISOString(), ...parsedDates, ...extra }, ...reminders]);
+                return;
+              }
               if (emailDragging) {
                 const em = Array.isArray(emailDragging) ? emailDragging[0] : emailDragging;
                 if (em) { const t = (em.subject || em.snippet || "Email reminder").slice(0, 120); saveReminders([{ id: uid(), text: t, emailId: em.id, createdAt: new Date().toISOString() }, ...reminders]); setEmailDragging(null); }
@@ -3700,173 +5439,268 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               <textarea
                 ref={remindersTypeRef}
                 value={remindersInput}
-                onChange={e => setRemindersInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addReminder(); } }}
+                onChange={e => {
+                  const val = e.target.value;
+                  setRemindersInput(val);
+                  const cursor = e.target.selectionStart;
+                  const before = val.slice(0, cursor);
+                  const m = before.match(/@([\w ]*)$/);
+                  if (m) {
+                    const rect = e.target.getBoundingClientRect();
+                    setRemindersMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, remId: "__new__", top: rect.bottom + 4, left: rect.left, width: rect.width });
+                  } else {
+                    setRemindersMentionQuery(null);
+                  }
+                }}
+                onKeyDown={e => {
+                  if (remindersMentionQuery) {
+                    const q = remindersMentionQuery.query.toLowerCase();
+                    const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(q) || (c.sub||"").toLowerCase().includes(q)).slice(0, 6);
+                    if (e.key === "ArrowDown") { e.preventDefault(); setRemindersMentionIndex(i => Math.min(i + 1, hits.length - 1)); return; }
+                    if (e.key === "ArrowUp")   { e.preventDefault(); setRemindersMentionIndex(i => Math.max(i - 1, 0)); return; }
+                    if (e.key === "Enter" && hits.length) {
+                      e.preventDefault();
+                      const c = hits[remindersMentionIndex] || hits[0];
+                      const mq = remindersMentionQuery;
+                      const tag = `@${c.name}`;
+                      setRemindersInput(prev => { const before = prev.slice(0, mq.anchorPos); const after = prev.slice(mq.anchorPos + mq.query.length + 1); return before + tag + after; });
+                      setRemindersInputMentions(prev => [...prev.filter(m => m.name !== c.name), { name: c.name, email: c.email }]);
+                      setRemindersMentionQuery(null); setRemindersMentionIndex(0); return;
+                    }
+                    if (e.key === "Escape") { setRemindersMentionQuery(null); setRemindersMentionIndex(0); return; }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addReminder(); }
+                  if (e.key === "Escape") setRemindersMentionQuery(null);
+                }}
                 rows={1}
+                placeholder=""
                 style={{ display: "block", width: "100%", fontSize: 12, lineHeight: 1.5,
-                  padding: 0, margin: "0 0 4px 0", border: "none", background: "transparent",
+                  padding: 0, margin: "0 0 4px 0", border: "none", background: CORAL_BG,
+                  boxShadow: `inset 0 0 0 1000px ${CORAL_BG}`, WebkitBoxShadow: `inset 0 0 0 1000px ${CORAL_BG}`,
                   color: colors.text, caretColor: colors.accent, outline: "none",
                   fontFamily: "inherit", resize: "none", overflow: "hidden",
-                  userSelect: "text", cursor: "text",
+                  userSelect: "text", cursor: "text", WebkitAppearance: "none",
                   height: remindersInput ? "auto" : "1.5em" }}
                 onInput={e => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }} />
               {sortedReminders.length === 0 && null}
               {sortedReminders.map(r => {
-                const hasMeta = !!(r.date || r.week || r.time || r.schoolId || r.className || r.studentName || r.notes);
+                const isExpanded = remindersMetaModal === r.id;
+                const f = isExpanded ? remindersMetaForm : null;
                 const school = r.schoolId ? schools.find(s => s.id === r.schoolId) : null;
-                const metaLine = [r.week ? `Wk ${r.week}` : r.date ? r.date : null, r.time || null, school?.name || null, r.className || null, r.studentName || null].filter(Boolean).join(" · ");
+
+                // Term week options (only computed when expanded)
+                let weekOptions = [];
+                if (isExpanded) {
+                  const todayStr2 = melbourneToday();
+                  let termStart2 = null;
+                  const bks2 = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date < b.date ? 1 : -1);
+                  for (const br of bks2) { const tbEnd = br.endDate || br.date; if (tbEnd < todayStr2) { const ts = new Date(tbEnd); ts.setDate(ts.getDate()+1); while(ts.getDay()===6||ts.getDay()===0) ts.setDate(ts.getDate()+1); termStart2=ts; break; } }
+                  if (!termStart2) { const y=new Date().getFullYear(); const s=new Date(y,0,27); while(s.getDay()!==2) s.setDate(s.getDate()+1); termStart2=s; }
+                  const nextBreak2 = interruptions.filter(i => i.type==="term_break" && i.date > todayStr2).sort((a,b)=>a.date<b.date?-1:1)[0];
+                  const termEnd2 = nextBreak2 ? new Date(nextBreak2.date) : new Date(termStart2.getTime()+10*7*86400000);
+                  const totalW2 = Math.ceil((termEnd2-termStart2)/(7*86400000));
+                  const curW2 = Math.max(1, Math.ceil((new Date(todayStr2)-termStart2)/(7*86400*1000))+1);
+                  for (let w=curW2; w<=Math.max(totalW2,curW2+4); w++) {
+                    const mon=new Date(termStart2); mon.setDate(mon.getDate()+(w-1)*7);
+                    const fri=new Date(mon); fri.setDate(fri.getDate()+4);
+                    const fmt=d=>d.toLocaleDateString("en-AU",{day:"numeric",month:"short"});
+                    weekOptions.push({ value:String(w), label:`Wk ${w}  (${fmt(mon)}–${fmt(fri)})` });
+                  }
+                }
+
+                const schoolClasses2 = (isExpanded && f?.schoolId)
+                  ? [...new Set(students.filter(s=>s.schoolId===f.schoolId&&s.className).map(s=>s.className))].sort()
+                  : [];
+                const matchedStudents2 = (isExpanded && (f?.studentName||"").length>=1)
+                  ? students.filter(s=>s.status==="active"&&s.name.toLowerCase().includes((f.studentName||"").toLowerCase())&&(!f.schoolId||s.schoolId===f.schoolId)).slice(0,6)
+                  : [];
+
+                // Minimal underline-only input style
+                const uInput = { width:"100%", fontSize:11, padding:"2px 0", border:"none", borderBottom:`1px solid ${colors.border}`, background:"transparent", color:colors.text, fontFamily:"inherit", outline:"none", appearance:"none" };
+                const uLabel = { fontSize:10, color:colors.textMuted, display:"block", marginBottom:2, letterSpacing:"0.04em" };
+
                 return (
                   <div key={r.id}
-                    onContextMenu={e => { e.preventDefault(); setRemindersMetaModal(r.id); setRemindersMetaForm({ date: r.date || "", week: r.week || "", time: r.time || "", schoolId: r.schoolId || "", className: r.className || "", studentName: r.studentName || "", notes: r.notes || "" }); }}
-                    style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "5px 2px", cursor: "default" }}>
-                    <span style={{ color: colors.accent, fontSize: 14, lineHeight: "18px", flexShrink: 0 }}>•</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.45, wordBreak: "break-word" }}>{r.text}</div>
-                      {metaLine && <div style={{ fontSize: 10, color: colors.accentDark, marginTop: 2, opacity: 0.8 }}>{metaLine}</div>}
+                    onDoubleClick={() => {
+                      if (isExpanded) { setRemindersMetaModal(null); setRemindersMetaForm(null); }
+                      else { setRemindersMetaModal(r.id); setRemindersMetaForm({ text:r.text||"", date:r.date||"", endDate:r.endDate||"", week:r.week||"", time:r.time||"", schoolId:r.schoolId||"", className:r.className||"", studentName:r.studentName||"", notes:r.notes||"", mentions:r.mentions||[] }); setRemindersMentionQuery(null); }
+                    }}
+                    style={{ padding:"5px 2px", cursor:"default", userSelect: isExpanded ? "text" : "none" }}>
+
+                    {/* ── Collapsed row ── */}
+                    <div style={{ display:"flex", alignItems:"flex-start", gap:6 }}>
+                      <span style={{ color:colors.accent, fontSize:14, lineHeight:"18px", flexShrink:0 }}>•</span>
+                      {isExpanded && f
+                        ? <div style={{ flex:1, position:"relative" }}>
+                            <textarea
+                              value={f.text}
+                              onChange={e => {
+                                const val = e.target.value;
+                                setRemindersMetaForm(p => ({ ...p, text: val }));
+                                const cursor = e.target.selectionStart;
+                                const before = val.slice(0, cursor);
+                                const m = before.match(/@([\w ]*)$/);
+                                if (m) {
+                                  const rect = e.target.getBoundingClientRect();
+                                  setRemindersMentionQuery({ query: m[1], anchorPos: cursor - m[0].length, remId: r.id, top: rect.bottom + 4, left: rect.left, width: rect.width });
+                                } else {
+                                  setRemindersMentionQuery(null);
+                                }
+                              }}
+                              onClick={e => e.stopPropagation()}
+                              onDoubleClick={e => e.stopPropagation()}
+                              onKeyDown={e => {
+                                if (remindersMentionQuery) {
+                                  const q = remindersMentionQuery.query.toLowerCase();
+                                  const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(q) || (c.sub||"").toLowerCase().includes(q)).slice(0, 6);
+                                  if (e.key === "ArrowDown") { e.preventDefault(); setRemindersMentionIndex(i => Math.min(i + 1, hits.length - 1)); return; }
+                                  if (e.key === "ArrowUp")   { e.preventDefault(); setRemindersMentionIndex(i => Math.max(i - 1, 0)); return; }
+                                  if (e.key === "Enter" && hits.length) {
+                                    e.preventDefault();
+                                    const c = hits[remindersMentionIndex] || hits[0];
+                                    const mq = remindersMentionQuery;
+                                    const tag = `@${c.name}`;
+                                    setRemindersMetaForm(prev => { if (!prev) return prev; const cur = prev.text||""; const before = cur.slice(0, mq.anchorPos); const after = cur.slice(mq.anchorPos + mq.query.length + 1); const newMentions = [...(prev.mentions||[]).filter(m => m.name !== c.name), { name: c.name, email: c.email }]; return { ...prev, text: before + tag + after, mentions: newMentions }; });
+                                    setRemindersMentionQuery(null); setRemindersMentionIndex(0); return;
+                                  }
+                                  if (e.key === "Escape") { setRemindersMentionQuery(null); setRemindersMentionIndex(0); e.stopPropagation(); return; }
+                                }
+                                if (e.key === "Escape") { setRemindersMentionQuery(null); e.stopPropagation(); }
+                              }}
+                              rows={1}
+                              placeholder=""
+                              style={{ width:"100%", fontSize:12, color:colors.text, lineHeight:1.45, background:"transparent", border:"none", borderBottom:`1px solid ${colors.border}`, outline:"none", fontFamily:"inherit", resize:"none", padding:"0 0 2px 0", overflow:"hidden", boxSizing:"border-box" }}
+                              onInput={e => { e.target.style.height="auto"; e.target.style.height=e.target.scrollHeight+"px"; }}
+                            />
+                          </div>
+                        : <div style={{ flex:1, minWidth:0, fontSize:12, color:colors.text, lineHeight:1.45, wordBreak:"break-word" }}>
+                          {renderReminderText(r.text, r.mentions)}
+                          {(r.date || r.endDate) && (
+                            <div style={{ fontSize:10, color:colors.textMuted, marginTop:2 }}>
+                              {r.date && new Date(r.date+"T12:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"})}
+                              {r.date && r.endDate && " – "}
+                              {r.endDate && new Date(r.endDate+"T12:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"})}
+                            </div>
+                          )}
+                        </div>
+                      }
+                      <button
+                        onClick={e => { e.stopPropagation(); saveReminders(reminders.filter(x=>x.id!==r.id)); }}
+                        style={{ background:"none", border:"none", cursor:"pointer", color:colors.textMuted, padding:0, flexShrink:0, opacity:0.4, display:"inline-flex", alignItems:"center" }}
+                        onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                        onMouseLeave={e=>e.currentTarget.style.opacity="0.4"}>
+                        <X size={12} />
+                      </button>
                     </div>
-                    {hasMeta && <span style={{ fontSize: 9, color: colors.accent, flexShrink: 0, marginTop: 3, opacity: 0.7 }}>◆</span>}
-                    <button
-                      onClick={() => saveReminders(reminders.filter(x => x.id !== r.id))}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 13, lineHeight: 1, padding: 0, flexShrink: 0, opacity: 0.4 }}
-                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                      onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>×</button>
+
+                    {/* ── Expanded inline ── */}
+                    {isExpanded && f && (
+                      <div style={{ marginLeft:18, marginTop:6, paddingTop:8, borderTop:`1px solid ${colors.borderLight}` }}>
+
+                        {/* Auto-detected email/parent info — clickable if email known */}
+                        {(r.emailFrom || r.parentName || r.studentName) && (
+                          <div style={{ fontSize:11, color:colors.textMuted, marginBottom:8, lineHeight:1.5 }}>
+                            {r.emailFrom && (
+                              <button onClick={() => r.emailFromAddr && openCompose([r.emailFromAddr])}
+                                style={{ background:"none", border:"none", padding:0, cursor: r.emailFromAddr ? "pointer" : "default", color: r.emailFromAddr ? colors.accent : colors.textMuted, fontFamily:"inherit", fontSize:"inherit", textDecoration: r.emailFromAddr ? "underline" : "none", textDecorationStyle:"dotted" }}>
+                                ✉ {r.emailFrom}
+                              </button>
+                            )}
+                            {(r.parentName || r.studentName) && r.emailFrom && <span> · </span>}
+                            {r.studentName && (() => {
+                              const st = students.find(s => s.name === r.studentName || s.id === r.studentId);
+                              const pEmail = st?.parents?.[0]?.email;
+                              return st && onViewStudent
+                                ? <button onClick={() => onViewStudent(st.id)} style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:colors.accent, fontFamily:"inherit", fontSize:"inherit", textDecoration:"underline", textDecorationStyle:"dotted" }}>{r.studentName}</button>
+                                : pEmail
+                                  ? <button onClick={() => openCompose([pEmail])} style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:colors.accent, fontFamily:"inherit", fontSize:"inherit", textDecoration:"underline", textDecorationStyle:"dotted" }}>{r.studentName}</button>
+                                  : <span>{r.studentName}</span>;
+                            })()}
+                            {r.studentName && r.parentName && <span style={{ color:colors.textMuted }}>{" "}(</span>}
+                            {r.parentName && (() => {
+                              const allC = allEmailContacts.find(c => c.name === r.parentName);
+                              const pEmail = allC?.email;
+                              return pEmail
+                                ? <button onClick={() => openCompose([pEmail])} style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:colors.accent, fontFamily:"inherit", fontSize:"inherit", textDecoration:"underline", textDecorationStyle:"dotted" }}>{r.parentName}</button>
+                                : <span>{r.parentName}</span>;
+                            })()}
+                            {r.studentName && r.parentName && <span style={{ color:colors.textMuted }}>)</span>}
+                          </div>
+                        )}
+
+                        {/* Form fields — 2 col grid */}
+                        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 14px", marginBottom:8 }}>
+                          <div>
+                            <span style={uLabel}>Date from</span>
+                            <input type="date" value={f.date} onChange={e=>setRemindersMetaForm(p=>({...p,date:e.target.value}))} style={uInput} />
+                          </div>
+                          <div>
+                            <span style={uLabel}>Date to</span>
+                            <input type="date" value={f.endDate||""} onChange={e=>setRemindersMetaForm(p=>({...p,endDate:e.target.value}))} style={uInput} />
+                          </div>
+                          <div>
+                            <span style={uLabel}>Week</span>
+                            <select value={f.week} onChange={e=>setRemindersMetaForm(p=>({...p,week:e.target.value}))} style={uInput}>
+                              <option value="">—</option>
+                              {weekOptions.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <span style={uLabel}>Time</span>
+                            <input type="time" value={f.time} onChange={e=>setRemindersMetaForm(p=>({...p,time:e.target.value}))} style={uInput} />
+                          </div>
+                          <div>
+                            <span style={uLabel}>School</span>
+                            <select value={f.schoolId} onChange={e=>setRemindersMetaForm(p=>({...p,schoolId:e.target.value,className:""}))} style={uInput}>
+                              <option value="">—</option>
+                              {schools.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <span style={uLabel}>Class</span>
+                            {schoolClasses2.length>0
+                              ? <select value={f.className} onChange={e=>setRemindersMetaForm(p=>({...p,className:e.target.value}))} style={uInput}><option value="">—</option>{schoolClasses2.map(c=><option key={c} value={c}>{c}</option>)}</select>
+                              : <input placeholder="e.g. 5A" value={f.className} onChange={e=>setRemindersMetaForm(p=>({...p,className:e.target.value}))} style={uInput} />}
+                          </div>
+                          <div style={{ position:"relative" }}>
+                            <span style={uLabel}>Student</span>
+                            <input placeholder="Search…" value={f.studentName} onChange={e=>{setRemindersMetaForm(p=>({...p,studentName:e.target.value}));setStudentDropOpen(true);}} onFocus={()=>setStudentDropOpen(true)} onBlur={()=>setTimeout(()=>setStudentDropOpen(false),150)} style={uInput} />
+                            {studentDropOpen && matchedStudents2.length>0 && (
+                              <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:10, background:colors.cardBg, border:`1px solid ${colors.border}`, borderRadius:6, boxShadow:"0 4px 12px rgba(0,0,0,0.12)", maxHeight:120, overflowY:"auto" }}>
+                                {matchedStudents2.map(s=>(
+                                  <div key={s.id} onMouseDown={()=>{setRemindersMetaForm(p=>({...p,studentName:s.name,schoolId:p.schoolId||s.schoolId||""}));setStudentDropOpen(false);}}
+                                    style={{ padding:"5px 8px", fontSize:11, cursor:"pointer" }}
+                                    onMouseEnter={e=>e.currentTarget.style.background=colors.blueLight}
+                                    onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                                    {s.name}{s.schoolId&&<span style={{fontSize:10,color:colors.textMuted,marginLeft:5}}>{schools.find(sc=>sc.id===s.schoolId)?.name?.split(" ")[0]}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Notes */}
+                        <div style={{ marginBottom:10 }}>
+                          <span style={uLabel}>Notes</span>
+                          <textarea rows={2} value={f.notes} onChange={e=>setRemindersMetaForm(p=>({...p,notes:e.target.value}))} placeholder="Extra context…" style={{ ...uInput, resize:"vertical", lineHeight:1.4 }} />
+                        </div>
+
+                        {/* Actions */}
+                        <div style={{ display:"flex", gap:12, alignItems:"center" }}>
+                          <button onClick={()=>{ saveReminders(reminders.map(x=>x.id===r.id?{...x,...f,text:f.text||x.text,mentions:f.mentions||x.mentions||[],week:f.week?String(parseInt(f.week)):"",endDate:f.endDate||undefined}:x)); setRemindersMetaModal(null); setRemindersMetaForm(null); setRemindersMentionQuery(null); }}
+                            style={{ background:"none", border:"none", padding:0, cursor:"pointer", fontSize:11, fontWeight:600, color:colors.accent, fontFamily:"inherit" }}>save</button>
+                          <button onClick={()=>{ saveReminders(reminders.filter(x=>x.id!==r.id)); setRemindersMetaModal(null); setRemindersMetaForm(null); }}
+                            style={{ background:"none", border:"none", padding:0, cursor:"pointer", fontSize:11, color:colors.danger, fontFamily:"inherit" }}>delete</button>
+                          <button onClick={()=>{ setRemindersMetaModal(null); setRemindersMetaForm(null); }}
+                            style={{ background:"none", border:"none", padding:0, cursor:"pointer", fontSize:11, color:colors.textMuted, fontFamily:"inherit", marginLeft:"auto" }}>close</button>
+                        </div>
+
+                      </div>
+                    )}
                   </div>
                 );
               })}
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── Reminders Metadata Modal ── */}
-      {remindersMetaModal && remindersMetaForm && (() => {
-        const r = reminders.find(x => x.id === remindersMetaModal);
-        if (!r) return null;
-        const f = remindersMetaForm;
-        const labelStyle = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 4 };
-        const inputStyle = { width: "100%", fontSize: 12, padding: "6px 8px", border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.white, color: colors.text, fontFamily: "inherit", boxSizing: "border-box", outline: "none" };
-
-        // Compute available weeks from current week to end of term
-        const todayStr = melbourneToday();
-        let termStart = null;
-        const bks = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date < b.date ? 1 : -1);
-        for (const br of bks) { const tbEnd = br.endDate || br.date; if (tbEnd < todayStr) { const ts = new Date(tbEnd); ts.setDate(ts.getDate()+1); while(ts.getDay()===6||ts.getDay()===0) ts.setDate(ts.getDate()+1); termStart=ts; break; } }
-        if (!termStart) { const y=new Date().getFullYear(); const s=new Date(y,0,27); while(s.getDay()!==2) s.setDate(s.getDate()+1); termStart=s; }
-        // Find next term break to know when term ends
-        const nextBreak = interruptions.filter(i => i.type === "term_break" && i.date > todayStr).sort((a,b) => a.date < b.date ? -1 : 1)[0];
-        const termEndDate = nextBreak ? new Date(nextBreak.date) : new Date(termStart.getTime() + 10*7*86400000);
-        const totalWeeks = Math.ceil((termEndDate - termStart) / (7*86400000));
-        // Current week number
-        const msPerWeek = 7*86400*1000;
-        const currentWeekNum = Math.max(1, Math.ceil((new Date(todayStr) - termStart) / msPerWeek) + 1);
-        const weekOptions = [];
-        for (let w = currentWeekNum; w <= Math.max(totalWeeks, currentWeekNum + 4); w++) {
-          const mon = new Date(termStart); mon.setDate(mon.getDate() + (w-1)*7);
-          const fri = new Date(mon); fri.setDate(fri.getDate()+4);
-          const fmt = d => d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-          weekOptions.push({ value: String(w), label: `Week ${w}  (${fmt(mon)} – ${fmt(fri)})` });
-        }
-
-        // Classes for selected school
-        const schoolClasses = f.schoolId
-          ? [...new Set(students.filter(s => s.schoolId === f.schoolId && s.className).map(s => s.className))].sort()
-          : [];
-
-        // Student search
-        const studentSearch = f.studentName || "";
-        const matchedStudents = studentSearch.length >= 1
-          ? students.filter(s => s.status === "active" && s.name.toLowerCase().includes(studentSearch.toLowerCase()) && (!f.schoolId || s.schoolId === f.schoolId)).slice(0, 8)
-          : [];
-        return (
-          <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center" }}
-            onClick={() => { setRemindersMetaModal(null); setRemindersMetaForm(null); }}>
-            <div style={{ background: colors.white, borderRadius: 14, padding: 20, width: 340, boxShadow: "0 8px 32px rgba(0,0,0,0.18)", fontFamily: "inherit" }}
-              onClick={e => e.stopPropagation()}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4 }}>Reminder details</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16, lineHeight: 1.4 }}>{r.text.slice(0, 80)}{r.text.length > 80 ? "…" : ""}</div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 12px", marginBottom: 12 }}>
-                {/* Date */}
-                <div>
-                  <span style={labelStyle}>Date</span>
-                  <input type="date" value={f.date} onChange={e => setRemindersMetaForm(p => ({ ...p, date: e.target.value }))} style={inputStyle} />
-                </div>
-                {/* Week dropdown */}
-                <div>
-                  <span style={labelStyle}>Week</span>
-                  <select value={f.week} onChange={e => setRemindersMetaForm(p => ({ ...p, week: e.target.value }))} style={{ ...inputStyle, appearance: "none" }}>
-                    <option value="">— Any —</option>
-                    {weekOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                {/* Time */}
-                <div>
-                  <span style={labelStyle}>Time</span>
-                  <input type="time" value={f.time} onChange={e => setRemindersMetaForm(p => ({ ...p, time: e.target.value }))} style={inputStyle} />
-                </div>
-                {/* School */}
-                <div>
-                  <span style={labelStyle}>School</span>
-                  <select value={f.schoolId} onChange={e => setRemindersMetaForm(p => ({ ...p, schoolId: e.target.value, className: "" }))} style={{ ...inputStyle, appearance: "none" }}>
-                    <option value="">— Any —</option>
-                    {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                {/* Class — dropdown filtered by school */}
-                <div>
-                  <span style={labelStyle}>Class</span>
-                  {schoolClasses.length > 0 ? (
-                    <select value={f.className} onChange={e => setRemindersMetaForm(p => ({ ...p, className: e.target.value }))} style={{ ...inputStyle, appearance: "none" }}>
-                      <option value="">— Any —</option>
-                      {schoolClasses.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                  ) : (
-                    <input placeholder="e.g. 5A" value={f.className} onChange={e => setRemindersMetaForm(p => ({ ...p, className: e.target.value }))} style={inputStyle} />
-                  )}
-                </div>
-                {/* Student — searchable */}
-                <div style={{ position: "relative" }}>
-                  <span style={labelStyle}>Student</span>
-                  <input
-                    placeholder="Search name…"
-                    value={f.studentName}
-                    onChange={e => { setRemindersMetaForm(p => ({ ...p, studentName: e.target.value })); setStudentDropOpen(true); }}
-                    onFocus={() => setStudentDropOpen(true)}
-                    onBlur={() => setTimeout(() => setStudentDropOpen(false), 150)}
-                    style={inputStyle} />
-                  {studentDropOpen && matchedStudents.length > 0 && (
-                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 10, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 7, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", maxHeight: 160, overflowY: "auto" }}>
-                      {matchedStudents.map(s => (
-                        <div key={s.id}
-                          onMouseDown={() => { setRemindersMetaForm(p => ({ ...p, studentName: s.name, schoolId: p.schoolId || s.schoolId || "", className: p.className || "" })); setStudentDropOpen(false); }}
-                          style={{ padding: "7px 10px", fontSize: 12, cursor: "pointer", borderBottom: `1px solid ${colors.borderLight}` }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
-                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                          {s.name}
-                          {s.schoolId && <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 6 }}>{schools.find(sc => sc.id === s.schoolId)?.name?.split(" ")[0]}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 16 }}>
-                <span style={labelStyle}>Notes</span>
-                <textarea rows={2} value={f.notes} onChange={e => setRemindersMetaForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical" }} />
-              </div>
-
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => {
-                    saveReminders(reminders.map(x => x.id === remindersMetaModal ? { ...x, ...f, week: f.week ? String(parseInt(f.week)) : "" } : x));
-                    setRemindersMetaModal(null); setRemindersMetaForm(null);
-                  }}
-                  style={{ flex: 1, padding: "8px 0", borderRadius: 8, background: colors.accent, color: "#fff", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>Save</button>
-                <button onClick={() => { saveReminders(reminders.filter(x => x.id !== remindersMetaModal)); setRemindersMetaModal(null); setRemindersMetaForm(null); }}
-                  style={{ padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", color: colors.danger, fontWeight: 700, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>Delete</button>
-                <button onClick={() => { setRemindersMetaModal(null); setRemindersMetaForm(null); }}
-                  style={{ padding: "8px 12px", borderRadius: 8, background: colors.bg, color: colors.textMuted, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-              </div>
             </div>
           </div>
         );
@@ -3901,7 +5735,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           const next = current.includes(cls) ? current.filter(c => c !== cls) : [...current, cls];
           setCalEventForm(prev => ({ ...prev, affectsClasses: next.length === 0 ? "all" : next.join(", ") }));
         };
-        const inputStyle = { padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", width: "100%", boxSizing: "border-box", background: colors.white };
+        const inputStyle = { padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, outline: "none", width: "100%", boxSizing: "border-box", background: colors.cardBg };
         const labelStyle = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4, display: "block" };
 
         const saveEvent = () => {
@@ -3965,7 +5799,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
               left: f.x ? Math.min(f.x, window.innerWidth - 440) : "50%",
               top: f.y ? Math.min(f.y, window.innerHeight - 520) : "50%",
               transform: f.x ? "none" : "translate(-50%,-50%)",
-              background: colors.white, borderRadius: 14, padding: "20px 22px", width: 420,
+              background: colors.cardBg, borderRadius: 14, padding: "20px 22px", width: 420,
               boxShadow: "0 8px 40px rgba(0,0,0,0.22)", zIndex: 10001,
               maxHeight: "90vh", overflowY: "auto",
             }}>
@@ -3980,7 +5814,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {Object.entries(EVENT_TYPE_META).map(([key, meta]) => (
                     <button key={key} onClick={() => setCalEventForm(prev => ({ ...prev, type: key, schoolId: (key === "personal") ? "" : prev.schoolId, affectsClasses: "all" }))}
-                      style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${f.type === key ? meta.border : colors.border}`, background: f.type === key ? meta.bg : colors.white, color: f.type === key ? meta.text : colors.textMuted, transition: "all 0.12s" }}>
+                      style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${f.type === key ? meta.border : colors.border}`, background: f.type === key ? meta.bg : colors.cardBg, color: f.type === key ? meta.text : colors.textMuted, transition: "all 0.12s" }}>
                       {meta.label}
                     </button>
                   ))}
@@ -4061,7 +5895,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                       const sel = selectedClasses.includes(cls);
                       return (
                         <button key={cls} onClick={() => toggleClass(cls)}
-                          style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: sel ? 700 : 400, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${sel ? tm.border : colors.border}`, background: sel ? tm.bg : colors.white, color: sel ? tm.text : colors.textMuted, transition: "all 0.12s" }}>
+                          style={{ padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: sel ? 700 : 400, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${sel ? tm.border : colors.border}`, background: sel ? tm.bg : colors.cardBg, color: sel ? tm.text : colors.textMuted, transition: "all 0.12s" }}>
                           {cls}
                         </button>
                       );
@@ -4086,7 +5920,7 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 </button>
                 {isEdit && (
                   <button onClick={deleteEvent}
-                    style={{ padding: "9px 14px", borderRadius: 8, background: "#FEF2F2", color: colors.danger, fontWeight: 700, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>
+                    style={{ padding: "9px 14px", borderRadius: 8, background: colors.redLight, color: colors.danger, fontWeight: 700, fontSize: 13, border: `1px solid ${colors.danger}`, cursor: "pointer", fontFamily: "inherit" }}>
                     Delete
                   </button>
                 )}
@@ -4099,24 +5933,146 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
           </div>
         );
       })()}
+      {/* ── Reminders @ mention dropdown (fixed, escapes overflow) ── */}
+      {todoMentionQuery && (() => {
+        const q = todoMentionQuery.query.toLowerCase();
+        const hits = allEmailContacts.filter(c => c.name.toLowerCase().includes(q) || (c.sub||"").toLowerCase().includes(q)).slice(0, 6);
+        if (!hits.length) return null;
+        return (
+          <div style={{ position:"fixed", top: todoMentionQuery.top, left: todoMentionQuery.left,
+            width: Math.max(todoMentionQuery.width || 0, 220), zIndex: 10001,
+            background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.14)", overflow: "hidden", fontFamily: "inherit" }}>
+            <div style={{ padding: "4px 10px 2px", fontSize: 10, fontWeight: 700, color: colors.textMuted, letterSpacing: "0.04em" }}>@MENTION</div>
+            {hits.map((c, i) => (
+              <div key={c.email} onMouseDown={e => {
+                e.preventDefault();
+                const mq = todoMentionQuery;
+                const tag = preferredFirstName(c.name) || c.name.split(" ")[0];
+                if (mq.field === "main")  { setTodoInput(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1)); setTodoAddMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]); }
+                if (mq.field === "edit")  { setTodoEditValue(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1)); setTodoEditMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]); }
+                if (mq.field === "sub")   { setTodoSubInput(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1)); setTodoSubMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]); }
+                if (mq.field === "notes") { setTodoNotesValue(prev => prev.slice(0, mq.anchorPos) + `@${tag}` + prev.slice(mq.anchorPos + mq.query.length + 1)); setTodoNotesMentions(prev => [...prev.filter(m => m.name !== tag), { name: tag, email: c.email }]); setTimeout(() => todoNotesRef.current?.focus(), 0); }
+                setTodoMentionQuery(null); setTodoMentionIndex(0);
+              }}
+              style={{ padding:"6px 10px", fontSize:11, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center",
+                background: i === todoMentionIndex ? colors.blueLight : "transparent" }}>
+                <span style={{ fontWeight:500, color:colors.text }}>{c.name}</span>
+                {c.sub && <span style={{ fontSize:10, color:colors.textMuted }}>{c.sub}</span>}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+      {remindersMentionQuery && (() => {
+        const q = remindersMentionQuery.query.toLowerCase();
+        const hits = allEmailContacts.filter(c =>
+          c.name.toLowerCase().includes(q) || (c.sub||"").toLowerCase().includes(q)
+        ).slice(0, 6);
+        return (
+          <>
+            <div style={{ position:"fixed", inset:0, zIndex:9990 }}
+              onMouseDown={() => { setRemindersMentionQuery(null); setRemindersMentionIndex(0); }} />
+            {hits.length > 0 && (
+              <div style={{
+                position:"fixed", top: remindersMentionQuery.top, left: remindersMentionQuery.left,
+                width: Math.max(remindersMentionQuery.width || 0, 200),
+                zIndex:9991, background:colors.cardBg, border:`1px solid ${colors.border}`,
+                borderRadius:6, boxShadow:"0 4px 16px rgba(0,0,0,0.15)", overflow:"hidden", fontFamily:"inherit"
+              }}>
+                {hits.map((c, i) => (
+                  <div key={i}
+                    onMouseEnter={() => setRemindersMentionIndex(i)}
+                    onMouseDown={e => {
+                      e.stopPropagation();
+                      const mq = remindersMentionQuery;
+                      if (mq.remId === "__new__") {
+                        setRemindersInput(prev => { const tag=`@${c.name}`; const before=prev.slice(0,mq.anchorPos); const after=prev.slice(mq.anchorPos+mq.query.length+1); return before+tag+after; });
+                        setRemindersInputMentions(prev => [...prev.filter(m=>m.name!==c.name), { name:c.name, email:c.email }]);
+                      } else {
+                        setRemindersMetaForm(prev => { if (!prev) return prev; const cur=prev.text||""; const tag=`@${c.name}`; const before=cur.slice(0,mq.anchorPos); const after=cur.slice(mq.anchorPos+mq.query.length+1); const newMentions=[...(prev.mentions||[]).filter(m=>m.name!==c.name),{name:c.name,email:c.email}]; return {...prev,text:before+tag+after,mentions:newMentions}; });
+                      }
+                      setRemindersMentionQuery(null); setRemindersMentionIndex(0);
+                    }}
+                    style={{ padding:"6px 10px", fontSize:11, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", background: i === remindersMentionIndex ? colors.blueLight : "transparent" }}>
+                    <span style={{ fontWeight:500, color:colors.text }}>{c.name}</span>
+                    {c.sub && <span style={{ fontSize:10, color:colors.textMuted }}>{c.sub}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        );
+      })()}
+
       {/* ── Email body right-click context menu ── */}
       {emailContextMenu && (() => {
         const isEnquiry = emailContextMenu.email && classifyEmailFull(emailContextMenu.email) === "enquiry";
+        const btnStyle = { display: "block", width: "100%", padding: "9px 14px", background: "none", border: "none", textAlign: "left", cursor: "pointer", color: colors.text, fontFamily: "inherit", fontSize: 13 };
+        const btnHover = e => e.currentTarget.style.background = colors.blueLight;
+        const btnLeave = e => e.currentTarget.style.background = "none";
         return (
         <div
           onMouseDown={e => e.stopPropagation()}
           style={{ position: "fixed", left: emailContextMenu.x, top: emailContextMenu.y, zIndex: 9999,
-            background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8,
+            background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8,
             boxShadow: "0 4px 16px rgba(0,0,0,0.14)", minWidth: 180, overflow: "hidden",
             fontFamily: "inherit", fontSize: 13 }}>
+          {emailContextMenu.fromAddr && (<>
+            <button onClick={() => { openCompose([emailContextMenu.fromAddr]); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+              style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> New Email</span></button>
+            <button onClick={() => { navigator.clipboard?.writeText(emailContextMenu.fromAddr); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+              style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><Copy size={13} /> Copy Address</span></button>
+            <button onClick={() => { setEmailSearchPersist(emailContextMenu.fromAddr); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+              style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><Search size={13} /> Search</span></button>
+            <div style={{ position: "relative" }}
+              onMouseEnter={() => setEmailContextSubMenu("contacts")}
+              onMouseLeave={() => setEmailContextSubMenu(null)}>
+              <button style={{ ...btnStyle, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                onMouseEnter={btnHover} onMouseLeave={btnLeave}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6 }}><UserPlus size={13} /> Add to Contacts</span><span style={{ fontSize: 11, color: colors.textMuted }}>›</span>
+              </button>
+              {emailContextSubMenu === "contacts" && (
+                <div style={{ position: "absolute", left: "100%", top: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.14)", minWidth: 160, overflow: "hidden", fontFamily: "inherit", fontSize: 13, zIndex: 10000 }}>
+                  <button onClick={() => { setAddParentPrefill({ name: emailContextMenu.fromName, email: emailContextMenu.fromAddr }); onNavigate("students"); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+                    style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}>Add Parent</button>
+                  <button onClick={() => { setNewContactPrefill({ name: emailContextMenu.fromName, email: emailContextMenu.fromAddr }); onNavigate("contacts"); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+                    style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}>Add School Contact</button>
+                </div>
+              )}
+            </div>
+            {(emailContextMenu.text || isEnquiry) && <div style={{ borderTop: `1px solid ${colors.border}`, margin: "3px 0" }} />}
+          </>)}
           {emailContextMenu.text && (
             <button
-              onClick={() => { navigator.clipboard?.writeText(emailContextMenu.text); setEmailContextMenu(null); }}
-              style={{ display: "block", width: "100%", padding: "9px 14px", background: "none", border: "none",
-                textAlign: "left", cursor: "pointer", color: colors.text, fontFamily: "inherit", fontSize: 13 }}
-              onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
-              onMouseLeave={e => e.currentTarget.style.background = "none"}>
-              📋 Copy
+              onClick={() => { navigator.clipboard?.writeText(emailContextMenu.text); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+              style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Copy size={13} /> Copy</span>
+            </button>
+          )}
+          {emailContextMenu.text && (
+            <button
+              onClick={() => {
+                const match = resolveEmailSender(emailContextMenu.fromAddr);
+                const _st = match.studentId ? students.find(s => s.id === match.studentId) : null;
+                const _pd = parseReminderDates(emailContextMenu.text);
+                const reminder = {
+                  id: uid(), text: emailContextMenu.text.trim(), createdAt: new Date().toISOString(),
+                  ..._pd,
+                  ...(emailContextMenu.emailId ? { emailId: emailContextMenu.emailId } : {}),
+                  ...(emailContextMenu.fromAddr ? { emailFrom: emailContextMenu.fromName || emailContextMenu.fromAddr, emailFromAddr: emailContextMenu.fromAddr } : {}),
+                  ...(match.parentName ? { parentName: match.parentName } : {}),
+                  ...(match.studentName ? { studentName: match.studentName } : {}),
+                  ...(match.studentId ? { studentId: match.studentId } : {}),
+                  ...(_st?.schoolId ? { schoolId: _st.schoolId } : {}),
+                  ...(_st?.className ? { className: _st.className } : {}),
+                };
+                saveReminders([reminder, ...reminders]);
+                notify("Added to Reminders", "success");
+                setEmailContextMenu(null); setEmailContextSubMenu(null);
+              }}
+              style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Bell size={13} /> Add to Reminders</span>
             </button>
           )}
           {isEnquiry && (
@@ -4125,13 +6081,12 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 const prefill = buildEnquiryPrefill(emailContextMenu.email, "pending");
                 setNewStudentPrefill(prefill);
                 onNavigate("students");
-                setEmailContextMenu(null);
+                setEmailContextMenu(null); setEmailContextSubMenu(null);
               }}
-              style={{ display: "block", width: "100%", padding: "9px 14px", background: "none", border: "none",
-                textAlign: "left", cursor: "pointer", color: colors.text, fontFamily: "inherit", fontSize: 13 }}
-              onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
-              onMouseLeave={e => e.currentTarget.style.background = "none"}>
-              ➕ Add to waiting list
+              style={btnStyle}
+              onMouseEnter={btnHover}
+              onMouseLeave={btnLeave}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Plus size={13} /> Add to waiting list</span>
             </button>
           )}
           {isEnquiry && (
@@ -4140,22 +6095,389 @@ export function Dashboard({ schools, students, teachers, specialists, interrupti
                 const prefill = buildEnquiryPrefill(emailContextMenu.email, "trial");
                 setNewStudentPrefill(prefill);
                 onNavigate("students");
-                setEmailContextMenu(null);
+                setEmailContextMenu(null); setEmailContextSubMenu(null);
               }}
-              style={{ display: "block", width: "100%", padding: "9px 14px", background: "none", border: "none",
-                textAlign: "left", cursor: "pointer", color: colors.text, fontFamily: "inherit", fontSize: 13 }}
-              onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
-              onMouseLeave={e => e.currentTarget.style.background = "none"}>
-              🎵 Schedule trial lesson
+              style={btnStyle}
+              onMouseEnter={btnHover}
+              onMouseLeave={btnLeave}>
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Music size={13} /> Schedule trial lesson</span>
             </button>
           )}
         </div>
         );
       })()}
+      {/* ── Attachment preview modal — draggable + resizable ── */}
+      {attachmentPreview && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 10100, background: "rgba(0,0,0,0.45)", pointerEvents: "auto" }}
+          onClick={closeAttachmentPreview}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: "fixed",
+              left: previewPos.x, top: previewPos.y,
+              width: previewSize.w, height: previewSize.h,
+              background: colors.cardBg, borderRadius: 12,
+              display: "flex", flexDirection: "column",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.45)",
+              overflow: "hidden", userSelect: "none",
+            }}>
+            {/* Header — drag handle */}
+            <div
+              onMouseDown={handlePreviewDragStart}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 16px", borderBottom: `1px solid ${colors.border}`, flexShrink: 0, gap: 12, cursor: "grab", userSelect: "none" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden", minWidth: 0 }}>
+                <Paperclip size={14} style={{ flexShrink: 0, color: colors.textMuted }} />
+                <span style={{ fontWeight: 600, fontSize: 14, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {attachmentPreview.att.filename}
+                </span>
+                {attachmentPreview.att.size > 0 && (
+                  <span style={{ fontSize: 11, color: colors.textMuted, flexShrink: 0 }}>
+                    {attachmentPreview.att.size > 1024 * 1024
+                      ? `${(attachmentPreview.att.size / 1024 / 1024).toFixed(1)} MB`
+                      : `${Math.round(attachmentPreview.att.size / 1024)} KB`}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }} onMouseDown={e => e.stopPropagation()}>
+                {!attachmentPreview.loading && (
+                  <button
+                    onClick={() => {
+                      if (window.electronAPI?.gmailGetAttachment) {
+                        window.electronAPI.gmailGetAttachment(attachmentPreview.messageId, attachmentPreview.att.attachmentId, attachmentPreview.att.filename)
+                          .then(r => { if (!r.ok && r.error !== "Cancelled") alert("Download failed: " + r.error); });
+                      }
+                    }}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", background: colors.sidebarActive, color: "#fff", border: "none", borderRadius: 6, fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                    <Download size={13} /> Download
+                  </button>
+                )}
+                {!attachmentPreview.loading && setDocuments && (
+                  <button
+                    onClick={() => openSaveAttachModal(attachmentPreview.att, attachmentPreview.messageId)}
+                    title="Save to Documents / Resources"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 12px", background: colors.accentLight, color: colors.accentDark, border: `1px solid ${colors.accent}40`, borderRadius: 6, fontSize: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                    <FolderInput size={13} /> Save to App
+                  </button>
+                )}
+                <button onClick={closeAttachmentPreview}
+                  style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "flex", alignItems: "center", padding: 4, borderRadius: 4 }}
+                  onMouseEnter={e => e.currentTarget.style.color = colors.text}
+                  onMouseLeave={e => e.currentTarget.style.color = colors.textMuted}>
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            {/* Body */}
+            <div style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 0 }}>
+              {attachmentPreview.loading ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, color: colors.textMuted }}>
+                  <Loader2 size={28} style={{ animation: "spin 1s linear infinite" }} />
+                  <span style={{ fontSize: 13 }}>Loading preview…</span>
+                </div>
+              ) : attachmentPreview.error ? (
+                <div style={{ textAlign: "center", color: colors.textMuted, padding: 24 }}>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 6 }}>Could not load preview</div>
+                  <div style={{ fontSize: 12 }}>{attachmentPreview.error}</div>
+                </div>
+              ) : (() => {
+                const type = getAttachmentType(attachmentPreview.att.filename);
+                if (type === "image") {
+                  const ext = (attachmentPreview.att.filename || "").split(".").pop().toLowerCase();
+                  const mimeMap = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" };
+                  return (
+                    <img
+                      src={`data:${mimeMap[ext] || "image/jpeg"};base64,${attachmentPreview.base64}`}
+                      alt={attachmentPreview.att.filename}
+                      style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 6, display: "block" }} />
+                  );
+                }
+                if (type === "pdf") {
+                  return (
+                    <iframe
+                      src={attachmentPreview.blobUrl}
+                      title={attachmentPreview.att.filename}
+                      style={{ width: "100%", height: "100%", border: "none", borderRadius: 6 }} />
+                  );
+                }
+                if (type === "text") {
+                  let text = "";
+                  try {
+                    text = new TextDecoder().decode(Uint8Array.from(atob(attachmentPreview.base64), c => c.charCodeAt(0)));
+                  } catch {
+                    text = "(Could not decode file content)";
+                  }
+                  return (
+                    <pre style={{ width: "100%", height: "100%", overflow: "auto", margin: 0, fontSize: 12, lineHeight: 1.6, color: colors.text, background: colors.bg, padding: "12px 16px", borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "monospace", boxSizing: "border-box" }}>
+                      {text}
+                    </pre>
+                  );
+                }
+                // Other — no preview available
+                return (
+                  <div style={{ textAlign: "center", color: colors.textMuted, padding: 32 }}>
+                    <div style={{ fontSize: 40, marginBottom: 12 }}>📎</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 6 }}>Preview not available</div>
+                    <div style={{ fontSize: 12, marginBottom: 20 }}>This file type can't be previewed in the app.</div>
+                    <button
+                      onClick={() => {
+                        if (window.electronAPI?.gmailGetAttachment) {
+                          window.electronAPI.gmailGetAttachment(attachmentPreview.messageId, attachmentPreview.att.attachmentId, attachmentPreview.att.filename)
+                            .then(r => { if (!r.ok && r.error !== "Cancelled") alert("Download failed: " + r.error); });
+                        }
+                      }}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 18px", background: colors.sidebarActive, color: "#fff", border: "none", borderRadius: 7, fontSize: 13, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                      <Download size={14} /> Download to view
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+            {/* Resize handles — edges */}
+            <div onMouseDown={e => startResize(e, false, false, true,  false)} style={{ position:"absolute", top:8,    right:0,  bottom:8,  width:5,  cursor:"ew-resize",   zIndex:11 }} />
+            <div onMouseDown={e => startResize(e, false, false, false, true)}  style={{ position:"absolute", top:8,    left:0,   bottom:8,  width:5,  cursor:"ew-resize",   zIndex:11 }} />
+            <div onMouseDown={e => startResize(e, false, true,  false, false)} style={{ position:"absolute", bottom:0, left:8,   right:8,   height:5, cursor:"ns-resize",   zIndex:11 }} />
+            <div onMouseDown={e => startResize(e, true,  false, false, false)} style={{ position:"absolute", top:0,    left:8,   right:8,   height:5, cursor:"ns-resize",   zIndex:11 }} />
+            {/* Corners */}
+            <div onMouseDown={e => startResize(e, false, true,  true,  false)} style={{ position:"absolute", bottom:0, right:0,  width:10,  height:10, cursor:"nwse-resize", zIndex:12 }} />
+            <div onMouseDown={e => startResize(e, false, true,  false, true)}  style={{ position:"absolute", bottom:0, left:0,   width:10,  height:10, cursor:"nesw-resize", zIndex:12 }} />
+            <div onMouseDown={e => startResize(e, true,  false, true,  false)} style={{ position:"absolute", top:0,    right:0,  width:10,  height:10, cursor:"nesw-resize", zIndex:12 }} />
+            <div onMouseDown={e => startResize(e, true,  false, false, true)}  style={{ position:"absolute", top:0,    left:0,   width:10,  height:10, cursor:"nwse-resize", zIndex:12 }} />
+          </div>
+        </div>
+      )}
+
       {emailContextMenu && (
-        <div onClick={() => setEmailContextMenu(null)} onContextMenu={e => { e.preventDefault(); setEmailContextMenu(null); }}
+        <div onClick={() => { setEmailContextMenu(null); setEmailContextSubMenu(null); }} onContextMenu={e => { e.preventDefault(); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
           style={{ position: "fixed", inset: 0, zIndex: 9998 }} />
       )}
+
+      {/* ── Quick-add To-Do modal (⌘.) ── rendered via portal to escape display:none parent */}
+      {quickTodoOpen && createPortal(
+        <div style={{ position: "fixed", inset: 0, zIndex: 10200, background: "rgba(0,0,0,0.18)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setQuickTodoOpen(false)}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, width: 400, maxWidth: "90vw", boxShadow: "0 20px 60px rgba(0,0,0,0.28)", border: `1px solid ${colors.border}`, overflow: "hidden" }}
+            onClick={e => e.stopPropagation()}>
+            {/* Header — matches the todo panel tab strip */}
+            <div style={{ background: colors.sidebar, padding: "11px 16px", display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `3px solid ${colors.accent}` }}>
+              <span style={{ fontWeight: 600, fontSize: 13, color: "#fff" }}>To Do</span>
+            </div>
+            {/* Input area */}
+            <div style={{ padding: "12px 16px 14px" }}>
+              <input
+                ref={quickTodoInputRef}
+                value={quickTodoInput}
+                onChange={e => setQuickTodoInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && quickTodoInput.trim()) {
+                    const item = { id: uid(), text: quickTodoInput.trim(), done: false, tag: "manual", createdAt: new Date().toISOString(), ...(quickTodoCategory ? { category: quickTodoCategory } : {}) };
+                    saveTodo([item, ...todoItemsRef.current]);
+                    setQuickTodoOpen(false);
+                    notify("Task added");
+                  }
+                }}
+                placeholder="Add a task… (press Enter)"
+                style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }}
+                onFocus={e => e.target.style.borderColor = colors.accent}
+                onBlur={e => e.target.style.borderColor = colors.inputBorder}
+              />
+              {/* Category chips */}
+              {todoCategories.length > 0 && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 9 }}>
+                  {todoCategories.map(cat => {
+                    const active = quickTodoCategory === cat.id;
+                    return (
+                      <button key={cat.id}
+                        onMouseDown={e => { e.preventDefault(); setQuickTodoCategory(active ? null : cat.id); }}
+                        style={{ padding: "3px 9px", borderRadius: 12, border: active ? `1.5px solid ${cat.color}` : `1.5px solid ${colors.border}`, background: active ? `${cat.color}18` : "transparent", color: active ? cat.color : colors.textMuted, fontSize: 11, fontWeight: active ? 700 : 400, cursor: "pointer", fontFamily: "inherit" }}>
+                        {cat.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── Quick-add Reminder modal (⌘/) ── rendered via portal to escape display:none parent */}
+      {quickReminderOpen && (() => {
+        const CORAL_BG = darkMode ? colors.accentLight : "#FDF0ED";
+        const CORAL_BORDER = colors.accent;
+        return createPortal(
+          <div style={{ position: "fixed", inset: 0, zIndex: 10200, background: "rgba(0,0,0,0.18)", display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setQuickReminderOpen(false)}>
+            <div style={{ background: CORAL_BG, borderRadius: 12, width: 340, maxWidth: "90vw", minHeight: 160, boxShadow: "0 20px 60px rgba(0,0,0,0.22)", border: `1.5px solid ${CORAL_BORDER}`, overflow: "hidden", display: "flex", flexDirection: "column" }}
+              onClick={e => e.stopPropagation()}>
+              {/* Ghost textarea at top — matches real reminder panel */}
+              <div style={{ flex: 1, padding: "10px 12px 4px", cursor: "text" }}
+                onClick={() => quickReminderInputRef.current?.focus()}>
+                <textarea
+                  ref={quickReminderInputRef}
+                  value={quickReminderInput}
+                  onChange={e => setQuickReminderInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!quickReminderInput.trim()) return;
+                      const entry = { id: uid(), text: quickReminderInput.trim(), createdAt: new Date().toISOString() };
+                      saveReminders([entry, ...reminders]);
+                      setQuickReminderOpen(false);
+                      notify("Reminder added");
+                    }
+                  }}
+                  rows={1}
+                  placeholder=""
+                  style={{ display: "block", width: "100%", boxSizing: "border-box", fontSize: 12, lineHeight: 1.5,
+                    padding: 0, margin: "0 0 4px 0", border: "none", background: CORAL_BG,
+                    boxShadow: `inset 0 0 0 1000px ${CORAL_BG}`, WebkitBoxShadow: `inset 0 0 0 1000px ${CORAL_BG}`,
+                    color: colors.text, caretColor: CORAL_BORDER, outline: "none",
+                    fontFamily: "inherit", resize: "none", overflow: "hidden",
+                    userSelect: "text", cursor: "text", WebkitAppearance: "none",
+                    height: "1.5em" }}
+                  onInput={e => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }}
+                />
+              </div>
+            </div>
+          </div>,
+          document.body
+        );
+      })()}
+      {/* ── Attachment right-click context menu ── */}
+      {attCtxMenu && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 9998 }} onClick={() => setAttCtxMenu(null)} />
+          <div ref={attCtxRef} style={{ position: "fixed", top: attCtxMenu.y, left: attCtxMenu.x, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 200, overflow: "hidden", fontFamily: "inherit" }}>
+            <button
+              onClick={() => openSaveAttachModal(attCtxMenu.att, attCtxMenu.messageId)}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+              onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+              <FolderInput size={13} style={{ color: colors.accent }} />
+              Save to Documents / Resources
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Save Attachment Modal ── */}
+      {saveAttachModal && createPortal(
+        <div style={{ position: "fixed", inset: 0, zIndex: 10200, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setSaveAttachModal(null)}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, width: 460, maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.28)", border: `1px solid ${colors.border}`, overflow: "hidden" }}
+            onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ background: colors.sidebarHover, padding: "13px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <FolderInput size={15} style={{ color: "#fff", opacity: 0.8 }} />
+                <span style={{ fontWeight: 600, fontSize: 14, color: "#fff" }}>Save Attachment</span>
+              </div>
+              <button onClick={() => setSaveAttachModal(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.6)", display: "flex", alignItems: "center", padding: 2, borderRadius: 4 }}
+                onMouseEnter={e => e.currentTarget.style.color = "#fff"} onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.6)"}>
+                <X size={16} />
+              </button>
+            </div>
+            {/* Filename display */}
+            <div style={{ padding: "12px 18px 0", display: "flex", alignItems: "center", gap: 7 }}>
+              <Paperclip size={13} style={{ color: colors.textMuted, flexShrink: 0 }} />
+              <span style={{ fontSize: 12, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{saveAttachModal.att.filename}</span>
+            </div>
+            {/* Section toggle */}
+            <div style={{ padding: "14px 18px 0" }}>
+              <div style={{ display: "flex", gap: 0, background: colors.bg, border: `2px solid ${colors.sidebarHover}`, borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
+                {[{ id: "documents", label: "Documents" }, { id: "resources", label: "Resources" }].map(s => (
+                  <button key={s.id} onClick={() => setSaveAttachSection(s.id)}
+                    style={{ flex: 1, padding: "7px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: saveAttachSection === s.id ? colors.sidebarHover : "transparent", color: saveAttachSection === s.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Fields */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Label — shared */}
+                <div>
+                  <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Label</label>
+                  <input value={saveAttachForm.label} onChange={e => setSaveAttachForm(f => ({ ...f, label: e.target.value }))}
+                    style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg }} />
+                </div>
+
+                {saveAttachSection === "documents" ? (<>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Type</label>
+                      <select value={saveAttachForm.type} onChange={e => setSaveAttachForm(f => ({ ...f, type: e.target.value }))}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                        {SAVE_ATT_DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Expiry Date</label>
+                      <input type="date" value={saveAttachForm.expiryDate} onChange={e => setSaveAttachForm(f => ({ ...f, expiryDate: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit" }} />
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Teacher <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></label>
+                      <select value={saveAttachForm.teacherId} onChange={e => setSaveAttachForm(f => ({ ...f, teacherId: e.target.value }))}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                        <option value="">No teacher</option>
+                        {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>School <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></label>
+                      <select value={saveAttachForm.schoolId} onChange={e => setSaveAttachForm(f => ({ ...f, schoolId: e.target.value }))}
+                        style={{ width: "100%", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                        <option value="">No school</option>
+                        {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Notes <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></label>
+                    <input value={saveAttachForm.notes} onChange={e => setSaveAttachForm(f => ({ ...f, notes: e.target.value }))}
+                      placeholder="Any additional notes…"
+                      style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg }} />
+                  </div>
+                </>) : (<>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Category</label>
+                    <select value={saveAttachForm.category} onChange={e => setSaveAttachForm(f => ({ ...f, category: e.target.value }))}
+                      style={{ width: "100%", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                      {SAVE_ATT_RES_CATS.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Description <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></label>
+                    <input value={saveAttachForm.description} onChange={e => setSaveAttachForm(f => ({ ...f, description: e.target.value }))}
+                      placeholder="Brief description…"
+                      style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg }} />
+                  </div>
+                </>)}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", padding: "16px 18px" }}>
+              <button onClick={() => setSaveAttachModal(null)}
+                style={{ padding: "7px 18px", background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 7, fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: colors.textLight, fontWeight: 500 }}>
+                Cancel
+              </button>
+              <button onClick={confirmSaveAttach}
+                style={{ padding: "7px 18px", background: colors.accent, border: "none", borderRadius: 7, fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: "#fff", fontWeight: 600 }}>
+                Save to {saveAttachSection === "documents" ? "Documents" : "Resources"}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
     </div>
   );
 }

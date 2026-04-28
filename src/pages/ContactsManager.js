@@ -2,16 +2,23 @@
 // CONTACTSMANAGER — extracted from App.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, STORAGE_KEYS } from "../constants";
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { Mail, Phone, StickyNote, Pencil, Trash2, Check, X, Users, Building2, Download, Bot } from "lucide-react";
+import { STORAGE_KEYS } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 import { uid, openCompose, openGmailSequential, getParentEmails } from "../utils/helpers";
-import { EmailTemplatesEditor, AiEmailRulesEditor, AiImportContacts } from "./ContactsEditors";
+// Session 95: EmailTemplatesEditor is no longer imported here — templates
+// moved to Settings. AiEmailRulesEditor and AiImportContacts still render
+// inline on the Contacts page.
+import { AiEmailRulesEditor, AiImportContacts } from "./ContactsEditors";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
 const CONTACT_ROLES = ["Principal", "Assistant Principal", "Office Manager", "Business Manager", "Classroom Teacher", "Specialist Teacher", "Other"];
 const CLASS_ROLES = ["Classroom Teacher", "Specialist Teacher"];
 
-export function ContactsManager({ contacts, setContacts, schools, students, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, goBack, goForward, historyCursor, pageHistory }) {
+export function ContactsManager({ contacts, setContacts, schools, students, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
+  const { colors, darkMode } = useTheme();
+  const ROW_HOVER_BG = darkMode ? colors.sidebarHover : "#EDF2FA";
   const [section, setSection] = useState("parents"); // "parents" | "school"
 
   // ── School contacts state ──────────────────────────────────────
@@ -27,6 +34,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
   const [sortCol, setSortCol] = useState("name");
   const [sortDir, setSortDir] = useState("asc");
   const [tooltip, setTooltip] = useState(null);
+  const [hoveredRow, setHoveredRow] = useState(null);
   const anyExpandedRef = useRef(false);
 
   // ── Parent contacts state ──────────────────────────────────────
@@ -43,16 +51,27 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
   const [pExpandedPhone, setPExpandedPhone] = useState(new Set());
   const [pExpandedNotes, setPExpandedNotes] = useState(new Set());
   const [pExpandedCC, setPExpandedCC] = useState(new Set());
+  const [hoveredPRow, setHoveredPRow] = useState(null);
   const pAnyExpandedRef = useRef(false);
 
   useEffect(() => { setEditingId(null); setEditForm(null); setSelected(new Set()); setPEditingKey(null); setPEditForm(null); setPSelected(new Set()); }, [resetKey]);
 
+  // Pre-fill a new school contact row from email context menu "Add School Contact"
+  useEffect(() => {
+    if (!newContactPrefill) return;
+    setSection("school");
+    const id = uid();
+    const blank = { id, name: newContactPrefill.name || "", schoolId: "", role: "", roleOther: "", className: "", email: newContactPrefill.email || "", phone: "", notes: "", _isNew: true };
+    setContacts(prev => [blank, ...prev]);
+    setEditingId(id);
+    setEditForm({ ...blank });
+    if (onClearNewContactPrefill) onClearNewContactPrefill();
+  }, [newContactPrefill]);
+
   // ── Derived parent rows ────────────────────────────────────────
-  // Build a flat list of parent entries derived from active students
-  // Each entry: { key, parentId, studentId, studentName, parentData, studentSchoolId, studentInstruments, studentTeacherIds, studentDays }
   const parentRows = useMemo(() => {
     const activeStudents = students.filter(s => s.status === "active" || s.status === "pending" || s.status === "trial");
-    const map = {}; // dedup key (email or name) -> merged entry
+    const map = {};
     for (const st of activeStudents) {
       for (let pi = 0; pi < (st.parents || []).length; pi++) {
         const p = st.parents[pi];
@@ -71,7 +90,6 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
         (st.instruments || []).forEach(inst => { if (inst.teacherId && !map[dedupKey]._teacherIds.includes(inst.teacherId)) map[dedupKey]._teacherIds.push(inst.teacherId); });
       }
     }
-    // Merge manually added parent contacts (type: "parent") from the contacts array
     for (const c of contacts.filter(c => c.type === "parent")) {
       const dedupKey = (c.email || "").trim().toLowerCase() || (c.name || "").trim().toLowerCase();
       if (!dedupKey) continue;
@@ -86,7 +104,6 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
     const id = uid();
     const blank = { id, type: "parent", name: "", email: "", phone: "", cc: "", notes: "", relationship: "", _isNew: true };
     setContacts(prev => [blank, ...prev]);
-    // Start editing immediately using a placeholder dedup key based on id
     setPEditingKey("__new__" + id);
     setPEditForm({ name: "", email: "", phone: "", cc: "", notes: "", relationship: "", _newContactId: id });
   };
@@ -94,14 +111,12 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
   const saveParentEditWithNew = () => {
     if (!pEditForm || !pEditingKey) return;
     if (pEditingKey.startsWith("__new__")) {
-      // Save as a manual contact entry
       const contactId = pEditForm._newContactId;
       const { _newContactId, ...rest } = pEditForm;
       setContacts(prev => prev.map(c => c.id === contactId ? { ...c, ...rest, _isNew: undefined } : c));
       setPEditingKey(null); setPEditForm(null);
       return;
     }
-    // Regular save path
     const dedupKey = pEditingKey;
     setStudents(prev => prev.map(st => {
       const newParents = (st.parents || []).map(p => {
@@ -111,7 +126,6 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
       });
       return { ...st, parents: newParents };
     }));
-    // Also update manual contact entry if it exists
     setContacts(prev => prev.map(c => {
       if (c.type !== "parent") return c;
       const cKey = (c.email || "").trim().toLowerCase() || (c.name || "").trim().toLowerCase();
@@ -146,8 +160,6 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
     });
   }, [parentRows, pSearch, pFilterSchool, pFilterTeacher, pFilterInstrument, pSortCol, pSortDir]);
 
-  // saveParentEdit is handled by saveParentEditWithNew above
-
   const startParentEdit = (p) => {
     const dedupKey = (p.email || "").trim().toLowerCase() || (p.name || "").trim().toLowerCase();
     setPEditingKey(dedupKey);
@@ -171,7 +183,6 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
     }));
   };
 
-  // Extract preferred name from brackets e.g. "Jennifer (Jen) Smith" -> "Jen"
   const getPreferredName = (name) => {
     if (!name) return "";
     const m = name.match(/\(([^)]+)\)/);
@@ -291,8 +302,8 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
   };
 
   const filtered = contacts.filter(c => {
-    if (c.type === "parent") return false; // manual parents shown in parents tab only
-    if (c._isNew) return true; // always show newly added row while editing
+    if (c.type === "parent") return false;
+    if (c._isNew) return true;
     if (filterSchool && c.schoolId !== filterSchool) return false;
     if (filterRole && c.role !== filterRole) return false;
     if (search) {
@@ -337,7 +348,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
   const SortTh = ({ col, children }) => {
     const active = sortCol === col;
     return (
-      <th onClick={() => handleSort(col)} style={{ padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: active ? colors.accent : colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none", background: colors.sidebarActive }}>
+      <th onClick={() => handleSort(col)} style={{ padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: active ? colors.accent : "#fff", textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none", background: colors.sidebarHover }}>
         {children}{active ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
       </th>
     );
@@ -352,7 +363,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
     const active = pSortCol === col;
     return (
       <th onClick={() => handlePSort(col)}
-        style={{ padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: active ? colors.accent : colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none", background: colors.sidebarActive }}>
+        style={{ padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: active ? colors.accent : "#fff", textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", whiteSpace: "nowrap", userSelect: "none", background: colors.sidebarHover }}>
         {children}{active ? (pSortDir === "asc" ? " ▲" : " ▼") : ""}
       </th>
     );
@@ -366,6 +377,10 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
 
   const totalContacts = section === "parents" ? parentRows.length : contacts.length;
 
+  const iconBtn = (onClick, icon, color, title, extraStyle = {}) => (
+    <button onClick={onClick} title={title} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13, display: "inline-flex", alignItems: "center", ...extraStyle }}>{icon}</button>
+  );
+
   return (
     <div>
       {tooltip && (
@@ -374,26 +389,35 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
         </div>
       )}
       <PageTitle subtitle={totalContacts + " contacts"} pageColor={PAGE_COLORS.contacts}
-        action={["templates","airules","import"].includes(section) ? null : section === "school" ? <Btn onClick={addContact}>+ Add Contact</Btn> : <Btn onClick={addManualParent}>+ Add Parent</Btn>}
+        action={["airules","import"].includes(section) ? null : section === "school"
+          ? <Btn onClick={addContact} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>+ Add Contact</Btn>
+          : null}
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>
         Contacts
       </PageTitle>
 
-      {/* Section toggle + Templates + AI Rules + Import */}
+      {/* Section toggle + AI Rules + Import */}
       <div style={{ display: "flex", alignItems: "center", marginBottom: 16, gap: 8, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 0, background: colors.bg, border: "1px solid " + colors.border, borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
-          {[{ id: "parents", label: "👨‍👩‍👧 Parent Contacts" }, { id: "school", label: "🏫 School Contacts" }].map(s => (
+        <div style={{ display: "flex", gap: 0, background: colors.bg, border: "2px solid " + colors.sidebarHover, borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
+          {[
+            { id: "parents", label: "Parent Contacts", icon: <Users size={13} /> },
+            { id: "school", label: "School Contacts", icon: <Building2 size={13} /> }
+          ].map(s => (
             <button key={s.id} onClick={() => setSection(s.id)}
-              style={{ padding: "8px 20px", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: section === s.id ? colors.sidebarActive : "transparent", color: section === s.id ? colors.white : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
-              {s.label}
+              style={{ padding: "8px 20px", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: section === s.id ? colors.sidebarHover : "transparent", color: section === s.id ? colors.white : colors.textMuted, transition: "background 0.15s, color 0.15s", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {s.icon}{s.label}
             </button>
           ))}
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {[{ id: "import", label: "📥 Import" }, { id: "airules", label: "🤖 AI Rules" }, { id: "templates", label: "📋 Templates" }].map(btn => (
+          {[
+            { id: "import", label: "Import", icon: <Download size={13} /> },
+            { id: "airules", label: "AI Rules", icon: <Bot size={13} /> }
+            // Session 95: Templates button removed — editor lives in Settings now.
+          ].map(btn => (
             <button key={btn.id} onClick={() => setSection(section === btn.id ? "parents" : btn.id)}
-              style={{ padding: "8px 16px", border: "1px solid " + (section === btn.id ? colors.sidebarActive : colors.border), borderRadius: 10, fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: section === btn.id ? colors.sidebarActive : colors.white, color: section === btn.id ? colors.white : colors.textMuted, transition: "background 0.15s, color 0.15s, border-color 0.15s" }}>
-              {btn.label}
+              style={{ padding: "8px 16px", border: "1px solid " + (section === btn.id ? colors.sidebarHover : colors.border), borderRadius: 10, fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: section === btn.id ? colors.sidebarHover : colors.cardBg, color: section === btn.id ? colors.cardBg : colors.textMuted, transition: "background 0.15s, color 0.15s, border-color 0.15s", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {btn.icon}{btn.label}
             </button>
           ))}
         </div>
@@ -407,7 +431,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
               <div style={{ flex: 1, minWidth: 160, position: "relative" }}>
                 <input value={pSearch} onChange={e => setPSearch(e.target.value)} placeholder="Search parent or student name…"
                   style={{ width: "100%", padding: "8px 32px 8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
-                {pSearch && <button onClick={() => setPSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>}
+                {pSearch && <button onClick={() => setPSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
               </div>
               <select value={pFilterSchool} onChange={e => setPFilterSchool(e.target.value)}
                 style={{ padding: "8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
@@ -427,28 +451,22 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
               {pSelected.size > 0 && (
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => {
-                    const emails = [...pSelected].map(key => {
-                      const row = filteredParents.find(p => getDedupKey(p) === key);
-                      return row ? row.email : null;
-                    }).filter(Boolean);
+                    const emails = [...pSelected].map(key => { const row = filteredParents.find(p => getDedupKey(p) === key); return row ? row.email : null; }).filter(Boolean);
                     if (!emails.length) { notify("No email addresses in selection", "warning"); return; }
                     openCompose(emails, { from: schools.find(s => s.id === pFilterSchool)?.senderEmail || "", triggerId: "contacts_individual" });
                   }}
-                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                    <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Group ({pSelected.size})</span>
+                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
+                    <Mail size={14} /><span>Group ({pSelected.size})</span>
                   </button>
                   <button onClick={() => {
-                    const emails = [...pSelected].map(key => {
-                      const row = filteredParents.find(p => getDedupKey(p) === key);
-                      return row ? row.email : null;
-                    }).filter(Boolean);
+                    const emails = [...pSelected].map(key => { const row = filteredParents.find(p => getDedupKey(p) === key); return row ? row.email : null; }).filter(Boolean);
                     if (!emails.length) { notify("No email addresses in selection", "warning"); return; }
                     openGmailSequential(emails, { from: schools.find(s => s.id === pFilterSchool)?.senderEmail || "" });
                   }}
-                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                    <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Individually</span>
+                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
+                    <Mail size={14} /><span>Individually</span>
                   </button>
                 </div>
               )}
@@ -458,17 +476,18 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
           {filteredParents.length === 0 ? (
             <EmptyState icon="👨‍👩‍👧" title="No parent contacts" subtitle="Parent contacts are automatically built from student records. Add parent details to a student to see them here." />
           ) : (
-            <div style={{ background: colors.white, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 280px)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
+                <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
                   <tr>
-                    <th style={{ padding: "10px 12px", background: colors.sidebarActive, width: 36 }}>
+                    <th style={{ padding: "10px 12px", background: colors.sidebarHover, width: 36 }}>
                       <input type="checkbox" checked={pSelected.size === filteredParents.length && filteredParents.length > 0} onChange={pToggleSelectAll} style={{ cursor: "pointer" }} />
                     </th>
                     <PSortTh col="name">Name</PSortTh>
                     <PSortTh col="students">Student(s)</PSortTh>
                     <PSortTh col="email">Email</PSortTh>
-                    <th style={{ padding: "10px 12px", background: colors.sidebarActive, width: 100 }}></th>
+                    <th style={{ padding: "10px 12px", background: colors.sidebarHover, width: 100 }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -478,13 +497,17 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                     const phoneOpen = pExpandedPhone.has(dedupKey);
                     const notesOpen = pExpandedNotes.has(dedupKey);
                     const ccOpen = pExpandedCC.has(dedupKey);
-                    const rowBg = idx % 2 === 0 ? colors.white : colors.bg;
+                    const isHovered = hoveredPRow === dedupKey;
+                    const rowBg = isEditing ? colors.blueLight : (isHovered ? ROW_HOVER_BG : colors.cardBg);
                     const preferredName = getPreferredName(p.name);
                     const displayName = getDisplayName(p.name);
 
                     return (
                       <React.Fragment key={dedupKey}>
-                        <tr style={{ background: isEditing ? colors.blueLight : rowBg, borderBottom: (phoneOpen || notesOpen || ccOpen) ? "none" : "1px solid " + colors.borderLight }}>
+                        <tr
+                          style={{ background: rowBg, borderBottom: (phoneOpen || notesOpen || ccOpen) ? "none" : "1px solid " + colors.borderLight }}
+                          onMouseEnter={() => setHoveredPRow(dedupKey)}
+                          onMouseLeave={() => setHoveredPRow(null)}>
                           <td style={{ padding: "8px 12px", textAlign: "center" }}>
                             <input type="checkbox" checked={pSelected.has(dedupKey)} onChange={e => handlePCheckbox(dedupKey, e)} style={{ cursor: "pointer" }} />
                           </td>
@@ -532,20 +555,19 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                             <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
                               {isEditing ? (
                                 <>
-                                  <button onClick={saveParentEditWithNew} title="Save" style={{ border: "none", background: colors.success, color: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>✓</button>
-                                  <button onClick={cancelParentEdit} title="Cancel" style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.textMuted, borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>✕</button>
+                                  <button onClick={saveParentEditWithNew} title="Save" style={{ border: "none", background: colors.success, color: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Check size={14} /></button>
+                                  <button onClick={cancelParentEdit} title="Cancel" style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.textMuted, borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                                 </>
                               ) : (
                                 <>
-                                  {p.email && <button onClick={e => { e.stopPropagation(); openCompose([p.email]); }} title={"Email " + displayName} style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.accent, borderRadius: 6, padding: "4px 7px", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>✉</button>}
+                                  {p.email && iconBtn(e => { e.stopPropagation(); openCompose([p.email]); }, <Mail size={13} />, colors.accent, "Email " + displayName)}
                                   <button data-expand-toggle="true" onClick={() => pToggleCC(dedupKey)} onMouseEnter={e => showTooltip(e, p.cc ? "CC: " + p.cc : "Add CC address")} onMouseLeave={hideTooltip}
-                                    style={{ border: "1px solid " + colors.border, background: ccOpen ? colors.sidebarActive : (p.cc ? colors.blueLight : colors.white), color: ccOpen ? colors.white : (p.cc ? colors.accent : colors.textMuted), borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>CC</button>
-                                  <button data-expand-toggle="true" onClick={() => pTogglePhone(dedupKey)} onMouseEnter={e => showTooltip(e, p.phone || "Add phone")} onMouseLeave={hideTooltip}
-                                    style={{ border: "1px solid " + colors.border, background: phoneOpen ? colors.sidebarActive : colors.white, color: phoneOpen ? colors.white : (p.phone ? colors.text : colors.textMuted), borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>📞</button>
-                                  <button data-expand-toggle="true" onClick={() => pToggleNotes(dedupKey)} onMouseEnter={e => showTooltip(e, p.notes ? p.notes.slice(0, 80) : "Add notes")} onMouseLeave={hideTooltip}
-                                    style={{ border: "1px solid " + colors.border, background: notesOpen ? colors.sidebarActive : colors.white, color: notesOpen ? colors.white : colors.textMuted, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>📝</button>
-                                  <button onClick={() => startParentEdit(p)} title="Edit"
-                                    style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.textMuted, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>✏</button>
+                                    style={{ border: "1px solid " + colors.border, background: ccOpen ? colors.sidebarActive : (p.cc ? colors.blueLight : colors.cardBg), color: ccOpen ? colors.cardBg : (p.cc ? colors.accent : colors.textMuted), borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>CC</button>
+                                  {iconBtn(e => { e.stopPropagation(); pTogglePhone(dedupKey); }, <Phone size={13} />, phoneOpen ? colors.white : (p.phone ? colors.text : colors.textMuted), p.phone || "Add phone",
+                                    { background: phoneOpen ? colors.sidebarActive : colors.cardBg })}
+                                  {iconBtn(e => { e.stopPropagation(); pToggleNotes(dedupKey); }, <StickyNote size={13} />, notesOpen ? colors.white : colors.textMuted, p.notes ? p.notes.slice(0, 80) : "Add notes",
+                                    { background: notesOpen ? colors.sidebarActive : colors.cardBg })}
+                                  {iconBtn(e => { e.stopPropagation(); startParentEdit(p); }, <Pencil size={13} />, colors.textMuted, "Edit")}
                                 </>
                               )}
                             </div>
@@ -584,7 +606,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                           <tr style={{ background: rowBg, borderBottom: "1px solid " + colors.borderLight }}>
                             <td data-expand-area="true" colSpan={5} style={{ padding: "0 12px 10px 48px" }}>
                               <textarea value={p.notes || ""} onChange={e => updateParentField(dedupKey, "notes", e.target.value)} placeholder="Notes…"
-                                style={{ width: "100%", padding: "8px 10px", border: "1px solid " + colors.inputBorder, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, boxSizing: "border-box", color: colors.text, background: colors.white }} />
+                                style={{ width: "100%", padding: "8px 10px", border: "1px solid " + colors.inputBorder, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, boxSizing: "border-box", color: colors.text, background: colors.cardBg }} />
                             </td>
                           </tr>
                         )}
@@ -593,6 +615,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                   })}
                 </tbody>
               </table>
+              </div>
               {filteredParents.length === 0 && parentRows.length > 0 && (
                 <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No parents match the current filters</div>
               )}
@@ -609,7 +632,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
               <div style={{ flex: 1, minWidth: 160, position: "relative" }}>
                 <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email…"
                   style={{ width: "100%", padding: "8px 32px 8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
-                {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>}
+                {search && <button onClick={() => setSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
               </div>
               <select value={filterSchool} onChange={e => setFilterSchool(e.target.value)}
                 style={{ padding: "8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
@@ -628,18 +651,18 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                     if (!emails.length) { notify("No email addresses in selection", "warning"); return; }
                     openCompose(emails, { from: schools.find(s => s.id === filterSchool)?.senderEmail || "", triggerId: "contacts_individual" });
                   }}
-                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                    <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Group ({selected.size})</span>
+                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
+                    <Mail size={14} /><span>Group ({selected.size})</span>
                   </button>
                   <button onClick={() => {
                     const emails = [...selected].map(id => (contacts.find(c => c.id === id) || {}).email).filter(Boolean);
                     if (!emails.length) { notify("No email addresses in selection", "warning"); return; }
                     openGmailSequential(emails, { from: schools.find(s => s.id === filterSchool)?.senderEmail || "" });
                   }}
-                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                    <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Individually</span>
+                    style={{ padding: "5px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.accent, display: "flex", alignItems: "center", gap: 5 }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
+                    <Mail size={14} /><span>Individually</span>
                   </button>
                 </div>
               )}
@@ -649,18 +672,19 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
           {contacts.length === 0 ? (
             <EmptyState icon="🏫" title="No school contacts yet" subtitle="Add school contacts like principals, office managers, and classroom teachers." action="+ Add Contact" onAction={addContact} />
           ) : (
-            <div style={{ background: colors.white, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 280px)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
+                <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
                   <tr>
-                    <th style={{ padding: "10px 12px", background: colors.sidebarActive, width: 36 }}>
+                    <th style={{ padding: "10px 12px", background: colors.sidebarHover, width: 36 }}>
                       <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleSelectAll} style={{ cursor: "pointer" }} />
                     </th>
                     <SortTh col="name">Name</SortTh>
                     <SortTh col="school">School</SortTh>
                     <SortTh col="role">Role</SortTh>
                     <SortTh col="class">Class / Subject</SortTh>
-                    <th style={{ padding: "10px 12px", background: colors.sidebarActive, width: 80 }}></th>
+                    <th style={{ padding: "10px 12px", background: colors.sidebarHover, width: 80 }}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -670,11 +694,15 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                     const schoolName = schools.find(s => s.id === c.schoolId)?.name || "";
                     const classOpts = getClassOptions(isEditing ? editForm.schoolId : c.schoolId, isEditing ? editForm.role : c.role);
                     const showClassField = CLASS_ROLES.includes(isEditing ? editForm.role : c.role);
-                    const rowBg = idx % 2 === 0 ? colors.white : colors.bg;
+                    const isHovered = hoveredRow === c.id;
+                    const rowBg = isEditing ? colors.blueLight : (isHovered ? ROW_HOVER_BG : colors.cardBg);
 
                     return (
                       <React.Fragment key={c.id}>
-                        <tr style={{ background: isEditing ? colors.blueLight : rowBg, borderBottom: noteOpen ? "none" : "1px solid " + colors.borderLight }}>
+                        <tr
+                          style={{ background: rowBg, borderBottom: noteOpen ? "none" : "1px solid " + colors.borderLight }}
+                          onMouseEnter={() => setHoveredRow(c.id)}
+                          onMouseLeave={() => setHoveredRow(null)}>
                           <td style={{ padding: "8px 12px", textAlign: "center" }}>
                             <input type="checkbox" checked={selected.has(c.id)} onChange={e => handleCheckbox(c.id, e)} style={{ cursor: "pointer" }} />
                           </td>
@@ -691,7 +719,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                                   <option value="">Select…</option>
                                   {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                                 </select>
-                              : schoolName || <span style={{ color: colors.textMuted }}>—</span>}
+                              : schoolName ? <span style={{ color: schools.find(s => s.id === c.schoolId)?.color || colors.text, fontWeight: 600 }}>{schoolName}</span> : <span style={{ color: colors.textMuted }}>—</span>}
                           </td>
                           <td style={{ padding: "6px 12px" }}>
                             {isEditing
@@ -727,16 +755,19 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                             <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
                               {isEditing ? (
                                 <>
-                                  <button onClick={saveEdit} title="Save" style={{ border: "none", background: colors.success, color: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 600 }}>✓</button>
-                                  <button onClick={cancelEdit} title="Cancel" style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.textMuted, borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>✕</button>
+                                  <button onClick={saveEdit} title="Save" style={{ border: "none", background: colors.success, color: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Check size={14} /></button>
+                                  <button onClick={cancelEdit} title="Cancel" style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.textMuted, borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
                                 </>
                               ) : (
                                 <>
-                                  {c.email && <button onClick={e => { e.stopPropagation(); openCompose([c.email]); }} title={"Email " + c.name} style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.accent, borderRadius: 6, padding: "4px 7px", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>✉</button>}
-                                  <button data-expand-toggle="true" onClick={() => toggleNote(c.id)} onMouseEnter={e => showTooltip(e, c.notes ? c.notes.slice(0, 80) : "Add notes")} onMouseLeave={hideTooltip} style={{ border: "1px solid " + colors.border, background: noteOpen ? colors.sidebarActive : colors.white, color: noteOpen ? colors.white : colors.textMuted, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>📝</button>
-                                  <button data-expand-toggle="true" onClick={() => togglePhone(c.id)} onMouseEnter={e => showTooltip(e, c.phone || "Add phone number")} onMouseLeave={hideTooltip} style={{ border: "1px solid " + colors.border, background: expandedPhone.has(c.id) ? colors.sidebarActive : colors.white, color: expandedPhone.has(c.id) ? colors.white : (c.phone ? colors.text : colors.textMuted), borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>📞</button>
-                                  <button onClick={() => startEdit(c)} title="Edit" style={{ border: "1px solid " + colors.border, background: colors.white, color: colors.textMuted, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>✏</button>
-                                  <button onClick={() => deleteContact(c.id)} title="Delete" style={{ border: "1px solid " + colors.danger + "60", background: colors.white, color: colors.danger, borderRadius: 6, padding: "4px 7px", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                                  {c.email && iconBtn(e => { e.stopPropagation(); openCompose([c.email]); }, <Mail size={13} />, colors.accent, "Email " + c.name)}
+                                  {iconBtn(e => { e.stopPropagation(); toggleNote(c.id); }, <StickyNote size={13} />, noteOpen ? colors.white : colors.textMuted, c.notes ? c.notes.slice(0, 80) : "Add notes",
+                                    { background: noteOpen ? colors.sidebarActive : colors.cardBg })}
+                                  {iconBtn(e => { e.stopPropagation(); togglePhone(c.id); }, <Phone size={13} />, expandedPhone.has(c.id) ? colors.white : (c.phone ? colors.text : colors.textMuted), c.phone || "Add phone number",
+                                    { background: expandedPhone.has(c.id) ? colors.sidebarActive : colors.cardBg })}
+                                  {iconBtn(e => { e.stopPropagation(); startEdit(c); }, <Pencil size={13} />, colors.textMuted, "Edit")}
+                                  {iconBtn(e => { e.stopPropagation(); deleteContact(c.id); }, <Trash2 size={13} />, colors.danger, "Delete",
+                                    { border: "1px solid " + colors.danger + "60" })}
                                 </>
                               )}
                             </div>
@@ -757,7 +788,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                           <tr style={{ background: rowBg, borderBottom: "1px solid " + colors.borderLight }}>
                             <td data-expand-area="true" colSpan={7} style={{ padding: "0 12px 10px 48px" }}>
                               <textarea value={c.notes || ""} onChange={e => updateNote(c.id, e.target.value)} placeholder="Notes…"
-                                style={{ width: "100%", padding: "8px 10px", border: "1px solid " + colors.inputBorder, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, boxSizing: "border-box", color: colors.text, background: colors.white }} />
+                                style={{ width: "100%", padding: "8px 10px", border: "1px solid " + colors.inputBorder, borderRadius: 7, fontSize: 12, fontFamily: "inherit", resize: "vertical", minHeight: 60, boxSizing: "border-box", color: colors.text, background: colors.cardBg }} />
                             </td>
                           </tr>
                         )}
@@ -766,17 +797,13 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
                   })}
                 </tbody>
               </table>
+              </div>
               {filtered.length === 0 && contacts.length > 0 && (
                 <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No contacts match the current filters</div>
               )}
             </div>
           )}
         </div>
-      )}
-
-      {/* ── TEMPLATES ── */}
-      {section === "templates" && (
-        <EmailTemplatesEditor notify={notify} />
       )}
 
       {/* ── AI EMAIL RULES ── */}

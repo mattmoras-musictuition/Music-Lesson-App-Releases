@@ -3,18 +3,23 @@
 // ============================================================
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, TALLY_REASONS, BAND_COLOR } from "../constants";
-import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
+import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, TALLY_REASONS, BAND_COLOR } from "../constants";
+import { useTheme } from "../context/ThemeContext";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks, isDayPast6pm } from "../utils/tallyHelpers";
+import { hasMissedEntry, getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
-import { ExportIcon } from "../components/ExportDialog";
+import { supabase } from "../supabaseClient";
+import { enrolmentIdFor } from "../utils/enrolmentsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+  const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
   const showMissedTally = viewState.showMissedTally;
@@ -32,8 +37,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const lastWttVersionNameRef = React.useRef({}); // { [schoolId]: lastUsedName }
   const [showWttVersionMenu, setShowWttVersionMenu] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [wttHintIdx, setWttHintIdx] = useState(0);
-  const [wttHintVisible, setWttHintVisible] = useState(true);
+
   React.useEffect(() => {
     (async () => {
       const v = await loadData(STORAGE_KEYS.weeklyVersions, []);
@@ -93,6 +97,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [confirmImportExpanded, setConfirmImportExpanded] = useState(false);
   const [showInterruptions, setShowInterruptions] = useState(false);
   const [editUnlocked, setEditUnlocked] = useState(false);
+  // ── Confirmed days (teacher-locked day slips) ─────────────
+  const [confirmedDaysMap, setConfirmedDaysMap] = useState({}); // { dateStr: [{id, teacherId}] }
+  const [resettingDay,  setResettingDay]  = useState(null);  // dateStr being reset
+  const [confirmingDay, setConfirmingDay] = useState(null);  // dateStr being confirmed by admin
+  const [resetConfirm,  setResetConfirm]  = useState(null);  // dateStr awaiting confirmation
   const gridScrollRef = useRef(null);
   const savedGridScroll = useRef({});
   savedGridScroll.current = sharedTimetableScroll?.gridScroll || viewState.gridScroll || {};
@@ -135,14 +144,62 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [constraintWarnings, setConstraintWarnings] = useState({});
   const [ackedConstraints, setAckedConstraints] = useState(new Set());
   const [expandedWarnings, setExpandedWarnings] = useState(new Set());
+  const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
   const [contextMenu, setContextMenu] = useState(null);
   const [catchupSubmenu, setCatchupSubmenu] = useState(null);
+  const [catchupDayTeacher, setCatchupDayTeacher] = useState({}); // { [dayName]: teacherId } for holiday catch-up grid
+  const [catchupSelectedCards, setCatchupSelectedCards] = useState(new Set()); // selected card IDs in holiday grid
+  const [selectedCatchupDays, setSelectedCatchupDays] = useState(new Set()); // Set of day names selected via holiday header click
+  const [dragOverCatchupMissed, setDragOverCatchupMissed] = useState(false);
+  const [swapCatchupTeacherSub, setSwapCatchupTeacherSub] = useState(null); // { y } for swap teacher submenu on catch-up cards
+  const swapCatchupSubRef = React.useRef(null);
+  const swapCatchupSubTimer = React.useRef(null);
+  // catchupLessons: derived from weeklyTimetables using "weekKey|__catchup__" sentinel keys.
+  // This makes catch-up data visible to React state (and Claude's system prompt) while
+  // keeping it out of Supabase (filtered at sync time in App.js).
+  // confirmedCatchupDays and catchupMissed remain in localStorage as before.
+  const catchupLessons = useMemo(() => {
+    const result = {};
+    Object.entries(weeklyTimetables || {}).forEach(([k, v]) => {
+      if (k.endsWith("|__catchup__")) result[k.split("|")[0]] = v.lessons || [];
+    });
+    return result;
+  }, [weeklyTimetables]);
+  const setCatchupLessons = useCallback((updater) => {
+    setWeeklyTimetables(prev => {
+      const current = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        if (k.endsWith("|__catchup__")) current[k.split("|")[0]] = v.lessons || [];
+      });
+      const next = typeof updater === "function" ? updater(current) : updater;
+      const catchupUpdates = {};
+      Object.entries(next).forEach(([wk, lessons]) => {
+        const key = `${wk}|__catchup__`;
+        catchupUpdates[key] = { ...(prev[key] || {}), lessons };
+      });
+      return {
+        ...Object.fromEntries(Object.entries(prev).filter(([k]) => !k.endsWith("|__catchup__"))),
+        ...catchupUpdates,
+      };
+    });
+  }, [setWeeklyTimetables]);
+  const [catchupMissed, setCatchupMissed] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("mt-catchup-missed") || "{}"); } catch { return {}; }
+  });
+  const [confirmedCatchupDays, setConfirmedCatchupDays] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("mt-catchup-confirmed") || "{}"); } catch { return {}; }
+  });
+  const [catchupSlotSubTeacher, setCatchupSlotSubTeacher] = useState(null); // { teacherId, y } for cascading slot menu
+  const catchupSlotSubRef = React.useRef(null);
+  const catchupSlotHideTimer = React.useRef(null);
+  const [dayTeacherChips, setDayTeacherChips] = useState({}); // { [day]: teacherId[] } chips added per day column
   const [pendingSubmenu, setPendingSubmenu] = useState(null);
   const [addLessonSubmenu, setAddLessonSubmenu] = useState(null);
   const [missedZoneSubmenu, setMissedZoneSubmenu] = useState(null);
   const [dayHeaderSubmenu, setDayHeaderSubmenu] = useState(null);
   const dayHeaderHideTimer = React.useRef(null);
+  const missedZoneHideTimer = React.useRef(null);
   const [wttEmailSubmenu, setWttEmailSubmenu] = useState(null);
   const [wttEmailLevel2, setWttEmailLevel2] = useState(null);
   const [notePopup, setNotePopup] = useState(null); // { lessonId, storageKey, x, y, note }
@@ -150,7 +207,26 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [selectedCards, setSelectedCards] = useState(new Set()); // Set of lessonIds
   const [selectedMissed, setSelectedMissed] = useState(new Set()); // Set of missed indices
   const [selectedDays, setSelectedDays] = useState(new Set()); // Set of day names selected via header click
-  const [bulkMissedModal, setBulkMissedModal] = useState(null); // { lessonIds }
+  const [missedModal, setMissedModal] = useState(null); // unified single+bulk missed modal
+  const [rememberedReasons, setRememberedReasons] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("mt-missed-reasons") || "[]"); } catch { return []; }
+  });
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.from("app_settings").select("value").eq("key", "missed_reasons").single();
+        if (data?.value) {
+          const parsed = JSON.parse(data.value);
+          if (Array.isArray(parsed)) { setRememberedReasons(parsed); try { localStorage.setItem("mt-missed-reasons", JSON.stringify(parsed)); } catch {} }
+        }
+      } catch {}
+    })();
+  }, []);
+  const saveRememberedReasons = async (list) => {
+    setRememberedReasons(list);
+    try { localStorage.setItem("mt-missed-reasons", JSON.stringify(list)); } catch {}
+    try { await supabase.from("app_settings").upsert({ key: "missed_reasons", value: JSON.stringify(list) }); } catch {}
+  };
   const [swapTeacherSubmenu, setSwapTeacherSubmenu] = useState(null); // { y } or null
   const swapTeacherSubRef = React.useRef(null);
   const swapTeacherHideTimer = React.useRef(null);
@@ -180,11 +256,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const inSwap = swapTeacherSubRef.current && (() => { const r = swapTeacherSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
       const inLevel3 = level3MenuRef.current && (() => { const r = level3MenuRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
       const inDayHeader = dayHeaderSubRef.current && (() => { const r = dayHeaderSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
-      if (inMain || inSub || inSwap || inLevel3 || inDayHeader) {
+      const inMissedZone = missedZoneSubRef.current && (() => { const r = missedZoneSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
+      const inCatchupSlotSub = catchupSlotSubRef.current && (() => { const r = catchupSlotSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
+      const inSwapCatchup = swapCatchupSubRef.current && (() => { const r = swapCatchupSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
+      if (inMain || inSub || inSwap || inLevel3 || inDayHeader || inMissedZone || inCatchupSlotSub || inSwapCatchup) {
         if (menuCloseTimer.current) { clearTimeout(menuCloseTimer.current); menuCloseTimer.current = null; }
       } else {
         if (!menuCloseTimer.current) {
-          menuCloseTimer.current = setTimeout(() => { setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null; menuCloseTimer.current = null; }, 250);
+          menuCloseTimer.current = setTimeout(() => { setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null; menuCloseTimer.current = null; }, 450);
         }
       }
     };
@@ -194,10 +273,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
 
 
+  // Persist confirmed days and missed records to localStorage whenever they change
+  React.useEffect(() => {
+    try { localStorage.setItem("mt-catchup-confirmed", JSON.stringify(confirmedCatchupDays)); } catch {}
+  }, [confirmedCatchupDays]);
+  React.useEffect(() => {
+    try { localStorage.setItem("mt-catchup-missed", JSON.stringify(catchupMissed)); } catch {}
+  }, [catchupMissed]);
+
   const [hoverNotes, setHoverNotes] = useState(null) // null | { text, x, y };
   // Tally prompt — shown when a lesson is manually dragged to missed area
   const [tallyPrompt, setTallyPrompt] = useState(null); // { lesson, missedEntry, weekKey, weekNum }
   const [tallyPromptNotes, setTallyPromptNotes] = useState("");
+  const [tallyPromptCategory, setTallyPromptCategory] = useState(null);
+  const [tallyPromptReasonDetail, setTallyPromptReasonDetail] = useState("");
+  const [tallyPromptCatchup, setTallyPromptCatchup] = useState(null);
   const [tallyConfirm, setTallyConfirm] = useState(null); // step 2: { lesson, reasonValue, reasonLabel, makeupEligible, weekLabel }
   const specLookupRef = React.useMemo(() => {
     const lookup = {};
@@ -211,6 +301,146 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
 
   // Live specialist tag lookup — used at render so stored field doesn't matter
+  // Extracts preferred display name from bracket notation: "Jonathan (Johnny) Smith" → "Johnny Smith"
+  const getPrefDisplayName = (name) => {
+    if (!name) return name;
+    const m = name.match(/\(([^)]+)\)/);
+    if (!m) return name;
+    const stripped = name.replace(/\s*\([^)]+\)/, "");
+    const parts = stripped.split(" ");
+    parts[0] = m[1];
+    return parts.join(" ");
+  };
+
+  // ── Popover helpers (hover info card on lesson cards) ─────
+  const buildPreferredDisplayName = (name) => {
+    if (!name) return name;
+    const match = name.match(/\(([^)]+)\)/);
+    if (!match) return name;
+    const prefFirst = match[1];
+    const surname = name.replace(/^[^\s(]+\s*\([^)]+\)\s*/, "").trim();
+    return surname ? `${prefFirst} ${surname}` : prefFirst;
+  };
+
+  const getStudentBands = (studentId) => {
+    if (!studentId || !(bands || []).length) return [];
+    return (bands || []).filter(b =>
+      (b.members || []).some(m => m.studentId === studentId || m.student_id === studentId)
+    ).map(b => b.name);
+  };
+
+  const buildPopoverInfo = (lesson) => {
+    const info = {
+      title: "",
+      instrument: lesson.instrument || "",
+      teacher: lesson.teacherName || "",
+      time: `${toTimeLabel(lesson.start)}${lesson.end ? " – " + toTimeLabel(lesson.end) : ""}`,
+      parentName: null,
+      className: null,
+      classTeacher: null,
+      bands: [],
+      groupMembers: [],
+    };
+
+    if (lesson.isGroup) {
+      info.title = lesson.groupName || lesson.studentName || "Group Lesson";
+      const memberIds = lesson.studentIds || [];
+      info.groupMembers = memberIds.map(sid => {
+        const st = students.find(s => s.id === sid);
+        if (!st) return null;
+        const parentName = (st.parents || []).find(p => p.name)?.name;
+        const studentBands = getStudentBands(sid);
+        return {
+          name: buildPreferredDisplayName(st.name),
+          className: st.className || st.class_name || "",
+          parentName: parentName || null,
+          bands: studentBands,
+          classTeacher: (() => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : null; })(),
+        };
+      }).filter(Boolean);
+    } else {
+      const st = students.find(s => s.id === lesson.studentId);
+      info.title = buildPreferredDisplayName(st?.name || lesson.studentName);
+      info.className = st?.className || st?.class_name || lesson.className || null;
+      if (st) {
+        const parent = (st.parents || []).find(p => p.name);
+        info.parentName = parent ? parent.name : null;
+        info.bands = getStudentBands(st.id);
+        const ct = getClassTeacher(st, contacts || []);
+        info.classTeacher = ct ? ct.name : null;
+      }
+    }
+
+    return info;
+  };
+
+  const renderHoverPopover = () => {
+    if (!hoverPopover) return null;
+    const { info, rect, color } = hoverPopover;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const topPos = spaceBelow > 200 ? rect.bottom + 6 : rect.top - 6;
+    const anchor = spaceBelow > 200 ? "top" : "bottom";
+    const popLeft = Math.min(rect.left, window.innerWidth - 260);
+
+    return (
+      <div style={{
+        position: "fixed", left: popLeft,
+        [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+        zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+        boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
+        padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4, lineHeight: 1.3 }}>
+          {info.title}
+        </div>
+        <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
+          {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
+        </div>
+        <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>
+        {!info.groupMembers.length && (
+          <>
+            {(info.className || info.classTeacher) && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>
+                Class: {info.className || ""}{info.classTeacher ? `${info.className ? " - " : ""}${info.classTeacher}` : ""}
+              </div>
+            )}
+            {info.parentName && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>Parent: {info.parentName}</div>
+            )}
+            {info.bands.length > 0 && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>
+                Band: {info.bands.join(", ")}
+              </div>
+            )}
+          </>
+        )}
+        {info.groupMembers.length > 0 && (
+          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+              Members
+            </div>
+            {info.groupMembers.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.groupMembers.length - 1 ? 4 : 0 }}>
+                <div style={{ fontWeight: 600 }}>{m.name}</div>
+                {(m.className || m.classTeacher) && (
+                  <div style={{ color: colors.textMuted }}>
+                    Class: {m.className || ""}{m.classTeacher ? `${m.className ? " - " : ""}${m.classTeacher}` : ""}
+                  </div>
+                )}
+                {m.parentName && (
+                  <div style={{ color: colors.textMuted }}>Parent: {m.parentName}</div>
+                )}
+                {m.bands.length > 0 && (
+                  <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const getLiveSpecialistTag = (lesson) => {
     const sStart = timeToMin(lesson.start), sEnd = timeToMin(lesson.end);
     if (lesson.isGroup) {
@@ -273,7 +503,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         }
       }
       const school = schools.find(s => s.id === lesson.schoolId);
-      const teacher = teachers.find(t => t.id === lesson.teacherId);
+      const liveBand = bands?.find(b => b.id === lesson.bandId);
+      const effectiveBandTeacherId = liveBand?.teacherId || lesson.teacherId;
+      const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
         if (!dayAvail) {
@@ -284,7 +516,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
           }
         }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && l.teacherId === lesson.teacherId && l.day === newDay && l.start === slot.start);
+        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
         if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
       }
       const targetDate = weekDateMap[newDay];
@@ -319,7 +551,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       // Teacher availability and double-booking for groups
       const school = schools.find(s => s.id === lesson.schoolId);
-      const teacher = teachers.find(t => t.id === lesson.teacherId);
+      // Look up current teacher from live groups state rather than stored lesson.teacherId
+      const liveGroup = groups?.find(g => g.id === lesson.groupId);
+      const effectiveGroupTeacherId = liveGroup?.teacherId || lesson.teacherId;
+      const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
         if (!dayAvail) {
@@ -331,7 +566,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
           }
         }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && l.teacherId === lesson.teacherId && l.day === newDay && l.start === slot.start);
+        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
         if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
       }
       // Interruption check for groups
@@ -358,6 +593,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const slotStart = timeToMin(slot.start);
     const slotEnd = timeToMin(slot.end);
     const hints = student._noteHints || {};
+
+    // Pre-marked absence: warn if student has an informed_absence missed entry for this week
+    const hasPreMarkedAbsence = hasMissedEntry({
+      weeklyTimetables,
+      studentId: lesson.studentId,
+      weekKey,
+      reasons: ["informed_absence"],
+    });
+    if (hasPreMarkedAbsence) warnings.push("⚠ Pre-marked absence this week — student not expected in");
     const hasRequiredHere = (hints.requiredTimes || []).some(function(rt) { return rt.day === newDay && rt.start === slot.start; });
     if (slot.type === "before_school" && !student.availableBefore && !hasRequiredHere) warnings.push("Student not available before school");
     if (slot.type === "after_school" && !student.availableAfter && !hasRequiredHere) warnings.push("Student not available after school");
@@ -365,6 +609,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const isBeforeAfter = ["before_school", "after_school"].includes(slot.type);
     if (student.outsideClassOnly && !isBreak && !isBeforeAfter) warnings.push("Student should only be scheduled outside class time");
     if (student.outsideClassPreferred && !isBreak && !isBeforeAfter && slot.type === "class") warnings.push("Student prefers outside class time");
+    if (student.avoidRecessLunch && isBreak) warnings.push("Student prefers to avoid recess/lunch lessons");
     if (hints.avoidTimes) {
       for (const at of hints.avoidTimes) {
         if (at.day === newDay && slotStart < timeToMin(at.end) && slotEnd > timeToMin(at.start)) warnings.push(`Avoid time: ${at.day} ${at.start}–${at.end}`);
@@ -376,11 +621,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (_wttUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     }
-    const teacher = _wttUnassigned ? null : teachers.find(t => t.id === lesson.teacherId);
+    // Use live teacher from student's instrument record, not the stored lesson snapshot
+    const liveInst = student ? (student.instruments || []).find(i => i.name === lesson.instrument) || (student.instruments || []).find(i => !i.isGroup) : null;
+    const liveTeacherId = liveInst?.teacherId || lesson.teacherId;
+    const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
     if (teacher) {
       const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
       if (!dayAvail) warnings.push(`${teacher.name} not available on ${newDay}`);
       else if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
+      // Teacher double-booking: another lesson at the same time with the same teacher
+      const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
+      const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
+      const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students) === liveTeacherId && l.day === newDay && l.start === slot.start);
+      if (conflict1) warnings.push(`${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
     }
 
     // Multi-lesson students: must have lessons on different days
@@ -471,6 +724,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   // Term week number
   const termBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
+  const holidayBreak = termBreaks.find(tb => weekKey >= tb.date && weekKey <= (tb.endDate || tb.date));
+  const isHolidayWeek = !!holidayBreak;
+  const holidayWeekNum = isHolidayWeek ? (() => {
+    const breakStartDate = new Date(holidayBreak.date + "T00:00:00");
+    const dow = breakStartDate.getDay();
+    const daysToNextMonday = dow === 1 ? 0 : (dow === 0 ? 1 : 8 - dow);
+    const firstMondayOfBreak = new Date(breakStartDate);
+    firstMondayOfBreak.setDate(firstMondayOfBreak.getDate() + daysToNextMonday);
+    const currentMonday = _getMondayOf(new Date(weekKey + "T00:00:00"));
+    return Math.max(1, Math.round((currentMonday.getTime() - firstMondayOfBreak.getTime()) / (7 * 24 * 60 * 60 * 1000)) + 1);
+  })() : null;
   const getTermWeekNum = (dateStr) => {
     if (termBreaks.length === 0) return null;
     const d = new Date(dateStr + "T00:00:00");
@@ -504,16 +768,87 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
 
   const termWeek = getTermWeekNum(weekKey);
-  const weekLabel = termWeek ? `Week ${termWeek}` : `Week of ${weekKey}`;
+  const weekLabel = isHolidayWeek ? `Holidays Week ${holidayWeekNum}` : (termWeek ? `Week ${termWeek}` : `Week of ${weekKey}`);
   // term week at offset 0 = current week; minOffset scrolls back to week 1
   const currentTermWeekNum = getTermWeekNum(getWeekDates(0)[0].date);
-  const minWeekOffset = currentTermWeekNum ? -(currentTermWeekNum - 1) : -20;
+  const minWeekOffset = currentTermWeekNum ? -(currentTermWeekNum - 1 + 8) : -20;
   const isPastWeek = weekOffset < 0;
   const isLocked = isPastWeek && !editUnlocked;
   const storageKey = `${weekKey}|${selectedSchool}`;
   const weeklyData = weeklyTimetables[storageKey] || null;
 
-  // ── Delete key: remove selected cards ─────────────────────
+  // Archived students are hidden from the grid — their slot becomes free.
+  // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
+  const displayLessons = (weeklyData?.lessons || []).filter(l => {
+    if (l.isGroup || !l.studentId) return true;
+    const liveStu = students.find(s => s.id === l.studentId);
+    return liveStu?.status !== "archived";
+  });
+
+  const catchupData = { lessons: catchupLessons[weekKey] || [] };
+  const catchupTimeSlots = (() => {
+    const slots = [];
+    for (let h = 9; h < 17; h++) {
+      slots.push(`${String(h).padStart(2, "0")}:00`);
+      slots.push(`${String(h).padStart(2, "0")}:30`);
+    }
+    return slots; // 9:00 to 16:30
+  })();
+
+  // Holiday grid includes Sat + Sun in addition to Mon–Fri
+  const catchupGridDays = isHolidayWeek ? (() => {
+    const friday = weekDates[4];
+    const friDate = new Date(friday.date + "T00:00:00");
+    const satDate = new Date(friDate); satDate.setDate(friDate.getDate() + 1);
+    const sunDate = new Date(friDate); sunDate.setDate(friDate.getDate() + 2);
+    return [
+      ...weekDates,
+      { day: "Saturday", date: toLocalDateStr(satDate) },
+      { day: "Sunday",   date: toLocalDateStr(sunDate) },
+    ];
+  })() : weekDates;
+
+  // ── Revalidate warnings whenever lessons or student data changes ─────────
+  // Runs on weeklyTimetables change (drag/poll) AND on students change (teacher/instrument edit).
+  // - Existing warnings: recomputed, cleared if now clean.
+  // - All lessons: also checked fresh so new warnings appear immediately when
+  //   a student's teacher or instrument changes (previously only warned lessons were rechecked).
+  useEffect(() => {
+    const lessons = weeklyData?.lessons || [];
+    if (lessons.length === 0) return;
+    setConstraintWarnings(prev => {
+      const updated = { ...prev };
+      let changed = false;
+      for (const l of lessons) {
+        const school = schools.find(s => s.id === l.schoolId);
+        const slot = school?.slots?.find(s => s.start === l.start);
+        if (!slot) {
+          if (updated[l.id]) { delete updated[l.id]; changed = true; }
+          continue;
+        }
+        const recomputed = checkConstraints(l, l.day, slot, lessons);
+        const existing = prev[l.id];
+        const same = existing
+          ? recomputed.length === existing.length && recomputed.every((w, i) => w === existing[i])
+          : recomputed.length === 0;
+        if (!same) {
+          if (recomputed.length > 0) updated[l.id] = recomputed;
+          else {
+            delete updated[l.id];
+            setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; });
+          }
+          changed = true;
+        }
+      }
+      // Remove warnings for lessons that no longer exist
+      for (const id of Object.keys(updated)) {
+        if (!lessons.find(l => l.id === id)) { delete updated[id]; changed = true; }
+      }
+      return changed ? updated : prev;
+    });
+  }, [weeklyTimetables, storageKey, students, teachers]);
+
+
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key !== "Delete" && e.key !== "Backspace") return;
@@ -541,6 +876,118 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     setEditUnlocked(false);
   }, [weekOffset]);
 
+  // ── Load confirmed day slips for displayed week ───────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const weekStart = weekDates[0].date;
+        const weekEnd   = weekDates[weekDates.length - 1].date;
+        const { data } = await supabase
+          .from("day_slips")
+          .select("id, teacher_id, slip_date")
+          .eq("slip_type", "lesson_day")
+          .eq("is_locked", true)
+          .gte("slip_date", weekStart)
+          .lte("slip_date", weekEnd);
+        if (data) {
+          const map = {};
+          for (const row of data) {
+            if (!map[row.slip_date]) map[row.slip_date] = [];
+            map[row.slip_date].push({ id: row.id, teacherId: row.teacher_id });
+          }
+          setConfirmedDaysMap(map);
+        }
+      } catch (e) {
+        console.warn("WeeklyAdjustments: failed to load day slips:", e);
+      }
+    })();
+  }, [weekKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Realtime: day_slips INSERT + DELETE ───────────────────
+  useEffect(() => {
+    const channel = supabase
+      .channel("admin-wa-day-slips")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "day_slips" }, (payload) => {
+        const row = payload.new;
+        if (row.slip_type !== "lesson_day" || !row.is_locked) return;
+        setConfirmedDaysMap(prev => {
+          const existing = prev[row.slip_date] || [];
+          if (existing.some(s => s.id === row.id)) return prev;
+          return { ...prev, [row.slip_date]: [...existing, { id: row.id, teacherId: row.teacher_id }] };
+        });
+      })
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "day_slips" }, (payload) => {
+        const row = payload.old;
+        if (!row?.slip_date) return;
+        setConfirmedDaysMap(prev => {
+          const updated = { ...prev };
+          if (updated[row.slip_date]) {
+            updated[row.slip_date] = updated[row.slip_date].filter(s => s.id !== row.id);
+            if (updated[row.slip_date].length === 0) delete updated[row.slip_date];
+          }
+          return updated;
+        });
+      })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  // ── Reset a confirmed day (admin) ─────────────────────────
+  async function resetConfirmedDay(dateStr) {
+    setResettingDay(dateStr);
+    try {
+      const slips = confirmedDaysMap[dateStr] || [];
+      const ids = slips.map(s => s.id);
+      if (ids.length > 0) {
+        await supabase.from("day_slips").delete().in("id", ids);
+      }
+      setConfirmedDaysMap(prev => { const next = { ...prev }; delete next[dateStr]; return next; });
+      setResetConfirm(null);
+      if (notify) notify("Day reset — teacher can re-confirm");
+    } catch (e) {
+      console.error("resetConfirmedDay error:", e);
+    } finally {
+      setResettingDay(null);
+    }
+  }
+
+  // ── Confirm a day from admin side (inserts one slip per teacher on that day) ─
+  async function confirmDay(dateStr, dayName) {
+    setConfirmingDay(dateStr);
+    try {
+      const teacherIds = [...new Set(
+        (weeklyData?.lessons || [])
+          .filter(l => l.day === dayName && l.teacherId)
+          .map(l => l.teacherId)
+      )];
+      if (teacherIds.length === 0) {
+        if (notify) notify("No lessons found for this day");
+        return;
+      }
+      const rows = teacherIds.map(tid => ({
+        teacher_id: tid,
+        slip_date: dateStr,
+        slip_type: "lesson_day",
+        is_locked: true,
+        school_id: selectedSchool,
+      }));
+      const { data, error } = await supabase.from("day_slips").insert(rows).select("id, teacher_id, slip_date");
+      if (error) throw error;
+      if (data) {
+        setConfirmedDaysMap(prev => ({
+          ...prev,
+          [dateStr]: [...(prev[dateStr] || []), ...data.map(r => ({ id: r.id, teacherId: r.teacher_id }))]
+        }));
+      }
+      if (notify) notify("Day confirmed");
+    } catch (e) {
+      console.error("confirmDay error:", e);
+      if (notify) notify("Failed to confirm day");
+    } finally {
+      setConfirmingDay(null);
+    }
+  }
+
   useEffect(() => {
     setAdjustmentNotes(weeklyData?.notes || "");
     setConstraintWarnings({});
@@ -554,28 +1001,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const end = i.endDate || i.date;
     return weekDates.some(wd => wd.date >= start && wd.date <= end);
   });
-
-  // Rotating hint chips
-  const WTT_HINTS = [
-    "No lessons this week",
-    "No lessons at [school] until week 4",
-    "Remove [student] from tally this week",
-    "[Student] on holidays this week",
-    "Extended absence for [student] — holding their place",
-    "[Student] hasn't started yet — remove from tally",
-    "No catch up needed",
-    "What if I'm sick Thursday?",
-  ];
-  useEffect(() => {
-    const id = setInterval(() => {
-      setWttHintVisible(false);
-      setTimeout(() => {
-        setWttHintIdx(i => (i + 1) % WTT_HINTS.length);
-        setWttHintVisible(true);
-      }, 800);
-    }, 4500);
-    return () => clearInterval(id);
-  }, []);
 
   // ── Add band session to WTT ────────────────────────────────
   const handleAddBandSession = (band) => {
@@ -653,7 +1078,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${s.instruments.map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
 
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
@@ -734,50 +1159,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 }).filter(Boolean);
                 if (suggestions.length > 0) setPendingRecurringNotes(suggestions);
               }
-              // Process tally_remove hints — apply to current week immediately
+              // tally_remove hints are consumed by the scheduler-side filter (weeklyTimetableGenerator.js); no longer persisted post-Commit-5
               const removeHints = parsed.filter(h => h.action === "tally_remove");
               if (removeHints.length > 0) {
-                const wttLessons = timetable.lessons.filter(l => l.schoolId === selectedSchool);
-                const seen = new Set();
-                const removeRows = [];
-                for (const l of wttLessons) {
-                  const lk = l.isGroup ? "group|" + l.groupId : l.studentId + "|" + l.instrument;
-                  if (!seen.has(lk)) { seen.add(lk); removeRows.push({ ...l, lessonKey: lk }); }
-                }
-                const newRemoveEntries = [];
-                for (const h of removeHints) {
-                  const reasonVal = h.tallyRemoveReason === "extended_absence" ? "extended_absence" : "removed_not_charged";
-                  let matchRows = removeRows;
-                  if (h.targetStudentName && !h.wholeSchool) {
-                    const nl = h.targetStudentName.toLowerCase();
-                    matchRows = removeRows.filter(r => {
-                      const n = (r.isGroup ? (r.groupName || "") : (r.studentName || "")).toLowerCase();
-                      return n.includes(nl) || nl.includes(n.split(" ")[0]);
-                    });
-                    if (h.targetInstrument) matchRows = matchRows.filter(r => (r.instrument || "").toLowerCase() === h.targetInstrument.toLowerCase());
-                  }
-                  for (const row of matchRows) {
-                    newRemoveEntries.push({
-                      id: uid(), lessonKey: row.lessonKey, lessonId: row.id,
-                      isGroup: row.isGroup || false, groupName: row.groupName || "",
-                      studentId: row.studentId || "",
-                      studentName: row.isGroup ? (row.groupName || row.studentNames?.join(", ") || "Group") : row.studentName,
-                      studentNames: row.studentNames || [],
-                      instrument: row.instrument, schoolId: row.schoolId,
-                      teacherId: row.teacherId, teacherName: row.teacherName,
-                      weekKey, weekLabel, weekNum: termWeek,
-                      termKey: null, day: row.day,
-                      status: "removed", reason: reasonVal,
-                      notes: "", makeupEligible: false, madeUp: false,
-                      recordedAt: new Date().toISOString(), recordedBy: "weekly_ai",
-                    });
-                  }
-                }
-                if (newRemoveEntries.length > 0) {
-                  const removeKeys = new Set(newRemoveEntries.map(e => e.lessonKey + "|" + e.weekKey));
-                  setTallyEntries(prev => [...prev.filter(e => !removeKeys.has(e.lessonKey + "|" + e.weekKey)), ...newRemoveEntries]);
-                  notify("Tally: " + newRemoveEntries.length + " slot" + (newRemoveEntries.length !== 1 ? "s" : "") + " removed from tally");
-                }
+                console.log("[AI] tally_remove hints received but no longer persisted (post-Commit-5):", removeHints.length);
               }
             }
           } catch (parseErr) { notify("Could not parse adjustment notes — try rephrasing", "warning"); }
@@ -797,45 +1182,56 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2
     );
 
+    // Skip students with a pre-marked informed_absence or extended_absence for this week — remove from
+    // scheduled lessons and push into missed so they don't appear on the grid.
+    const _preAbsentEntries = getMissedEntries({
+      weeklyTimetables,
+      weekKey,
+      schoolId: selectedSchool,
+      reasons: ["informed_absence", "extended_absence"],
+    });
+    const _preAbsentIds = new Set(
+      _preAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
+    );
+    const _absentLessons = _preAbsentIds.size > 0
+      ? result.lessons.filter(l => !l.isBandSession && !l.isGroup && _preAbsentIds.has(l.studentId))
+      : [];
+    const scheduledLessons = _preAbsentIds.size > 0
+      ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_preAbsentIds.has(l.studentId))
+      : result.lessons;
+    const allMissed = [...result.missed, ..._absentLessons.map(l => {
+      const tallyEntry = _preAbsentEntries.find(e => e.studentId === l.studentId);
+      return { ...l, reason: tallyEntry?.reason || "informed_absence" };
+    })];
+
+    const allMissedNormalized = allMissed.map(m => {
+      const isClashOrCancel = m.reason && (
+        m.reason.includes("No available slot") ||
+        m.reason.includes("conflict") ||
+        m.reason.includes("Cancelled by weekly")
+      );
+      if (!isClashOrCancel) return m;
+      const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
+      const makeupElig = matchingHint?.makeupEligible === false ? false : true;
+      return {
+        ...m,
+        reason: m.reason.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
+        reasonDetail: "",
+        notes: m.reason || "",
+        makeupEligible: makeupElig,
+        madeUp: false,
+        cardNote: "",
+      };
+    });
+
     setWeeklyTimetables(prev => ({
       ...prev,
-      [storageKey]: { lessons: [...existingBandSessions, ...result.lessons], missed: result.missed, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
+      [storageKey]: { lessons: [...existingBandSessions, ...scheduledLessons], missed: allMissedNormalized, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
     }));
 
-    // Update cumulative missed tally
-    // Auto-tally scheduler-placed missed lessons as "timetable_clash"
-    const autoTallyEntries = result.missed
-      .filter(m => m.reason && (m.reason.includes("No available slot") || m.reason.includes("conflict") || m.reason.includes("Cancelled by weekly")))
-      .map(m => {
-        const lKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-        return {
-          id: uid(),
-          lessonKey: lKey, lessonId: m.id,
-          isGroup: m.isGroup || false, groupName: m.groupName || "",
-          studentId: m.studentId || "",
-          studentName: m.isGroup ? (m.groupName || m.studentNames?.join(", ") || "Group") : m.studentName,
-          studentNames: m.studentNames || [],
-          instrument: m.instrument, schoolId: m.schoolId,
-          teacherId: m.teacherId, teacherName: m.teacherName,
-          weekKey, weekLabel, weekNum: termWeek,
-          termKey: null, day: m.day,
-          status: "missed", reason: "timetable_clash",
-          notes: m.reason || "",
-          makeupEligible: (() => { const mh = aiHints.find(h => h.lessonMatch && h.lessonMatch(m)); return mh?.makeupEligible === false ? false : true; })(),
-          madeUp: false,
-          recordedAt: new Date().toISOString(), autoRecorded: true,
-        };
-      });
-    if (autoTallyEntries.length > 0) {
-      setTallyEntries(prev => {
-        // Remove previous auto-recorded entries for this week+school, then add new ones
-        const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool));
-        return [...filtered, ...autoTallyEntries];
-      });
-    }
-
-    const adj = result.lessons.filter(l => l.adjusted).length;
-    notify(`Weekly timetable: ${result.lessons.length} lessons, ${adj} adjusted, ${result.missed.length} missed`);
+    const adj = scheduledLessons.filter(l => l.adjusted).length;
+    const absentSkipped = _absentLessons.length;
+    notify(`Weekly timetable: ${scheduledLessons.length} lessons, ${adj} adjusted, ${allMissed.length} missed${absentSkipped > 0 ? ` (${absentSkipped} skipped — pre-marked absent)` : ""}`);
   };
 
   const handleGenerateAllSchools = async () => {
@@ -849,9 +1245,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const result = generateWeeklyTimetable(
         filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks
       );
+      const _allPreAbsentEntries = getMissedEntries({
+        weeklyTimetables,
+        weekKey,
+        schoolId: school.id,
+        reasons: ["informed_absence", "extended_absence"],
+      });
+      const _allPreAbsentIds = new Set(
+        _allPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
+      );
+      const _allAbsentLessons = _allPreAbsentIds.size > 0
+        ? result.lessons.filter(l => !l.isBandSession && !l.isGroup && _allPreAbsentIds.has(l.studentId))
+        : [];
+      const _allScheduledLessons = _allPreAbsentIds.size > 0
+        ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_allPreAbsentIds.has(l.studentId))
+        : result.lessons;
+      const _allMissed = [...result.missed, ..._allAbsentLessons.map(l => {
+        const tallyEntry = _allPreAbsentEntries.find(e => e.studentId === l.studentId);
+        return { ...l, reason: tallyEntry?.reason || "informed_absence" };
+      })];
       setWeeklyTimetables(prev => ({
         ...prev,
-        [sk]: { lessons: [...existingBandSessionsAll, ...result.lessons], missed: result.missed, generatedAt: new Date().toISOString() }
+        [sk]: { lessons: [...existingBandSessionsAll, ..._allScheduledLessons], missed: _allMissed, generatedAt: new Date().toISOString() }
       }));
     }
   };
@@ -867,17 +1282,60 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (targetDay) {
       const existing = weeklyTimetables[storageKey];
       const otherDays = existing ? existing.lessons.filter(l => l.day !== targetDay) : [];
+      // Session 97.1: preserve catch-ups (isMakeup) and band sessions on the
+      // target day. Previously the filter above only kept lessons on OTHER
+      // days, so any catch-up scheduled for targetDay got wiped alongside
+      // the master-derived lessons. Same rationale as the whole-week import:
+      // these lessons aren't in the master, so "import from master" should
+      // never remove them.
+      const preservedDayExtras = existing
+        ? (existing.lessons || []).filter(l => l.day === targetDay && (l.isMakeup || l.isBandSession))
+        : [];
       setWeeklyTimetables(prev => ({
         ...prev,
-        [storageKey]: { lessons: [...otherDays, ...importedLessons], missed: existing?.missed || [], generatedAt: new Date().toISOString() }
+        [storageKey]: {
+          lessons: [...otherDays, ...preservedDayExtras, ...importedLessons],
+          missed: (existing?.missed || []).filter(m => m.day !== targetDay),
+          generatedAt: new Date().toISOString()
+        }
       }));
       notify(`Imported ${importedLessons.length} lessons for ${targetDay}`);
+      // Rerun tally if this day is already past 6pm
+      if (isDayPast6pm(targetDay, weekKey) && rerunAutoTallyForDate) {
+        const dateStr = weekDateMap[targetDay];
+        if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
+      }
     } else {
+      // Session 97.1 FIX — the old version unconditionally replaced the
+      // weekly timetable's `lessons` array with just the master-derived
+      // lessons, wiping any isMakeup catch-ups or isBandSession entries
+      // that had been added to this week. Those aren't in the master by
+      // definition (catch-ups are per-week, band sessions are scheduled
+      // ad-hoc), so "import from master" should never be removing them.
+      // Missed-zone entries ARE still wiped — a whole-week re-import is an
+      // explicit reset of the week's state, and any tally entries with
+      // real user input (reasons/notes/makeup flags) are now preserved
+      // separately by doAutoTallyForDate's strip predicate.
+      const existing = weeklyTimetables[storageKey];
+      const preservedExtras = existing
+        ? (existing.lessons || []).filter(l => l.isMakeup || l.isBandSession)
+        : [];
       setWeeklyTimetables(prev => ({
         ...prev,
-        [storageKey]: { lessons: importedLessons, missed: [], generatedAt: new Date().toISOString() }
+        [storageKey]: { lessons: [...preservedExtras, ...importedLessons], missed: [], generatedAt: new Date().toISOString() }
       }));
-      notify(`Imported ${importedLessons.length} lessons for the week`);
+      const extraNote = preservedExtras.length > 0
+        ? ` (${preservedExtras.length} catch-up/band ${preservedExtras.length === 1 ? "lesson" : "lessons"} preserved)`
+        : "";
+      notify(`Imported ${importedLessons.length} lessons for the week${extraNote}`);
+      // Rerun tally for any days already past 6pm
+      if (rerunAutoTallyForDate) {
+        for (const wd of weekDates) {
+          if (isDayPast6pm(wd.day, weekKey)) {
+            setTimeout(() => rerunAutoTallyForDate(wd.date), 150);
+          }
+        }
+      }
     }
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
@@ -910,7 +1368,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${s.instruments.map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
         const schoolGroups2 = groups.filter(g => g.schoolId === selectedSchool && g.status === "scheduled");
@@ -1009,57 +1467,74 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3
     );
 
+    // Skip students with a pre-marked informed_absence or extended_absence for this week
+    const _dayPreAbsentEntries = getMissedEntries({
+      weeklyTimetables,
+      weekKey,
+      schoolId: selectedSchool,
+      reasons: ["informed_absence", "extended_absence"],
+    });
+    const _dayPreAbsentIds = new Set(
+      _dayPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
+    );
+    const _rawNewDayLessons = result.lessons.filter(l => l.day === targetDay);
+    const _dayAbsentLessons = _dayPreAbsentIds.size > 0
+      ? _rawNewDayLessons.filter(l => !l.isBandSession && !l.isGroup && _dayPreAbsentIds.has(l.studentId))
+      : [];
+    const newDayLessonsFiltered = _dayPreAbsentIds.size > 0
+      ? _rawNewDayLessons.filter(l => l.isBandSession || l.isGroup || !_dayPreAbsentIds.has(l.studentId))
+      : _rawNewDayLessons;
+
     // Get existing weekly data (if any)
     const existing = weeklyTimetables[storageKey];
 
     // Keep existing lessons for other days (including band sessions), use new results only for target day
     const otherDayLessons = existing ? existing.lessons.filter(l => l.day !== targetDay || l.isBandSession) : [];
-    const newDayLessons = result.lessons.filter(l => l.day === targetDay);
+    const newDayLessons = newDayLessonsFiltered;
     const otherDayMissed = existing ? existing.missed.filter(m => m.day !== targetDay) : [];
-    const newDayMissed = result.missed.filter(m => m.day === targetDay);
+    const newDayMissed = [
+      ...result.missed.filter(m => m.day === targetDay),
+      ..._dayAbsentLessons.map(l => {
+        const tallyEntry = _dayPreAbsentEntries.find(e => e.studentId === l.studentId);
+        return { ...l, reason: tallyEntry?.reason || "informed_absence" };
+      }),
+    ];
+
+    const newDayMissedNormalized = newDayMissed.map(m => {
+      const isClashOrCancel = m.reason && (
+        m.reason.includes("No available slot") ||
+        m.reason.includes("conflict") ||
+        m.reason.includes("Cancelled by weekly")
+      );
+      if (!isClashOrCancel) return m;
+      const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
+      const makeupElig = matchingHint?.makeupEligible === false ? false : true;
+      return {
+        ...m,
+        reason: m.reason.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
+        reasonDetail: "",
+        notes: m.reason || "",
+        makeupEligible: makeupElig,
+        madeUp: false,
+        cardNote: "",
+      };
+    });
 
     const mergedLessons = [...otherDayLessons, ...newDayLessons];
-    const mergedMissed = [...otherDayMissed, ...newDayMissed];
+    const mergedMissed = [...otherDayMissed, ...newDayMissedNormalized];
 
     setWeeklyTimetables(prev => ({
       ...prev,
       [storageKey]: { lessons: mergedLessons, missed: mergedMissed, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
     }));
 
-    // Auto-tally AI-cancelled and unplaceable lessons for this day
-    const autoTallyDay = newDayMissed
-      .filter(m => m.reason && (m.reason.includes("No available slot") || m.reason.includes("conflict") || m.reason.includes("Cancelled by weekly")))
-      .map(m => {
-        const lKey = m.isGroup ? `group|${m.groupId}` : `${m.studentId}|${m.instrument}`;
-        // Find matching hint to check makeupEligible override
-        const matchingHint = aiHints.find(h => h.lessonMatch && h.lessonMatch(m));
-        const makeupElig = matchingHint?.makeupEligible === false ? false : true;
-        return {
-          id: uid(),
-          lessonKey: lKey, lessonId: m.id,
-          isGroup: m.isGroup || false, groupName: m.groupName || "",
-          studentId: m.studentId || "",
-          studentName: m.isGroup ? (m.groupName || m.studentNames?.join(", ") || "Group") : m.studentName,
-          studentNames: m.studentNames || [],
-          instrument: m.instrument, schoolId: m.schoolId,
-          teacherId: m.teacherId, teacherName: m.teacherName,
-          weekKey, weekLabel, weekNum: termWeek,
-          termKey: null, day: m.day,
-          status: "missed", reason: m.reason?.includes("Cancelled by weekly") ? "informed_absence" : "timetable_clash",
-          notes: m.reason || "",
-          makeupEligible: makeupElig, madeUp: false,
-          recordedAt: new Date().toISOString(), autoRecorded: true,
-        };
-      });
-    if (autoTallyDay.length > 0) {
-      setTallyEntries(prev => {
-        const filtered = prev.filter(e => !(e.autoRecorded && e.weekKey === weekKey && e.schoolId === selectedSchool && e.day === targetDay));
-        return [...filtered, ...autoTallyDay];
-      });
-    }
-
     const adj = newDayLessons.filter(l => l.adjusted).length;
     notify(`${targetDay}: ${newDayLessons.length} lessons${adj > 0 ? `, ${adj} adjusted` : ""}${newDayMissed.length > 0 ? `, ${newDayMissed.length} missed` : ""}`);
+    // If this day is already past 6pm, re-run the auto-tally so completed lessons are recorded
+    const targetDateStr = weekDateMap[targetDay];
+    if (targetDateStr && isDayPast6pm(targetDay, weekKey) && rerunAutoTallyForDate) {
+      setTimeout(() => rerunAutoTallyForDate(targetDateStr), 150);
+    }
   };
 
   React.useEffect(() => {
@@ -1074,14 +1549,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   }, [showClearMenu]);
 
   const clearWeek = (day) => {
+    if (!weeklyData) return;
     if (day) {
-      setWeeklyTimetables(prev => {
-        const entry = prev[storageKey];
-        if (!entry) return prev;
-        return { ...prev, [storageKey]: { ...entry, lessons: entry.lessons.filter(l => l.day !== day) } };
-      });
+      const clearedLessons = (weeklyData.lessons || []).filter(l => l.day !== day);
+      const clearedMissed = (weeklyData.missed || []).filter(m => m.day !== day);
+      setWeeklyTimetables(prev => ({
+        ...prev,
+        [storageKey]: { ...(prev[storageKey] || {}), lessons: clearedLessons, missed: clearedMissed }
+      }));
+      notify(`${day} cleared`);
     } else {
-      setWeeklyTimetables(prev => { const n = { ...prev }; delete n[storageKey]; return n; });
+      setWeeklyTimetables(prev => {
+        const updated = { ...prev };
+        delete updated[storageKey];
+        return updated;
+      });
+      notify("Week cleared");
     }
   };
 
@@ -1097,36 +1580,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!weeklyData) return;
     const lesson = weeklyData.lessons.find(l => l.id === lessonId);
     if (!lesson) return;
-    const missedEntry = { ...lesson, reason: "Removed from schedule" };
+    const missedEntry = {
+      ...lesson,
+      reason: "",
+      reasonDetail: "",
+      notes: "",
+      makeupEligible: false,
+      madeUp: false,
+      cardNote: "",
+    };
     // Move lesson to missed area
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
       return { ...prev, [storageKey]: { ...entry, lessons: entry.lessons.filter(l => l.id !== lessonId), missed: [...(entry.missed || []), missedEntry] } };
     });
-    const lessonKey = `${lesson.studentId}|${lesson.instrument}`;
-    if (isPastWeek) {
-      // Past week (unlocked): skip dialog, auto-record missed, remove any completed entry
-      const tBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
-      const wNum = computeTermWeekNum(weekKey, tBreaks);
-      const missedTallyEntry = {
-        id: uid(), lessonKey, lessonId: lesson.id,
-        isGroup: false, groupName: "",
-        studentId: lesson.studentId || "", studentName: lesson.studentName || "",
-        instrument: lesson.instrument, schoolId: lesson.schoolId,
-        teacherId: lesson.teacherId, teacherName: lesson.teacherName,
-        weekKey, weekLabel: wNum ? `Week ${wNum}` : `Week of ${weekKey}`,
-        weekNum: wNum, termKey: computeTermKey(weekKey, tBreaks), day: lesson.day,
-        status: "missed", reason: null, notes: "",
-        makeupEligible: false, madeUp: false,
-        recordedAt: new Date().toISOString(),
-      };
-      setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)), missedTallyEntry]);
-    } else {
-      // Current week: open tally prompt dialog
-      setTallyPromptNotes("");
-      setTallyPrompt({ lesson, missedEntry, weekKey, weekNum: termWeek });
-    }
+    // Always show the reasons dialog so a reason can be recorded
+    setTallyPromptNotes("");
+    setTallyPrompt({ lesson, missedEntry, weekKey, weekNum: termWeek });
+    setTallyPromptNotes(""); setTallyPromptCategory(null); setTallyPromptReasonDetail(""); setTallyPromptCatchup(null);
   };
 
 
@@ -1160,6 +1632,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const slot = currentSchool.slots.find(s => s.start === newTime);
     if (!slot) return;
     const lesson = weeklyData.lessons.find(l => l.id === lessonId);
+    const oldDay = lesson?.day;
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
@@ -1210,6 +1683,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         setExpandedWarnings(prev => { const next = new Set(prev); next.delete(lessonId); return next; });
       }
     }
+    // Rerun tally for affected days if past 6pm
+    if (rerunAutoTallyForDate) {
+      const daysToRerun = new Set();
+      if (oldDay && oldDay !== newDay && isDayPast6pm(oldDay, weekKey)) daysToRerun.add(oldDay);
+      if (isDayPast6pm(newDay, weekKey)) daysToRerun.add(newDay);
+      for (const d of daysToRerun) {
+        const dateStr = weekDateMap[d];
+        if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
+      }
+    }
   };
 
   // Rescue a missed lesson by placing it into the weekly timetable at a specific slot
@@ -1223,7 +1706,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const rescuedLesson = {
       ...missed, day: newDay, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
-      weekDate: dayDate?.date, adjusted: true, adjustReason: "Rescheduled from missed",
+      weekDate: dayDate?.date, adjusted: false, adjustReason: undefined,
       duringSpecialist: getSpecialistForSlot(missed, newDay, slot)
     };
     delete rescuedLesson.reason;
@@ -1247,27 +1730,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setExpandedWarnings(prev => { const next = new Set(prev); next.add(rescuedLesson.id); return next; });
     } else {
       setExpandedWarnings(prev => { const next = new Set(prev); next.delete(rescuedLesson.id); return next; });
-    }
-    // Update tally: remove missed entry; add completed entry if the slot day is past 6pm
-    const lessonKey = missed.isGroup ? `group|${missed.groupId}` : `${missed.studentId}|${missed.instrument}`;
-    if (isDayPast6pm(newDay, weekKey)) {
-      const tBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
-      const wNum = computeTermWeekNum(weekKey, tBreaks);
-      const completedEntry = {
-        id: uid(), lessonKey, lessonId: missed.id,
-        isGroup: false, groupName: "",
-        studentId: missed.studentId || "", studentName: missed.studentName || "",
-        instrument: missed.instrument, schoolId: missed.schoolId,
-        teacherId: missed.teacherId, teacherName: missed.teacherName,
-        weekKey, weekLabel: wNum ? `Week ${wNum}` : `Week of ${weekKey}`,
-        weekNum: wNum, termKey: computeTermKey(weekKey, tBreaks), day: newDay,
-        status: "completed", reason: null, notes: "",
-        makeupEligible: false, madeUp: false,
-        recordedAt: new Date().toISOString(),
-      };
-      setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)), completedEntry]);
-    } else {
-      setTallyEntries(prev => prev.filter(e => !(e.lessonKey === lessonKey && e.weekKey === weekKey)));
     }
     notify(`${missed.isGroup ? missed.groupName : missed.studentName} rescheduled to ${newDay} ${slot.start}`);
   };
@@ -1355,10 +1817,74 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     notify("Catch-up lesson placed: " + (staged.studentName || "") + " " + newDay + " " + slot.start);
   };
 
-  // Missed tally grouped by student+instrument — derived from tallyEntries
+  // Mark the oldest outstanding tally entry as madeUp for a student+instrument
+  const markOldestOwedAsMadeUp = (studentId, instrument) => {
+    const owed = tallyEntries
+      .filter(e => e.studentId === studentId && e.instrument === instrument && e.status === "missed" && e.makeupEligible && !e.madeUp)
+      .sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+    if (owed.length > 0) {
+      const oldest = owed[0];
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+      setTallyEntries(prev => prev.map(e => e.id === oldest.id ? { ...e, madeUp: true } : e));
+    }
+  };
+
+  // Confirm a catch-up day — marks tally entries and locks the day
+  const confirmCatchupDay = (day) => {
+    const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
+    const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
+    if (tallyIds.length > 0) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+      setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: true } : e));
+    }
+    setConfirmedCatchupDays(prev => ({
+      ...prev, [weekKey]: [...new Set([...(prev[weekKey] || []), day])]
+    }));
+    if (notify) notify(`${day} confirmed — ${dayLessons.length} catch-up${dayLessons.length !== 1 ? "s" : ""} marked`);
+  };
+
+  // Un-confirm a catch-up day — reverses tally marks and unlocks
+  const unconfirmCatchupDay = (day) => {
+    const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
+    const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
+    if (tallyIds.length > 0) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+      setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
+    }
+    setConfirmedCatchupDays(prev => ({
+      ...prev, [weekKey]: (prev[weekKey] || []).filter(d => d !== day)
+    }));
+    if (notify) notify(`${day} unlocked`);
+  };
+
+  // Record a missed catch-up — remove from schedule, forfeit tally entry (makeupEligible: false)
+  const handleCatchupMissedDrop = (lessonId) => {
+    const lesson = (catchupLessons[weekKey] || []).find(l => l.id === lessonId);
+    if (!lesson) return;
+    // Add to missed records for this week
+    setCatchupMissed(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), { ...lesson, missedAt: new Date().toISOString() }] }));
+    // Remove from scheduled lessons
+    setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(l => l.id !== lessonId) }));
+    // Forfeit the tally entry: makeupEligible: false, madeUp: false
+    if (lesson.makeupForTallyId) {
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+      setTallyEntries(prev => prev.map(e => e.id === lesson.makeupForTallyId ? { ...e, makeupEligible: false, madeUp: false } : e));
+    } else {
+      const toForfeit = tallyEntries.filter(e => e.studentId === lesson.studentId && e.instrument === lesson.instrument && e.status === "missed" && e.makeupEligible).sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+      if (toForfeit.length > 0) setTallyEntries(prev => prev.map(e => e.id === toForfeit[0].id ? { ...e, makeupEligible: false, madeUp: false } : e));
+    }
+    setCatchupSelectedCards(new Set());
+    if (notify) notify(`${lesson.studentName} — catch-up forfeited`);
+  };
+
+  // Missed tally grouped by student+instrument — derived from WTT.missed across all weeks.
+  // WTT.missed entries don't carry a `status` field (status is implicit from the
+  // missed array itself), so no status filter is needed. weekLabel is also absent
+  // on WTT.missed; weeks[] degrades to weekKey only (audit-acknowledged).
   const tallyByStudent = {};
-  for (const e of tallyEntries) {
-    if (e.status !== "missed") continue;
+  for (const e of getMissedEntries({ weeklyTimetables })) {
+    if (e.schoolId === "__private__") continue; // private students have their own tally panel
     const k = `${e.studentId}|${e.instrument}`;
     if (!tallyByStudent[k]) tallyByStudent[k] = { ...e, count: 0, weeks: [] };
     tallyByStudent[k].count++;
@@ -1366,142 +1892,314 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   }
 
   return (
-    <div onClick={() => { if (contextMenu) { setContextMenu(null); setHoverNotes(false); setMissedZoneSubmenu(null); setDayHeaderSubmenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); } if (expandedWarnings.size > 0) setExpandedWarnings(new Set()); }}>
+    <div onClick={() => { setHoverNotes(null); if (contextMenu) { setContextMenu(null); setMissedZoneSubmenu(null); setDayHeaderSubmenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); } if (expandedWarnings.size > 0) setExpandedWarnings(new Set()); }} >
 
       {/* Tally prompt — shown when lesson is manually dragged to missed area */}
       {tallyPrompt && (() => {
         const closeBoth = () => { setTallyPrompt(null); setTallyConfirm(null); };
         const lesson = tallyPrompt.lesson;
-
-        // Helper: save a tally entry and move to step 2
-        const saveAndConfirm = (reasonValue, reasonLabel, makeupElig) => {
-          const lKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
-          const entry = {
-            id: uid(), lessonKey: lKey, lessonId: lesson.id,
-            isGroup: lesson.isGroup || false, groupName: lesson.groupName || "",
-            studentId: lesson.studentId || "",
-            studentName: lesson.isGroup ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group") : lesson.studentName,
-            studentNames: lesson.studentNames || [],
-            instrument: lesson.instrument, schoolId: lesson.schoolId,
-            teacherId: lesson.teacherId, teacherName: lesson.teacherName,
-            weekKey: tallyPrompt.weekKey, weekLabel, weekNum: tallyPrompt.weekNum,
-            termKey: null, day: lesson.day,
-            status: "missed", reason: reasonValue,
-            notes: tallyPromptNotes.trim(),
-            makeupEligible: makeupElig, madeUp: false,
-            recordedAt: new Date().toISOString(),
-          };
-          setTallyEntries(prev => [...prev.filter(e => !(e.lessonKey === lKey && e.weekKey === tallyPrompt.weekKey)), entry]);
-          notify(`Missed lesson recorded: ${reasonLabel}`);
-          setTallyConfirm({ lesson, reasonValue, reasonLabel, makeupEligible: makeupElig, weekLabel });
+        const handleTpCategory = (cat) => {
+          const newCat = tallyPromptCategory === cat ? null : cat;
+          setTallyPromptCategory(newCat);
+          if (newCat === "uninformed_absence") setTallyPromptCatchup(false);
+          else if (newCat) setTallyPromptCatchup(true);
         };
-
+        const tpShowDetailsBorder = tallyPromptReasonDetail.trim().toLowerCase() === "other";
+        const tpCanSave = tallyPromptCatchup !== null;
+        const saveAndConfirm = () => {
+          const finalReason = tallyPromptCategory || "other";
+          const finalReasonDetail = tallyPromptReasonDetail.trim();
+          const finalDetails = tallyPromptNotes.trim();
+          const finalMakeup = tallyPromptCatchup === true;
+          if (finalReasonDetail && finalReasonDetail.toLowerCase() !== "other" && !rememberedReasons.includes(finalReasonDetail)) {
+            saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
+          }
+          const lKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
+          setWeeklyTimetables(prev => {
+            const wEntry = prev[storageKey];
+            if (!wEntry) return prev;
+            return {
+              ...prev,
+              [storageKey]: {
+                ...wEntry,
+                missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
+                  ...m,
+                  reason: finalReason,
+                  reasonDetail: finalReasonDetail,
+                  notes: finalDetails,
+                  makeupEligible: finalMakeup,
+                  madeUp: m.madeUp || false,
+                } : m)
+              }
+            };
+          });
+          const displayReason = TALLY_REASONS.find(r => r.value === finalReason)?.label || finalReasonDetail || "Other";
+          notify(`Missed lesson recorded${displayReason ? ": " + displayReason : ""}`);
+          setTallyPrompt(null); setTallyConfirm(null);
+        };
+        const catBtnStyle = (val) => ({
+          width: "100%", padding: "11px 14px", marginBottom: 6, borderRadius: 8, fontSize: 13,
+          fontWeight: tallyPromptCategory === val ? 700 : 500, cursor: "pointer", fontFamily: "inherit",
+          transition: "all 0.12s", textAlign: "left",
+          border: `1.5px solid ${tallyPromptCategory === val ? colors.sidebarActive : colors.border}`,
+          background: tallyPromptCategory === val ? "rgba(52,69,101,0.1)" : colors.cardBg,
+          color: tallyPromptCategory === val ? colors.sidebarActive : colors.text,
+        });
+        const catchupBtnStyle = (val) => ({
+          width: 34, height: 34, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s", flexShrink: 0,
+          border: `1.5px solid ${tallyPromptCatchup === val ? colors.sidebarActive : colors.border}`,
+          background: tallyPromptCatchup === val ? "rgba(52,69,101,0.1)" : colors.cardBg,
+          color: tallyPromptCatchup === val ? colors.sidebarActive : colors.textMuted,
+        });
         return (
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
             onClick={closeBoth}>
-            <div style={{ background: "#fff", borderRadius: 14, padding: 24, width: 340, boxShadow: "0 20px 60px rgba(0,0,0,0.2)", maxHeight: "90vh", overflowY: "auto" }}
+            <div style={{ background: colors.cardBg, borderRadius: 14, padding: 22, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }}
               onClick={e => e.stopPropagation()}>
-
-              {/* ── Header (same in both steps) ── */}
-              <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 3 }}>
                 {lesson.isGroup ? (lesson.groupName || "Group") : lesson.studentName}
               </div>
-              <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 18 }}>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>
                 {lesson.instrument} · {lesson.day} · {weekLabel}
               </div>
+              <input
+                list="tp-reasons-list"
+                value={tallyPromptReasonDetail}
+                onChange={e => setTallyPromptReasonDetail(e.target.value)}
+                placeholder="Reason (e.g. swimming, excursion…)"
+                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", marginBottom: 10,
+                  border: `1.5px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13,
+                  fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }}
+                onFocus={e => e.target.style.borderColor = colors.sidebarActive}
+                onBlur={e => e.target.style.borderColor = colors.inputBorder}
+              />
+              <datalist id="tp-reasons-list">
+                {rememberedReasons.map(r => <option key={r} value={r} />)}
+                <option value="Other" />
+              </datalist>
+              {[
+                { value: "informed_absence", label: "Informed Absence" },
+                { value: "uninformed_absence", label: "Uninformed Absence" },
+                { value: "teacher_absent", label: "Teacher Absence" },
+              ].map(btn => (
+                <button key={btn.value} onClick={() => handleTpCategory(btn.value)} style={catBtnStyle(btn.value)}
+                  onMouseEnter={e => { if (tallyPromptCategory !== btn.value) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (tallyPromptCategory !== btn.value) e.currentTarget.style.background = colors.cardBg; }}>
+                  {btn.label}
+                </button>
+              ))}
+              <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, marginTop: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.3 }}>Details</div>
+              <textarea
+                value={tallyPromptNotes}
+                onChange={e => setTallyPromptNotes(e.target.value)}
+                placeholder="Optional — unusual circumstances, notes for your records…"
+                rows={3}
+                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", resize: "vertical",
+                  border: `1.5px solid ${tpShowDetailsBorder ? colors.sidebarActive : colors.inputBorder}`,
+                  borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: colors.text,
+                  background: colors.cardBg, outline: "none", lineHeight: 1.5, marginBottom: 14 }}
+                onFocus={e => e.target.style.borderColor = colors.sidebarActive}
+                onBlur={e => e.target.style.borderColor = tpShowDetailsBorder ? colors.sidebarActive : colors.inputBorder}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: colors.text }}>Catch Up</span>
+                <button style={catchupBtnStyle(true)} onClick={() => setTallyPromptCatchup(tallyPromptCatchup === true ? null : true)}
+                  onMouseEnter={e => { if (tallyPromptCatchup !== true) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (tallyPromptCatchup !== true) e.currentTarget.style.background = colors.cardBg; }}>
+                  <Check size={14} />
+                </button>
+                <button style={catchupBtnStyle(false)} onClick={() => setTallyPromptCatchup(tallyPromptCatchup === false ? null : false)}
+                  onMouseEnter={e => { if (tallyPromptCatchup !== false) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (tallyPromptCatchup !== false) e.currentTarget.style.background = colors.cardBg; }}>
+                  <X size={14} />
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={closeBoth}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: colors.tagBg, color: colors.gray700, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = colors.border}
+                  onMouseLeave={e => e.currentTarget.style.background = colors.tagBg}>
+                  Cancel
+                </button>
+                <button onClick={saveAndConfirm} disabled={!tpCanSave}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, border: "none",
+                    cursor: tpCanSave ? "pointer" : "not-allowed", fontFamily: "inherit", transition: "all 0.12s",
+                    background: tpCanSave ? colors.sidebarActive : colors.border,
+                    color: tpCanSave ? "#fff" : colors.textMuted, opacity: tpCanSave ? 1 : 0.6 }}>
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
-              {tallyConfirm ? (
-                /* ── Step 2: confirmation + email ── */
-                <>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9, padding: "10px 14px", marginBottom: 16 }}>
-                    <span style={{ fontSize: 18, lineHeight: 1 }}>✓</span>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 13, color: "#16A34A" }}>Missed lesson recorded</div>
-                      <div style={{ fontSize: 12, color: "#15803D", marginTop: 1 }}>{tallyConfirm.reasonLabel}{tallyConfirm.makeupEligible ? " · makeup owed" : ""}</div>
-                    </div>
-                  </div>
-                  {(() => {
-                    const st = !lesson.isGroup ? students.find(s => s.id === lesson.studentId) : null;
-                    const emails = st ? getParentEmails(st) : [];
-                    if (!emails.length) return null;
-                    const school = schools.find(s => s.id === (lesson.schoolId || selectedSchool));
-                    const tmpl = getEmailTemplates()[tallyConfirm.reasonValue] || getEmailTemplates().other;
-                    const parentName = (st?.parents?.[0]?.name || "").split(" ")[0] || "there";
-                    const resolved = resolveTemplate(tmpl, {
-                      studentName: preferredFirstName(lesson.studentName),
-                      parentName: preferredFirstName(parentName) || 'there',
-                      instrument: lesson.instrument,
-                      day: lesson.day,
-                      weekLabel,
-                      teacherName: lesson.teacherName || "",
-                      schoolName: school?.name || "",
-                    });
-                    const tallyMergeCtx = {
-                      student_name: lesson.studentName || "",
-                      parent_name: parentName,
-                      instrument: lesson.instrument || "",
-                      day: lesson.day || "",
-                      lesson_time: lesson.start || "",
-                      week_label: weekLabel || "",
-                      absence_reason: tallyConfirm.reasonLabel || "",
-                      teacher_name: lesson.teacherName || "",
-                      school_name: school?.name || "",
-                      class_name: st?.className || "",
-                    };
-                    return (
-                      <button
-                        onClick={() => { openCompose(emails, { subject: resolved.subject, body: resolved.body, from: school?.senderEmail || "", triggerId: "tally_missed", mergeCtx: tallyMergeCtx }); }}
-                        style={{ width: "100%", padding: "9px 0", borderRadius: 8, background: colors.accentLight, color: colors.accentDark, fontWeight: 600, fontSize: 13, border: `1.5px solid ${colors.accent}`, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 8 }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.accent + "33"}
-                        onMouseLeave={e => e.currentTarget.style.background = colors.accentLight}>
-                        <span style={{ fontSize: 17, lineHeight: 1 }}>✉</span> Email Parent
-                      </button>
-                    );
-                  })()}
-                  <button onClick={closeBoth}
-                    style={{ width: "100%", padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#E5E7EB"} onMouseLeave={e => e.currentTarget.style.background = "#F3F4F6"}>
-                    Done
-                  </button>
-                </>
-              ) : (
-                /* ── Step 1: notes + reason picker ── */
-                <>
-                  <div style={{ marginBottom: 14 }}>
-                    <textarea value={tallyPromptNotes} onChange={e => setTallyPromptNotes(e.target.value)}
-                      placeholder="Notes (optional) — e.g. Will catch up Thursday lunch…"
-                      style={{ width: "100%", padding: "8px 10px", border: "1px solid #D1D5DB", borderRadius: 7, fontSize: 13, fontFamily: "inherit", resize: "vertical", minHeight: 52, boxSizing: "border-box", color: "#374151" }} />
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Why was this lesson missed?</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-                    {TALLY_REASONS.filter(r => !r.invisible).map(r => {
-                      const makeupElig = r.makeupEligible === null ? true : (r.makeupEligible || false);
-                      return (
-                        <button key={r.value} onClick={() => saveAndConfirm(r.value, r.label, makeupElig)}
-                          style={{ padding: "9px 12px", borderRadius: 7, border: "1.5px solid #E5E7EB", background: "#fff", color: "#374151", fontWeight: 400, fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
-                          onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
-                          {r.label}
-                          {r.makeupEligible === true && <span style={{ fontSize: 11, color: "#D97706", fontWeight: 600 }}>● makeup owed</span>}
-                          {r.makeupEligible === false && <span style={{ fontSize: 11, color: "#9CA3AF" }}>no makeup</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={() => saveAndConfirm("other", "Other", true)}
-                      style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#E5E7EB"} onMouseLeave={e => e.currentTarget.style.background = "#F3F4F6"}>
-                      Save (no reason)
-                    </button>
-                    <button onClick={closeBoth}
-                      style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#E5E7EB"} onMouseLeave={e => e.currentTarget.style.background = "#F3F4F6"}>
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              )}
+      {/* Unified missed lesson modal — single (right-click) and bulk (multi-select) */}
+      {missedModal && (() => {
+        const isBulk = missedModal.type === "bulk";
+        const { lesson, weekKey: mmWeekKey, category, reasonDetail, catchup, details } = missedModal;
+        const selLessons = isBulk ? (weeklyData?.lessons || []).filter(l => missedModal.lessonIds.includes(l.id)) : null;
+        const tBreaks = interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
+        const wNum = computeTermWeekNum(mmWeekKey, tBreaks);
+        const mmWeekLabel = wNum ? `Week ${wNum}` : `Week of ${mmWeekKey}`;
+        const setField = (field, val) => setMissedModal(prev => ({ ...prev, [field]: val }));
+        const handleCategory = (cat) => {
+          const newCat = category === cat ? null : cat;
+          const newCatchup = newCat === "uninformed_absence" ? false : newCat ? true : catchup;
+          setMissedModal(prev => ({ ...prev, category: newCat, catchup: newCatchup }));
+        };
+        const showDetailsBorder = reasonDetail.trim().toLowerCase() === "other";
+        const canSave = catchup !== null;
+        const handleSave = () => {
+          const now = new Date().toISOString();
+          const finalReason = category || "other";
+          const finalReasonDetail = reasonDetail.trim();
+          const finalDetails = details.trim();
+          const finalMakeup = catchup === true;
+          if (finalReasonDetail && finalReasonDetail.toLowerCase() !== "other" && !rememberedReasons.includes(finalReasonDetail)) {
+            saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
+          }
+          if (isBulk) {
+            setWeeklyTimetables(prev => {
+              const out = { ...prev };
+              for (const l of selLessons) {
+                const sk = mmWeekKey + "|" + l.schoolId;
+                const data = out[sk] || { lessons: [], missed: [] };
+                const newMissedEntry = {
+                  ...l,
+                  reason: finalReason,
+                  reasonDetail: finalReasonDetail,
+                  notes: finalDetails,
+                  makeupEligible: finalMakeup,
+                  madeUp: false,
+                  cardNote: "",
+                };
+                out[sk] = {
+                  ...data,
+                  lessons: data.lessons.filter(ll => ll.id !== l.id),
+                  missed: [...(data.missed || []), newMissedEntry],
+                };
+              }
+              return out;
+            });
+            setMissedModal(null); setSelectedCards(new Set());
+            notify(`${selLessons.length} lessons marked missed`);
+          } else {
+            setWeeklyTimetables(prev => {
+              const wEntry = prev[storageKey];
+              if (!wEntry) return prev;
+              return {
+                ...prev,
+                [storageKey]: {
+                  ...wEntry,
+                  missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
+                    ...m,
+                    reason: finalReason,
+                    reasonDetail: finalReasonDetail,
+                    notes: finalDetails,
+                    makeupEligible: finalMakeup,
+                    madeUp: m.madeUp && finalMakeup,
+                  } : m)
+                }
+              };
+            });
+            setMissedModal(null);
+          }
+        };
+        const catBtnStyle = (val) => ({
+          width: "100%", padding: "11px 14px", marginBottom: 6, borderRadius: 8, fontSize: 13,
+          fontWeight: category === val ? 700 : 500, cursor: "pointer", fontFamily: "inherit",
+          transition: "all 0.12s", textAlign: "left",
+          border: `1.5px solid ${category === val ? colors.sidebarActive : colors.border}`,
+          background: category === val ? "rgba(52,69,101,0.1)" : colors.cardBg,
+          color: category === val ? colors.sidebarActive : colors.text,
+        });
+        const catchupBtnStyle = (val) => ({
+          width: 34, height: 34, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+          cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s", flexShrink: 0,
+          border: `1.5px solid ${catchup === val ? colors.sidebarActive : colors.border}`,
+          background: catchup === val ? "rgba(52,69,101,0.1)" : colors.cardBg,
+          color: catchup === val ? colors.sidebarActive : colors.textMuted,
+        });
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setMissedModal(null)}>
+            <div style={{ background: colors.cardBg, borderRadius: 14, padding: 22, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 3 }}>
+                {isBulk ? `Mark ${selLessons.length} lessons missed` : (lesson.isGroup ? (lesson.groupName || "Group") : lesson.studentName)}
+              </div>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 16 }}>
+                {isBulk ? selLessons.map(l => l.studentName || l.groupName).join(", ") : `${lesson.instrument} · ${lesson.day} · ${mmWeekLabel}`}
+              </div>
+              <input
+                list="mm-reasons-list"
+                value={reasonDetail}
+                onChange={e => setField("reasonDetail", e.target.value)}
+                placeholder="Reason (e.g. swimming, excursion…)"
+                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", marginBottom: 10,
+                  border: `1.5px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13,
+                  fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }}
+                onFocus={e => e.target.style.borderColor = colors.sidebarActive}
+                onBlur={e => e.target.style.borderColor = colors.inputBorder}
+              />
+              <datalist id="mm-reasons-list">
+                {rememberedReasons.map(r => <option key={r} value={r} />)}
+                <option value="Other" />
+              </datalist>
+              {[
+                { value: "informed_absence", label: "Informed Absence" },
+                { value: "uninformed_absence", label: "Uninformed Absence" },
+                { value: "teacher_absent", label: "Teacher Absence" },
+              ].map(btn => (
+                <button key={btn.value} onClick={() => handleCategory(btn.value)} style={catBtnStyle(btn.value)}
+                  onMouseEnter={e => { if (category !== btn.value) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (category !== btn.value) e.currentTarget.style.background = colors.cardBg; }}>
+                  {btn.label}
+                </button>
+              ))}
+              <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, marginTop: 10, marginBottom: 5, textTransform: "uppercase", letterSpacing: 0.3 }}>Details</div>
+              <textarea
+                value={details}
+                onChange={e => setField("details", e.target.value)}
+                placeholder="Optional — unusual circumstances, notes for your records…"
+                rows={3}
+                style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", resize: "vertical",
+                  border: `1.5px solid ${showDetailsBorder ? colors.sidebarActive : colors.inputBorder}`,
+                  borderRadius: 8, fontSize: 13, fontFamily: "inherit", color: colors.text,
+                  background: colors.cardBg, outline: "none", lineHeight: 1.5, marginBottom: 14 }}
+                onFocus={e => e.target.style.borderColor = colors.sidebarActive}
+                onBlur={e => e.target.style.borderColor = showDetailsBorder ? colors.sidebarActive : colors.inputBorder}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: colors.text }}>Catch Up</span>
+                <button style={catchupBtnStyle(true)} onClick={() => setField("catchup", catchup === true ? null : true)}
+                  onMouseEnter={e => { if (catchup !== true) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (catchup !== true) e.currentTarget.style.background = colors.cardBg; }}>
+                  <Check size={14} />
+                </button>
+                <button style={catchupBtnStyle(false)} onClick={() => setField("catchup", catchup === false ? null : false)}
+                  onMouseEnter={e => { if (catchup !== false) e.currentTarget.style.background = colors.blueLight; }}
+                  onMouseLeave={e => { if (catchup !== false) e.currentTarget.style.background = colors.cardBg; }}>
+                  <X size={14} />
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setMissedModal(null)}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 8, background: colors.tagBg, color: colors.gray700, fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = colors.border}
+                  onMouseLeave={e => e.currentTarget.style.background = colors.tagBg}>
+                  Cancel
+                </button>
+                <button onClick={handleSave} disabled={!canSave}
+                  style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, border: "none",
+                    cursor: canSave ? "pointer" : "not-allowed", fontFamily: "inherit", transition: "all 0.12s",
+                    background: canSave ? colors.sidebarActive : colors.border,
+                    color: canSave ? "#fff" : colors.textMuted, opacity: canSave ? 1 : 0.6 }}>
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -1516,7 +2214,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const top = Math.min(Math.max(notePopup.y, gridRect.top + 8), gridRect.bottom - POPUP_H - 8);
         return (
           <div style={{ position: "fixed", inset: 0, zIndex: 10100 }} onMouseDown={() => setNotePopup(null)}>
-            <div style={{ position: "fixed", left, top, zIndex: 10101, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 14, width: POPUP_W }}
+            <div style={{ position: "fixed", left, top, zIndex: 10101, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 14, width: POPUP_W }}
               onMouseDown={e => e.stopPropagation()}>
               {notePopup.studentNote && (
                 <div style={{ marginBottom: 10, padding: "7px 10px", background: colors.bg, borderRadius: 7, border: `1px solid ${colors.borderLight}` }}>
@@ -1543,57 +2241,79 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         );
       })()}
 
-      {/* 6: Bulk missed modal */}
-      {bulkMissedModal && (() => {
-        const selLessons = (weeklyData?.lessons || []).filter(l => bulkMissedModal.lessonIds.includes(l.id));
-        return (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
-            onClick={() => setBulkMissedModal(null)}>
-            <div style={{ background: "#fff", borderRadius: 14, padding: 24, width: 320, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
-              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Mark {selLessons.length} lessons missed</div>
-              <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 16 }}>{selLessons.map(l => l.studentName || l.groupName).join(", ")}</div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Reason (applied to all)</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {TALLY_REASONS.filter(r => !r.invisible).map(r => (
-                  <button key={r.value} onClick={() => {
-                    const now = new Date().toISOString();
-                    const newEntries = selLessons.map(l => ({
-                      id: uid(), lessonKey: l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`,
-                      lessonId: l.id, isGroup: l.isGroup || false, groupName: l.groupName || "",
-                      studentId: l.studentId || "", studentName: l.isGroup ? (l.groupName || "Group") : l.studentName,
-                      studentNames: l.studentNames || [], instrument: l.instrument, schoolId: l.schoolId,
-                      teacherId: l._swapTeacherId || l.teacherId, teacherName: l._swapTeacherName || l.teacherName,
-                      weekKey, weekLabel, weekNum: 0, termKey: null, day: l.day,
-                      status: "missed", reason: r.value, notes: "", makeupEligible: r.makeupEligible ?? true,
-                      madeUp: false, recordedAt: now,
-                    }));
-                    setTallyEntries(prev => {
-                      const existingKeys = new Set(newEntries.map(e => `${e.lessonKey}|${e.weekKey}`));
-                      return [...prev.filter(e => !existingKeys.has(`${e.lessonKey}|${e.weekKey}`)), ...newEntries];
-                    });
-                    selLessons.forEach(l => handleMissedDrop(l.id));
-                    setBulkMissedModal(null); setSelectedCards(new Set());
-                    notify(`${selLessons.length} lessons marked missed`);
-                  }}
-                    style={{ padding: "8px 12px", borderRadius: 7, border: "1.5px solid #E5E7EB", background: "#fff", color: "#374151", fontSize: 13, cursor: "pointer", textAlign: "left", fontFamily: "inherit", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
-                    onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
-                    {r.label}
-                    {r.makeupEligible === true && <span style={{ fontSize: 11, color: "#D97706", fontWeight: 600 }}>● makeup owed</span>}
-                  </button>
-                ))}
-              </div>
-              <button onClick={() => setBulkMissedModal(null)} style={{ marginTop: 12, width: "100%", padding: "8px 0", borderRadius: 8, background: "#F3F4F6", color: "#374151", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-            </div>
-          </div>
-        );
-      })()}
-
       {/* Right-click context menu */}
       {contextMenu && (
-        <div ref={contextMenuRef} style={{ position: "fixed", ...((contextMenu.fromMissed || contextMenu.isCatchupStage || contextMenu.isMissedZone) ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 220, 0).left, zIndex: 9999, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 200 }}
+        <div ref={contextMenuRef} style={{ position: "fixed", ...((contextMenu.fromMissed || contextMenu.isCatchupStage || contextMenu.isMissedZone) ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 220, 0).left, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 200 }}
           onClick={e => e.stopPropagation()}>
-          {contextMenu.isDayHeader ? (() => {
+          {contextMenu.fromMissed ? (() => {
+            const missedIdx = (weeklyData?.missed || []).findIndex(m => m.id === contextMenu.lessonId);
+            const missedLesson = missedIdx >= 0 ? weeklyData.missed[missedIdx] : null;
+            if (!missedLesson) return null;
+            const currentReason = missedLesson.reason || null;
+            const currentReasonLabel = currentReason ? (TALLY_REASONS.find(r => r.value === currentReason)?.label || currentReason) : null;
+            const missedSt = !missedLesson.isGroup ? students.find(s => s.id === missedLesson.studentId) : null;
+            const parentEmails = missedSt ? getParentEmails(missedSt) : [];
+            const school = schools.find(s => s.id === (missedLesson.schoolId || selectedSchool));
+            return (
+              <div style={{ padding: "4px 0", minWidth: 210 }}>
+                <div style={{ padding: "6px 12px 6px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  {missedLesson.isGroup ? (missedLesson.groupName || "Group") : missedLesson.studentName}
+                </div>
+                {currentReasonLabel && (
+                  <div style={{ padding: "5px 12px 3px", fontSize: 11, color: colors.textMuted, display: "flex", alignItems: "center", gap: 5 }}>
+                    <Check size={10} style={{ flexShrink: 0, color: colors.textMuted }} /> {currentReasonLabel}
+                  </div>
+                )}
+                <button
+                  onClick={() => { setMissedModal({ type: "single", missedIndex: missedIdx, lesson: missedLesson, weekKey, category: null, reasonDetail: "", catchup: null, details: "" }); setContextMenu(null); }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <StickyNote size={13} style={{ flexShrink: 0, color: colors.textMuted }} /> {currentReason ? "Change reason" : "Add reason"}
+                </button>
+                {parentEmails.length > 0 && (
+                  <button
+                    onClick={() => {
+                      const tmpl = getEmailTemplates()[currentReason] || getEmailTemplates().other;
+                      const parentName = (missedSt?.parents?.[0]?.name || "").split(" ")[0] || "there";
+                      const resolved = resolveTemplate(tmpl, {
+                        studentName: preferredFirstName(missedLesson.studentName),
+                        parentName: preferredFirstName(parentName) || "there",
+                        instrument: missedLesson.instrument || "",
+                        day: missedLesson.day || "",
+                        weekLabel: weekLabel || "",
+                        teacherName: missedLesson.teacherName || "",
+                        schoolName: school?.name || "",
+                        absenceReason: missedLesson.reasonDetail || "",
+                      });
+                      openCompose(parentEmails, { subject: resolved.subject, body: resolved.body, from: school?.senderEmail || "", triggerId: "tally_missed" });
+                      setContextMenu(null);
+                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                    <Mail size={13} style={{ flexShrink: 0, color: colors.textMuted }} /> Email parent
+                  </button>
+                )}
+                <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
+                <button
+                  onClick={() => {
+                    setWeeklyTimetables(prev => {
+                      const entry = prev[storageKey];
+                      if (!entry) return prev;
+                      const newMissed = entry.missed.filter((_, i) => i !== missedIdx);
+                      return { ...prev, [storageKey]: { ...entry, missed: newMissed } };
+                    });
+                    setContextMenu(null);
+                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove from missed</span>
+                </button>
+              </div>
+            );
+          })() : contextMenu.isDayHeader ? (() => {
             const day = contextMenu.day;
             // Aggregate across all selected days, or just the right-clicked day
             const activeDays = selectedDays.size > 0 ? [...selectedDays] : [day];
@@ -1662,7 +2382,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 <div ref={dayHeaderSubRef}
                   onMouseEnter={keepDayHeaderOpen}
                   onMouseLeave={scheduleDayHeaderClose}
-                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                   {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
                   {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
                   {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
@@ -1698,7 +2418,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
                       <span>{label} ({allEmails.length})</span>
-                      <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                   ) : (
                     <button
@@ -1724,18 +2444,58 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 {mkEmailRow("Parents", allParentEmails, parentRows, "parents", colors.accent)}
                 {mkEmailRow("Class Teachers", allTeacherEmails, teacherRows, "teachers", colors.sidebarActive)}
                 {mkEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
+                {/* Add / clear teacher chips */}
+                {(() => {
+                  const currentChips = dayTeacherChips[day] || [];
+                  const notAdded = teachers.filter(t => !currentChips.includes(t.id));
+                  if (notAdded.length === 0 && currentChips.length === 0) return null;
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ padding: "4px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Teacher Chips</div>
+                      {notAdded.map(t => {
+                        const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                        return (
+                          <button key={t.id} onClick={() => { setDayTeacherChips(prev => ({ ...prev, [day]: [...(prev[day] || []), t.id] })); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                            onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                            onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                            <span style={{ width: 22, height: 17, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
+                            Add {t.name.split(" ")[0]}
+                          </button>
+                        );
+                      })}
+                      {currentChips.length > 0 && (
+                        <button onClick={() => { setDayTeacherChips(prev => ({ ...prev, [day]: [] })); setCatchupDayTeacher(prev => { const n = { ...prev }; delete n[day]; return n; }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textMuted, fontFamily: "inherit" }}
+                          onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                          Clear chips
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             );
           })() : contextMenu.isMissedZone ? (() => {
             const missed = weeklyData.missed || [];
-            // Group by reason
+            const scheduleMissedZoneClose = () => { missedZoneHideTimer.current = setTimeout(() => setMissedZoneSubmenu(null), 300); };
+
+            // Group by reasonDetail from tally entry, falling back to "Other"
             const byReason = {};
             for (const m of missed) {
-              const key = m.reason || "other";
+              const key = m.reasonDetail?.trim() || "Other";
               if (!byReason[key]) byReason[key] = [];
               byReason[key].push(m);
             }
-            const reasonGroups = Object.entries(byReason);
+            // Sort: named reasons first, "Other" always last
+            const reasonGroups = Object.entries(byReason).sort(([a], [b]) => {
+              if (a === "Other") return 1;
+              if (b === "Other") return -1;
+              return a.localeCompare(b);
+            });
+
             const subMenuW = 230;
             const menuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
             const menuRight = menuRect ? menuRect.right : contextMenu.x + 220;
@@ -1752,97 +2512,67 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               return [...emails];
             };
 
-            // All parents across all missed
-            const allParentEmails = missedParentEmails(missed);
-
             return (
               <div style={{ padding: "6px 4px" }}>
-                <div style={{ padding: "6px 10px", fontSize: 11, color: colors.danger, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
                   Missed Lessons · {missed.length}
                 </div>
-                {/* All parents group action */}
-                {allParentEmails.length > 0 && (
-                  <div style={{ padding: "6px 10px 4px", borderBottom: `1px solid ${colors.borderLight}` }}>
-                    <div style={{ fontSize: 11, color: colors.textMuted, fontWeight: 600, marginBottom: 4 }}>All parents ({allParentEmails.length})</div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={() => { openCompose(allParentEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "", triggerId: "wtt_missed_parent" }); setContextMenu(null); setMissedZoneSubmenu(null); }}
-                        title="BCC all parents"
-                        style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                        <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Group</span>
-                      </button>
-                      <button onClick={() => {
-                        openGmailSequential(allParentEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "" });
-                        setContextMenu(null); setMissedZoneSubmenu(null);
-                      }}
-                        title="Email each parent individually"
-                        style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                        <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Individual</span>
-                      </button>
-                    </div>
+                {/* Email section label */}
+                {reasonGroups.length > 0 && (
+                  <div style={{ padding: "7px 12px 3px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                    Email
                   </div>
                 )}
-                {/* Per-reason groups */}
-                {reasonGroups.map(([reasonVal, entries]) => {
-                  const reasonLabel = TALLY_REASONS.find(r => r.value === reasonVal)?.label || reasonVal;
+                {/* Per-reason buttons */}
+                {reasonGroups.map(([reasonKey, entries]) => {
                   const groupEmails = missedParentEmails(entries);
-                  const isOpen = missedZoneSubmenu && missedZoneSubmenu.reasonValue === reasonVal;
+                  const isOpen = missedZoneSubmenu && missedZoneSubmenu.reasonValue === reasonKey;
                   return (
-                    <div key={reasonVal} style={{ position: "relative" }}>
-                      {isOpen && groupEmails.length > 0 && (
-                        <div ref={missedZoneSubRef} style={{ position: "fixed", bottom: window.innerHeight - (missedZoneSubmenu.y + 28), left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, padding: "6px 4px" }}>
-                          <div style={{ padding: "4px 10px 6px", fontSize: 11, color: colors.danger, fontWeight: 600, borderBottom: `1px solid ${colors.borderLight}`, marginBottom: 4 }}>
-                            {reasonLabel} ({entries.length})
+                    <div key={reasonKey} style={{ position: "relative" }}>
+                      {isOpen && (
+                        <div ref={missedZoneSubRef}
+                          onMouseEnter={() => { if (missedZoneHideTimer.current) clearTimeout(missedZoneHideTimer.current); }}
+                          onMouseLeave={() => { missedZoneHideTimer.current = setTimeout(() => setMissedZoneSubmenu(null), 300); }}
+                          style={{ position: "fixed", bottom: window.innerHeight - (missedZoneSubmenu.y + 28), left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, padding: "6px 4px" }}>
+                          <div style={{ padding: "4px 10px 6px", fontSize: 11, color: colors.textMuted, fontWeight: 600, borderBottom: `1px solid ${colors.borderLight}`, marginBottom: 4 }}>
+                            {reasonKey} ({entries.length})
                           </div>
-                          {/* Student list */}
+                          {/* Group email actions */}
+                          {groupEmails.length > 0 && (
+                            <div style={{ borderBottom: `1px solid ${colors.borderLight}`, paddingBottom: 4, marginBottom: 4 }}>
+                              <button onClick={() => { openCompose(groupEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "", triggerId: "wtt_missed_parent" }); setContextMenu(null); setMissedZoneSubmenu(null); }}
+                                style={{ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                Email group (BCC)
+                              </button>
+                              <button onClick={() => { openGmailSequential(groupEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "" }); setContextMenu(null); setMissedZoneSubmenu(null); }}
+                                style={{ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                Email individually
+                              </button>
+                            </div>
+                          )}
+                          {/* Individual student list */}
                           {entries.map((m, mi) => {
                             const st = students.find(s => s.id === m.studentId);
                             const pEmails = st ? getParentEmails(st) : [];
                             return (
-                              <div key={mi} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 10px", fontSize: 12 }}>
-                                <span style={{ color: colors.text, fontWeight: 500 }}>{m.isGroup ? (m.groupName || "Group") : m.studentName}</span>
-                                {pEmails.length > 0 && (
-                                  <button onClick={() => { openCompose(pEmails); setContextMenu(null); setMissedZoneSubmenu(null); }}
-                                    style={{ padding: "3px 8px", border: `1px solid ${colors.border}`, borderRadius: 5, background: "none", fontSize: 11, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-                                    onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      <span style={{fontSize:16}}>✉</span>
-                                  </button>
-                                )}
-                              </div>
+                              <button key={mi} onClick={() => { if (pEmails.length > 0) { openCompose(pEmails); setContextMenu(null); setMissedZoneSubmenu(null); } }}
+                                style={{ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: pEmails.length > 0 ? "pointer" : "default", color: colors.text, fontFamily: "inherit", opacity: pEmails.length > 0 ? 1 : 0.45 }}
+                                onMouseEnter={e => { if (pEmails.length > 0) e.currentTarget.style.background = colors.bg; }}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                {m.isGroup ? (m.groupName || "Group") : m.studentName}
+                              </button>
                             );
                           })}
-                          {/* Group actions */}
-                          {groupEmails.length > 1 && (
-                            <div style={{ borderTop: `1px solid ${colors.borderLight}`, padding: "6px 10px 2px" }}>
-                              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>Group ({groupEmails.length} parents)</div>
-                              <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={() => { openCompose(groupEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "" }); setContextMenu(null); setMissedZoneSubmenu(null); }}
-                        title="BCC this group"
-                        style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                        <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Group</span>
-                      </button>
-                      <button onClick={() => {
-                        openGmailSequential(groupEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "" });
-                        setContextMenu(null); setMissedZoneSubmenu(null);
-                      }}
-                        title="Email each individually"
-                        style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                        <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Individual</span>
-                      </button>
-                            </div>
-                            </div>
-                          )}
                         </div>
                       )}
                       <button
-                        onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; setMissedZoneSubmenu({ reasonValue: reasonVal, y: e.currentTarget.getBoundingClientRect().top }); }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${colors.borderLight}`, fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}>
-                        <span>{reasonLabel}</span>
-                        <span style={{ fontSize: 11, color: colors.textMuted }}>{entries.length} {entries.length === 1 ? "student" : "students"} ▶</span>
+                        onMouseEnter={e => { e.currentTarget.style.background = colors.bg; if (missedZoneHideTimer.current) clearTimeout(missedZoneHideTimer.current); setMissedZoneSubmenu({ reasonValue: reasonKey, y: e.currentTarget.getBoundingClientRect().top }); }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleMissedZoneClose(); }}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}>
+                        <span>{reasonKey}</span>
+                        <span style={{ fontSize: 11, color: colors.textMuted }}>{entries.length === 1 ? "1 student" : `${entries.length} students`} ▶</span>
                       </button>
                     </div>
                   );
@@ -1857,24 +2587,39 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "hidden" }}>
               {(() => {
                 const sId = contextMenu.schoolId;
-                const alreadyStagedIds = new Set((weeklyData?.catchupStaged || []).map(c => c.studentId));
-                const schoolStudentsWithMakeup = students.filter(s => {
-                  if (s.schoolId !== sId) return false;
-                  return tallyEntries.some(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp);
-                });
-                if (schoolStudentsWithMakeup.length === 0) {
+                // Build one row per (student, instrument) pair that has owed make-ups.
+                // schoolId filter is on the missed entry's schoolId (audit decision:
+                // theoretical-only shift vs students-table school join).
+                const eligibleEntries = findOpenCatchups({ weeklyTimetables, schoolId: sId })
+                  .map(r => ({ ...r.missed, weekKey: r.weekKey }));
+                // Group by studentId + instrument
+                const pairMap = {};
+                for (const e of eligibleEntries) {
+                  const key = e.studentId + "|" + e.instrument;
+                  if (!pairMap[key]) pairMap[key] = { studentId: e.studentId, instrument: e.instrument, entries: [] };
+                  pairMap[key].entries.push(e);
+                }
+                const pairs = Object.values(pairMap).sort((a, b) => b.entries.length - a.entries.length || a.instrument.localeCompare(b.instrument));
+                if (pairs.length === 0) {
                   return <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No students with outstanding make-ups</div>;
                 }
-                const makeupCount = (s) => tallyEntries.filter(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp).length;
-                const sorted = [...schoolStudentsWithMakeup].sort((a, b) => makeupCount(b) - makeupCount(a));
-                return sorted.map(s => {
-                  const count = makeupCount(s);
-                  const alreadyStaged = alreadyStagedIds.has(s.id);
+                // Track already-staged by studentId+instrument key
+                const alreadyStagedKeys = new Set(
+                  (weeklyData?.catchupStaged || []).filter(c => !c.isBandSession).map(c => c.studentId + "|" + c.instrument)
+                );
+                return pairs.map(pair => {
+                  const s = students.find(st => st.id === pair.studentId);
+                  if (!s) return null;
+                  const pairKey = pair.studentId + "|" + pair.instrument;
+                  const alreadyStaged = alreadyStagedKeys.has(pairKey);
+                  const count = pair.entries.length;
+                  const oldest = [...pair.entries].sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
+                  // Show instrument label only if student has multiple instruments with owed make-ups
+                  const studentPairs = pairs.filter(p => p.studentId === pair.studentId);
+                  const showInstrument = studentPairs.length > 1;
                   return (
-                    <button key={s.id} onClick={() => {
+                    <button key={pairKey} onClick={() => {
                       if (alreadyStaged) return;
-                      const oldest = tallyEntries.filter(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp).sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
-                      if (!oldest) return;
                       const stagedCard = {
                         id: uid(), studentId: s.id, studentName: s.name,
                         schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
@@ -1891,8 +2636,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: alreadyStaged ? "default" : "pointer", color: alreadyStaged ? colors.textMuted : colors.text, fontFamily: "inherit", textAlign: "left", opacity: alreadyStaged ? 0.5 : 1 }}
                       onMouseEnter={e => { if (!alreadyStaged) e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                      <span>{s.name}</span>
-                      <span style={{ fontSize: 11, color: "#6B7280", whiteSpace: "nowrap" }}>
+                      <span>{s.name}{showInstrument ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>· {pair.instrument}</span> : null}</span>
+                      <span style={{ fontSize: 11, color: colors.gray500, whiteSpace: "nowrap" }}>
                         {alreadyStaged ? "already staged" : count + " owed"}
                       </span>
                     </button>
@@ -1939,7 +2684,490 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               })()}
               </div>
             </div>
-          ) : contextMenu.isEmpty ? (
+          ) : contextMenu.isCatchupSlot ? (() => {
+            // Build set of student+instrument pairs already scheduled across ALL weeks of this holiday break
+            const holidayBreakWeekKeys = holidayBreak
+              ? Object.keys(catchupLessons).filter(wk => wk >= holidayBreak.date && wk <= (holidayBreak.endDate || holidayBreak.date))
+              : [weekKey];
+            // Count scheduled lessons per student+instrument pair across this holiday break
+            const scheduledCountMap = {};
+            holidayBreakWeekKeys.flatMap(wk => (catchupLessons[wk] || [])).forEach(l => {
+              const k = l.studentId + "|" + l.instrument;
+              scheduledCountMap[k] = (scheduledCountMap[k] || 0) + 1;
+            });
+            // Count total owed per student+instrument pair
+            const allOpen = findOpenCatchups({ weeklyTimetables });
+            const owedCountMap = {};
+            for (const r of allOpen) {
+              const k = r.missed.studentId + "|" + r.missed.instrument;
+              owedCountMap[k] = (owedCountMap[k] || 0) + 1;
+            }
+            const owedByTeacher = {};
+            for (const r of allOpen) {
+              const m = r.missed;
+              const k = m.studentId + "|" + m.instrument;
+              // Skip only when all catch-ups for this student+instrument are already scheduled
+              if ((scheduledCountMap[k] || 0) >= (owedCountMap[k] || 0)) continue;
+              const tid = m.teacherId || "__none__";
+              if (!owedByTeacher[tid]) owedByTeacher[tid] = [];
+              owedByTeacher[tid].push({ ...m, weekKey: r.weekKey });
+            }
+            for (const tid of Object.keys(owedByTeacher)) {
+              owedByTeacher[tid].sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+            }
+            const teacherGroups = Object.entries(owedByTeacher)
+              .map(([tid, entries]) => { const t = teachers.find(x => x.id === tid); return { tid, teacherName: t?.name || "Unknown", color: t?.color || colors.accent, entries }; })
+              .sort((a, b) => a.teacherName.localeCompare(b.teacherName));
+            const menuRect = contextMenuRef.current?.getBoundingClientRect();
+            const menuRight = menuRect ? menuRect.right : contextMenu.x + 200;
+            const menuLeft = menuRect ? menuRect.left : contextMenu.x;
+            const subW = 210;
+            const subX = menuRight + subW > window.innerWidth ? menuLeft - subW : menuRight;
+            const keepCatchupSub = () => { if (catchupSlotHideTimer.current) clearTimeout(catchupSlotHideTimer.current); };
+            const scheduleCatchupSubClose = () => { catchupSlotHideTimer.current = setTimeout(() => setCatchupSlotSubTeacher(null), 220); };
+            return (
+              <div style={{ padding: "4px 0", minWidth: 200 }}>
+                <div style={{ padding: "6px 12px", fontSize: 11, color: colors.accentDark, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><RotateCcw size={11} /> Catch Ups — {contextMenu.day} {contextMenu.time}</span>
+                </div>
+                {teacherGroups.length === 0 ? (
+                  <div style={{ padding: "12px 16px", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No outstanding catch-ups</div>
+                ) : (
+                  teacherGroups.map(({ tid, teacherName, color, entries }) => {
+                    const seen = new Set();
+                    const deduped = entries.filter(e => { const k = e.studentId + "|" + e.instrument; if (seen.has(k)) return false; seen.add(k); return true; });
+                    const totalOwed = deduped.length;
+                    const initials = teacherName.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                    const isOpen = catchupSlotSubTeacher?.teacherId === tid;
+                    return (
+                      <div key={tid} style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={catchupSlotSubRef}
+                            onMouseEnter={keepCatchupSub} onMouseLeave={scheduleCatchupSubClose}
+                            style={{ position: "fixed", ...clampMenuPos(subX, catchupSlotSubTeacher.y, subW, Math.min(deduped.length * 40 + 30, 300)), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)", minWidth: subW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            <div style={{ padding: "5px 12px 4px", fontSize: 11, color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: `1px solid ${colors.borderLight}` }}>
+                              {initials} — {teacherName.split(" ")[0]}
+                            </div>
+                            {deduped.map(e => {
+                              const owedCount = (owedCountMap[e.studentId + "|" + e.instrument] || 0) - (scheduledCountMap[e.studentId + "|" + e.instrument] || 0);
+                              const alreadyPlaced = (catchupData.lessons || []).some(l => l.studentId === e.studentId && l.instrument === e.instrument && l.day === contextMenu.day && l.start === contextMenu.time);
+                              const multiInstrument = entries.filter(en => en.studentId === e.studentId).length > 1;
+                              return (
+                                <button key={e.studentId + "|" + e.instrument} disabled={alreadyPlaced}
+                                  onClick={() => {
+                                    if (alreadyPlaced) return;
+                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, teacherId: e.teacherId || "", teacherName: e.teacherName || "", enrolmentId: enrolmentIdFor(e.studentId, e.instrument, enrolments), day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
+                                    setCatchupLessons(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), newLesson] }));
+                                    if (notify) notify(`${e.studentName} — catch-up scheduled`);
+                                    setContextMenu(null); setCatchupSlotSubTeacher(null);
+                                  }}
+                                  onMouseEnter={e2 => { keepCatchupSub(); if (!alreadyPlaced) e2.currentTarget.style.background = colors.bg; }}
+                                  onMouseLeave={e2 => { scheduleCatchupSubClose(); e2.currentTarget.style.background = "none"; }}
+                                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: alreadyPlaced ? "default" : "pointer", color: alreadyPlaced ? colors.textMuted : colors.text, fontFamily: "inherit", opacity: alreadyPlaced ? 0.5 : 1 }}>
+                                  <span>{e.studentName}{multiInstrument && <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 5 }}>· {e.instrument}</span>}</span>
+                                  <span style={{ fontSize: 11, color: colors.textMuted, whiteSpace: "nowrap" }}>{owedCount} owed{alreadyPlaced ? " · placed" : ""}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCatchupSub(); setCatchupSlotSubTeacher({ teacherId: tid, y: e.currentTarget.getBoundingClientRect().top }); }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCatchupSubClose(); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0, display: "inline-block" }} />
+                            {initials} — {teacherName.split(" ")[0]}
+                          </span>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: colors.textMuted }}>
+                            {totalOwed} owed <ChevronRight size={10} style={{ opacity: 0.5 }} />
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })() : contextMenu.isCatchupDayHeader ? (() => {
+            const day = contextMenu.day;
+            const isDayCatchupConfirmed = contextMenu.isDayCatchupConfirmed || (confirmedCatchupDays[weekKey] || []).includes(day);
+            const currentChips = dayTeacherChips[day] || [];
+            const notAdded = teachers.filter(t => !currentChips.includes(t.id));
+            // Aggregate lessons across all selected catch-up days, or just the right-clicked day
+            const activeCatchupDays = selectedCatchupDays.size > 0 ? [...selectedCatchupDays] : [day];
+            const dayCatchupLessons = (catchupLessons[weekKey] || []).filter(l => activeCatchupDays.includes(l.day));
+            // Collect parent emails
+            const cuParentEmailSet = new Set();
+            const cuParentRows = [];
+            dayCatchupLessons.forEach(l => {
+              const st = students.find(s => s.id === l.studentId);
+              if (!st) return;
+              (st.parents || []).forEach(p => {
+                if (p.email && !cuParentEmailSet.has(p.email)) {
+                  cuParentEmailSet.add(p.email);
+                  cuParentRows.push({ name: p.name || p.email, email: p.email });
+                }
+              });
+            });
+            const cuAllParentEmails = [...cuParentEmailSet];
+            // Collect class teacher emails
+            const cuTeacherEmailSet = new Set();
+            const cuTeacherRows = [];
+            dayCatchupLessons.forEach(l => {
+              const st = students.find(s => s.id === l.studentId);
+              if (!st) return;
+              const ct = getClassTeacher(st, contacts || []);
+              if (ct && ct.email && !cuTeacherEmailSet.has(ct.email)) {
+                cuTeacherEmailSet.add(ct.email);
+                cuTeacherRows.push({ name: ct.name || ct.email, email: ct.email });
+              }
+            });
+            const cuAllTeacherEmails = [...cuTeacherEmailSet];
+            // Collect music staff emails
+            const cuStaffEmailSet = new Set();
+            const cuStaffRows = [];
+            dayCatchupLessons.forEach(l => {
+              const t = teachers.find(x => x.id === l.teacherId);
+              if (t?.email && !cuStaffEmailSet.has(t.email)) {
+                cuStaffEmailSet.add(t.email);
+                cuStaffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null });
+              }
+            });
+            const cuAllStaffEmails = [...cuStaffEmailSet];
+            // Remove a teacher: wipe their chip, delete their lessons for this day, un-mark tally
+            const removeTeacherFromDay = (tid) => {
+              // Find lessons for this teacher on this day
+              const removedLessons = (catchupData.lessons || []).filter(l => l.day === day && l.teacherId === tid);
+              // Un-mark tally entries for those lessons
+              const removedLessonTallyIds = removedLessons.map(l => l.makeupForTallyId).filter(Boolean);
+              if (removedLessonTallyIds.length > 0) {
+                // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+                setTallyEntries(prev => prev.map(e => removedLessonTallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
+              }
+              // Also un-mark by studentId+instrument for any that don't have makeupForTallyId
+              removedLessons.forEach(l => {
+                if (!l.makeupForTallyId) {
+                  const markedUp = tallyEntries
+                    .filter(e => e.studentId === l.studentId && e.instrument === l.instrument && e.status === "missed" && e.makeupEligible && e.madeUp)
+                    .sort((a, b) => b.weekKey.localeCompare(a.weekKey));
+                  // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+                  if (markedUp.length > 0) setTallyEntries(prev => prev.map(e => e.id === markedUp[0].id ? { ...e, madeUp: false } : e));
+                }
+              });
+              // Remove lessons
+              setCatchupLessons(prev => ({
+                ...prev, [weekKey]: (prev[weekKey] || []).filter(l => !(l.day === day && l.teacherId === tid))
+              }));
+              // Remove chip; update active teacher if needed
+              setDayTeacherChips(prev => {
+                const next = { ...prev, [day]: (prev[day] || []).filter(id => id !== tid) };
+                if (!next[day] || next[day].length === 0) delete next[day];
+                return next;
+              });
+              setCatchupDayTeacher(prev => {
+                if (prev[day] !== tid) return prev;
+                const remaining = (currentChips || []).filter(id => id !== tid);
+                const n = { ...prev };
+                if (remaining.length > 0) n[day] = remaining[0]; else delete n[day];
+                return n;
+              });
+            };
+
+            const cuSubMenuW = 210;
+            const cuMenuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
+            const cuMenuRight = cuMenuRect ? cuMenuRect.right : contextMenu.x + 220;
+            const cuMenuLeft = cuMenuRect ? cuMenuRect.left : contextMenu.x;
+            const cuSubX = cuMenuRight + cuSubMenuW > window.innerWidth ? cuMenuLeft - cuSubMenuW : cuMenuRight;
+
+            const keepCuDayHeaderOpen = () => { if (dayHeaderHideTimer.current) clearTimeout(dayHeaderHideTimer.current); };
+            const scheduleCuDayHeaderClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
+
+            const CuDaySubPanel = ({ type, rows, allEmails, color, multi }) => {
+              if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
+              const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
+              const hov = (e) => e.currentTarget.style.background = colors.bg;
+              const unhov = (e) => e.currentTarget.style.background = "none";
+              return (
+                <div ref={dayHeaderSubRef}
+                  onMouseEnter={keepCuDayHeaderOpen}
+                  onMouseLeave={scheduleCuDayHeaderClose}
+                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: cuSubX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                  {multi && <button onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+                  {multi && <button onClick={() => { openGmailSequential(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+                  {rows.map((r, i) => (
+                    <button key={i} onClick={() => { openCompose([r.email]); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      style={r.color ? btn(colors.text) : btn(color || colors.accent)}
+                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
+                      {r.name ? r.name.split(" ")[0] : r.email}
+                    </button>
+                  ))}
+                </div>
+              );
+            };
+
+            const mkCuEmailRow = (label, allEmails, rows, type, color) => {
+              if (!allEmails.length) return null;
+              const isOpen = dayHeaderSubmenu?.type === type;
+              const multi = allEmails.length > 1;
+              return (
+                <div style={{ position: "relative" }}>
+                  <CuDaySubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
+                  {multi ? (
+                    <button
+                      onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onMouseEnter={e => {
+                        keepCuDayHeaderOpen();
+                        e.currentTarget.style.background = colors.bg;
+                        if (!isOpen) setDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
+                      }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCuDayHeaderClose(); }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      <span>{label} ({allEmails.length})</span>
+                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onMouseEnter={e => { keepCuDayHeaderOpen(); e.currentTarget.style.background = colors.bg; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCuDayHeaderClose(); }}
+                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
+                    </button>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <div style={{ padding: "4px 0", minWidth: 190 }}>
+                <div style={{ padding: "6px 12px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  {activeCatchupDays.length > 1 ? `${activeCatchupDays.map(d => d.slice(0, 3)).join(", ")} — Catch-Ups` : `${day} — Catch-Ups`}
+                </div>
+                {/* Email section */}
+                {dayCatchupLessons.length > 0 && (cuAllParentEmails.length > 0 || cuAllTeacherEmails.length > 0 || cuAllStaffEmails.length > 0) && (
+                  <>
+                    {mkCuEmailRow("Parents", cuAllParentEmails, cuParentRows, "parents", colors.accent)}
+                    {mkCuEmailRow("Class Teachers", cuAllTeacherEmails, cuTeacherRows, "teachers", colors.sidebarActive)}
+                    {mkCuEmailRow("Staff", cuAllStaffEmails, cuStaffRows, "staff", colors.textLight)}
+                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
+                  </>
+                )}
+                {/* If confirmed — show un-confirm option only */}
+                {isDayCatchupConfirmed ? (
+                  <>
+                    <div style={{ padding: "8px 12px", fontSize: 12, color: "rgba(34,197,94,0.9)", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Check size={12} /> Day confirmed
+                    </div>
+                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
+                    <button onClick={() => { unconfirmCatchupDay(day); setContextMenu(null); }}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: "#D97706", fontFamily: "inherit" }}
+                      onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      <RotateCcw size={13} /> Un-confirm day
+                    </button>
+                  </>
+                ) : (
+                <>
+                {/* Added teachers with × remove */}
+                {currentChips.length > 0 && (
+                  <>
+                    <div style={{ padding: "5px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Teachers on this day</div>
+                    {currentChips.map(tid => {
+                      const t = teachers.find(x => x.id === tid);
+                      if (!t) return null;
+                      const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                      return (
+                        <div key={tid} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px" }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: colors.text }}>
+                            <span style={{ width: 24, height: 18, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
+                            {t.name.split(" ")[0]}
+                          </span>
+                          <button onClick={() => { removeTeacherFromDay(tid); setContextMenu(null); }}
+                            title={`Remove ${t.name.split(" ")[0]}`}
+                            style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", borderRadius: 4 }}
+                            onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; }}
+                            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = "none"; }}>
+                            <X size={13} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
+                  </>
+                )}
+                {/* Add teacher */}
+                {notAdded.length > 0 ? (
+                  <>
+                    <div style={{ padding: "5px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Add Teacher</div>
+                    {notAdded.map(t => {
+                      const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                      return (
+                        <button key={t.id} onClick={() => {
+                          // Auto-add any teacher who already has lessons on this day as first chip
+                          const existingTids = [...new Set((catchupLessons[weekKey] || []).filter(l => l.day === day && l.teacherId).map(l => l.teacherId))];
+                          const newChips = [...new Set([...(currentChips || []), ...existingTids, t.id])];
+                          setDayTeacherChips(prev => ({ ...prev, [day]: newChips }));
+                          // Default active to whoever already has lessons, falling back to new teacher
+                          if (!catchupDayTeacher[day]) setCatchupDayTeacher(prev => ({ ...prev, [day]: existingTids[0] || t.id }));
+                          setContextMenu(null);
+                        }}
+                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                          onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                          <span style={{ width: 24, height: 18, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
+                          {t.name}
+                        </button>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>All teachers added</div>
+                )}
+                </>
+                )}
+              </div>
+            );
+          })() : contextMenu.isCatchupCard ? (() => {
+            const lesson = (catchupData.lessons || []).find(x => x.id === contextMenu.lessonId);
+            const isMulti = catchupSelectedCards.size > 1 && catchupSelectedCards.has(contextMenu.lessonId);
+            const menuBtn = (color) => ({ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", borderRadius: 6 });
+            const hov = (bg) => (e => e.currentTarget.style.background = bg);
+            const unhov = (e => e.currentTarget.style.background = "none");
+            const removeSingleCatchup = (l) => {
+              if (!l) return;
+              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+              if (l.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === l.makeupForTallyId ? { ...e, madeUp: false } : e));
+              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(x => x.id !== l.id) }));
+            };
+            if (isMulti) {
+              const selLessons = (catchupData.lessons || []).filter(l => catchupSelectedCards.has(l.id));
+              const allParentEmails = [...new Set(selLessons.flatMap(l => { const st = students.find(s => s.id === l.studentId); return st ? getParentEmails(st) : []; }))];
+              const menuRect2 = contextMenuRef.current?.getBoundingClientRect();
+              const cuSubW2 = 160;
+              const cuSubX2 = menuRect2 ? (menuRect2.right + cuSubW2 > window.innerWidth ? menuRect2.left - cuSubW2 : menuRect2.right) : contextMenu.x + 200;
+              const keepCuSwap2 = () => { if (swapCatchupSubTimer.current) clearTimeout(swapCatchupSubTimer.current); };
+              const schedCuSwapClose2 = () => { swapCatchupSubTimer.current = setTimeout(() => setSwapCatchupTeacherSub(null), 200); };
+              return (
+                <div style={{ padding: "6px 4px", minWidth: 200 }}>
+                  <div style={{ padding: "6px 12px 4px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                    {catchupSelectedCards.size} catch-ups selected
+                  </div>
+                  <div style={{ padding: "6px 4px" }}>
+                    {allParentEmails.length > 0 && (
+                      <button onClick={() => { openCompose(allParentEmails); setContextMenu(null); setCatchupSelectedCards(new Set()); }} style={menuBtn(colors.textLight)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                        <Mail size={13} /> Email
+                      </button>
+                    )}
+                    <div style={{ position: "relative" }}>
+                      {swapCatchupTeacherSub && (
+                        <div ref={swapCatchupSubRef} onMouseEnter={keepCuSwap2} onMouseLeave={schedCuSwapClose2}
+                          style={{ position: "fixed", top: swapCatchupTeacherSub.y, left: cuSubX2, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubW2, padding: "4px 0" }}>
+                          {teachers.map(t => (
+                            <button key={t.id} onClick={() => {
+                              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).map(l => catchupSelectedCards.has(l.id) ? { ...l, teacherId: t.id, teacherName: t.name } : l) }));
+                              setCatchupSelectedCards(new Set()); setContextMenu(null); setSwapCatchupTeacherSub(null);
+                            }}
+                              style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                              onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                              {t.name.split(" ")[0]}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <button
+                        onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCuSwap2(); setSwapCatchupTeacherSub({ y: e.currentTarget.getBoundingClientRect().top }); }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "none"; schedCuSwapClose2(); }}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", borderRadius: 6 }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><RefreshCw size={13} /> Swap Teacher</span>
+                        <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                      </button>
+                    </div>
+                    <button onClick={() => {
+                      selLessons.forEach(l => { handleCatchupMissedDrop(l.id); });
+                      setCatchupSelectedCards(new Set()); setContextMenu(null);
+                    }} style={menuBtn(colors.danger)} onMouseEnter={e => { hov(darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2")(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                      <X size={13} /> Missed ({catchupSelectedCards.size})
+                    </button>
+                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 0" }} />
+                    <button onClick={() => {
+                      selLessons.forEach(l => removeSingleCatchup(l));
+                      setCatchupSelectedCards(new Set()); setContextMenu(null);
+                      if (notify) notify(`${selLessons.length} catch-ups removed`);
+                    }} style={menuBtn(colors.textMuted)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                      <Trash2 size={13} /> Remove ({catchupSelectedCards.size})
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+            const st = lesson ? students.find(s => s.id === lesson.studentId) : null;
+            const parentEmails = st ? getParentEmails(st) : [];
+            const menuRect = contextMenuRef.current?.getBoundingClientRect();
+            const cuSubW = 160;
+            const cuSubX = menuRect ? (menuRect.right + cuSubW > window.innerWidth ? menuRect.left - cuSubW : menuRect.right) : contextMenu.x + 200;
+            const keepCuSwap = () => { if (swapCatchupSubTimer.current) clearTimeout(swapCatchupSubTimer.current); };
+            const schedCuSwapClose = () => { swapCatchupSubTimer.current = setTimeout(() => setSwapCatchupTeacherSub(null), 200); };
+            return (
+              <div style={{ padding: "6px 4px", minWidth: 200 }}>
+                <div style={{ padding: "6px 12px 4px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  {lesson ? `${lesson.studentName} · ${lesson.instrument}` : "Catch-up"}
+                </div>
+                <div style={{ padding: "6px 4px" }}>
+                  {parentEmails.length > 0 && (
+                    <button onClick={() => { openCompose(parentEmails); setContextMenu(null); }} style={menuBtn(colors.textLight)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                      <Mail size={13} /> Email
+                    </button>
+                  )}
+                  {/* Swap Teacher */}
+                  <div style={{ position: "relative" }}>
+                    {swapCatchupTeacherSub && (
+                      <div ref={swapCatchupSubRef}
+                        onMouseEnter={keepCuSwap} onMouseLeave={schedCuSwapClose}
+                        style={{ position: "fixed", top: swapCatchupTeacherSub.y, left: cuSubX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubW, padding: "4px 0" }}>
+                        {teachers.map(t => {
+                          const isCurrent = t.id === (lesson?.teacherId);
+                          return (
+                            <button key={t.id} onClick={() => {
+                              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).map(l => l.id === contextMenu.lessonId ? { ...l, teacherId: t.id, teacherName: t.name } : l) }));
+                              setContextMenu(null); setSwapCatchupTeacherSub(null);
+                            }}
+                              style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: isCurrent ? "default" : "pointer", color: isCurrent ? colors.textMuted : colors.text, fontFamily: "inherit", opacity: isCurrent ? 0.5 : 1 }}
+                              onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.background = colors.bg; }}
+                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                              {t.name.split(" ")[0]}{isCurrent ? " (current)" : ""}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <button
+                      onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCuSwap(); setSwapCatchupTeacherSub({ y: e.currentTarget.getBoundingClientRect().top }); }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; schedCuSwapClose(); }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", borderRadius: 6 }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><RefreshCw size={13} /> Swap Teacher</span>
+                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                    </button>
+                  </div>
+                  <button onClick={() => { if (lesson) { handleCatchupMissedDrop(lesson.id); } setContextMenu(null); }}
+                    style={menuBtn(colors.danger)} onMouseEnter={e => { hov(darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2")(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                    <X size={13} /> Missed
+                  </button>
+                  <div style={{ height: 1, background: colors.borderLight, margin: "3px 0" }} />
+                  <button onClick={() => { removeSingleCatchup(lesson); if (notify) notify("Catch-up removed"); setContextMenu(null); }}
+                    style={menuBtn(colors.textMuted)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
+                    <Trash2 size={13} /> Remove
+                  </button>
+                </div>
+              </div>
+            );
+          })() : contextMenu.isEmpty ? (
             <div style={{ padding: "6px 4px" }}>
               <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {contextMenu.day} {to12h(contextMenu.time)}
@@ -1951,13 +3179,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...(prev[contextMenu.weekKey] || {}), breaks: [...curBreaks, { id: uid(), schoolId: contextMenu.schoolId, day: contextMenu.day, time: contextMenu.time }] } }));
                 setContextMenu(null);
               }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: "#92400E", borderRadius: 6, fontFamily: "inherit" }}
-                onMouseEnter={e => e.currentTarget.style.background = "#FFF7ED"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                ☕ Add break
+                onMouseEnter={e => e.currentTarget.style.background = colors.amberLight} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Coffee size={13} /> Add break</span>
               </button>
               {/* Add Lesson — cascading upward menu */}
               {(() => {
                 const sId = contextMenu.schoolId;
-                const schoolStudentsWithMakeup = students.filter(s => s.schoolId === sId && tallyEntries.some(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp));
+                const idsWithCatchups = new Set(
+                  findOpenCatchups({ weeklyTimetables, schoolId: sId }).map(r => r.missed.studentId)
+                );
+                const schoolStudentsWithMakeup = students.filter(s => s.schoolId === sId && idsWithCatchups.has(s.id));
                 // Exclude students already scheduled in any week
                 const scheduledStudentIds = new Set(
                   Object.values(weeklyTimetables || {}).flatMap(data => (data.lessons || []).map(l => l.studentId))
@@ -1977,7 +3208,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             );
             const hasPending = students.some(s => s.schoolId === sId && s.status === "pending");
                 if (!hasCatchup && !hasTrial && missing.length === 0 && !hasPending) return null;
-                const makeupCount = (s) => tallyEntries.filter(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp).length;
+                const makeupCount = (s) => findOpenCatchups({ weeklyTimetables, studentId: s.id }).length;
                 const scoreStudent = (s) => {
                   let score = 0;
                   const weekDayDate = (weekDates || []).find(wd => wd.day === contextMenu.day)?.date;
@@ -2000,12 +3231,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 };
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
+                  const activeEnrolment = (enrolments || []).find(e =>
+                    e.studentId === s.id && !e.endDate && !e.isGroup
+                  );
+                  if (!activeEnrolment) {
+                    if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
+                    return;
+                  }
+                  const teacher = teachers.find(t => t.id === activeEnrolment.teacherId);
                   const newLesson = {
                     id: uid(), studentId: s.id, studentName: s.name,
                     schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                    instrument: (s.instruments && s.instruments[0]?.name) || "",
-                    teacherId: (s.instruments && s.instruments[0]?.teacherId) || "",
-                    teacherName: (() => { const tid = s.instruments && s.instruments[0]?.teacherId; return tid ? (teachers.find(t => t.id === tid)?.name || "") : ""; })(),
+                    instrument: activeEnrolment.instrument,
+                    teacherId: activeEnrolment.teacherId || "",
+                    teacherName: teacher?.name || "",
+                    enrolmentId: activeEnrolment.id,
                     day: contextMenu.day, start: contextMenu.time, end: contextMenu.time,
                     ...opts
                   };
@@ -2013,7 +3253,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === contextMenu.time) || { start: contextMenu.time, end: contextMenu.time };
                   const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot);
+                  setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
+                  // Rerun tally if this day is already past 6pm
+                  if (rerunAutoTallyForDate && isDayPast6pm(contextMenu.day, weekKey)) {
+                    const dateStr = weekDateMap[contextMenu.day];
+                    if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
+                  }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                 };
                 // Cascading submenus — open to the right at same Y as hovered item
@@ -2040,12 +3286,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     studentNames: ml.studentNames || undefined, members: ml.members || undefined,
                     schoolId: ml.schoolId, schoolName: ml.schoolName || "",
                     instrument: ml.instrument, teacherId: ml.teacherId || "", teacherName: ml.teacherName || "",
+                    enrolmentId: ml.enrolmentId || enrolmentIdFor(ml.studentId, ml.instrument, enrolments, ml.groupId),
                     day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false,
                   };
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
                   const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot);
+                  setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                 };
@@ -2056,27 +3304,48 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     {/* Single stable submenu div — no component boundary so scroll never resets on re-render */}
                     {addLessonSubmenu && (
                       <div ref={subMenuRef}
-                        style={{ position: "fixed", ...clampMenuPos(subX, addLessonSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}
+                        style={{ position: "fixed", ...clampMenuPos(subX, addLessonSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}
                         onScroll={e => { subPanelScrollRef.current[addLessonSubmenu.type] = e.currentTarget.scrollTop; }}>
                         {addLessonSubmenu.type === "catchup" && <>
                           <div style={subHdr(colors.accentDark)}>Add catch-up</div>
-                          {[...schoolStudentsWithMakeup].sort((a, b) => { const cDiff = makeupCount(b) - makeupCount(a); return cDiff !== 0 ? cDiff : scoreStudent(a) - scoreStudent(b); }).map(s => {
-                            const count = makeupCount(s);
-                            const score = scoreStudent(s);
-                            const scoreLabel = score >= 4 ? "⚠ interruption" : score >= 2 ? "constraint" : score >= 1 ? "specialist" : null;
-                            return (
-                              <button key={s.id} onClick={() => {
-                                const oldest = tallyEntries.filter(e => e.studentId === s.id && e.status === "missed" && e.makeupEligible && !e.madeUp).sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
-                                if (!oldest) return;
-                                placeLesson(s, { instrument: oldest.instrument, teacherId: oldest.teacherId || "", teacherName: oldest.teacherName || "", isMakeup: true, makeupForTallyId: oldest.id });
-                              }} style={subBtnStyle}
-                                onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
-                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                <span>{s.name}</span>
-                                <span style={{ fontSize: 11, color: score > 0 ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>{count}{scoreLabel ? " · " + scoreLabel : ""}</span>
-                              </button>
-                            );
-                          })}
+                          {(() => {
+                            // Build one row per (student, instrument) pair
+                            const eligiblePairMap = {};
+                            for (const r of findOpenCatchups({ weeklyTimetables })) {
+                              const e = r.missed;
+                              const s = students.find(st => st.id === e.studentId && st.schoolId === sId);
+                              if (!s) continue;
+                              const key = e.studentId + "|" + e.instrument;
+                              if (!eligiblePairMap[key]) eligiblePairMap[key] = { student: s, instrument: e.instrument, entries: [] };
+                              eligiblePairMap[key].entries.push({ ...e, weekKey: r.weekKey });
+                            }
+                            const eligiblePairs = Object.values(eligiblePairMap).sort((a, b) => {
+                              const cDiff = b.entries.length - a.entries.length;
+                              if (cDiff !== 0) return cDiff;
+                              return scoreStudent(a.student) - scoreStudent(b.student);
+                            });
+                            return eligiblePairs.map(pair => {
+                              const { student: s, instrument, entries } = pair;
+                              const count = entries.length;
+                              const score = scoreStudent(s);
+                              const scoreLabel = score >= 4 ? "⚠ interruption" : score >= 2 ? "constraint" : score >= 1 ? "specialist" : null;
+                              const oldest = [...entries].sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
+                              // Show instrument label only if student has multiple instruments with owed make-ups
+                              const studentPairs = eligiblePairs.filter(p => p.student.id === s.id);
+                              const showInstrument = studentPairs.length > 1;
+                              const pairKey = s.id + "|" + instrument;
+                              return (
+                                <button key={pairKey} onClick={() => {
+                                  placeLesson(s, { instrument: oldest.instrument, teacherId: oldest.teacherId || "", teacherName: oldest.teacherName || "", isMakeup: true, makeupForTallyId: oldest.id });
+                                }} style={subBtnStyle}
+                                  onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
+                                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                  <span>{s.name}{showInstrument ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>· {instrument}</span> : null}</span>
+                                  <span style={{ fontSize: 11, color: score > 0 ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>{count}{scoreLabel ? " · " + scoreLabel : ""}</span>
+                                </button>
+                              );
+                            });
+                          })()}
                         </>}
                         {addLessonSubmenu.type === "missed" && <>
                           <div style={subHdr("#DC2626")}>Add missed lesson</div>
@@ -2086,10 +3355,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             return (
                               <button key={s.id} onClick={() => { if (!missedLesson) return; placeLesson(s, { instrument: missedLesson.instrument || "", teacherId: missedLesson.teacherId || "", teacherName: missedLesson.teacherName || "" }); }}
                                 style={subBtnStyle}
-                                onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"}
+                                onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
                                 onMouseLeave={e => e.currentTarget.style.background = "none"}>
                                 <span>{s.name}</span>
-                                <span style={{ fontSize: 11, color: "#6B7280", whiteSpace: "nowrap" }}>{count} missed</span>
+                                <span style={{ fontSize: 11, color: colors.gray500, whiteSpace: "nowrap" }}>{count} missed</span>
                               </button>
                             );
                           })}
@@ -2101,7 +3370,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
                               <span>{s.name}</span>
-                              <span style={{ fontSize: 11, color: "#6B7280" }}>{(s.instruments && s.instruments[0]?.name) || ""}</span>
+                              <span style={{ fontSize: 11, color: colors.gray500 }}>{(s.instruments && s.instruments[0]?.name) || ""}</span>
                             </button>
                           ))}
                         </>}
@@ -2122,9 +3391,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             const label = ml.isGroup ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group") : ml.studentName;
                             return (
                               <button key={mi} onClick={() => placeOne(ml)} style={subBtnStyle}
-                                onMouseEnter={e => e.currentTarget.style.background = "#EFF6FF"}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                                 onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                <span>{ml.isGroup ? "👥 " : ""}{label}</span>
+                                <span>{ml.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{label}</span>
                                 <span style={{ fontSize: 11, color: colors.textMuted }}>{ml.isGroup ? "" : ml.instrument}</span>
                               </button>
                             );
@@ -2134,12 +3403,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.danger)}>Temp slot (waiting list)</div>
                           {students.filter(s => s.schoolId === sId && s.status === "pending").sort((a, b) => a.name.localeCompare(b.name)).map(s => (
                             <button key={s.id} onClick={() => {
-                              const inst = s.instruments?.[0] || {};
-                              const teacherForTemp = inst.teacherId ? teachers.find(t => t.id === inst.teacherId) : null;
+                              const activeEnrolment = (enrolments || []).find(e =>
+                                e.studentId === s.id && !e.endDate && !e.isGroup
+                              );
+                              if (!activeEnrolment) {
+                                if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
+                                return;
+                              }
+                              const teacherForTemp = activeEnrolment.teacherId
+                                ? teachers.find(t => t.id === activeEnrolment.teacherId) : null;
                               const newLesson = {
                                 id: uid(), studentId: s.id, studentName: s.name,
                                 schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                                instrument: inst.name || "", teacherId: inst.teacherId || "", teacherName: teacherForTemp?.name || "",
+                                instrument: activeEnrolment.instrument,
+                                teacherId: activeEnrolment.teacherId || "",
+                                teacherName: teacherForTemp?.name || "",
+                                enrolmentId: activeEnrolment.id,
                                 day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
                               };
                               const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
@@ -2149,7 +3428,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                               setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                             }} style={subBtnStyle}
-                              onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"}
+                              onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
                               <span>{s.name}</span>
                               <span style={{ fontSize: 11, color: colors.textMuted }}>{s.instruments?.[0]?.name || ""}</span>
@@ -2162,35 +3441,35 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       <button style={mkItemStyle(colors.accentDark)}
                         onMouseEnter={e => { e.currentTarget.style.background = colors.accentLight; if (addLessonSubmenuType.current !== "catchup") { addLessonSubmenuType.current = "catchup"; setAddLessonSubmenu({ type: "catchup", y: e.currentTarget.getBoundingClientRect().top }); } }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span>↺ Add catch-up</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Add catch-up</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     )}
                     {hasMissed && (
                       <button style={mkItemStyle("#DC2626")}
-                        onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; if (addLessonSubmenuType.current !== "missed") { addLessonSubmenuType.current = "missed"; setAddLessonSubmenu({ type: "missed", y: e.currentTarget.getBoundingClientRect().top }); } }}
+                        onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; if (addLessonSubmenuType.current !== "missed") { addLessonSubmenuType.current = "missed"; setAddLessonSubmenu({ type: "missed", y: e.currentTarget.getBoundingClientRect().top }); } }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span>✕ Add missed</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Add missed</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     )}
                     {hasTrial && (
                       <button style={mkItemStyle(colors.sidebarActive)}
                         onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; if (addLessonSubmenuType.current !== "trial") { addLessonSubmenuType.current = "trial"; setAddLessonSubmenu({ type: "trial", y: e.currentTarget.getBoundingClientRect().top }); } }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span>🎵 Add trial</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Music size={13} /> Add trial</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     )}
                     {schoolBands.length > 0 && (
                       <button style={mkItemStyle(instruments_colors.Band)}
                         onMouseEnter={e => { e.currentTarget.style.background = instruments_colors.Band + "18"; if (addLessonSubmenuType.current !== "band") { addLessonSubmenuType.current = "band"; setAddLessonSubmenu({ type: "band", y: e.currentTarget.getBoundingClientRect().top }); } }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span>🎸 Add band session</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Guitar size={13} /> Add band session</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     )}
                     {missing.length > 0 && (
                       <button style={mkItemStyle(colors.sidebarActive)}
-                        onMouseEnter={e => { e.currentTarget.style.background = "#EFF6FF"; if (addLessonSubmenuType.current !== "unsched") { addLessonSubmenuType.current = "unsched"; setAddLessonSubmenu({ type: "unsched", y: e.currentTarget.getBoundingClientRect().top }); } }}
+                        onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; if (addLessonSubmenuType.current !== "unsched") { addLessonSubmenuType.current = "unsched"; setAddLessonSubmenu({ type: "unsched", y: e.currentTarget.getBoundingClientRect().top }); } }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span>＋ Add unscheduled</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Plus size={13} /> Add unscheduled</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     )}
                     {(() => {
@@ -2198,9 +3477,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       if (pendingStu.length === 0) return null;
                       return (
                         <button style={mkItemStyle(colors.danger)}
-                          onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; if (addLessonSubmenuType.current !== "temp") { addLessonSubmenuType.current = "temp"; setAddLessonSubmenu({ type: "temp", y: e.currentTarget.getBoundingClientRect().top }); } }}
+                          onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; if (addLessonSubmenuType.current !== "temp") { addLessonSubmenuType.current = "temp"; setAddLessonSubmenu({ type: "temp", y: e.currentTarget.getBoundingClientRect().top }); } }}
                           onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                          <span>⏳ Add temp (waiting list)</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Clock size={13} /> Add temp (waiting list)</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
                       );
                     })()}
@@ -2211,7 +3490,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           ) : contextMenu.isBandSession ? (
             <>
               <div style={{ padding: "8px 12px", fontSize: 12, color: instruments_colors.Band, borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 700 }}>
-                🎸 {contextMenu.bandName || "Band Session"}
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Guitar size={13} /> {contextMenu.bandName || "Band Session"}</span>
               </div>
               <div style={{ padding: "6px 4px" }}>
                 {(() => {
@@ -2228,9 +3507,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   return (
               <button onClick={() => { openCompose(bandEmails, { from: schools.find(s => s.id === selectedSchool)?.senderEmail || "", triggerId: "bands_parent" }); setContextMenu(null); }}
                 title="BCC all band parents"
-                style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.white, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
+                style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}
                 onMouseEnter={e => e.currentTarget.style.background = colors.accentLight} onMouseLeave={e => e.currentTarget.style.background = colors.white}>
-                <span style={{fontSize:17, lineHeight:1}}>✉</span><span>Email Parents</span>
+                <Mail size={14} style={{ flexShrink: 0 }} /><span>Email Parents</span>
               </button>
                   );
                 })()}
@@ -2252,8 +3531,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setContextMenu(null);
                   notify("Band session removed");
                 }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                  ✕ Remove band session
+                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove band session</span>
                 </button>
               </div>
             </>
@@ -2343,7 +3622,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const btnChev = (color) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, fontWeight: 600 });
                   const hov = (e) => e.currentTarget.style.background = colors.bg;
                   const unhov = (e) => e.currentTarget.style.background = "none";
-                  const subPanel = { position: "fixed", zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" };
+                  const subPanel = { position: "fixed", zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" };
 
                   return (
                     <div style={{ position: "relative" }}>
@@ -2352,10 +3631,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         onMouseLeave={e => e.currentTarget.style.background = "none"}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}>
                         Email
-                        <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                       {wttEmailSubmenu && (
-                        <div ref={subMenuRef} style={{ position: "fixed", top: wttEmailSubmenu.y, left: subX, zIndex: 10001, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" }}>
+                        <div ref={subMenuRef} style={{ position: "fixed", top: wttEmailSubmenu.y, left: subX, zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" }}>
 
                           {/* Single parent */}
                           {parentObjs.length === 1 && (
@@ -2373,7 +3652,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 Parents
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {wttEmailLevel2?.type === "parents" && (
                                 <div style={{ ...subPanel, top: wttEmailLevel2.y, left: level2X }}>
@@ -2403,7 +3682,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 All Parents
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {wttEmailLevel2?.type === "groupParents" && (
                                 <div style={{ ...subPanel, top: wttEmailLevel2.y, left: level2X, minWidth: emailSubW + 20 }}>
@@ -2434,7 +3713,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.sidebarActive)}>
                                 Teachers
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {wttEmailLevel2?.type === "teachers" && (
                                 <div style={{ ...subPanel, top: wttEmailLevel2.y, left: level2X }}>
@@ -2463,8 +3742,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 })()}
                 {!contextMenu.isMulti && <button onClick={() => { handleMissedDrop(contextMenu.lessonId); setContextMenu(null); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                  ✕ Missed
+                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Missed</span>
                 </button>}
                 {/* 2: Add / edit note */}
                 {!contextMenu.isGroup && !contextMenu.isMulti && (() => {
@@ -2480,7 +3759,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     }}
                       style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, borderRadius: 6, fontFamily: "inherit" }}
                       onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      📝 {hasNote ? "Edit note" : "Add note"}
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><StickyNote size={13} /> {hasNote ? "Edit note" : "Add note"}</span>
                     </button>
                   );
                 })()}
@@ -2494,14 +3773,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <div style={{ position: "relative" }}>
                       {swapTeacherSubmenu?.type === "single" && (
                         <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
+                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
                           {_cm_lesson?._swapTeacherId && (
                             <button onClick={() => {
                               setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => x.id === contextMenu.lessonId ? { ...x, _swapTeacherId: undefined, _swapTeacherName: undefined } : x) } }; });
                               setContextMenu(null); setSwapTeacherSubmenu(null);
                             }} style={{ display: "flex", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                              onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                              ✕ Restore original
+                              onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Restore original</span>
                             </button>
                           )}
                           {availTeachers.map(t => (
@@ -2521,7 +3800,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         onMouseEnter={e => { e.currentTarget.style.background = colors.bg; setSwapTeacherSubmenu({ type: "single", y: e.currentTarget.getBoundingClientRect().top }); keepSwap(); }}
                         onMouseLeave={e => { e.currentTarget.style.background = "none"; schedSwapClose(); }}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, borderRadius: 6, fontFamily: "inherit" }}>
-                        <span>🔄 Swap Teacher</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> Swap Teacher</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     </div>
                   );
@@ -2583,7 +3862,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const multi = allEmails.length > 1;
                     return (
                       <div ref={level3MenuRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                        style={{ position: "fixed", top: wttEmailLevel2.y, left: level3X, zIndex: 10003, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
+                        style={{ position: "fixed", top: wttEmailLevel2.y, left: level3X, zIndex: 10003, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
                         {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
                         {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
                         {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
@@ -2609,7 +3888,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     if (swapTeacherSubmenu?.type !== "multiEmail") return null;
                     return (
                       <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                        style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
+                        style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
                         <GroupEmailPanel type="multiEmail_parents" allEmails={allParentEmails} rows={parentRows} color={colors.accent} />
                         <GroupEmailPanel type="multiEmail_teachers" allEmails={allCtEmails} rows={ctRows} color={colors.sidebarActive} />
                         <GroupEmailPanel type="multiEmail_staff" allEmails={allStaffEmails} rows={staffRows} color={colors.textLight} />
@@ -2623,7 +3902,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
                             onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_parents", y: e.currentTarget.getBoundingClientRect().top }); }}
                             onMouseLeave={unhov}>
-                            <span>Parents ({allParentEmails.length})</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                            <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                           </button>
                         ))}
                         {allCtEmails.length > 0 && (allCtEmails.length === 1 ? (
@@ -2636,7 +3915,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
                             onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_teachers", y: e.currentTarget.getBoundingClientRect().top }); }}
                             onMouseLeave={unhov}>
-                            <span>Teachers ({allCtEmails.length})</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                            <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                           </button>
                         ))}
                         {allStaffEmails.length > 0 && (allStaffEmails.length === 1 ? (
@@ -2649,7 +3928,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
                             onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_staff", y: e.currentTarget.getBoundingClientRect().top }); }}
                             onMouseLeave={unhov}>
-                            <span>Staff ({allStaffEmails.length})</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                            <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                           </button>
                         ))}
                         {!hasAnyEmail && <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No email addresses found</div>}
@@ -2670,7 +3949,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         onMouseEnter={e => { hov(e); setSwapTeacherSubmenu({ type: "multiEmail", y: e.currentTarget.getBoundingClientRect().top }); setWttEmailLevel2(null); keepSwap(); }}
                         onMouseLeave={e => { unhov(e); schedSwapClose(); }}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: hasAnyEmail ? colors.accent : colors.textMuted, fontFamily: "inherit", fontWeight: 600 }}>
-                        <span>✉ Email</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Mail size={13} /> Email</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     </div>
 
@@ -2678,7 +3957,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <div style={{ position: "relative" }}>
                       {swapTeacherSubmenu?.type === "swap" && (
                         <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
+                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
                           {teachers.map(t => (
                             <button key={t.id} onClick={() => {
                               setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => contextMenu.selectedIds.includes(x.id) ? { ...x, _swapTeacherId: t.id, _swapTeacherName: t.name } : x) } }; });
@@ -2694,15 +3973,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         onMouseEnter={e => { hov(e); setSwapTeacherSubmenu({ type: "swap", y: e.currentTarget.getBoundingClientRect().top }); setWttEmailLevel2(null); keepSwap(); }}
                         onMouseLeave={e => { unhov(e); schedSwapClose(); }}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
-                        <span>🔄 Swap Teacher (all)</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> Swap Teacher (all)</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     </div>
 
                     {/* Mark all missed */}
-                    <button onClick={() => { setBulkMissedModal({ lessonIds: contextMenu.selectedIds }); setContextMenu(null); }}
+                    <button onClick={() => { setMissedModal({ type: "bulk", lessonIds: contextMenu.selectedIds, weekKey, category: null, reasonDetail: "", catchup: null, details: "" }); setContextMenu(null); }}
                       style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      ✕ Mark all missed…
+                      onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Mark all missed…</span>
                     </button>
 
                     {/* Delete all selected */}
@@ -2717,15 +3996,37 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       setContextMenu(null); setSelectedCards(new Set());
                     }}
                       style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      🗑 Delete lessons
+                      onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Trash2 size={13} /> Delete lessons</span>
                     </button>
                   </>);
                 })()}
+                {onAddMemory && !contextMenu.isMulti && (() => {
+                  const lesson = (weeklyData?.lessons || []).find(l => l.id === contextMenu.lessonId);
+                  if (!lesson) return null;
+                  const schoolName = schools.find(s => s.id === (lesson.schoolId || selectedSchool))?.name || "";
+                  const teacherName = teachers.find(t => t.id === lesson.teacherId)?.name || "";
+                  const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
+                  return (
+                    <>
+                      <div style={{ borderTop: `1px solid ${colors.border}`, margin: "3px 0" }} />
+                      <button
+                        onClick={() => { onAddMemory(memText); setContextMenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit" }}
+                        onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                        onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+                          Add to Claude memory
+                        </span>
+                      </button>
+                    </>
+                  );
+                })()}
                 {!contextMenu.isMulti && <button onClick={() => { handleDeleteWeeklyLesson(contextMenu.lessonId); setContextMenu(null); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textMuted, borderRadius: 6, fontFamily: "inherit" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                  🗑 Delete lesson
+                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Trash2 size={13} /> Delete lesson</span>
                 </button>}
               </div>
             </>
@@ -2744,37 +4045,52 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   if (wd) { allWeekLessons.push(...wd.lessons); allWeekMissed.push(...(wd.missed || [])); }
                 }
                 onExport({ lessons: allWeekLessons, missed: allWeekMissed }, weekLabel);
-              }} title="Export">{ExportIcon}</Btn>
-            <Btn variant="secondary" onClick={() => printWeeklyTimetable(weeklyTimetables, schools, students, weekDates, weekLabel)} title="Print week">🖨</Btn>
+              }} title={isHolidayWeek ? "Disabled" : "Export"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Send size={13} /></Btn>
+            <Btn variant="secondary" onClick={() => !isHolidayWeek && printWeeklyTimetable(weeklyTimetables, schools, students, weekDates, weekLabel)} title={isHolidayWeek ? "Disabled" : "Print week"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Printer size={13} /></Btn>
             {confirmClearAllWeeks ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FEF2F2", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
-                <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500 }}>Clear all?</span>
-                <Btn variant="danger" onClick={() => { setWeeklyTimetables({}); setConfirmClearAllWeeks(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>Yes</Btn>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                <span style={{ fontSize: 12, color: colors.cardBg, fontWeight: 500 }}>Clear all?</span>
+                <Btn variant="danger" onClick={() => {
+                  // Only wipe current + future weeks. Past weeks are locked
+                  // (isLocked = isPastWeek && !editUnlocked) and Clear all
+                  // must respect that — otherwise it retroactively erases
+                  // already-delivered timetables, which was the bug.
+                  setWeeklyTimetables(prev => {
+                    const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
+                    const next = {};
+                    for (const key of Object.keys(prev)) {
+                      const [mondayStr] = key.split("|");
+                      if (mondayStr < currentMondayStr) next[key] = prev[key];
+                    }
+                    return next;
+                  });
+                  setConfirmClearAllWeeks(false);
+                }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmClearAllWeeks(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
             ) : (
-              <Btn variant="danger" disabled={isLocked} style={{ opacity: isLocked ? 0.35 : 1, border: "none" }} onClick={() => setConfirmClearAllWeeks(true)} title="Clear all weeks">🗑</Btn>
+              <Btn variant="danger" disabled={isLocked || isHolidayWeek} style={{ opacity: (isLocked || isHolidayWeek) ? 0.35 : 1, border: "none" }} onClick={() => setConfirmClearAllWeeks(true)} title={isHolidayWeek ? "Disabled" : "Clear all weeks"}><Trash2 size={13} /></Btn>
             )}
-            {confirmRegenerateWeek ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#E9E4F0", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
-                <span style={{ fontSize: 12, color: "#5B3F7A", fontWeight: 500 }}>Reschedule all schools?</span>
-                <Btn variant="primary" onClick={() => { handleGenerateAllSchools(); setConfirmRegenerateWeek(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#5B3F7A", color: "#fff", border: "none" }}>Yes</Btn>
+            {!isHolidayWeek && confirmRegenerateWeek ? (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                <span style={{ fontSize: 12, color: colors.cardBg, fontWeight: 500 }}>Reschedule all schools?</span>
+                <Btn variant="primary" onClick={() => { handleGenerateAllSchools(); setConfirmRegenerateWeek(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: colors.sidebarActive, color: "#fff", border: "none" }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmRegenerateWeek(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
             ) : (
-              <Btn variant="secondary" onClick={() => setConfirmRegenerateWeek(true)} disabled={generating || isLocked} style={{ opacity: (generating || isLocked) ? 0.35 : 1, color: "#5B3F7A", border: "none" }} title="Reschedule all schools">🔄</Btn>
+              <Btn variant="secondary" onClick={() => setConfirmRegenerateWeek(true)} disabled={generating || isLocked || isHolidayWeek} style={{ opacity: (generating || isLocked || isHolidayWeek) ? 0.35 : 1, color: colors.sidebarActive, border: "none" }} title={isHolidayWeek ? "Disabled" : "Reschedule all schools"}><RefreshCw size={13} /></Btn>
             )}
             {confirmImportAllWeeks ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#EFF6FF", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
-                <span style={{ fontSize: 12, color: colors.sidebarActive, fontWeight: 500 }}>Import all schools?</span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                <span style={{ fontSize: 12, color: colors.cardBg, fontWeight: 500 }}>Import all schools?</span>
                 <Btn variant="primary" onClick={importAllSchoolsFromMTT} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: colors.sidebarActive, color: "#fff", border: "none" }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmImportAllWeeks(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
             ) : (
-              <Btn variant="secondary" onClick={() => setConfirmImportAllWeeks(true)} disabled={generating || isLocked} style={{ opacity: (generating || isLocked) ? 0.35 : 1, color: colors.sidebarActive, border: "none" }} title="Import MTT for all schools">📥</Btn>
+              <Btn variant="secondary" onClick={() => setConfirmImportAllWeeks(true)} disabled={generating || isLocked || isHolidayWeek} style={{ opacity: (generating || isLocked || isHolidayWeek) ? 0.35 : 1, color: colors.sidebarActive, border: "none" }} title={isHolidayWeek ? "Disabled" : "Import MTT for all schools"}><Download size={13} /></Btn>
             )}
-            {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)">↩</Btn>}
-            {onRedo && <Btn variant="secondary" onClick={onRedo} disabled={!redoCount} style={{ opacity: redoCount ? 1 : 0.4 }} title="Redo (Cmd+Shift+Z)">↪</Btn>}
+            {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)"><Undo2 size={13} /></Btn>}
+            {onRedo && <Btn variant="secondary" onClick={onRedo} disabled={!redoCount} style={{ opacity: redoCount ? 1 : 0.4 }} title="Redo (Cmd+Shift+Z)"><Redo2 size={13} /></Btn>}
           </>}>
           Weekly Adjustments
         </PageTitle>
@@ -2790,43 +4106,342 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               onMouseDown={() => { setExpandedBtn(null); setConfirmImportExpanded(false); }}
             />
           )}
-          <FrozenCard style={{ border: `2px solid ${colors.sidebarActive}` }}>
+          <FrozenCard style={{ border: `2px solid ${colors.sidebarHover}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "space-between" }}>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {schools.map(s => {
-                  const sKey = weekKey + "|" + s.id; const wttCount = (weeklyTimetables[sKey]?.lessons || []).length;
-                  const isActive = selectedSchool === s.id;
-                  return (
-                    <button key={s.id} onClick={() => setSelectedSchool(s.id)}
-                      style={{
-                        height: 34, padding: "0 14px", borderRadius: 8, fontSize: 13, fontFamily: "inherit", cursor: "pointer", boxSizing: "border-box",
-                        border: `2px solid ${isActive ? colors.sidebarActive : colors.border}`,
-                        background: isActive ? colors.sidebarActive : colors.white,
-                        color: isActive ? colors.white : colors.text, fontWeight: 600,
-                        transition: "all 0.15s", display: "flex", alignItems: "center", gap: 8
-                      }}>
-                      <span>🏫 {s.name.replace(/Primary School/gi, "PS")}</span>
-                      <span style={{
-                        fontSize: 11, padding: "2px 0", borderRadius: 10, fontWeight: 600,
-                        background: isActive ? "rgba(255,255,255,0.2)" : colors.borderLight,
-                        color: isActive ? colors.white : colors.textMuted,
-                        minWidth: 28, textAlign: "center", display: "inline-block"
-                      }}>{wttCount}</span>
-                    </button>
-                  );
-                })}
+                {isHolidayWeek ? (
+                  <div style={{ height: 34, padding: "0 16px", borderRadius: 8, fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, background: colors.accentDark, color: "#fff", border: `2px solid ${colors.accentDark}`, userSelect: "none" }}>
+                    <RotateCcw size={13} /> Holiday Catch-Ups
+                  </div>
+                ) : (
+                  schools.map(s => {
+                    const sKey = weekKey + "|" + s.id; const wttCount = (weeklyTimetables[sKey]?.lessons || []).length;
+                    const isActive = selectedSchool === s.id;
+                    return (
+                      <button key={s.id} onClick={() => setSelectedSchool(s.id)}
+                        style={{
+                          height: 34, padding: "0 14px", borderRadius: 8, fontSize: 13, fontFamily: "inherit", cursor: "pointer", boxSizing: "border-box",
+                          border: `2px solid ${isActive ? (s.color || colors.sidebarHover) : colors.border}`,
+                          background: isActive ? (s.color || colors.sidebarHover) : colors.cardBg,
+                          color: isActive ? colors.white : colors.text, fontWeight: 600,
+                          transition: "all 0.15s", display: "flex", alignItems: "center", gap: 8
+                        }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Building2 size={13} /> {s.name.replace(/Primary School/gi, "PS")}</span>
+                        <span style={{
+                          fontSize: 11, padding: "2px 0", borderRadius: 10, fontWeight: 600,
+                          background: isActive ? "rgba(255,255,255,0.2)" : colors.borderLight,
+                          color: isActive ? colors.white : colors.textMuted,
+                          minWidth: 28, textAlign: "center", display: "inline-block"
+                        }}>{wttCount}</span>
+                      </button>
+                    );
+                  })
+                )}
               </div>
-              <div style={{ display: "flex", alignItems: "center", background: colors.sidebarActive, borderRadius: 8, overflow: "hidden", height: 34, boxSizing: "border-box", flexShrink: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", background: colors.sidebarHover, borderRadius: 8, overflow: "hidden", height: 34, boxSizing: "border-box", flexShrink: 0 }}>
                 <button onClick={() => setWeekOffset(o => o - 1)} disabled={weekOffset <= minWeekOffset}
-                  style={{ background: "none", border: "none", color: colors.white, fontSize: 18, padding: "0 12px", height: "100%", cursor: weekOffset <= minWeekOffset ? "default" : "pointer", opacity: weekOffset <= minWeekOffset ? 0.3 : 1, fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>‹</button>
+                  style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: weekOffset <= minWeekOffset ? "default" : "pointer", opacity: weekOffset <= minWeekOffset ? 0.3 : 1, fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>‹</button>
                 <div style={{ fontWeight: 700, fontSize: 13, padding: "0 8px", color: colors.white, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{weekLabel}</div>
                 <button onClick={() => setWeekOffset(o => o + 1)}
-                  style={{ background: "none", border: "none", color: colors.white, fontSize: 18, padding: "0 12px", height: "100%", cursor: "pointer", fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>›</button>
+                  style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: "pointer", fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>›</button>
               </div>
             </div>
           </FrozenCard>
 
-          {weeklyData && !isLocked && (
+          {/* Past-holiday WEEK RECORD banner + Edit/Lock toggle.
+              Mirrors the non-holiday banner further down the render tree.
+              Without this, past holiday weeks had no lock affordance at all
+              and the catch-up grid could be mutated retroactively. */}
+          {isHolidayWeek && isPastWeek && (
+            <div style={{ marginTop: 12, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ background: colors.sidebarActive, color: "#fff", borderRadius: 8, padding: "6px 18px", fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", border: `2px solid ${colors.sidebarActive}`, boxShadow: "0 2px 8px rgba(52,69,101,0.18)" }}>
+                {weekLabel} RECORD
+              </span>
+              <button onClick={() => setEditUnlocked(v => !v)}
+                style={{ padding: "5px 16px", background: "none", border: `1px solid ${colors.border}`, borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", color: colors.textMuted }}>
+                {editUnlocked ? "Lock" : "Edit"}
+              </button>
+            </div>
+          )}
+
+          {/* ── Holiday Catch-Up Grid ── */}
+          {isHolidayWeek && (() => {
+            const owedTotal = findOpenCatchups({ weeklyTimetables }).length;
+            const scheduledTotal = (catchupData.lessons || []).length;
+            const allTeachers = teachers.filter(t => t.id);
+            return (
+              // pointerEvents:none + dim when locked — keeps the grid visible
+              // (Matt can still read it) but blocks every drag/click edit.
+              // Mirrors the same pattern used by the non-holiday grid.
+              <div style={{ marginTop: 0, pointerEvents: isLocked ? "none" : "auto", opacity: isLocked ? 0.7 : 1 }}>
+                {/* Stats row */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                  <Card style={{ flex: 1, padding: "8px 14px" }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: colors.danger }}>{owedTotal}</span>
+                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Catch-ups owed</span>
+                  </Card>
+                  <Card style={{ flex: 1, padding: "8px 14px" }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: colors.accentDark }}>{scheduledTotal}</span>
+                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Scheduled</span>
+                  </Card>
+                  <Card style={{ flex: 1, padding: "8px 14px" }}>
+                    <span style={{ fontSize: 16, fontWeight: 700, color: "#16A34A" }}>{Math.max(0, owedTotal - scheduledTotal)}</span>
+                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Still to schedule</span>
+                  </Card>
+                </div>
+
+                {/* Catch-up timetable grid */}
+                <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { setCatchupSelectedCards(new Set()); setSelectedCatchupDays(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 210px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `60px repeat(7, minmax(140px, 1fr))`, gap: 1, background: colors.border, minWidth: "calc(60px + 7 * 140px + 6 * 140px)" }}>
+
+                    {/* Corner header */}
+                    <div style={{ background: colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
+
+                    {/* Day column headers with teacher chips */}
+                    {catchupGridDays.map(({ day, date: catchupDayDate }) => {
+                      const dateLabel = catchupDayDate ? new Date(catchupDayDate + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : "";
+                      const chips = dayTeacherChips[day] || [];
+                      const activeTid = chips.length >= 2 ? (catchupDayTeacher[day] || chips[0]) : null;
+                      const isDayCatchupConfirmed = (confirmedCatchupDays[weekKey] || []).includes(day);
+                      const dayHasCatchups = (catchupLessons[weekKey] || []).some(l => l.day === day);
+                      const dayCatchupSelected = selectedCatchupDays.has(day);
+                      return (
+                        <div key={day}
+                          onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupDayHeader: true, day, isDayCatchupConfirmed }); }}
+                          onClick={e => {
+                            e.stopPropagation();
+                            const dayLessonIds = (catchupLessons[weekKey] || []).filter(l => l.day === day).map(l => l.id);
+                            setSelectedCatchupDays(prev => {
+                              const next = new Set(prev);
+                              if (next.has(day)) {
+                                next.delete(day);
+                                setCatchupSelectedCards(cards => { const nc = new Set(cards); dayLessonIds.forEach(id => nc.delete(id)); return nc; });
+                              } else {
+                                next.add(day);
+                                setCatchupSelectedCards(cards => { const nc = new Set(cards); dayLessonIds.forEach(id => nc.add(id)); return nc; });
+                              }
+                              return next;
+                            });
+                          }}
+                          style={{ background: dayCatchupSelected ? colors.accent : colors.sidebarHover, padding: chips.length > 0 ? "6px 6px" : "10px 6px", textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>
+                          {/* Confirm / un-confirm button — top-left */}
+                          {dayHasCatchups && (
+                            <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
+                              {isDayCatchupConfirmed ? (
+                                <button onClick={e => { e.stopPropagation(); unconfirmCatchupDay(day); }} title="Un-confirm day"
+                                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.85 }}
+                                  onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                  onMouseLeave={e => e.currentTarget.style.opacity = "0.85"}>
+                                  <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
+                                </button>
+                              ) : (
+                                <button onClick={e => { e.stopPropagation(); confirmCatchupDay(day); }} title="Confirm day"
+                                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
+                                  onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                  onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}>
+                                  <Check size={12} color="rgba(34,197,94,0.9)" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>
+                            {day.slice(0, 3)}<span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12, marginLeft: 4 }}>{dateLabel}</span>
+                          </div>
+                          {isDayCatchupConfirmed && (
+                            <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
+                          )}
+                          {/* Dynamic teacher chips — only shown when 2+ teachers added via right-click */}
+                          {chips.length >= 2 && (
+                            <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 5, flexWrap: "wrap" }}>
+                              {chips.map(tid => {
+                                const t = teachers.find(x => x.id === tid);
+                                if (!t) return null;
+                                const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                                const isActive = activeTid === tid;
+                                return (
+                                  <button key={tid}
+                                    onClick={e => { e.stopPropagation(); setCatchupDayTeacher(prev => ({ ...prev, [day]: tid })); }}
+                                    title={t.name}
+                                    style={{ height: 22, minWidth: 28, padding: "0 5px", borderRadius: 5, fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
+                                      background: isActive ? (t.color || colors.sidebarActive) : (darkMode ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.25)"),
+                                      color: isActive ? "#fff" : "rgba(255,255,255,0.6)",
+                                    }}>
+                                    {initials}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Time slot rows */}
+                    {catchupTimeSlots.map(time => {
+                      const isHour = time.endsWith(":00");
+                      const timeLabel = (() => { const [h, m] = time.split(":"); const hour = parseInt(h) % 12 || 12; return `${hour}:${m}`; })();
+                      return (
+                        <React.Fragment key={`hcrow-${time}`}>
+                          {/* Time label — blue column */}
+                          <div style={{
+                            background: colors.sidebarHover, padding: "8px 6px 8px 4px", fontSize: 11,
+                            color: "#fff", textAlign: "right",
+                            minHeight: 32, display: "flex", alignItems: "center", justifyContent: "flex-end",
+                            fontWeight: 600, position: "sticky", left: 0, zIndex: 5,
+                          }}>
+                            {timeLabel}
+                          </div>
+
+                          {/* Day cells */}
+                          {catchupGridDays.map(({ day }) => {
+                            const chips = dayTeacherChips[day] || [];
+                            const activeTid = chips.length >= 2 ? (catchupDayTeacher[day] || chips[0]) : null;
+                            const cellKey = `${day}|${time}`;
+                            const isDropTarget = dragOver === cellKey;
+                            const activeLesson = activeTid
+                              ? (catchupData.lessons || []).find(l => l.day === day && l.start === time && l.teacherId === activeTid)
+                              : (catchupData.lessons || []).find(l => l.day === day && l.start === time);
+                            const otherLessons = activeTid
+                              ? (catchupData.lessons || []).filter(l => l.day === day && l.start === time && l.teacherId !== activeTid)
+                              : [];
+                            const otherColor = otherLessons.length > 0 ? (teachers.find(t => t.id === otherLessons[0].teacherId)?.color || colors.accent) : null;
+                            return (
+                              <div key={day}
+                                onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupSlot: true, day, time }); }}
+                                onDragOver={e => { e.preventDefault(); setDragOver(cellKey); }}
+                                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+                                onDrop={e => {
+                                  e.preventDefault();
+                                  const lid = e.dataTransfer.getData("text/plain");
+                                  if (!lid || !lid.startsWith("hcatchup:")) { setDragOver(null); return; }
+                                  const lessonId = lid.replace("hcatchup:", "");
+                                  const dragged = (catchupData.lessons || []).find(l => l.id === lessonId);
+                                  setCatchupLessons(prev => ({
+                                    ...prev, [weekKey]: (prev[weekKey] || []).map(l => l.id === lessonId ? { ...l, day, start: time } : l)
+                                  }));
+                                  if (dragged?.teacherId) setCatchupDayTeacher(prev => ({ ...prev, [day]: dragged.teacherId }));
+                                  setDragOver(null); setDraggingId(null);
+                                  if (onSoundPlay) onSoundPlay();
+                                }}
+                                style={{
+                                  minHeight: 32, padding: 2, position: "relative",
+                                  cursor: (confirmedCatchupDays[weekKey] || []).includes(day) ? "default" : "context-menu",
+                                  background: isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : colors.cardBg,
+                                  boxShadow: (() => {
+                                    if (isDropTarget) return "none";
+                                    if (chips.length < 2 || !activeTid || !activeLesson) return "none";
+                                    const activeT = teachers.find(t => t.id === activeTid);
+                                    return `inset 0 0 0 1.5px ${activeT?.color || colors.accent}`;
+                                  })(),
+                                  outline: "none",
+                                  transition: "background 0.12s, box-shadow 0.12s",
+                                  pointerEvents: (confirmedCatchupDays[weekKey] || []).includes(day) ? "none" : "auto",
+                                }}>
+                                {activeLesson && (() => {
+                                  const isSelected = catchupSelectedCards.has(activeLesson.id);
+                                  const isConfirmed = (confirmedCatchupDays[weekKey] || []).includes(day);
+                                  return (
+                                    <div
+                                      draggable={!isConfirmed}
+                                      onDragStart={e => { e.dataTransfer.setData("text/plain", "hcatchup:" + activeLesson.id); e.dataTransfer.effectAllowed = "move"; setDraggingId("hcatchup:" + activeLesson.id); setHoverPopover(null); }}
+                                      onDragEnd={() => { setDraggingId(null); setDragOver(null); setDragOverCatchupMissed(false); }}
+                                      onMouseEnter={e => {
+                                        if (draggingId) return;
+                                        const rect = e.currentTarget.getBoundingClientRect();
+                                        const info = buildPopoverInfo(activeLesson);
+                                        setHoverPopover({ info, rect, color: getInstColor(activeLesson.instrument) });
+                                      }}
+                                      onMouseLeave={() => setHoverPopover(null)}
+                                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupCard: true, lessonId: activeLesson.id }); }}
+                                      onClick={e => { e.stopPropagation(); if (isConfirmed) return; setCatchupSelectedCards(prev => { const next = new Set(prev); if (next.has(activeLesson.id)) next.delete(activeLesson.id); else next.add(activeLesson.id); return next; }); }}
+                                      style={{
+                                        padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4,
+                                        cursor: draggingId === "hcatchup:" + activeLesson.id ? "grabbing" : isConfirmed ? "default" : "grab",
+                                        background: isSelected ? `${colors.sidebarActive}18` : getInstColor(activeLesson.instrument) + "18",
+                                        borderLeft: `3px solid ${isSelected ? colors.sidebarActive : getInstColor(activeLesson.instrument)}`,
+                                        outline: isSelected ? `1.5px solid ${colors.sidebarActive}` : "none",
+                                        opacity: draggingId === "hcatchup:" + activeLesson.id ? 0.4 : isConfirmed ? 0.5 : 1,
+                                        transition: "opacity 0.12s", position: "relative",
+                                      }}>
+                                      <div style={{ fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        {(() => { const st = students.find(s => s.id === activeLesson.studentId); return getPrefDisplayName(st?.name || activeLesson.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}
+                                      </div>
+                                      <div style={{ color: colors.textLight, fontSize: 12 }}>
+                                        {activeLesson.instrument ? `${activeLesson.instrument} · ` : ""}{(activeLesson.teacherName || "").split(" ")[0]}
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Missed Catch-Ups zone — WTT-style, full width */}
+                <div
+                  onDragOver={e => { e.preventDefault(); setDragOverCatchupMissed(true); }}
+                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCatchupMissed(false); }}
+                  onDrop={e => {
+                    e.preventDefault();
+                    const lid = e.dataTransfer.getData("text/plain");
+                    if (lid?.startsWith("hcatchup:")) handleCatchupMissedDrop(lid.replace("hcatchup:", ""));
+                    setDragOverCatchupMissed(false); setDraggingId(null);
+                  }}
+                  style={{ marginTop: 16, borderRadius: 12, border: `1px solid ${dragOverCatchupMissed ? colors.danger : colors.border}`, background: dragOverCatchupMissed ? (darkMode ? "rgba(196,84,84,0.08)" : "#FEF2F2") : colors.cardBg, transition: "all 0.15s", overflow: "hidden" }}>
+                  {/* Header */}
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "12px 16px 10px", borderBottom: `1px solid ${colors.borderLight}` }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: colors.danger, display: "flex", alignItems: "center", gap: 6 }}>
+                      <X size={13} /> Missed Catch-Ups{(catchupMissed[weekKey] || []).length > 0 ? ` (${(catchupMissed[weekKey] || []).length})` : ""}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>
+                      · drag lesson cards here to record a missed catch-up
+                    </div>
+                  </div>
+                  {/* Cards */}
+                  {(catchupMissed[weekKey] || []).length === 0 ? (
+                    <div style={{ padding: "16px", fontSize: 13, color: colors.textMuted, fontStyle: "italic", textAlign: "center" }}>No missed catch-ups this week</div>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px" }}>
+                      {(catchupMissed[weekKey] || []).map((m, i) => {
+                        const mSt = students.find(s => s.id === m.studentId);
+                        const timeLabel = (() => { const [h, min] = (m.start || "").split(":"); const hr = parseInt(h) % 12 || 12; return `${hr}:${min}`; })();
+                        return (
+                          <div key={m.id || i} style={{ padding: "8px 12px", borderRadius: 8, minWidth: 180, maxWidth: 260, background: darkMode ? "rgba(196,84,84,0.10)" : "#FEF2F2", border: `1px solid ${colors.danger}30`, borderLeft: `3px solid ${colors.danger}`, position: "relative" }}>
+                            <button title="Return to available catch-ups" onClick={() => {
+                              setCatchupMissed(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter((_, idx) => idx !== i) }));
+                              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
+                              if (m.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === m.makeupForTallyId ? { ...e, makeupEligible: true, madeUp: false } : e));
+                              if (notify) notify(`${m.studentName} — returned to available catch-ups`);
+                            }} style={{ position: "absolute", top: 4, right: 5, background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", borderRadius: 4 }}
+                              onMouseEnter={e => e.currentTarget.style.color = colors.text} onMouseLeave={e => e.currentTarget.style.color = colors.textMuted}>
+                              <RotateCcw size={11} />
+                            </button>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: colors.text, paddingRight: 18, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {getPrefDisplayName(mSt?.name || m.studentName)}{mSt?.className ? ` · ${mSt.className}` : ""}
+                            </div>
+                            <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>
+                              {m.instrument} · {(m.teacherName || "").split(" ")[0]}
+                            </div>
+                            <div style={{ marginTop: 5 }}>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger, background: darkMode ? "rgba(196,84,84,0.2)" : "#FECACA", borderRadius: 4, padding: "2px 6px" }}>
+                                Missed · {m.day} {timeLabel}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+
+          {!isHolidayWeek && weeklyData && !isLocked && (
             <ConflictBanner
               constraintWarnings={constraintWarnings}
               ackedConstraints={ackedConstraints}
@@ -2840,7 +4455,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             />
           )}
 
-          {timetable && selectedSchool && (() => {
+          {!isHolidayWeek && timetable && selectedSchool && (() => {
             const mttLessons = timetable.lessons.filter(l => l.schoolId === selectedSchool && !l.isBandSession);
             const wttLessons = (weeklyData?.lessons) || [];
             const seen = new Set();
@@ -2852,7 +4467,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const found = wttLessons.some(wl =>
                 ml.isGroup ? wl.groupId === ml.groupId : (wl.studentId === ml.studentId && wl.instrument === ml.instrument)
               );
-              if (!found) {
+              const foundInMissed = (weeklyData?.missed || []).some(wm =>
+                ml.isGroup ? wm.groupId === ml.groupId : (wm.studentId === ml.studentId && wm.instrument === ml.instrument)
+              );
+              if (!found && !foundInMissed) {
                 const label = ml.isGroup
                   ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group")
                   : ml.studentName;
@@ -2870,8 +4488,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             }
             if (missing.length === 0) return null;
             return (
-              <div style={{ marginBottom: 12, background: "#FFF7ED", border: "1px solid #F59E0B40", borderRadius: 10, padding: "10px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <span style={{ fontSize: 16, lineHeight: 1, marginTop: 1 }}>⚠️</span>
+              <div style={{ marginBottom: 12, background: colors.tagBg, border: "1px solid #F59E0B40", borderRadius: 10, padding: "10px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <AlertTriangle size={16} style={{ flexShrink: 0, color: "#92400E", marginTop: 1 }} />
                 <div>
                   <span style={{ fontSize: 12, fontWeight: 600, color: "#92400E" }}>
                     {missing.length} {missing.length === 1 ? "student" : "students"} from the master timetable not scheduled this week:
@@ -2884,7 +4502,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             );
           })()}
 
-          {isPastWeek && (
+          {!isHolidayWeek && isPastWeek && (
             <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ background: colors.sidebarActive, color: "#fff", borderRadius: 8, padding: "6px 18px", fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", border: `2px solid ${colors.sidebarActive}`, boxShadow: "0 2px 8px rgba(52,69,101,0.18)" }}>
                 {weekLabel} RECORD
@@ -2895,15 +4513,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               </button>
             </div>
           )}
-          {isLocked ? null : (
+          {!isHolidayWeek && !isLocked && (
           <>
           {/* Week Interruptions */}
           {weekInterruptions.length > 0 && (
-            <Card style={{ marginBottom: 8, padding: 0, background: "#FEF3C7", border: "1px solid #F59E0B40", overflow: "hidden" }}>
+            <Card style={{ marginBottom: 8, padding: 0, background: colors.amberLight, border: "1px solid #F59E0B40", overflow: "hidden" }}>
               <div onClick={() => setShowInterruptions(v => !v)}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: "#92400E" }}>
-                <span>⚠ Interruptions this week ({weekInterruptions.length})</span>
-                <span style={{ fontSize: 11, color: "#B45309" }}>{showInterruptions ? "▲" : "▼"}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><AlertTriangle size={13} /> Interruptions this week ({weekInterruptions.length})</span>
+                <span style={{ fontSize: 11, color: "#B45309" }}>{showInterruptions ? <ChevronUp size={11} /> : <ChevronDown size={11} />}</span>
               </div>
               {showInterruptions && (
                 <div style={{ padding: "0 14px 12px", display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -2919,75 +4537,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             </Card>
           )}
 
-          {/* AI Adjustments — current week only */}
+          {/* Reschedule — current week only */}
           {!isPastWeek && <Card style={{ marginBottom: 16, padding: 0, overflow: "hidden" }}>
-            <div style={{ background: colors.sidebarActive, padding: "10px 16px", borderRadius: "12px 12px 0 0", marginBottom: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 14, color: colors.white }}>Claude</div>
+            <div style={{ background: colors.sidebarHover, padding: "10px 16px", borderRadius: "12px 12px 0 0", marginBottom: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: colors.white }}>Reschedule</div>
             </div>
             <div style={{ padding: "14px 18px" }}>
-            {!(typeof localStorage !== "undefined" && localStorage.getItem("mt-api-key")) && (
-              <div style={{ marginBottom: 10, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, color: "#92400E", display: "flex", alignItems: "center", gap: 8 }}>
-                <span>🔑</span>
-                <span>Add your <strong>API key</strong> (via the key icon in the sidebar) to enable AI-powered adjustment parsing.</span>
-              </div>
-            )}
-            <div style={{ position: "relative" }}>
-              <textarea
-                value={adjustmentNotes} onChange={e => { setAdjustmentNotes(e.target.value); e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }}
-                onFocus={e => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; }}
-                placeholder=""
-                rows={1}
-                style={{
-                  width: "100%", padding: 12, border: `1px solid ${colors.inputBorder}`,
-                  borderRadius: 8, fontSize: 13, fontFamily: "inherit", resize: "none",
-                  boxSizing: "border-box", overflow: "hidden", lineHeight: 1.5
-                }}
-              />
-              {!adjustmentNotes && (
-                <div style={{
-                  position: "absolute", top: 0, left: 0, right: 0,
-                  padding: 12, fontSize: 13, fontFamily: "inherit",
-                  color: colors.textMuted, pointerEvents: "none", lineHeight: 1.5,
-                  opacity: wttHintVisible ? 1 : 0, transition: "opacity 0.7s ease",
-                  whiteSpace: "nowrap", overflow: "hidden",
-                }}>
-                  {"\u201C"}{WTT_HINTS[wttHintIdx]}{"\u201D"}
-                </div>
-              )}
-            </div>
-            {pendingRecurringNotes.length > 0 && (
-              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                {pendingRecurringNotes.map((item, idx) => (
-                  <div key={idx} style={{ padding: "8px 12px", background: "rgba(52,69,101,0.07)", border: "1px solid rgba(52,69,101,0.25)", borderRadius: 8, fontSize: 12, color: colors.sidebarActive, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <span>💾</span>
-                    <span style={{ flex: 1 }}>Save as recurring note for <strong>{item.studentName}</strong>: <em>"{item.noteText}"</em></span>
-                    <button onClick={() => {
-                      setStudents(prev => {
-                        const updated = prev.map(s => s.id !== item.studentId ? s : {
-                          ...s,
-                          notes: s.notes ? `${s.notes.trimEnd()}; ${item.noteText}` : item.noteText
-                        });
-                        saveStudents(updated);
-                        return updated;
-                      });
-                      setPendingRecurringNotes(prev => prev.filter((_, i) => i !== idx));
-                      notify(`Recurring note saved for ${item.studentName}`);
-                    }} style={{ padding: "3px 10px", background: colors.sidebarActive, color: "#fff", border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Save</button>
-                    <button onClick={() => setPendingRecurringNotes(prev => prev.filter((_, i) => i !== idx))}
-                      style={{ padding: "3px 8px", background: "none", color: "#6B7280", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Dismiss</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, whiteSpace: "nowrap", flexShrink: 0 }}>Reschedule:</span>
+            <div style={{ display: "flex", gap: 8, marginTop: 0, alignItems: "center", flexWrap: "wrap" }}>
               {/* Week button — expands to Reschedule / Import */}
-              <div key={expandedBtn === "week" ? "week-exp" : "week-col"} style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", outline: `2px solid ${expandedBtn === "week" ? colors.sidebarActive : "transparent"}`, transition: "outline-color 0.15s", position: "relative", zIndex: expandedBtn === "week" ? 40 : "auto" }}>
+              <div key={expandedBtn === "week" ? "week-exp" : "week-col"} style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", outline: `2px solid ${expandedBtn === "week" ? colors.sidebarHover : "transparent"}`, transition: "outline-color 0.15s", position: "relative", zIndex: expandedBtn === "week" ? 40 : "auto" }}>
                 {expandedBtn === "week" ? (
                   <>
                     {confirmImportExpanded === "week" ? (
                       <>
-                        <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: "#EFF6FF", whiteSpace: "nowrap" }}>Replace week?</span>
+                        <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace week?</span>
                         <button onClick={() => { importFromMTT(null); }} disabled={generating}
                           style={{ padding: "6px 10px", background: colors.sidebarActive, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>Yes</button>
                         <button onClick={() => setConfirmImportExpanded(false)}
@@ -2996,19 +4559,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     ) : (
                       <>
                         <button onClick={() => setExpandedBtn(null)}
-                          style={{ padding: "6px 12px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none" }}>Week</button>
+                          style={{ padding: "6px 12px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none" }}>Week</button>
                         <button onClick={() => { handleGenerate(); setExpandedBtn(null); }} disabled={generating}
-                          style={{ padding: "6px 12px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: generating ? "not-allowed" : "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", opacity: generating ? 0.5 : 1, transition: "background 0.1s" }}
-                          onMouseEnter={e => { if (!generating) e.currentTarget.style.background = colors.sidebarActive; }}
+                          style={{ padding: "6px 12px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: generating ? "not-allowed" : "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", opacity: generating ? 0.5 : 1, transition: "background 0.1s" }}
+                          onMouseEnter={e => { if (!generating) e.currentTarget.style.background = colors.sidebarHover; }}
                           onMouseLeave={e => e.currentTarget.style.background = colors.accent}>
-                          {generating ? "…" : "Reschedule"}
+                          {generating ? "…" : "Auto"}
                         </button>
                         <button onClick={() => {
                           const hasLessons = (weeklyData?.lessons || []).filter(l => !l.isBandSession).length > 0;
                           if (hasLessons) { setConfirmImportExpanded("week"); } else { importFromMTT(null); }
                         }}
                           style={{ padding: "6px 12px", background: colors.accent, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", transition: "background 0.1s" }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.sidebarActive}
+                          onMouseEnter={e => e.currentTarget.style.background = colors.sidebarHover}
                           onMouseLeave={e => e.currentTarget.style.background = colors.accent}>
                           Import
                         </button>
@@ -3017,8 +4580,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   </>
                 ) : (
                   <button onClick={() => setExpandedBtn("week")} disabled={generating}
-                    style={{ padding: "6px 14px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: generating ? "not-allowed" : "pointer", border: "none", opacity: generating ? 0.5 : 1, transition: "background 0.1s" }}
-                    onMouseEnter={e => { if (!generating) e.currentTarget.style.background = colors.sidebarActive; }}
+                    style={{ padding: "6px 14px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: generating ? "not-allowed" : "pointer", border: "none", opacity: generating ? 0.5 : 1, transition: "background 0.1s" }}
+                    onMouseEnter={e => { if (!generating) e.currentTarget.style.background = colors.sidebarHover; }}
                     onMouseLeave={e => e.currentTarget.style.background = colors.accent}>
                     {generating ? "Parsing adjustments…" : "Week"}
                   </button>
@@ -3030,11 +4593,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 const isExpanded = expandedBtn === d;
                 return (
                   <React.Fragment key={d}>
-                  <div key={isExpanded ? `${d}-exp` : `${d}-col`} style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", outline: `2px solid ${isExpanded ? colors.sidebarActive : "transparent"}`, transition: "outline-color 0.15s", position: "relative", zIndex: isExpanded ? 40 : "auto" }}>
+                  <div key={isExpanded ? `${d}-exp` : `${d}-col`} style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", outline: `2px solid ${isExpanded ? colors.sidebarHover : "transparent"}`, transition: "outline-color 0.15s", position: "relative", zIndex: isExpanded ? 40 : "auto" }}>
                     {isExpanded ? (
                       confirmImportExpanded === d ? (
                         <>
-                          <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: "#EFF6FF", whiteSpace: "nowrap" }}>Replace {d.slice(0,3)}?</span>
+                          <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace {d.slice(0,3)}?</span>
                           <button onClick={() => { importFromMTT(d); }}
                             style={{ padding: "6px 10px", background: colors.sidebarActive, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>Yes</button>
                           <button onClick={() => setConfirmImportExpanded(false)}
@@ -3043,25 +4606,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       ) : (
                         <>
                           <button onClick={() => setExpandedBtn(null)}
-                            style={{ padding: "6px 12px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", minWidth: 52, textAlign: "center" }}
+                            style={{ padding: "6px 12px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", minWidth: 52, textAlign: "center" }}
                             title={dateLabel}>{d.slice(0,3)}</button>
                           <button onClick={() => { handleGenerateDay(d); setExpandedBtn(null); }}
-                            style={{ padding: "6px 12px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", transition: "background 0.1s" }}
-                            onMouseEnter={e => e.currentTarget.style.background = colors.sidebarActive}
-                            onMouseLeave={e => e.currentTarget.style.background = colors.accent}>Reschedule</button>
+                            style={{ padding: "6px 12px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", transition: "background 0.1s" }}
+                            onMouseEnter={e => e.currentTarget.style.background = colors.sidebarHover}
+                            onMouseLeave={e => e.currentTarget.style.background = colors.accent}>Auto</button>
                           <button onClick={() => {
                             const hasLessons = (weeklyData?.lessons || []).filter(l => l.day === d && !l.isBandSession).length > 0;
                             if (hasLessons) { setConfirmImportExpanded(d); } else { importFromMTT(d); }
                           }}
                             style={{ padding: "6px 12px", background: colors.accent, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)", transition: "background 0.1s" }}
-                            onMouseEnter={e => e.currentTarget.style.background = colors.sidebarActive}
+                            onMouseEnter={e => e.currentTarget.style.background = colors.sidebarHover}
                             onMouseLeave={e => e.currentTarget.style.background = colors.accent}>Import</button>
                         </>
                       )
                     ) : (
                       <button onClick={() => { setExpandedBtn(d); setConfirmImportExpanded(false); }}
-                        style={{ padding: "6px 12px", background: colors.accent, color: colors.white, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", minWidth: 52, textAlign: "center", transition: "background 0.1s" }}
-                        onMouseEnter={e => e.currentTarget.style.background = colors.sidebarActive}
+                        style={{ padding: "6px 12px", background: colors.accent, color: colors.cardBg, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", minWidth: 52, textAlign: "center", transition: "background 0.1s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = colors.sidebarHover}
                         onMouseLeave={e => e.currentTarget.style.background = colors.accent}
                         title={`Options for ${d}${dateLabel ? " (" + dateLabel + ")" : ""}`}>{d.slice(0,3)}</button>
                     )}
@@ -3079,20 +4642,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         placeholder="Version name..."
                         autoFocus
                         style={{ padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", width: 140 }} />
-                      <Btn variant="success" onClick={() => saveWttVersion(wttVersionName)} style={{ fontSize: 11, padding: "4px 8px" }}>✓</Btn>
-                      <Btn variant="ghost" onClick={() => setShowWttSavePrompt(false)} style={{ fontSize: 11, padding: "4px 6px" }}>✕</Btn>
+                      <Btn variant="success" onClick={() => saveWttVersion(wttVersionName)} style={{ fontSize: 11, padding: "4px 8px" }}><Check size={12} /></Btn>
+                      <Btn variant="ghost" onClick={() => setShowWttSavePrompt(false)} style={{ fontSize: 11, padding: "4px 6px" }}><X size={12} /></Btn>
                     </div>
                   ) : (
-                    <Btn variant="secondary" onClick={() => { setWttVersionName(lastWttVersionNameRef.current[selectedSchool] || ""); setShowWttSavePrompt(true); }} style={{ fontSize: 12 }} title="Save this week's timetable as a version">💾</Btn>
+                    <Btn variant="secondary" onClick={() => { setWttVersionName(lastWttVersionNameRef.current[selectedSchool] || ""); setShowWttSavePrompt(true); }} style={{ fontSize: 12 }} title="Save this week's timetable as a version"><Save size={13} /></Btn>
                   )}
                 </div>
                 {wttSavedVersions.filter(v => v.schoolId === selectedSchool).length > 0 && (
                   <div style={{ position: "relative" }}>
                     <Btn variant="secondary" onClick={() => setShowWttVersionMenu(!showWttVersionMenu)} style={{ fontSize: 12 }}>
-                      📂 {wttSavedVersions.filter(v => v.schoolId === selectedSchool).length}
+                      <FolderOpen size={13} /> {wttSavedVersions.filter(v => v.schoolId === selectedSchool).length}
                     </Btn>
                     {showWttVersionMenu && (
-                      <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 260, zIndex: 50, maxHeight: 300, overflowY: "auto" }}>
+                      <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 260, zIndex: 50, maxHeight: 300, overflowY: "auto" }}>
                         <div style={{ padding: "8px 12px", fontSize: 11, color: colors.textMuted, borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                           Saved weekly versions
                         </div>
@@ -3104,56 +4667,43 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               <div style={{ fontSize: 11, color: colors.textMuted }}>{v.weekLabel} · {new Date(v.date).toLocaleDateString()} · {v.lessons.length} lessons</div>
                             </div>
                             <button onClick={e => { e.stopPropagation(); deleteWttVersion(v.id); }}
-                              style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}
-                              title="Delete version">×</button>
+                              style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: "2px 6px", display: "inline-flex", alignItems: "center" }}
+                              title="Delete version"><X size={13} /></button>
                           </div>
                         ))}
                       </div>
                     )}
                   </div>
                 )}
-                <div style={{ position: "relative" }}>
-                  <span ref={clearMenuBtnRef} style={{ display: "inline-block" }}>
-                    <Btn variant="danger" onClick={() => {
-                      const rect = clearMenuBtnRef.current?.getBoundingClientRect();
-                      if (rect) setClearMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
-                      setShowClearMenu(v => !v); setConfirmClearWeek(false);
-                    }} style={{ border: "none" }} title="Clear this week">🗑</Btn>
-                  </span>
-                  {showClearMenu && (() => {
-                    const menuDays = (currentSchool?.days || DAYS).filter(d => (weeklyData?.lessons || []).some(l => l.day === d));
-                    return (
-                      <div ref={clearMenuRef} style={{ position: "fixed", top: clearMenuPos.top, right: clearMenuPos.right, background: colors.white, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, zIndex: 9999, overflow: "hidden" }}>
-                        {menuDays.map(d => (
-                          confirmClearWeek === d ? (
-                            <div key={d} style={{ display: "flex", gap: 6, alignItems: "center", background: "#FEF2F2", padding: "8px 12px", whiteSpace: "nowrap" }}>
-                              <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500, flex: 1 }}>Clear {d}?</span>
-                              <Btn variant="danger" onClick={() => { clearWeek(d); setShowClearMenu(false); setConfirmClearWeek(false); }} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>Yes</Btn>
-                              <Btn variant="secondary" onClick={() => setConfirmClearWeek(false)} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>No</Btn>
-                            </div>
-                          ) : (
-                            <div key={d} onClick={() => setConfirmClearWeek(d)}
-                              style={{ padding: "8px 14px", fontSize: 12, cursor: "pointer", color: colors.text, fontWeight: 500 }}
-                              onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"}
-                              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>{d}</div>
-                          )
-                        ))}
-                        {menuDays.length > 0 && <div style={{ height: 1, background: colors.border, margin: "2px 0" }} />}
-                        {confirmClearWeek === "all" ? (
-                          <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FEF2F2", padding: "8px 12px", whiteSpace: "nowrap" }}>
-                            <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500, flex: 1 }}>Clear all?</span>
-                            <Btn variant="danger" onClick={() => { clearWeek(); setShowClearMenu(false); setConfirmClearWeek(false); }} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>Yes</Btn>
-                            <Btn variant="secondary" onClick={() => setConfirmClearWeek(false)} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>No</Btn>
-                          </div>
-                        ) : (
-                          <div onClick={() => setConfirmClearWeek("all")}
-                            style={{ padding: "8px 14px", fontSize: 12, cursor: "pointer", color: colors.danger, fontWeight: 600 }}
-                            onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"}
-                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}>Full week</div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                <div ref={clearMenuRef} style={{ display: "inline-flex", alignItems: "center" }}>
+                {confirmClearWeek ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.redLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap" }}>
+                    <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500 }}>Clear {confirmClearWeek === "all" ? "full week" : confirmClearWeek}?</span>
+                    <Btn variant="danger" onClick={() => { confirmClearWeek === "all" ? clearWeek() : clearWeek(confirmClearWeek); setConfirmClearWeek(false); setShowClearMenu(false); }} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>Yes</Btn>
+                    <Btn variant="secondary" onClick={() => setConfirmClearWeek(false)} style={{ height: 24, padding: "0 8px", fontSize: 11, borderRadius: 5, fontWeight: 600 }}>No</Btn>
+                  </div>
+                ) : showClearMenu ? (() => {
+                  const menuDays = (currentSchool?.days || DAYS).filter(d => (weeklyData?.lessons || []).some(l => l.day === d));
+                  return (
+                    <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                      {menuDays.map(d => (
+                        <button key={d} onClick={() => setConfirmClearWeek(d)}
+                          style={{ height: 28, padding: "0 10px", borderRadius: 6, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1px solid ${colors.danger}`, background: colors.redLight, color: colors.danger, fontWeight: 500 }}
+                          onMouseEnter={e => e.currentTarget.style.background = "#FEE2E2"}
+                          onMouseLeave={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}>{d.slice(0, 3)}</button>
+                      ))}
+                      <button onClick={() => setConfirmClearWeek("all")}
+                        style={{ height: 28, padding: "0 10px", borderRadius: 6, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: `1px solid ${colors.danger}`, background: colors.danger, color: "#fff", fontWeight: 600 }}
+                        onMouseEnter={e => e.currentTarget.style.opacity = "0.85"}
+                        onMouseLeave={e => e.currentTarget.style.opacity = "1"}>All</button>
+                      <button onClick={() => setShowClearMenu(false)}
+                        style={{ height: 28, padding: "0 8px", borderRadius: 6, fontSize: 12, fontFamily: "inherit", cursor: "pointer", border: "none", background: "none", color: colors.textMuted }}>
+                        <X size={12} /></button>
+                    </div>
+                  );
+                })() : (
+                  <Btn variant="danger" onClick={() => setShowClearMenu(true)} style={{ border: "none" }} title="Clear this week"><Trash2 size={13} /></Btn>
+                )}
                 </div>
               </div>)}
             </div>
@@ -3168,7 +4718,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           )}
 
           {/* Weekly Grid */}
-          {weeklyData ? (
+          {!isHolidayWeek && (weeklyData ? (
             <div style={{ pointerEvents: isLocked ? "none" : "auto" }}>
               <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
                 <Card style={{ flex: 1, padding: "8px 14px" }}>
@@ -3187,7 +4737,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
               {(() => {
                 const schoolDays = (currentSchool?.days || DAYS).slice().sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
-                const wLessons = weeklyData.lessons;
+                const wLessons = displayLessons;
 
                 // Weekly break cards: stored in weeklyData.breaks; fall back to masterBreaks for this school
                 const weeklyBreaks = weeklyData.breaks || (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
@@ -3232,15 +4782,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                 return (
                   <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { if (selectedCards.size > 0) setSelectedCards(new Set()); if (selectedDays.size > 0) setSelectedDays(new Set()); if (selectedMissed.size > 0) setSelectedMissed(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 200px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: `50px repeat(${schoolDays.length}, 1fr)`, gap: 1, background: colors.border }}>
+                    <div style={{ display: "grid", gridTemplateColumns: `50px repeat(${schoolDays.length}, 200px)`, gap: 1, background: colors.border, minWidth: `calc(50px + ${schoolDays.length} * 200px + 1000px)` }}>
                       {/* Header row */}
-                      <div style={{ background: colors.sidebarActive, color: colors.white, padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10 }}>Time</div>
+                      <div style={{ background: colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
                       {schoolDays.map(d => {
                         const blocked = isDayBlocked(d);
                         const daySelected = selectedDays.has(d);
+                        const dayDateStr = weekDateMap[d];
+                        const isDayConfirmed = (confirmedDaysMap[dayDateStr] || []).length > 0;
+                        const isResettingThis = resettingDay === dayDateStr;
+                        const isConfirmingThis = confirmingDay === dayDateStr;
+                        const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
                         return (
                           <div key={d}
-                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : colors.sidebarActive, color: colors.white, padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
+                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
                             onClick={e => {
                               e.stopPropagation();
                               const dayLessonIds = (weeklyData?.lessons || []).filter(l => l.day === d).map(l => l.id);
@@ -3262,8 +4817,69 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               setDayHeaderSubmenu(null);
                               setSwapTeacherSubmenu(null);
                             }}>
+                            {/* Confirmed indicator / reset button — top-left */}
+                            {isDayConfirmed && (
+                              <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
+                                {isResettingThis ? (
+                                  <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                                ) : (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setResetConfirm(dayDateStr); }}
+                                    title="Reset confirmed day"
+                                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.75 }}
+                                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                    onMouseLeave={e => e.currentTarget.style.opacity = "0.75"}
+                                  >
+                                    <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                            {/* Confirm button (admin) — shown when day has lessons but is not yet confirmed */}
+                            {!isDayConfirmed && dayHasLessons && (
+                              <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
+                                {isConfirmingThis ? (
+                                  <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(34,197,94,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                                ) : (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); confirmDay(dayDateStr, d); }}
+                                    title="Confirm day (admin)"
+                                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
+                                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                    onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}
+                                  >
+                                    <Check size={12} color="rgba(34,197,94,0.9)" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {d}
+                            {isDayConfirmed && (
+                              <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
+                            )}
                             {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
+                            {/* Teacher chips — added via right-click */}
+                            {(dayTeacherChips[d] || []).length > 0 && (
+                              <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 4, flexWrap: "wrap" }}>
+                                {(dayTeacherChips[d] || []).map(tid => {
+                                  const t = teachers.find(x => x.id === tid);
+                                  if (!t) return null;
+                                  const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                                  const isChipActive = catchupDayTeacher[d] === tid;
+                                  return (
+                                    <button key={tid}
+                                      onClick={e => { e.stopPropagation(); setCatchupDayTeacher(prev => ({ ...prev, [d]: isChipActive ? null : tid })); }}
+                                      title={t.name}
+                                      style={{ height: 20, minWidth: 26, padding: "0 4px", borderRadius: 4, fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit",
+                                        background: isChipActive ? (t.color || colors.sidebarActive) : "rgba(255,255,255,0.25)",
+                                        color: isChipActive ? "#fff" : "rgba(255,255,255,0.7)",
+                                      }}>
+                                      {initials}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -3274,19 +4890,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isSlotBreak = !!schoolSlotTypeMap[time]; // subtle indicator only
                         return (
                         <React.Fragment key={`wrow-${time}`}>
-                          <div style={{ background: colors.sidebarActive, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: colors.white, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 1 }}>
+                          <div style={{ background: colors.sidebarHover, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: "#fff", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 1, position: "sticky", left: 0, zIndex: 5 }}>
                             {toTimeLabel(time)}
-                            {isSlotBreak && !isTeacherBreak && <span style={{ fontSize: 9, opacity: 0.7 }}>☕</span>}
+                            {isSlotBreak && !isTeacherBreak && <span style={{ opacity: 0.7, display: "inline-flex", alignItems: "center" }}><Coffee size={9} /></span>}
                           </div>
                           {isTeacherBreak ? (
-                            <div style={{ gridColumn: `2 / -1`, background: "#FFF7ED", padding: "8px", minHeight: 36, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                              <span style={{ fontWeight: 600, color: "#92400E", fontSize: 12 }}>☕ Break</span>
+                            <div style={{ gridColumn: `2 / -1`, background: colors.tagBg, padding: "8px", minHeight: 36, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <span style={{ fontWeight: 600, color: "#555", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Coffee size={12} /> Break</span>
                             </div>
                           ) : schoolDays.map(day => {
                             const cellBreak = wGetBreak(time, day);
                             const cellLessons = wLessons.filter(l => l.day === day && l.start === time);
                             const blocked = isDayBlocked(day);
                             const isDropTarget = dragOver && dragOver.day === day && dragOver.time === time;
+                            const isDayConfirmed = (confirmedDaysMap[weekDateMap[day]] || []).length > 0;
                             return (
                               <div key={`${day}-${time}`}
                                 onContextMenu={e => {
@@ -3355,11 +4972,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   } else {
                                     handleWeeklyMoveLesson(lid, day, time);
                                   }
+                                  if (onSoundPlay) onSoundPlay();
                                 }}
                                 style={{
-                                  background: isDropTarget ? colors.accentLight : blocked ? "#FEF2F2" : cellBreak ? "#FFF7ED" : colors.white,
+                                  background: isDayConfirmed
+                                    ? (darkMode ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.04)")
+                                    : isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : blocked ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : colors.cardBg,
                                   padding: 4, minHeight: 32, display: "flex", flexDirection: "column", gap: 3,
-                                  outline: isDropTarget ? `2px dashed ${colors.accent}` : "none",
+                                  outline: "none",
                                   transition: "background 0.15s, outline 0.15s"
                                 }}
                               >
@@ -3372,12 +4992,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       setDraggingId(`wbreak:${cellBreak.id}`);
                                     }}
                                     onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
-                                    style={{ padding: "6px 10px", borderRadius: 6, fontSize: 13, background: "#FED7AA40", borderLeft: "3px solid #D97706", textAlign: "center", cursor: "grab", position: "relative", opacity: draggingId === `wbreak:${cellBreak.id}` ? 0.4 : 1, transition: "opacity 0.15s" }}>
-                                    <span style={{ fontWeight: 600, color: "#92400E" }}>☕ Break</span>
+                                    style={{ flex: 1, padding: "6px 10px", borderRadius: 6, fontSize: 13, background: darkMode ? "#2D2A35" : "#E8E8E8", borderLeft: "3px solid #999", textAlign: "center", cursor: "grab", position: "relative", opacity: draggingId === `wbreak:${cellBreak.id}` ? 0.4 : 1, transition: "opacity 0.15s", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <span style={{ fontWeight: 600, color: "#555", display: "inline-flex", alignItems: "center", gap: 5 }}><Coffee size={12} /> Break</span>
                                     <span
                                       onClick={e => { e.stopPropagation(); updateWeeklyBreaks(weeklyBreaks.filter(b => b.id !== cellBreak.id)); }}
                                       style={{ position: "absolute", top: 1, right: 3, fontSize: 10, color: "#DC2626", cursor: "pointer", lineHeight: 1, fontWeight: 700 }}
-                                      title="Remove break">✕</span>
+                                      title="Remove break" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>
                                   </div>
                                 )}
                                 {cellLessons.map((l, li) => {
@@ -3385,12 +5005,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   // ── Band session card ──
                                   if (l.isBandSession) {
                                     const bandMembers = (l.members || []);
-                                    const memberNames = bandMembers.map(m => {
-                                      const s = students.find(st => st.id === m.studentId);
+                                    const resolvedStudents = bandMembers.map(m => students.find(st => st.id === m.studentId));
+                                    const memberNames = bandMembers.map((m, mi) => {
+                                      const s = resolvedStudents[mi];
                                       if (!s) return null;
-                                      const displayName = bandDisplayName(s, bandMembers.map(bm => students.find(st2 => st2.id === bm.studentId)).filter(Boolean));
-                                      const abbr = m.instrument ? m.instrument : null;
-                                      return displayName + (abbr ? ` (${abbr})` : "");
+                                      // Inline name logic: first name, add surname initial if duplicate first name
+                                      const first = (s.name || "").split(" ")[0];
+                                      const hasDupe = resolvedStudents.some((os, oi) => oi !== mi && os && (os.name || "").split(" ")[0] === first);
+                                      const parts = (s.name || "").split(" ");
+                                      const displayName = hasDupe && parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
+                                      return displayName + (m.instrument ? ` (${m.instrument})` : "");
                                     }).filter(Boolean);
                                     const bandWarnings = cWarnings;
                                     const hasBandWarning = bandWarnings.length > 0 && !ackedConstraints.has(l.id);
@@ -3412,30 +5036,37 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     })();
                                     return (
                                       <div key={li} draggable
-                                        onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); dragCache.current = {}; }}
+                                        onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {}; }}
                                         onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
+                                        onMouseEnter={e => {
+                                          if (draggingId || expandedWarnings.size > 0) return;
+                                          const rect = e.currentTarget.getBoundingClientRect();
+                                          const info = buildPopoverInfo(l);
+                                          setHoverPopover({ info, rect, color: instruments_colors.Band });
+                                        }}
+                                        onMouseLeave={() => setHoverPopover(null)}
                                         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isBandSession: true, lessonId: l.id, bandName: l.bandName, bandId: l.bandId }); }}
                                         onClick={e => { if (isBandExpanded || hasBandWarning) { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
                                         style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, lineHeight: 1.4, position: "relative", cursor: "grab",
-                                          background: hasBandWarning ? "#FEF2F2" : instruments_colors.Band + "18",
+                                          background: hasBandWarning ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : instruments_colors.Band + "18",
                                           borderLeft: `3px solid ${hasBandWarning ? colors.danger : instruments_colors.Band}`,
                                           opacity: draggingId === l.id ? 0.4 : 1, transition: "opacity 0.15s"
                                         }}>
                                         {hasBandWarning && (
                                           <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }}
-                                            style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 13, lineHeight: 1, color: colors.success, fontWeight: 700 }} title="Confirm this time">✓</span>
+                                            style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>
                                         )}
                                         {bandWarningAcked && !hasBandWarning && (
                                           <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }}
-                                            style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 11, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6 }} title="Click to view warnings">⚠</span>
+                                            style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }} title="Click to view warnings"><AlertTriangle size={11} /></span>
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
                                         {l.teacherName && <div style={{ color: colors.textLight, fontSize: 11 }}>{l.teacherName.split(" ")[0]}</div>}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (
-                                          <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: "#FEF2F2", border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
-                                            {bandWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500 }}>⚠ {w}</div>)}
+                                          <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                                            {bandWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}
                                           </div>
                                         )}
                                       </div>
@@ -3447,15 +5078,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   const showRed = hasConstraintIssue;
                                   const hasAckedWarning = constraintAcked;
                                   const isExpanded = expandedWarnings.has(l.id);
+                                  // Live instrument: if the student's instrument changed, reflect it on the card
+                                  const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
+                                  const liveInst = _cardStuW
+                                    ? (_cardStuW.instruments?.find(i => i.name === l.instrument)
+                                        ? l.instrument
+                                        : (_cardStuW.instruments?.find(i => !i.isGroup)?.name || l.instrument))
+                                    : l.instrument;
                                   return (
                                   <div key={li} draggable
                                     onDragStart={e => {
                                       e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move";
-                                      setDraggingId(l.id); setExpandedWarnings(new Set()); dragCache.current = {};
+                                      setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
                                       if (l._swapTeacherId) setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => x.id === l.id ? { ...x, _swapTeacherId: undefined, _swapTeacherName: undefined } : x) } }; });
                                     }}
                                     onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
-                                    onContextMenu={e => { e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${l.instrument}` }); }}
+                                    onMouseEnter={e => {
+                                      if (draggingId || expandedWarnings.size > 0) return;
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const _popColor = getInstColor(liveInst, l.isGroup);
+                                      const info = buildPopoverInfo(l);
+                                      setHoverPopover({ info, rect, color: _popColor });
+                                    }}
+                                    onMouseLeave={() => setHoverPopover(null)}
+                                    onContextMenu={e => { e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
                                     onClick={e => {
                                       e.stopPropagation();
                                       // If a double-click timer is already running, this is the 2nd click → open details
@@ -3479,27 +5125,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     }}
                                     style={{
                                       padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4, cursor: "grab", position: "relative",
-                                      background: selectedCards.has(l.id) ? `${colors.sidebarActive}18` : showRed ? "#FEF2F2" : getInstColor(l.instrument, l.isGroup) + "18",
-                                      borderLeft: `3px solid ${selectedCards.has(l.id) ? colors.sidebarActive : showRed ? colors.danger : getInstColor(l.instrument, l.isGroup)}`,
+                                      background: selectedCards.has(l.id) ? `${colors.sidebarActive}18` : showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
+                                      borderLeft: `3px solid ${selectedCards.has(l.id) ? colors.sidebarActive : showRed ? colors.danger : getInstColor(liveInst, l.isGroup)}`,
                                       borderTop: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
                                       borderRight: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
                                       borderBottom: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : l.adjusted && !showRed && !hasAckedWarning ? "3px solid #F59E0B" : "none",
-                                      opacity: draggingId === l.id ? 0.4 : 1, transition: "opacity 0.15s",
+                                      opacity: draggingId === l.id ? 0.4 : isDayConfirmed ? 0.5 : 1, transition: "opacity 0.15s",
                                     }} title={l.isGroup ? l.groupName || l.studentName : l.adjustReason || undefined}>
-                                    {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 13, lineHeight: 1, color: colors.success, fontWeight: 700 }} title="Confirm this time">✓</span>}
-                                    {hasAckedWarning && !showRed && <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 11, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6 }} title="Click to view warnings">⚠</span>}
-                                    {l.isMakeup && <span onClick={e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); }} style={{ position: "absolute", top: 2, right: 4, fontSize: 13, color: colors.sidebarActive, cursor: "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2 }} title="Catch-up lesson — click to remove">↺</span>}
+                                    {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
+                                    {hasAckedWarning && !showRed && <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }} title="Click to view warnings"><AlertTriangle size={11} /></span>}
+                                    {l.isMakeup && <span onClick={e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); }} style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson — click to remove"><RotateCcw size={11} /></span>}
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
-                                      {l.isGroup ? "👥 " : ""}
-                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""); })() : l.studentName + (() => { const st = students.find(s => s.id === l.studentId); return st?.className ? ` · ${st.className}` : ""; })()}</span>
-                                      {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ fontSize: 10, color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0 }}>📝</span>; })()}
+                                      {l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}
+                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""); })() : (() => { const st = students.find(s => s.id === l.studentId); return getPrefDisplayName(st?.name || l.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}</span>
+                                      {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
-                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students); return <div style={{ color: _unassigned ? colors.danger : l._swapTeacherId ? "#7C3AED" : colors.textLight }}>{l.instrument ? `${l.instrument} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students); return <div style={{ color: _unassigned ? colors.danger : l._swapTeacherId ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
                                     {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
-                                    {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic" }}>↻ {l.adjustReason}</div>}
-                                    {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: "#FEF2F2", border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500 }}>⚠ {w}</div>)}</div>}
+                                    {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
+                                    {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}
                                   </div>
                                   );
                                 })}
@@ -3519,7 +5165,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               {/* Hover warning panel — DOM-driven, no React state */}
               <div ref={hoverPanelRef} style={{
                 display: "none", position: "fixed", zIndex: 9999, pointerEvents: "none",
-                background: "#FFFBFF", border: "1px solid #E5E7EB",
+                background: colors.cardBg, border: `1px solid ${colors.border}`,
                 borderRadius: 8, padding: "8px 12px", fontSize: 11, lineHeight: 1.6,
                 boxShadow: "0 4px 16px rgba(0,0,0,0.18)", minWidth: 180, maxWidth: 300,
               }} />
@@ -3555,7 +5201,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   {`Missed Lessons${weeklyData.missed.length > 0 ? ` (${weeklyData.missed.length})` : ""}`}
                   <span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 400, marginLeft: 4 }}>· drag lessons here to mark as missed, or drag missed lessons onto the grid to reschedule</span>
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: 72, alignContent: "flex-start", borderRadius: 8, padding: 4, background: dragOverMissed ? "#FEF2F2" : "transparent", transition: "background 0.15s" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: 72, alignContent: "flex-start", borderRadius: 8, padding: 4, background: dragOverMissed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : "transparent", transition: "background 0.15s" }}>
                   {weeklyData.missed.length === 0 && !dragOverMissed && (
                     <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic", padding: "4px 0" }}>No missed lessons this week</div>
                   )}
@@ -3575,20 +5221,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           lessonName: m.isGroup && m.studentNames ? `${m.studentNames.join(", ")} — ${m.instrument}` : `${m.studentName} — ${m.instrument}` }); }}
                       onDoubleClick={() => { if (m.isGroup && onViewGroup) onViewGroup(m.groupId); else if (!m.isGroup && onViewStudent) onViewStudent(m.studentId); }}
                       style={{
-                        padding: "6px 10px", background: isSelectedMissed ? "#FEE2E2" : "#FEF2F2", borderRadius: 8, fontSize: 12,
-                        border: `1px solid ${isSelectedMissed ? colors.danger : colors.danger + "40"}`,
-                        borderLeft: `3px solid ${colors.danger}`,
+                        padding: "6px 10px", background: isSelectedMissed ? getInstColor(m.instrument) + "30" : getInstColor(m.instrument) + "18", borderRadius: 8, fontSize: 12,
+                        border: `1px solid ${isSelectedMissed ? getInstColor(m.instrument) : getInstColor(m.instrument) + "40"}`,
+                        borderLeft: `3px solid ${getInstColor(m.instrument)}`,
                         cursor: "grab", opacity: draggingId === `missed:${i}` ? 0.4 : 1,
                         transition: "opacity 0.15s, background 0.1s", maxWidth: 280,
-                        boxShadow: isSelectedMissed ? `0 0 0 2px ${colors.danger}40` : "none",
+                        boxShadow: isSelectedMissed ? `0 0 0 2px ${getInstColor(m.instrument)}40` : "none",
                         position: "relative",
                       }}>
-                      {m.isMakeup && <span style={{ position: "absolute", top: 2, right: 4, fontSize: 13, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700 }} title="Missed catch-up lesson">↺</span>}
-                      <div style={{ fontWeight: 600 }}>{m.isGroup ? "👥 " : ""}{m.isGroup ? m.groupName : m.studentName}{missedClassName ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{missedClassName}</span> : null}</div>
+                      {m.isMakeup && <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Missed catch-up lesson"><RotateCcw size={11} /></span>}
+                      <div style={{ fontWeight: 600 }}>{m.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{m.isGroup ? m.groupName : getPrefDisplayName(missedStudent?.name || m.studentName)}{missedClassName ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{missedClassName}</span> : null}</div>
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}
                       </div>
-                      <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason}</div>
+                      {m.reason ? <div style={{ color: m.reason === "extended_absence" ? colors.warning : colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "extended_absence" ? "Extended Absence — half fees" : m.reason === "informed_absence" ? "Pre-marked absent" : m.reason}</div> : null}
                     </div>
                     );
                   })}
@@ -3657,9 +5303,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         onDragEnd={() => { setDraggingId(null); setDragOver(null); setDragOverMissed(false); setDragOverStaging(false); }}
                         style={{
                           padding: "6px 10px", borderRadius: 8, fontSize: 12,
-                          background: c.isBandSession ? BAND_COLOR + "15" : colors.accentLight,
-                          border: "1px solid " + (c.isBandSession ? BAND_COLOR : colors.accent) + "40",
-                          borderLeft: "3px solid " + (c.isBandSession ? BAND_COLOR : colors.accent),
+                          background: c.isBandSession ? BAND_COLOR + "15" : getInstColor(c.instrument) + "18",
+                          border: "1px solid " + (c.isBandSession ? BAND_COLOR : getInstColor(c.instrument)) + "40",
+                          borderLeft: "3px solid " + (c.isBandSession ? BAND_COLOR : getInstColor(c.instrument)),
                           cursor: "grab", opacity: draggingId === "staged:" + c.id ? 0.4 : 1,
                           transition: "opacity 0.15s", maxWidth: 280, position: "relative"
                         }}>
@@ -3672,7 +5318,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             });
                           }}
                           style={{ position: "absolute", top: 2, right: 5, fontSize: 11, color: colors.textMuted, cursor: "pointer", lineHeight: 1, fontWeight: 700 }}
-                          title="Remove">✕</span>
+                          title="Remove" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>
                         {c.isBandSession ? (
                           <>
                             <div style={{ fontWeight: 600, color: BAND_COLOR }}>{c.bandName || "Band"}</div>
@@ -3681,9 +5327,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           </>
                         ) : (
                           <>
-                            <div style={{ fontWeight: 600, color: colors.accent }}>↺ {c.studentName}</div>
+                            <div style={{ fontWeight: 600, color: getInstColor(c.instrument), display: "flex", alignItems: "center", gap: 5 }}><RotateCcw size={11} /> {c.studentName}</div>
                             <div style={{ color: colors.textMuted, fontSize: 11 }}>{c.instrument}{c.teacherName ? " · " + c.teacherName : ""}</div>
-                            <div style={{ color: colors.accent, fontSize: 10, marginTop: 2 }}>catch-up — drag to place</div>
+                            <div style={{ color: getInstColor(c.instrument), fontSize: 10, marginTop: 2 }}>catch-up — drag to place</div>
                           </>
                         )}
                       </div>
@@ -3706,20 +5352,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             </div>
           ) : (
             <Card style={{ textAlign: "center", padding: "40px 20px", color: colors.textMuted }}>
-              <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
+              <div style={{ marginBottom: 12, display: "flex", justifyContent: "center", opacity: 0.5 }}><Check size={32} /></div>
               <div style={{ fontWeight: 600, color: colors.textLight }}>No weekly timetable for {currentSchool?.name || "this school"}</div>
               <div style={{ fontSize: 13, marginTop: 6 }}>Add any adjustments above and hit Reschedule to create a weekly version based on the master timetable.</div>
             </Card>
-          )}
+          ))}
 
           {/* Missed Tally */}
-          {showMissedTally && (
+          {!isHolidayWeek && showMissedTally && (
             <Card style={{ marginTop: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontWeight: 700, fontSize: 16 }}>✓ Term Missed Lessons Tally</div>
-                {Object.keys(tallyByStudent).length > 0 && (
-                  <Btn variant="danger" onClick={() => { setTallyEntries(prev => prev.filter(e => e.status !== "missed")); notify("Missed tally cleared"); }} style={{ fontSize: 11 }}>Clear All</Btn>
-                )}
+                <div style={{ fontWeight: 700, fontSize: 16, display: "flex", alignItems: "center", gap: 8 }}><Check size={15} /> Term Missed Lessons Tally</div>
               </div>
               {Object.keys(tallyByStudent).length === 0 ? (
                 <div style={{ color: colors.textMuted, fontSize: 13, textAlign: "center", padding: 20 }}>No missed lessons recorded.</div>
@@ -3728,7 +5371,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   {Object.values(tallyByStudent).sort((a, b) => b.count - a.count).map((entry, i) => (
                     <div key={i} style={{
                       display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "8px 12px", background: entry.count >= 3 ? "#FEF2F2" : colors.white,
+                      padding: "8px 12px", background: entry.count >= 3 ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : colors.cardBg,
                       border: `1px solid ${entry.count >= 3 ? colors.danger + "40" : colors.border}`,
                       borderRadius: 8, fontSize: 13
                     }}>
@@ -3750,7 +5393,49 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           )}
         </div>
       )}
+
+      {/* Hover popover — rendered unconditionally (position:fixed) */}
+      {renderHoverPopover()}
+
+      {/* ── Reset confirmed day modal ── */}
+      {resetConfirm && (
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setResetConfirm(null)}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: colors.cardBg, borderRadius: 14, padding: 24, width: 340, maxWidth: "90vw", boxShadow: "0 8px 40px rgba(0,0,0,0.25)" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(217,119,6,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <RotateCcw size={18} color="#D97706" />
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: colors.text }}>
+                Reset {new Date(resetConfirm + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}?
+              </div>
+            </div>
+            <p style={{ fontSize: 13, color: colors.textMuted, margin: "0 0 20px", lineHeight: 1.5 }}>
+              This will delete the day slip and reopen the day for editing. The teacher will be able to re-confirm once changes are made.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setResetConfirm(null)}
+                style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${colors.border}`, background: "none", fontSize: 13, cursor: "pointer", color: colors.textMuted, fontFamily: "inherit" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => resetConfirmedDay(resetConfirm)}
+                style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: "#D97706", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <RotateCcw size={13} /> Reset Day
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
-

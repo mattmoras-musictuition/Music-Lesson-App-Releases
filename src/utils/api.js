@@ -48,6 +48,20 @@ export async function anthropicFetch(url, options) {
 // Works in both Electron (IPC channel) and browser dev mode (native ReadableStream).
 // callbacks: { onChunk(text), onEnd(usage|null), onError(message, isAuthError) }
 export function anthropicStreamChat(url, options, { onChunk, onEnd, onError }) {
+  // ── Tool call accumulator — collects tool_use blocks during streaming ────
+  // toolState.pending: blocks in progress, keyed by SSE content block index
+  // toolState.calls: completed tool calls [ { id, name, input } ]
+  // toolState.text: accumulated text content (for building history after tool use)
+  const toolState = { pending: {}, calls: [], text: "" };
+
+  // Guard: onEnd must only fire once — parseLine fires it with real usage data
+  // (message_delta event), and the stream-end handler fires it with null.
+  // Without this flag, the caller gets two onEnd calls on every successful response,
+  // causing a spurious second React render to strip the streaming flag.
+  // onEnd signature: (usage, toolCalls, textContent)
+  let endFired = false;
+  const safeOnEnd = (usage) => { if (!endFired) { endFired = true; onEnd(usage, toolState.calls, toolState.text); } };
+
   // ── Helper: parse raw SSE lines into events ──────────────────────────────
   function parseLine(line, inputTokensRef) {
     if (!line.startsWith("data: ")) return;
@@ -57,10 +71,32 @@ export function anthropicStreamChat(url, options, { onChunk, onEnd, onError }) {
       const evt = JSON.parse(raw);
       if (evt.type === "message_start") {
         inputTokensRef.value = evt.message?.usage?.input_tokens || 0;
-      } else if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-        onChunk(evt.delta.text);
+      } else if (evt.type === "content_block_start") {
+        // Track tool_use blocks so we can accumulate their JSON input
+        const cb = evt.content_block;
+        if (cb?.type === "tool_use") {
+          toolState.pending[evt.index] = { id: cb.id, name: cb.name, jsonAccum: "" };
+        }
+      } else if (evt.type === "content_block_delta") {
+        if (evt.delta?.type === "text_delta") {
+          toolState.text += evt.delta.text;
+          onChunk(evt.delta.text);
+        } else if (evt.delta?.type === "input_json_delta") {
+          // Accumulate streamed JSON for the tool's input object
+          if (toolState.pending[evt.index]) {
+            toolState.pending[evt.index].jsonAccum += evt.delta.partial_json;
+          }
+        }
+      } else if (evt.type === "content_block_stop") {
+        // Finalise any completed tool_use block
+        const block = toolState.pending[evt.index];
+        if (block) {
+          try { block.input = JSON.parse(block.jsonAccum || "{}"); } catch { block.input = {}; }
+          toolState.calls.push({ id: block.id, name: block.name, input: block.input });
+          delete toolState.pending[evt.index];
+        }
       } else if (evt.type === "message_delta" && evt.usage) {
-        onEnd({ input_tokens: inputTokensRef.value, output_tokens: evt.usage.output_tokens || 0 });
+        safeOnEnd({ input_tokens: inputTokensRef.value, output_tokens: evt.usage.output_tokens || 0 });
       }
     } catch {}
   }
@@ -79,7 +115,7 @@ export function anthropicStreamChat(url, options, { onChunk, onEnd, onError }) {
         buffer = lines.pop(); // keep any incomplete line
         for (const line of lines) parseLine(line, inputTokensRef);
       },
-      () => { onEnd(null); },
+      () => { safeOnEnd(null); },
       (message, status) => {
         const isAuth = status === 401 || status === 403;
         onError(message, isAuth);
@@ -106,7 +142,7 @@ export function anthropicStreamChat(url, options, { onChunk, onEnd, onError }) {
         let buffer = "";
         while (true) {
           const { done, value } = await reader.read();
-          if (done) { onEnd(null); break; }
+          if (done) { safeOnEnd(null); break; }
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split("\n");
           buffer = lines.pop();

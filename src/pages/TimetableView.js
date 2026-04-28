@@ -2,19 +2,32 @@
 // TimetableView.js
 // ============================================================
 
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { colors, DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
-import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import React, { useState, useEffect, useRef } from "react";
+import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Calendar, Send } from "lucide-react";
+import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
+import { useTheme } from "../context/ThemeContext";
+import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printMasterTimetable, printWeeklyTimetable } from "../data/weeklyTimetableGenerator";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
-import { ExportDialog, ExportIcon } from "../components/ExportDialog";
+import { ExportDialog } from "../components/ExportDialog";
+
+// "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
+function buildPreferredDisplayName(name) {
+  if (!name) return name;
+  const match = name.match(/\(([^)]+)\)/);
+  if (!match) return name;
+  const prefFirst = match[1];
+  const surname = name.replace(/^[^\s(]+\s*\([^)]+\)\s*/, "").trim();
+  return surname ? `${prefFirst} ${surname}` : prefFirst;
+}
 
 
 
-export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, teachers, setTeachers, specialists, pendingStudents, masterBreaks, setMasterBreaks, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory }) {
+export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+  const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const viewMode = viewState.viewMode;
   const filterTeacher = viewState.filterTeacher;
@@ -67,11 +80,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const [draggingId, setDraggingId] = useState(null);
   useDragScroll(mainScrollRef, !!draggingId);
   const [unschedDragOver, setUnschedDragOver] = useState(false);
+  const [pendDragOver, setPendDragOver] = useState(false);
   const hoverPanelRef = React.useRef(null);
   const dragCache = React.useRef({});
   const [constraintWarnings, setConstraintWarnings] = useState(() => initialConstraintWarnings || {});
   const [ackedConstraints, setAckedConstraints] = useState(() => initialAckedConstraints || new Set());
   const [expandedWarnings, setExpandedWarnings] = useState(new Set());
+  const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
 
   // Auto-check constraints for newly added lessons (e.g. right-click pending placement)
@@ -116,6 +131,36 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   }, [timetable?.lessons]);
 
   const [contextMenu, setContextMenu] = useState(null);
+
+  // Re-check ALL lessons when student or teacher data changes (e.g. teacher reassignment)
+  useEffect(() => {
+    if (!timetable) return;
+    const curr = timetable.lessons;
+    if (curr.length === 0) return;
+    setConstraintWarnings(prev => {
+      const updated = { ...prev };
+      let changed = false;
+      for (const l of curr) {
+        const school = schools.find(s => s.id === l.schoolId);
+        const slot = school?.slots?.find(s => s.start === l.start);
+        if (!slot) {
+          if (updated[l.id]) { delete updated[l.id]; changed = true; }
+          continue;
+        }
+        const recomputed = checkConstraints(l, l.day, slot, curr);
+        const existing = prev[l.id];
+        const same = existing
+          ? recomputed.length === existing.length && recomputed.every((w, i) => w === existing[i])
+          : recomputed.length === 0;
+        if (!same) {
+          if (recomputed.length > 0) updated[l.id] = recomputed;
+          else { delete updated[l.id]; }
+          changed = true;
+        }
+      }
+      return changed ? updated : prev;
+    });
+  }, [students, teachers]);
   const [hoverNotes, setHoverNotes] = useState(null) // null | { text, x, y };
   const [mttAddSubmenu, setMttAddSubmenu] = useState(null); // { type, y }
   const [mttEmailSubmenu, setMttEmailSubmenu] = useState(null); // { y } or null
@@ -203,6 +248,127 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     }
     return lookup;
   }, [specialists]);
+
+  // ── Popover helpers (hover info card on lesson cards) ─────
+  const getStudentBands = (studentId) => {
+    if (!studentId || !(bands || []).length) return [];
+    return (bands || []).filter(b =>
+      (b.members || []).some(m => m.studentId === studentId || m.student_id === studentId)
+    ).map(b => b.name);
+  };
+
+  const buildPopoverInfo = (lesson) => {
+    const stu = allStudents || students;
+    const info = {
+      title: "",
+      instrument: lesson.instrument || "",
+      teacher: lesson.teacherName || "",
+      time: `${toTimeLabel(lesson.start)}${lesson.end ? " – " + toTimeLabel(lesson.end) : ""}`,
+      parentName: null,
+      className: null,
+      classTeacher: null,
+      bands: [],
+      groupMembers: [],
+    };
+
+    if (lesson.isGroup) {
+      info.title = lesson.groupName || lesson.studentName || "Group Lesson";
+      const memberIds = lesson.studentIds || [];
+      info.groupMembers = memberIds.map(sid => {
+        const st = stu.find(s => s.id === sid);
+        if (!st) return null;
+        const parentName = (st.parents || []).find(p => p.name)?.name;
+        const studentBands = getStudentBands(sid);
+        return {
+          name: buildPreferredDisplayName(st.name),
+          className: st.className || st.class_name || "",
+          parentName: parentName || null,
+          bands: studentBands,
+          classTeacher: (() => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : null; })(),
+        };
+      }).filter(Boolean);
+    } else {
+      const st = stu.find(s => s.id === lesson.studentId);
+      info.title = buildPreferredDisplayName(st?.name || lesson.studentName);
+      info.className = st?.className || st?.class_name || lesson.className || null;
+      if (st) {
+        const parent = (st.parents || []).find(p => p.name);
+        info.parentName = parent ? parent.name : null;
+        info.bands = getStudentBands(st.id);
+        const ct = getClassTeacher(st, contacts || []);
+        info.classTeacher = ct ? ct.name : null;
+      }
+    }
+
+    return info;
+  };
+
+  const renderHoverPopover = () => {
+    if (!hoverPopover) return null;
+    const { info, rect, color } = hoverPopover;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const topPos = spaceBelow > 200 ? rect.bottom + 6 : rect.top - 6;
+    const anchor = spaceBelow > 200 ? "top" : "bottom";
+    const popLeft = Math.min(rect.left, window.innerWidth - 260);
+
+    return (
+      <div style={{
+        position: "fixed", left: popLeft,
+        [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+        zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+        boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
+        padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
+      }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4, lineHeight: 1.3 }}>
+          {info.title}
+        </div>
+        <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
+          {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
+        </div>
+        <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>
+        {!info.groupMembers.length && (
+          <>
+            {(info.className || info.classTeacher) && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>
+                Class: {info.className || ""}{info.classTeacher ? `${info.className ? " - " : ""}${info.classTeacher}` : ""}
+              </div>
+            )}
+            {info.parentName && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>Parent: {info.parentName}</div>
+            )}
+            {info.bands.length > 0 && (
+              <div style={{ fontSize: 11, color: colors.textLight }}>
+                Band: {info.bands.join(", ")}
+              </div>
+            )}
+          </>
+        )}
+        {info.groupMembers.length > 0 && (
+          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+              Members
+            </div>
+            {info.groupMembers.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.groupMembers.length - 1 ? 4 : 0 }}>
+                <div style={{ fontWeight: 600 }}>{m.name}</div>
+                {(m.className || m.classTeacher) && (
+                  <div style={{ color: colors.textMuted }}>
+                    Class: {m.className || ""}{m.classTeacher ? `${m.className ? " - " : ""}${m.classTeacher}` : ""}
+                  </div>
+                )}
+                {m.parentName && (
+                  <div style={{ color: colors.textMuted }}>Parent: {m.parentName}</div>
+                )}
+                {m.bands.length > 0 && (
+                  <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
 
   // Live specialist tag lookup — used at render so stored field doesn't matter
@@ -301,7 +467,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           }
         }
         {
-          const conflict = lessonList.find(l => l.id !== lesson.id && l.teacherId === lesson.teacherId && l.day === newDay && l.start === slot.start);
+          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students) === lesson.teacherId && l.day === newDay && l.start === slot.start);
           if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
         }
       }
@@ -326,6 +492,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     const isBeforeAfter = ["before_school", "after_school"].includes(slot.type);
     if (student.outsideClassOnly && !isBreak && !isBeforeAfter) warnings.push("Student should only be scheduled outside class time");
     if (student.outsideClassPreferred && !isBreak && !isBeforeAfter && slot.type === "class") warnings.push("Student prefers outside class time");
+    if (student.avoidRecessLunch && isBreak) warnings.push("Student prefers to avoid recess/lunch lessons");
 
     // Avoid times from notes
     if (hints.avoidTimes) {
@@ -351,7 +518,14 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     if (_liveTeacherUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     } else {
-      const teacher = teachers.find(t => t.id === lesson.teacherId);
+      // Use live teacher from student's current instrument record, not stored lesson.teacherId
+      const _allStu = allStudents || students;
+      const _liveInst = (_allStu.find(s => s.id === lesson.studentId)?.instruments || [])
+        .find(i => i.name === lesson.instrument)
+        || (_allStu.find(s => s.id === lesson.studentId)?.instruments || [])
+        .find(i => !i.isGroup);
+      const _liveTeacherId = _liveInst?.teacherId || lesson.teacherId;
+      const teacher = teachers.find(t => t.id === _liveTeacherId);
       if (teacher) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
         if (!dayAvail) {
@@ -362,8 +536,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       }
       // Check teacher double-booking (another lesson at the same time)
       {
-        const conflict = lessonList.find(l => l.id !== lesson.id && l.teacherId === lesson.teacherId && l.day === newDay && l.start === slot.start);
-        if (conflict) warnings.push(`${lesson.teacherName} already has ${conflict.studentName} at this time`);
+        const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students) === _liveTeacherId && l.day === newDay && l.start === slot.start);
+        if (conflict) warnings.push(`${teacher?.name || lesson.teacherName} already has ${conflict.studentName} at this time`);
       }
     }
 
@@ -438,7 +612,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
 
   // Handle dropping an unscheduled card onto the grid
   const handleDropUnsched = (data, day, time) => {
-    if (onPlaceUnsched) onPlaceUnsched(data, day, time);
+    if (onPlaceUnsched) { onPlaceUnsched(data, day, time); if (onSoundPlay) onSoundPlay(); }
   };
 
   // Wrap onMoveLesson to check specialist clash + constraints at destination
@@ -450,6 +624,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     const slot = school?.slots.find(s => s.start === newTime);
     if (!slot) return;
     onMoveLesson(lessonId, newDay, newTime);
+    if (onSoundPlay) onSoundPlay();
 
     // Simulate the timetable after the move so all warning re-checks use the correct state
     const simulatedLessons = timetable.lessons.map(l =>
@@ -457,6 +632,15 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     );
 
     const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons);
+    // Session 97: capture the lesson's existing warnings BEFORE updating, so
+    // we can decide whether the ack is still valid. If the new warning set is
+    // identical (same strings in same order) to what the user already
+    // acknowledged, keep the ack. Only clear it when the warnings genuinely
+    // changed (or the move resolved them — in which case ack is moot anyway).
+    const oldWarnings = constraintWarnings[lessonId] || [];
+    const warningsUnchanged =
+      warnings.length === oldWarnings.length &&
+      warnings.every((w, i) => w === oldWarnings[i]);
     setConstraintWarnings(prev => {
       const next = { ...prev };
       if (warnings.length > 0) next[lessonId] = warnings;
@@ -475,9 +659,18 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       }
       return next;
     });
-    setAckedConstraints(prev => { const next = new Set(prev); next.delete(lessonId); return next; });
-    // Auto-expand popout if there are warnings
-    if (warnings.length > 0) {
+    setAckedConstraints(prev => {
+      // Keep the ack if the user already acknowledged this exact warning set —
+      // moving a card around (even back to the same conflicting slot) shouldn't
+      // re-prompt them. Only changed warnings clear the ack.
+      if (warningsUnchanged && prev.has(lessonId)) return prev;
+      const next = new Set(prev);
+      next.delete(lessonId);
+      return next;
+    });
+    // Auto-expand popout if there are warnings AND they're new/changed (i.e. not
+    // a re-acknowledged set the user already cleared).
+    if (warnings.length > 0 && !(warningsUnchanged && ackedConstraints.has(lessonId))) {
       setExpandedWarnings(prev => { const next = new Set(prev); next.add(lessonId); return next; });
     } else {
       setExpandedWarnings(prev => { const next = new Set(prev); next.delete(lessonId); return next; });
@@ -500,7 +693,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       <div>
         <PageTitle subtitle="Schedule a master timetable to view it here" pageColor={PAGE_COLORS.timetable}>Master Timetable</PageTitle>
         <div style={{ textAlign: "center", padding: "60px 20px", color: colors.textMuted }}>
-          <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.5 }}>📅</div>
+          <div style={{ marginBottom: 16, opacity: 0.5, display: "flex", justifyContent: "center" }}><Calendar size={48} /></div>
           <div style={{ fontSize: 18, fontWeight: 600, color: colors.textLight, marginBottom: 8 }}>No master timetable scheduled yet</div>
           <div style={{ fontSize: 14, marginBottom: 24, maxWidth: 400, margin: "0 auto 24px" }}>Set up your schools, students, and teachers, then hit Schedule Full Term.</div>
           {isScheduling ? (
@@ -533,7 +726,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 if (issues.length === 0) return null;
                 return (
                   <div style={{ marginTop: 12, fontSize: 12, color: colors.warning, maxWidth: 340, margin: "12px auto 0" }}>
-                    {issues.map((issue, i) => <div key={i}>⚠ {issue}</div>)}
+                    {issues.map((issue, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 5 }}><AlertTriangle size={12} /> {issue}</div>)}
                   </div>
                 );
               })()}
@@ -545,15 +738,62 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   }
 
   const { lessons, unscheduled } = timetable;
+  const allStu = allStudents || students;
 
-  const schoolLessons = lessons.filter(l => l.schoolId === selectedSchool);
+  // Filter out lessons where the live student record is archived — slot becomes available
+  const schoolLessons = lessons.filter(l => {
+    if (l.schoolId !== selectedSchool) return false;
+    if (!l.isGroup && l.studentId) {
+      const liveStu = allStu.find(s => s.id === l.studentId);
+      if (liveStu?.status === "archived") return false;
+    }
+    return true;
+  });
   let filteredLessons = schoolLessons;
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => l.teacherId === filterTeacher);
 
+  // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {
     const student = u.student;
-    return student.schoolId === selectedSchool;
+    if (student.schoolId !== selectedSchool) return false;
+    const liveStu = allStu.find(s => s.id === student.id);
+    if (liveStu?.status === "archived") return false;
+    return true;
   });
+
+  // Active students at this school with no lesson slot → shown as unscheduled automatically.
+  // Covers: pending→active promotions, newly unarchived students, and additional instruments.
+  // Check per instrument (not per student) so multi-instrument students show unscheduled entries
+  // for instruments that don't yet have a lesson card.
+  const scheduledStudentInstruments = new Set(
+    schoolLessons.flatMap(l => l.isGroup
+      ? (l.studentIds || []).map(sid => `${sid}|${l.instrument || "Group"}`)
+      : l.studentId ? [`${l.studentId}|${l.instrument}`] : []
+    )
+  );
+  const alreadyInUnscheduledInstruments = new Set(
+    schoolUnscheduled.map(u => `${u.student?.id}|${u.instrument}`).filter(Boolean)
+  );
+  const derivedUnscheduled = allStu
+    .filter(s =>
+      s.schoolId === selectedSchool &&
+      s.status === "active" &&
+      (s.instruments || []).some(i => !i.isGroup)
+    )
+    .flatMap(s =>
+      (s.instruments || []).filter(i =>
+        !i.isGroup &&
+        !scheduledStudentInstruments.has(`${s.id}|${i.name}`) &&
+        !alreadyInUnscheduledInstruments.has(`${s.id}|${i.name}`)
+      ).map(i => ({
+        student: s,
+        instrument: i.name,
+        reason: "Unscheduled",
+        _derived: true,
+      }))
+    );
+
+  const allSchoolUnscheduled = [...schoolUnscheduled, ...derivedUnscheduled];
 
   const currentSchool = schools.find(s => s.id === selectedSchool);
   // ── Drag overlay: precomputed per-slot warnings + specialist tags ──
@@ -583,10 +823,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   };
 
   return (
-    <div onClick={() => { if (contextMenu) { setContextMenu(null); setMttAddSubmenu(null); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setHoverNotes(false); } if (expandedWarnings.size > 0) setExpandedWarnings(new Set()); if (showVersionMenu) setShowVersionMenu(false); }}>
+    <div onClick={() => { if (contextMenu) { setContextMenu(null); setMttAddSubmenu(null); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setHoverNotes(false); } if (expandedWarnings.size > 0) setExpandedWarnings(new Set()); if (showVersionMenu) setShowVersionMenu(false); }} >
       {/* Right-click context menu */}
       {contextMenu && (
-        <div ref={mttMenuRef} style={{ position: "fixed", ...(contextMenu.fromMissed ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 200, 0).left, zIndex: 9999, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160 }}
+        <div ref={mttMenuRef} style={{ position: "fixed", ...(contextMenu.fromMissed ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 200, 0).left, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160 }}
           onClick={e => e.stopPropagation()}>
           {contextMenu.isDayHeader && contextMenu.isMtt ? (() => {
             const day = contextMenu.day;
@@ -640,7 +880,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
               if (mttDayHeaderSubmenu?.type !== type || !rows.length) return null;
               return (
                 <div ref={mttDayHeaderSubRef}
-                  style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                  style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                   {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
                   {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
                   {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
@@ -669,7 +909,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       onMouseEnter={e => { hov(e); setMttDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top }); }}
                       onMouseLeave={unhov}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
-                      <span>{label} ({allEmails.length})</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                      <span>{label} ({allEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                   ) : (
                     <button
@@ -696,7 +936,20 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {mkMttEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
               </div>
             );
-          })() : contextMenu.isEmpty ? (
+          })() : contextMenu.isUnschedCard ? (
+            <div style={{ padding: "6px 4px" }}>
+              <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                {contextMenu.studentName}
+              </div>
+              <button onClick={() => {
+                if (onDismissUnscheduled) onDismissUnscheduled(contextMenu.studentId, contextMenu.instrument);
+                setContextMenu(null);
+              }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
+                onMouseEnter={e => e.currentTarget.style.background = colors.dangerLight || "rgba(239,68,68,0.08)"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <Trash2 size={13} /> Remove from unscheduled list
+              </button>
+            </div>
+          ) : contextMenu.isEmpty ? (
             <div style={{ padding: "6px 4px" }}>
               <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {contextMenu.day} {to12h(contextMenu.time)}
@@ -705,35 +958,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 if (setMasterBreaks) setMasterBreaks(prev => [...prev, { id: uid(), schoolId: contextMenu.schoolId, day: contextMenu.day, time: contextMenu.time }]);
                 setContextMenu(null);
               }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: "#92400E", borderRadius: 6, fontFamily: "inherit" }}
-                onMouseEnter={e => e.currentTarget.style.background = "#FFF7ED"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                ☕ Add break
+                onMouseEnter={e => e.currentTarget.style.background = colors.amberLight} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Coffee size={13} /> Add break</span>
               </button>
-              {timetable && schoolUnscheduled && schoolUnscheduled.length > 0 && (() => {
-                const cDay = contextMenu.day;
-                const cTime = contextMenu.time;
-                return (
-                  <button onClick={() => {
-                    let count = 0;
-                    for (const u of schoolUnscheduled) {
-                      const student = u.student;
-                      if (!student) continue;
-                      const instrumentName = u.instrument || student.instruments?.[0]?.name;
-                      if (!instrumentName) continue;
-                      const data = `unsched:${student.id}:${instrumentName}`;
-                      handleDropUnsched(data, cDay, cTime);
-                      count++;
-                    }
-                    setContextMenu(null); setMttAddSubmenu(null);
-                  }}
-                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${colors.borderLight}`, fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-                    onMouseEnter={e => e.currentTarget.style.background = "#EFF6FF"}
-                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                    <span>＋ Add unscheduled</span>
-                    <span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 400 }}>{schoolUnscheduled.length}</span>
-                  </button>
-                );
-              })()}
-              {((pendingStudents || []).some(s => s.schoolId === contextMenu.schoolId && s.status === "pending") || (schoolUnscheduled || []).length > 0) && (() => {
+              {((pendingStudents || []).some(s => s.schoolId === contextMenu.schoolId && s.status === "pending") || allSchoolUnscheduled.length > 0) && (() => {
                 const sId = contextMenu.schoolId;
                 const pendingRows = (pendingStudents || [])
                   .filter(s => s.schoolId === sId && s.status === "pending")
@@ -746,7 +974,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
                 const mkItemStyle = (fg) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${colors.borderLight}`, fontSize: 13, cursor: "pointer", color: fg, borderRadius: 6, fontFamily: "inherit" });
                 const SubPanel = ({ type, color, title, children }) => mttAddSubmenu && mttAddSubmenu.type === type ? (
-                  <div ref={mttSubMenuRef} style={{ position: "fixed", ...clampMenuPos(subX, mttAddSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
+                  <div ref={mttSubMenuRef} style={{ position: "fixed", ...clampMenuPos(subX, mttAddSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
                     <div style={{ padding: "6px 12px", fontSize: 11, color: color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>{title}</div>
                     {children}
                   </div>
@@ -762,17 +990,17 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           onMouseEnter={e => e.currentTarget.style.background = colors.purpleLight}
                           onMouseLeave={e => e.currentTarget.style.background = "none"}>
                           <span>{row.name}</span>
-                          <span style={{ fontSize: 11, color: "#6B7280" }}>{row._inst?.name || ""}</span>
+                          <span style={{ fontSize: 11, color: colors.gray500 }}>{row._inst?.name || ""}</span>
                         </button>
                       ))}
                     </SubPanel>
                     <button style={mkItemStyle(colors.purple600)}
                       onMouseEnter={e => { e.currentTarget.style.background = colors.purpleLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "pending" ? prev : { type: "pending", y }); }}
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      <span>⏳ Add pending</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Clock size={13} /> Add pending</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                 <SubPanel type="unsched" color={colors.sidebarActive} title="Add unscheduled">
-                  {(schoolUnscheduled || []).map((u, ui) => (
+                  {allSchoolUnscheduled.map((u, ui) => (
                     <button key={ui} onClick={() => {
                       const student = u.student;
                       if (!student) return;
@@ -782,18 +1010,18 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       setContextMenu(null); setMttAddSubmenu(null);
                     }}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#EFF6FF"}
+                      onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
                       <span>{u.student?.name}</span>
-                      <span style={{ fontSize: 11, color: "#6B7280" }}>{(u.instrument || "") + (u.reason === "Unassigned" ? " — Unassigned" : "")}</span>
+                      <span style={{ fontSize: 11, color: colors.gray500 }}>{(u.instrument || "") + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</span>
                     </button>
                   ))}
                 </SubPanel>
-                {(schoolUnscheduled || []).length > 0 && (
+                {allSchoolUnscheduled.length > 0 && (
                   <button style={mkItemStyle(colors.sidebarActive)}
-                    onMouseEnter={e => { e.currentTarget.style.background = "#EFF6FF"; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu({ type: "unsched", y }); }}
+                    onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu({ type: "unsched", y }); }}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                    <span>＋ Add unscheduled</span><span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Plus size={13} /> Add unscheduled</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                   </button>
                 )}
                   </div>
@@ -890,7 +1118,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const btnChev = (color) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, fontWeight: 600 });
                   const hov = (e) => e.currentTarget.style.background = colors.bg;
                   const unhov = (e) => e.currentTarget.style.background = "none";
-                  const subPanel = { position: "fixed", zIndex: 10002, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" };
+                  const subPanel = { position: "fixed", zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" };
 
                   return (
                     <div style={{ position: "relative" }}>
@@ -899,10 +1127,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         onMouseLeave={e => e.currentTarget.style.background = "none"}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}>
                         Email
-                        <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                        <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                       {mttEmailSubmenu && (
-                        <div ref={mttSubMenuRef} style={{ position: "fixed", top: mttEmailSubmenu.y, left: subX, zIndex: 10001, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" }}>
+                        <div ref={mttSubMenuRef} style={{ position: "fixed", top: mttEmailSubmenu.y, left: subX, zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: emailSubW, padding: "4px 0" }}>
 
                           {/* Single parent */}
                           {parentObjs.length === 1 && (
@@ -920,7 +1148,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 Parents
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {mttEmailLevel2?.type === "parents" && (
                                 <div ref={mttLevel2Ref} style={{ ...subPanel, top: mttEmailLevel2.y, left: level2X }}>
@@ -950,7 +1178,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 All Parents
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {mttEmailLevel2?.type === "groupParents" && (
                                 <div ref={mttLevel2Ref} style={{ ...subPanel, top: mttEmailLevel2.y, left: level2X, minWidth: emailSubW + 20 }}>
@@ -981,7 +1209,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.sidebarActive)}>
                                 Teachers
-                                <span style={{ fontSize: 10, opacity: 0.5 }}>▶</span>
+                                <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                               </button>
                               {mttEmailLevel2?.type === "teachers" && (
                                 <div ref={mttLevel2Ref} style={{ ...subPanel, top: mttEmailLevel2.y, left: level2X }}>
@@ -1008,48 +1236,70 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                     </div>
                   );
                 })()}
+                {onAddMemory && (() => {
+                  const lesson = timetable?.lessons.find(l => l.id === contextMenu.lessonId);
+                  if (!lesson) return null;
+                  const schoolName = schools.find(s => s.id === lesson.schoolId)?.name || "";
+                  const teacherName = teachers.find(t => t.id === lesson.teacherId)?.name || "";
+                  const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
+                  return (
+                    <>
+                      <div style={{ borderTop: `1px solid ${colors.border}`, margin: "3px 0" }} />
+                      <button
+                        onClick={() => { onAddMemory(memText); setContextMenu(null); setMttEmailSubmenu(null); setMttEmailLevel2(null); }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit" }}
+                        onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+                        onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+                          Add to Claude memory
+                        </span>
+                      </button>
+                    </>
+                  );
+                })()}
                 <button onClick={() => { if (onDeleteLesson) onDeleteLesson(contextMenu.lessonId); setContextMenu(null); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                  🗑 Delete lesson
+                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Trash2 size={13} /> Delete lesson</span>
                 </button>
               </div>
             </>
           )}
         </div>
       )}
-      <PageTitle subtitle={`${lessons.length} lessons · ${schoolsWithLessons.length} ${schoolsWithLessons.length === 1 ? "school" : "schools"}${unscheduled.length > 0 ? " · " + unscheduled.length + " unscheduled" : ""}`}
+      <PageTitle subtitle={`${lessons.length} lessons · ${schoolsWithLessons.length} ${schoolsWithLessons.length === 1 ? "school" : "schools"}${allSchoolUnscheduled.length > 0 ? " · " + allSchoolUnscheduled.length + " unscheduled" : ""}`}
           navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           action={<>
-            <Btn onClick={handleExportSchool} title="Export">{ExportIcon}</Btn>
-            <Btn variant="secondary" onClick={() => onPrint && onPrint()} title="Print master timetable">🖨</Btn>
+            <Btn onClick={handleExportSchool} title="Export"><Send size={13} /></Btn>
+            <Btn variant="secondary" onClick={() => onPrint && onPrint()} title="Print master timetable"><Printer size={13} /></Btn>
             {confirmClear ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FEF2F2", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.redLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500 }}>Clear all?</span>
                 <Btn variant="danger" onClick={() => { onClear(); setConfirmClear(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmClear(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
             ) : (
-              <Btn variant="danger" onClick={() => setConfirmClear(true)} title="Clear all" style={{ border: "none" }}>🗑</Btn>
+              <Btn variant="danger" onClick={() => setConfirmClear(true)} title="Clear all" style={{ border: "none" }}><Trash2 size={13} /></Btn>
             )}
             {confirmRegenerate ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#E9E4F0", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.purpleLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: "#5B3F7A", fontWeight: 500 }}>Reschedule all?</span>
                 <Btn variant="primary" onClick={() => { onGenerate(); setConfirmRegenerate(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#5B3F7A", color: "#fff", border: "none" }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmRegenerate(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
             ) : (
-              <Btn variant="secondary" onClick={() => setConfirmRegenerate(true)} title="Reschedule" style={{ color: colors.sidebarActive, border: "none" }}>🔄</Btn>
+              <Btn variant="secondary" onClick={() => setConfirmRegenerate(true)} title="Reschedule" style={{ color: colors.sidebarActive, border: "none" }}><RefreshCw size={13} /></Btn>
             )}
-            {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)">↩</Btn>}
-            {onRedo && <Btn variant="secondary" onClick={onRedo} disabled={!redoCount} style={{ opacity: redoCount ? 1 : 0.4 }} title="Redo (Cmd+Shift+Z)">↪</Btn>}
+            {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)"><Undo2 size={13} /></Btn>}
+            {onRedo && <Btn variant="secondary" onClick={onRedo} disabled={!redoCount} style={{ opacity: redoCount ? 1 : 0.4 }} title="Redo (Cmd+Shift+Z)"><Redo2 size={13} /></Btn>}
           </>}
           pageColor={PAGE_COLORS.timetable}>
           Timetable
         </PageTitle>
 
       {/* School selector + conflict banner — sticky block */}
-      <FrozenCard style={{ border: `2px solid ${colors.sidebarActive}` }}>
+      <FrozenCard style={{ border: `2px solid ${colors.sidebarHover}` }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {displaySchools.map(s => {
             const count = lessons.filter(l => l.schoolId === s.id).length;
@@ -1058,8 +1308,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
               <button key={s.id} onClick={() => { setSelectedSchool(s.id); setFilterTeacher(""); setConfirmClearSchool(false); }}
                 style={{
                   height: 34, padding: "0 14px", borderRadius: 8, fontSize: 13, fontFamily: "inherit", cursor: "pointer", boxSizing: "border-box",
-                  border: `2px solid ${isActive ? colors.sidebarActive : colors.border}`,
-                  background: isActive ? colors.sidebarActive : colors.white,
+                  border: `2px solid ${isActive ? (s.color || colors.sidebarHover) : colors.border}`,
+                  background: isActive ? (s.color || colors.sidebarHover) : colors.cardBg,
                   color: isActive ? colors.white : colors.text, fontWeight: 600,
                   transition: "all 0.15s", display: "flex", alignItems: "center", gap: 8
                 }}>
@@ -1081,7 +1331,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
         ackedConstraints={ackedConstraints}
         lessons={lessons}
         students={students}
-        unscheduled={schoolUnscheduled}
+        unscheduled={allSchoolUnscheduled}
         onAckAll={() => setAckedConstraints(prev => {
           const next = new Set(prev);
           Object.keys(constraintWarnings).forEach(id => next.add(id));
@@ -1103,9 +1353,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {["grid", "list"].map(m => (
                   <button key={m} onClick={() => setViewMode(m)} style={{
                     height: 34, padding: "0 14px", borderRadius: 6, fontSize: 13, fontFamily: "inherit", cursor: "pointer", boxSizing: "border-box",
-                    border: `1px solid ${viewMode === m ? colors.accent : colors.border}`,
-                    background: viewMode === m ? colors.accentLight : colors.white,
-                    color: viewMode === m ? colors.accentDark : colors.textLight, fontWeight: 500,
+                    border: `1px solid ${viewMode === m ? colors.sidebarHover : colors.border}`,
+                    background: viewMode === m ? colors.sidebarHover : colors.cardBg,
+                    color: viewMode === m ? colors.white : colors.textLight, fontWeight: 500,
                     textTransform: "capitalize"
                   }}>
                     {m}
@@ -1122,20 +1372,20 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         placeholder="Version name..."
                         autoFocus
                         style={{ padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", width: 140 }} />
-                      <Btn variant="success" onClick={() => saveVersion(versionName)} style={{ fontSize: 11, padding: "4px 8px" }}>✓</Btn>
-                      <Btn variant="ghost" onClick={() => setShowSavePrompt(false)} style={{ fontSize: 11, padding: "4px 6px" }}>✕</Btn>
+                      <Btn variant="success" onClick={() => saveVersion(versionName)} style={{ fontSize: 11, padding: "4px 8px" }}><Check size={12} /></Btn>
+                      <Btn variant="ghost" onClick={() => setShowSavePrompt(false)} style={{ fontSize: 11, padding: "4px 6px" }}><X size={12} /></Btn>
                     </div>
                   ) : (
-                    <Btn variant="secondary" onClick={() => { setVersionName(lastVersionNameRef.current[selectedSchool] || ""); setShowSavePrompt(true); }} style={{ fontSize: 12 }}>💾</Btn>
+                    <Btn variant="secondary" onClick={() => { setVersionName(lastVersionNameRef.current[selectedSchool] || ""); setShowSavePrompt(true); }} style={{ fontSize: 12 }}><Save size={13} /></Btn>
                   )}
                 </div>
                 {schoolVersions.length > 0 && (
                   <div style={{ position: "relative" }}>
-                    <Btn variant="secondary" onClick={() => setShowVersionMenu(!showVersionMenu)} style={{ fontSize: 12 }}>
-                      📂 {schoolVersions.length}
+                    <Btn variant="secondary" onClick={() => setShowVersionMenu(!showVersionMenu)} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <FolderOpen size={13} /> {schoolVersions.length}
                     </Btn>
                     {showVersionMenu && (
-                      <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: colors.white, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 240, zIndex: 50, maxHeight: 300, overflowY: "auto" }}>
+                      <div style={{ position: "absolute", top: "100%", right: 0, marginTop: 4, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 240, zIndex: 50, maxHeight: 300, overflowY: "auto" }}>
                         <div style={{ padding: "8px 12px", fontSize: 11, color: colors.textMuted, borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                           Saved versions
                         </div>
@@ -1147,8 +1397,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                               <div style={{ fontSize: 11, color: colors.textMuted }}>{new Date(v.date).toLocaleDateString()} · {v.lessons.length} lessons</div>
                             </div>
                             <button onClick={e => { e.stopPropagation(); deleteVersion(v.id); }}
-                              style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", fontSize: 14, padding: "2px 6px" }}
-                              title="Delete version">×</button>
+                              style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: "2px 6px", display: "inline-flex", alignItems: "center" }}
+                              title="Delete version"><X size={13} /></button>
                           </div>
                         ))}
                       </div>
@@ -1156,22 +1406,22 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   </div>
                 )}
                 {confirmClearSchool ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#FEF2F2", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.redLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                     <span style={{ fontSize: 12, color: colors.danger, fontWeight: 500, whiteSpace: "nowrap" }}>Clear?</span>
                     <Btn variant="danger" onClick={() => { onClearSchool(selectedSchool); setConfirmClearSchool(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>Yes</Btn>
                     <Btn variant="secondary" onClick={() => setConfirmClearSchool(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
                   </div>
                 ) : (
-                  <Btn variant="danger" onClick={() => setConfirmClearSchool(true)} title="Clear this school" style={{ border: "none" }}>🗑</Btn>
+                  <Btn variant="danger" onClick={() => setConfirmClearSchool(true)} title="Clear this school" style={{ border: "none" }}><Trash2 size={13} /></Btn>
                 )}
                 {confirmRegenerateSchool ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#E9E4F0", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.purpleLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                     <span style={{ fontSize: 12, color: "#5B3F7A", fontWeight: 500, whiteSpace: "nowrap" }}>Reschedule?</span>
                     <Btn variant="primary" onClick={() => { onGenerateSchool(selectedSchool); setConfirmRegenerateSchool(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#5B3F7A", color: "#fff", border: "none" }}>Yes</Btn>
                     <Btn variant="secondary" onClick={() => setConfirmRegenerateSchool(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
                   </div>
                 ) : (
-                  <Btn variant="secondary" onClick={() => setConfirmRegenerateSchool(true)} title="Reschedule this school" style={{ color: "#5B3F7A", border: "none" }}>🔄</Btn>
+                  <Btn variant="secondary" onClick={() => setConfirmRegenerateSchool(true)} title="Reschedule this school" style={{ color: "#5B3F7A", border: "none" }}><RefreshCw size={13} /></Btn>
                 )}
               </div>
             </div>
@@ -1179,16 +1429,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           {/* Grid View */}
           {viewMode === "grid" && (
             <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { if (mttSelectedDays.size > 0) setMttSelectedDays(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 200px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: `50px repeat(${DAYS.length}, 1fr)`, gap: 1, background: colors.border }}>
+              <div style={{ display: "grid", gridTemplateColumns: `50px repeat(${DAYS.length}, 200px)`, gap: 1, background: colors.border, minWidth: `calc(50px + ${DAYS.length} * 200px + 1000px)` }}>
                 {/* Header row — sticky */}
-                <div style={{ background: colors.sidebarActive, color: colors.white, padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10 }}>Time</div>
+                <div style={{ background: colors.sidebarHover, color: colors.cardBg, padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
                 {DAYS.map(d => {
                   const daySelected = mttSelectedDays.has(d);
                   return (
                     <div key={d}
                       onClick={e => { e.stopPropagation(); setMttSelectedDays(prev => { const next = new Set(prev); if (next.has(d)) next.delete(d); else next.add(d); return next; }); }}
                       onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, isDayHeader: true, isMtt: true, day: d, schoolId: selectedSchool }); }}
-                      style={{ background: daySelected ? colors.accent : colors.sidebarActive, color: colors.white, padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>{d}</div>
+                      style={{ background: daySelected ? colors.accent : colors.sidebarHover, color: colors.cardBg, padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>{d}</div>
                   );
                 })}
 
@@ -1218,16 +1468,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                     // Render as a single spanning cell
                     return (
                       <React.Fragment key={`row-${row.time}`}>
-                        <div style={{ background: colors.sidebarActive, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: colors.white, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ background: colors.sidebarHover, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: colors.cardBg, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", position: "sticky", left: 0, zIndex: 5 }}>
                           {toTimeLabel(row.time)}
                         </div>
                         <div style={{
                           gridColumn: `2 / -1`,
-                          background: "#FFF7ED",
+                          background: colors.tagBg,
                           padding: "8px", minHeight: 36,
                           display: "flex", alignItems: "center", justifyContent: "center"
                         }}>
-                          <span style={{ fontWeight: 600, color: "#92400E", fontSize: 12 }}>☕ {breakLabel} {breakTimeRange}</span>
+                          <span style={{ fontWeight: 600, color: "#888", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Coffee size={12} /> {breakLabel} {breakTimeRange}</span>
                         </div>
                       </React.Fragment>
                     );
@@ -1235,9 +1485,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
 
                   return (
                   <React.Fragment key={`row-${row.time}`}>
-                    <div style={{ background: colors.sidebarActive, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: colors.white, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 1 }}>
+                    <div style={{ background: colors.sidebarHover, padding: "8px 2px", fontSize: 11, fontWeight: 600, color: colors.cardBg, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 1, position: "sticky", left: 0, zIndex: 5 }}>
                       {toTimeLabel(row.time)}
-                      {isSlotTypeBreak && <span style={{ fontSize: 9, opacity: 0.7 }}>☕</span>}
+                      {isSlotTypeBreak && <span style={{ opacity: 0.7, display: "inline-flex", alignItems: "center" }}><Coffee size={9} /></span>}
                     </div>
                     {DAYS.map(day => {
                       const cellBreak = getBreakForCell(row.time, day);
@@ -1300,9 +1550,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           }
                         }}
                           style={{
-                            background: isDropTarget ? colors.accentLight : cellBreak ? "#FFF7ED" : colors.white,
+                            background: isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : colors.cardBg,
                             padding: 4, minHeight: 32, display: "flex", flexDirection: "column", gap: 3,
-                            outline: isDropTarget ? `2px dashed ${colors.accent}` : "none",
+                            outline: "none",
                             transition: "background 0.15s, outline 0.15s"
                           }}
                         >
@@ -1315,13 +1565,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 setDraggingId(`mbreak:${cellBreak.id}`);
                               }}
                               onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
-                              style={{ padding: "6px 10px", borderRadius: 6, fontSize: 13, background: "#FED7AA40", borderLeft: "3px solid #D97706", textAlign: "center", cursor: "grab", position: "relative", opacity: draggingId === `mbreak:${cellBreak.id}` ? 0.4 : 1, transition: "opacity 0.15s" }}>
-                              <span style={{ fontWeight: 600, color: "#92400E" }}>☕ Break</span>
+                              style={{ flex: 1, padding: "6px 10px", borderRadius: 6, fontSize: 13, background: darkMode ? "#2D2A35" : "#E8E8E8", borderLeft: "3px solid #999", textAlign: "center", cursor: "grab", position: "relative", opacity: draggingId === `mbreak:${cellBreak.id}` ? 0.4 : 1, transition: "opacity 0.15s", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                              <span style={{ fontWeight: 600, color: "#555", display: "inline-flex", alignItems: "center", gap: 5 }}><Coffee size={12} /> Break</span>
                               {setMasterBreaks && (
                                 <span
                                   onClick={e => { e.stopPropagation(); setMasterBreaks(prev => prev.filter(b => b.id !== cellBreak.id)); }}
-                                  style={{ position: "absolute", top: 1, right: 3, fontSize: 10, color: "#DC2626", cursor: "pointer", lineHeight: 1, fontWeight: 700 }}
-                                  title="Remove break">✕</span>
+                                  style={{ position: "absolute", top: 3, right: 5, cursor: "pointer", color: "#999", display: "inline-flex", alignItems: "center" }}
+                                  title="Remove break"><X size={10} /></span>
                               )}
                             </div>
                           )}
@@ -1332,30 +1582,40 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                             const showRed = hasConstraintIssue;
                             const hasAckedWarning = constraintAcked;
                             const isExpanded = expandedWarnings.has(l.id);
+                            const _cardStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null;
+                            const liveInst = _cardStu ? (_cardStu.instruments?.find(i => i.name === l.instrument) ? l.instrument : (_cardStu.instruments?.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument;
                             return (
                             <div key={l.id} draggable
-                              onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); dragCache.current = {}; }}
+                              onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {}; }}
                               onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
-                              onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${l.instrument}` }); }}
+                              onMouseEnter={e => {
+                                if (draggingId || expandedWarnings.size > 0) return;
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const _popColor = getInstColor(liveInst, l.isGroup);
+                                const info = buildPopoverInfo(l);
+                                setHoverPopover({ info, rect, color: _popColor });
+                              }}
+                              onMouseLeave={() => setHoverPopover(null)}
+                              onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); const _ctxSt = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${buildPreferredDisplayName(_ctxSt?.name || l.studentName)} — ${liveInst}` }); }}
                               onDoubleClick={() => { if (l.isGroup && onViewGroup) onViewGroup(l.groupId); else if (!l.isGroup && onViewStudent) onViewStudent(l.studentId); }}
                               onClick={e => { if (showRed && !isExpanded) { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); next.add(l.id); return next; }); } else if (isExpanded || showRed) { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
                               style={{
                                 padding: "6px 10px", borderRadius: 6, fontSize: 13, position: "relative",
-                                background: showRed ? "#FEF2F2" : getInstColor(l.instrument, l.isGroup) + "18",
-                                borderLeft: `3px solid ${showRed ? colors.danger : getInstColor(l.instrument, l.isGroup)}`,
+                                background: showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
+                                borderLeft: `3px solid ${showRed ? colors.danger : getInstColor(liveInst, l.isGroup)}`,
                                 lineHeight: 1.4, cursor: "grab",
                                 opacity: draggingId === l.id ? 0.4 : 1,
                                 transition: "opacity 0.15s",
                               }} title={l.isGroup ? l.groupName || l.studentName : undefined}>
                               {showRed && (
                                 <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }}
-                                  style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 13, lineHeight: 1, color: colors.success, fontWeight: 700 }}
-                                  title="Confirm this time">✓</span>
+                                  style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }}
+                                  title="Confirm this time"><Check size={11} /></span>
                               )}
                               {hasAckedWarning && !showRed && (
                                 <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }}
-                                  style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", fontSize: 11, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6 }}
-                                  title="Click to view warnings">⚠</span>
+                                  style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}
+                                  title="Click to view warnings"><AlertTriangle size={11} /></span>
                               )}
                               {(() => {
                                 const _st = (allStudents || students).find(s => s.id === l.studentId);
@@ -1371,14 +1631,14 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                   </span>
                                 );
                               })()}
-                              <div style={{ fontWeight: 600, color: colors.text }}>{l.isGroup ? "👥 " : ""}{l.isGroup && l.studentNames ? (() => { const allStu = allStudents || students; const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = allStu.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""; return names + classSuffix; })() : l.studentName + (() => { const st = (allStudents || students).find(s => s.id === l.studentId); return st?.className ? " · " + st.className : ""; })()}</div>
-                              {(() => { const _tn = getLiveTeacherName(l, allStudents || students, teachers); const _unassigned = isLessonUnassigned(l, allStudents || students); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{l.instrument ? `${l.instrument} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
+                              <div style={{ fontWeight: 600, color: colors.text }}>{l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{l.isGroup && l.studentNames ? (() => { const allStu = allStudents || students; const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = allStu.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""; return names + classSuffix; })() : (() => { const st = (allStudents || students).find(s => s.id === l.studentId); return buildPreferredDisplayName(st?.name || l.studentName) + (st?.className ? " · " + st.className : ""); })()}</div>
+                              {(() => { const _mttStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; const _liveInst = _mttStu ? (_mttStu.instruments?.find(i => i.name === l.instrument) ? l.instrument : (_mttStu.instruments?.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument; const _tn = getLiveTeacherName(l, allStudents || students, teachers); const _unassigned = isLessonUnassigned(l, allStudents || students); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{_liveInst ? `${_liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
                               {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
-                              {l.noteMismatch && <div style={{ color: "#D97706", fontSize: 10, fontWeight: 600 }} title={l.noteMismatch}>⚠ not at requested time</div>}
+                              {l.noteMismatch && <div style={{ color: "#D97706", fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }} title={l.noteMismatch}><AlertTriangle size={10} /> not at requested time</div>}
                               {isExpanded && (
-                                <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: "#FEF2F2", border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                                <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
                                   {cWarnings.map((w, wi) => (
-                                    <div key={wi} style={{ color: colors.danger, fontWeight: 500 }}>⚠ {w}</div>
+                                    <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>
                                   ))}
                                 </div>
                               )}
@@ -1400,10 +1660,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           {/* Hover warning panel — DOM-driven, no React state */}
           <div ref={hoverPanelRef} style={{
             display: "none", position: "fixed", zIndex: 9999, pointerEvents: "none",
-            background: "#FFFBFF", border: "1px solid #E5E7EB",
+            background: colors.cardBg, border: `1px solid ${colors.border}`,
             borderRadius: 8, padding: "8px 12px", fontSize: 11, lineHeight: 1.6,
             boxShadow: "0 4px 16px rgba(0,0,0,0.18)", minWidth: 180, maxWidth: 300,
           }} />
+
+          {/* Hover popover */}
+          {renderHoverPopover()}
 
           {/* Student note tooltip */}
           {hoverNotes && (
@@ -1450,7 +1713,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   <tr style={{ background: colors.bg, borderBottom: `1px solid ${colors.border}` }}>
                     {columns.map(c => (
                       <th key={c.key} onClick={() => toggleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: sortKey === c.key ? colors.sidebarActive : colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, cursor: "pointer", userSelect: "none" }}>
-                        {c.label} {sortKey === c.key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{c.label} {sortKey === c.key ? (sortDir === "asc" ? <ChevronUp size={10} /> : <ChevronDown size={10} />) : ""}</span>
                       </th>
                     ))}
                   </tr>
@@ -1462,7 +1725,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <tr key={l.id} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                         <td style={{ padding: "8px 14px" }}>{l.day}</td>
                         <td style={{ padding: "8px 14px", color: colors.textLight }}>{toTimeLabel(l.start)}</td>
-                        <td style={{ padding: "8px 14px", fontWeight: 500 }}>{l.isGroup ? "👥 " : ""}{l.isGroup ? groupDisplayName(l) : l.studentName}</td>
+                        <td style={{ padding: "8px 14px", fontWeight: 500 }}>{l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3 }} />}{l.isGroup ? groupDisplayName(l) : buildPreferredDisplayName(student?.name || l.studentName)}</td>
                         <td style={{ padding: "8px 14px", color: colors.textLight }}>{student?.className || ""}</td>
                         <td style={{ padding: "8px 14px" }}>{l.teacherName}</td>
                         <td style={{ padding: "8px 14px" }}><Tag color={getInstColor(l.instrument, l.isGroup)}>{l.instrument}</Tag></td>
@@ -1475,13 +1738,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             );
           })()}
 
+          {/* Unscheduled + Pending — side by side row */}
+          <div style={{ display: "flex", gap: 12, marginTop: 20, alignItems: "stretch" }}>
+
           {/* Unscheduled area — always visible, accepts drops from grid */}
           {(() => {
-            const hasItems = schoolUnscheduled.length > 0;
+            const hasItems = allSchoolUnscheduled.length > 0;
             return (
-              <Card style={{ marginTop: 20, minHeight: 110,
-                background: unschedDragOver ? "rgba(220,38,38,0.06)" : hasItems ? "#FEF6F6" : colors.bg,
-                borderColor: unschedDragOver ? colors.danger : hasItems ? "#FCC" : colors.border,
+              <Card style={{ flex: "1 1 0", minWidth: 0, marginTop: 0,
+                background: unschedDragOver ? "rgba(220,38,38,0.06)" : hasItems ? (darkMode ? "rgba(196,84,84,0.12)" : "#FEF6F6") : colors.cardBg,
+                borderColor: unschedDragOver ? colors.danger : hasItems ? (darkMode ? `${colors.danger}60` : "#FCC") : colors.border,
                 transition: "background 0.15s, border-color 0.15s",
                 border: unschedDragOver ? `2px dashed ${colors.danger}` : undefined
               }}
@@ -1497,22 +1763,23 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   setDraggingId(null); setDragOver(null);
                 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, color: hasItems ? colors.danger : colors.textMuted, marginBottom: hasItems ? 4 : 0, display: "flex", alignItems: "center", gap: 6 }}>
-                  {hasItems ? "⚠ " : ""}Unscheduled{hasItems ? ` at ${currentSchool?.name} (${schoolUnscheduled.length})` : " — drag a lesson here to remove it from the timetable"}
+                  {hasItems && <AlertTriangle size={13} style={{ flexShrink: 0 }} />}Unscheduled{hasItems ? ` at ${currentSchool?.name} (${allSchoolUnscheduled.length})` : " — drag a lesson here to remove it from the timetable"}
                 </div>
-                {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to place it, or use 📌 Place</div>}
+                {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to place it, or use Place</div>}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
-                  {schoolUnscheduled.map((u, i) => (
+                  {allSchoolUnscheduled.map((u, i) => (
                     <div key={i} draggable
-                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${u.instrument || u.student.instruments[0]?.name}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
+                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${u.instrument || (u.student.instruments || [])[0]?.name}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
                       onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
+                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isUnschedCard: true, studentId: u.student.id, instrument: u.instrument || u.student.instruments?.[0]?.name, studentName: u.student.name }); }}
                       style={{
-                        padding: "6px 10px", background: colors.white, borderRadius: 8, fontSize: 12,
+                        padding: "6px 10px", background: colors.cardBg, borderRadius: 8, fontSize: 12,
                         border: `1px solid ${colors.danger}40`, borderLeft: `3px solid ${colors.danger}`,
                         cursor: "grab", opacity: draggingId === `unsched:${i}` ? 0.4 : 1,
                         transition: "opacity 0.15s", maxWidth: 280
                       }}>
-                      <div style={{ fontWeight: 600 }}>{u.student.name} — {(u.instrument || u.student.instruments[0]?.name) + (u.reason === "Unassigned" ? " — Unassigned" : "")}</div>
-                      {u.reason && u.reason !== "Unassigned" && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{u.reason}</div>}
+                      <div style={{ fontWeight: 600 }}>{u.student.name} — {(u.instrument || (u.student.instruments || [])[0]?.name) + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
+                      {u.reason && u.reason !== "Unassigned" && !u._derived && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{u.reason}</div>}
                     </div>
                   ))}
                   {!hasItems && unschedDragOver && (
@@ -1523,11 +1790,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             );
           })()}
 
-          {/* Pending (waiting list) panel — drag cards into the timetable grid to schedule */}
+          {/* Pending (waiting list) panel — always visible, accepts drops back from timetable */}
           {(() => {
-            const PENDING_PURPLE = "#5B21B6";
-            const PENDING_PURPLE_LIGHT = "#EDE9F6";
-            const PENDING_PURPLE_BORDER = "#C4B5FD";
+            const PENDING_PURPLE = darkMode ? "#A78BFA" : "#5B21B6";
+            const PENDING_PURPLE_LIGHT = darkMode ? "rgba(91,33,182,0.15)" : "#EDE9F6";
+            const PENDING_PURPLE_BORDER = darkMode ? "#7C3AED60" : "#C4B5FD";
             const schoolPending = (pendingStudents || [])
               .filter(s => s.schoolId === selectedSchool)
               .flatMap(s =>
@@ -1536,14 +1803,29 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   .filter(inst => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === s.id && l.instrument === inst.name)))
                   .map(inst => ({ student: s, instrument: inst.name, teacherName: teachers.find(t => t.id === inst.teacherId)?.name || "" }))
               );
-            if (schoolPending.length === 0) return null;
+            const hasItems = schoolPending.length > 0;
             return (
-              <Card style={{ marginTop: 12, background: PENDING_PURPLE_LIGHT, borderColor: PENDING_PURPLE_BORDER }}>
-                <div style={{ fontWeight: 600, fontSize: 13, color: PENDING_PURPLE, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                  ⏳ Waiting List — {currentSchool?.name} ({schoolPending.length})
+              <Card style={{ flex: "1 1 0", minWidth: 0, marginTop: 0,
+                background: pendDragOver ? "rgba(91,33,182,0.06)" : hasItems ? PENDING_PURPLE_LIGHT : colors.bg,
+                borderColor: pendDragOver ? PENDING_PURPLE : hasItems ? PENDING_PURPLE_BORDER : colors.border,
+                transition: "background 0.15s, border-color 0.15s",
+                border: pendDragOver ? `2px dashed ${PENDING_PURPLE}` : undefined
+              }}
+                onDragOver={e => { if (draggingId && !draggingId.startsWith("pending:") && !draggingId.startsWith("unsched:")) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setPendDragOver(true); } }}
+                onDragLeave={() => setPendDragOver(false)}
+                onDrop={e => {
+                  e.preventDefault(); setPendDragOver(false);
+                  const raw = e.dataTransfer.getData("text/plain");
+                  if (!raw || raw.startsWith("pending:") || raw.startsWith("unsched:")) return;
+                  if (onReturnToPending) onReturnToPending(raw);
+                  else if (onDeleteLesson) onDeleteLesson(raw);
+                  setDraggingId(null); setDragOver(null);
+                }}>
+                <div style={{ fontWeight: 600, fontSize: 13, color: hasItems ? PENDING_PURPLE : colors.textMuted, marginBottom: hasItems ? 4 : 0, display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Clock size={13} /> Waiting List{hasItems ? ` — ${currentSchool?.name} (${schoolPending.length})` : ` — drag a lesson here to return it to the waiting list`}</span>
                 </div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to schedule and activate the student</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to schedule and activate the student</div>}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
                   {schoolPending.map((row, i) => {
                     const dragId = `pending:${row.student.id}:${row.instrument}`;
                     const instColor = getInstColor(row.instrument, false);
@@ -1552,7 +1834,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         onDragStart={e => { e.dataTransfer.setData("text/plain", dragId); e.dataTransfer.effectAllowed = "move"; setDraggingId(dragId); }}
                         onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
                         style={{
-                          padding: "6px 10px", background: colors.white, borderRadius: 8, fontSize: 12,
+                          padding: "6px 10px", background: colors.cardBg, borderRadius: 8, fontSize: 12,
                           border: `1px solid ${PENDING_PURPLE}40`, borderLeft: `3px solid ${instColor}`,
                           cursor: "grab", opacity: draggingId === dragId ? 0.4 : 1,
                           transition: "opacity 0.15s", minWidth: 140, maxWidth: 240
@@ -1565,10 +1847,15 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       </div>
                     );
                   })}
+                  {!hasItems && pendDragOver && (
+                    <div style={{ fontSize: 12, color: PENDING_PURPLE, fontStyle: "italic" }}>Drop to return to waiting list</div>
+                  )}
                 </div>
               </Card>
             );
           })()}
+
+          </div>{/* end unscheduled + pending row */}
         </>
       )}
     </div>

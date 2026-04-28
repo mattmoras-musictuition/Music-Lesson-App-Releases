@@ -22,3 +22,15 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 dist/
+
+# Claude Code session data
+.claude/
+
+# Environment files (may contain API keys)
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.asar
+release/

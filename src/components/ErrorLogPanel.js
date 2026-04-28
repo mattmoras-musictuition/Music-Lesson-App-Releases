@@ -3,9 +3,11 @@
 // ============================================================
 
 import React from "react";
-import { colors, STORAGE_KEYS } from "../constants";
+import { STORAGE_KEYS } from "../constants";
+import { useTheme } from "../context/ThemeContext";
 
 export function ErrorLogPanel({ errorLog }) {
+  const { colors } = useTheme();
   const [open, setOpen] = React.useState(false);
   return (
     <div style={{ marginTop: 16 }}>
@@ -30,6 +32,7 @@ export function ErrorLogPanel({ errorLog }) {
 }
 
 export function DashboardBackupBar({ onBackup, onRestore, notify }) {
+  const { colors } = useTheme();
   const fileRef = React.useRef(null);
   const [backupDone, setBackupDone] = React.useState(false);
 
@@ -80,7 +83,7 @@ export function DashboardBackupBar({ onBackup, onRestore, notify }) {
           {backupDone ? <><span style={{ fontSize: 14 }}>✓</span> Saved</> : "Backup"}
         </button>
         <button onClick={() => window.electronAPI ? handleRestore() : fileRef.current?.click()}
-          style={{ padding: "5px 14px", border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.white, color: colors.textLight, fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>
+          style={{ padding: "5px 14px", border: `1px solid ${colors.border}`, borderRadius: 7, background: colors.cardBg, color: colors.textLight, fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer" }}>
           Restore
         </button>
       </div>

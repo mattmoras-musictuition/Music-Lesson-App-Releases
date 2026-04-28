@@ -1,6 +1,6 @@
 {
   "name": "matt-moras-music-tuition",
-  "version": "1.8.0",
+  "version": "2.3.5",
   "description": "Music lesson timetabling app for Matt Moras",
   "main": "electron.js",
   "homepage": "./",
@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "au.mattmoras.musictuition",
-    "productName": "Matt Moras - Music Tuition",
+    "productName": "Matt Moras Music Tuition",
     "copyright": "Copyright © 2026",
     "publish": {
       "provider": "github",
@@ -26,6 +26,7 @@
     "mac": {
       "category": "public.app-category.education",
       "icon": "public/icon.icns",
+      "artifactName": "Matt-Moras-Music-Tuition-${version}-${arch}-mac.${ext}",
       "target": [
         {
           "target": "dmg",
@@ -55,11 +56,13 @@
     }
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.100.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^13.5.0",
     "electron-updater": "^6.8.3",
+    "lucide-react": "^1.0.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-scripts": "5.0.1",

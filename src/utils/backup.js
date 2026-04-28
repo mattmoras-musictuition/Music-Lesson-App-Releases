@@ -35,7 +35,6 @@ export const defaultSlots = () => [
 // ── Data migration ────────────────────────────────────────────────────────────
 // migrateData runs on load for any stored data missing required fields.
 // DATA_VERSION history:
-//   v1 → v2: added weekLabel to tallyEntries (was only weekKey)
 
 export function migrateData(key, data) {
   if (!data) return data;
@@ -86,19 +85,6 @@ export function migrateData(key, data) {
         ...sc,
         slots: Array.isArray(sc.slots) ? sc.slots : defaultSlots(),
         classNames: Array.isArray(sc.classNames) ? sc.classNames : [],
-      }));
-
-    case "tallyEntries":
-      if (!Array.isArray(data)) return data;
-      return data.map(e => ({
-        ...e,
-        // v2: ensure weekLabel exists; derive from weekKey if missing
-        weekLabel: e.weekLabel || (e.weekKey ? `Week of ${e.weekKey}` : ""),
-        makeupEligible: e.makeupEligible !== undefined ? e.makeupEligible : true,
-        madeUp: e.madeUp !== undefined ? e.madeUp : false,
-        status: e.status || "missed",
-        // removed entries: ensure makeupEligible is always false
-        ...(e.status === "removed" ? { makeupEligible: false, madeUp: false } : {}),
       }));
 
     case "groups":
