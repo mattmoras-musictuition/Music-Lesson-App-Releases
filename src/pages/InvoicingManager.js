@@ -348,18 +348,11 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
         let termN = 0;
         for (const day of days) termN += _countWeekday(_dowNum(day), termInfo.start, termInfo.end);
 
-        const futureExt = tallyEntries.filter(e =>
-          e.studentId === student.id && e.instrument === instr &&
-          e.reason === "extended_absence" && e.weekKey >= termInfo.start && e.weekKey <= termInfo.end
-        ).length;
-        const billable = termN - futureExt;
+        const billable = termN;
 
         if (billable > 0 && indRate > 0)
           lines.push({ id: uid(), type: "lesson", studentName: student.name,
             description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
-        if (futureExt > 0 && indRate > 0)
-          lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-            description: `${instr} – Extended Absence`, qty: futureExt, rate: indRate / 2, subtotal: futureExt * (indRate / 2), schoolName });
 
         if (prevTerm && indRate > 0) {
           // Session 97: removed the prior `activeSlotDays` day-of-week filter.
@@ -373,7 +366,7 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
           const prevMissedAll = tallyEntries.filter(e =>
             e.studentId === student.id && e.instrument === instr &&
             e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end &&
-            e.status !== "completed" && e.reason !== "extended_absence" && !e.invoiced
+            e.status !== "completed" && !e.invoiced
           );
           const catchups = _countHolidayCatchups(weeklyTimetables, student.id, instr, interruptions, termInfo.start);
           // Session 97: replace the blunt `!e.madeUp` filter (session 95) with
@@ -398,15 +391,6 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
           if (extras > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
               description: `${instr} – Holiday Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
-
-          const prevExt = tallyEntries.filter(e =>
-            e.studentId === student.id && e.instrument === instr &&
-            e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end &&
-            e.reason === "extended_absence" && !e.invoiced
-          ).length;
-          if (prevExt > 0)
-            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-              description: `${instr} – Ext. Absence`, qty: prevExt, rate: indRate / 2, subtotal: prevExt * (indRate / 2), schoolName });
         }
       }
 
@@ -425,18 +409,14 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
           const tallyByInstr = {};
           for (const e of termTally) {
             const instr = e.instrument || "Lesson";
-            if (!tallyByInstr[instr]) tallyByInstr[instr] = { completed: 0, extended: 0 };
+            if (!tallyByInstr[instr]) tallyByInstr[instr] = { completed: 0 };
             if (e.status === "completed") tallyByInstr[instr].completed++;
-            if (e.reason === "extended_absence") tallyByInstr[instr].extended++;
           }
           for (const [instr, counts] of Object.entries(tallyByInstr)) {
             const billable = counts.completed;
             if (billable > 0)
               lines.push({ id: uid(), type: "lesson", studentName: student.name,
                 description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
-            if (counts.extended > 0)
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-                description: `${instr} – Extended Absence`, qty: counts.extended, rate: indRate / 2, subtotal: counts.extended * (indRate / 2), schoolName });
           }
         } else {
           // Term hasn't started yet (or no tally entries) — infer lesson schedule from
@@ -480,7 +460,7 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
             // (preserving session 95's mid-term-catchup fix); `holidayStamped`
             // identifies the subset whose madeUp came from a holiday catch-up
             // already counted in `catchups`, so the pair cancels cleanly.
-            const missedAll = entries.filter(e => e.status !== "completed" && e.reason !== "extended_absence" && !e.invoiced);
+            const missedAll = entries.filter(e => e.status !== "completed" && !e.invoiced);
             const catchups = _countHolidayCatchups(weeklyTimetables, student.id, instr, interruptions, termInfo.start);
             const mkpEligPending = missedAll.filter(e => e.makeupEligible && !e.madeUp).length;
             const holidayStamped = _countHolidayStampedMakeups(missedAll, interruptions, termInfo.start);
@@ -494,10 +474,6 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
             if (extras > 0)
               lines.push({ id: uid(), type: "adjustment", studentName: student.name,
                 description: `${instr} – Holiday Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
-            const prevExt = entries.filter(e => e.reason === "extended_absence" && !e.invoiced).length;
-            if (prevExt > 0)
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-                description: `${instr} – Ext. Absence`, qty: prevExt, rate: indRate / 2, subtotal: prevExt * (indRate / 2), schoolName });
           }
         }
       }
@@ -507,18 +483,11 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
         const gl = (timetable?.lessons || []).find(l => l.isGroup && l.groupId === grp.id);
         if (!gl || grpRate <= 0) continue;
         const termN = _countWeekday(_dowNum(gl.day), termInfo.start, termInfo.end);
-        const extN  = tallyEntries.filter(e =>
-          e.studentId === student.id && e.lessonKey === `group|${grp.id}` &&
-          e.reason === "extended_absence" && e.weekKey >= termInfo.start && e.weekKey <= termInfo.end
-        ).length;
-        const bill = termN - extN;
+        const bill = termN;
 
         if (bill > 0)
           lines.push({ id: uid(), type: "lesson", studentName: student.name,
             description: grp.name || `Group`, qty: bill, rate: grpRate, subtotal: bill * grpRate, schoolName });
-        if (extN > 0)
-          lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-            description: `${grp.name || "Group"} – Extended Absence`, qty: extN, rate: grpRate / 2, subtotal: extN * (grpRate / 2) });
 
         if (prevTerm) {
           // Count missed group lesson occasions using ALL group members' tally entries,
