@@ -563,3 +563,292 @@ export function getWeekTallySummary({ weeklyTimetables, weekKey, schools, termBr
   }
   return { completed, missed, label };
 }
+
+// ============================================================
+// 7.1.1 helpers — count-based invoicing math.
+// Replaces InvoicingManager's legacy pair-matching deduction
+// logic (madeUp/madeUpWeekKey/invoiced flags) with pure counts
+// scoped by enrolment+instrument or by group. Consumers migrate
+// in 7.1.2; handleCloseTermTally + Clear Tally drop in 7.1.3.
+// ============================================================
+
+// Internal — find the term_break immediately preceding nextTermStart.
+// Returns { start, end } or null. Mirrors the InvoicingManager
+// _sortedBreaks + reverse-find pattern used by _countHolidayCatchups
+// and _countHolidayStampedMakeups (which 7.1.2 deletes).
+function _findPrevBreak(interruptions, nextTermStart) {
+  const breaks = (interruptions || [])
+    .filter(i => i.type === "term_break")
+    .map(i => ({ start: i.date, end: i.endDate || i.date }))
+    .sort((a, b) => a.start.localeCompare(b.start));
+  return [...breaks].reverse().find(b => b.end < nextTermStart) || null;
+}
+
+/**
+ * Count WTT.lessons surviving for the given enrolment+instrument whose
+ * weekKey falls in [rangeStart, rangeEnd] inclusive. Each entry counts
+ * as 1 — group lessons count once per slot, matching WTT storage.
+ * Includes lessons with isMakeup: true. Defensively skips lessons with
+ * isCancelled === true.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.enrolmentId
+ * @param {string} params.instrument
+ * @param {string} params.rangeStart - Inclusive lower bound on weekKey.
+ * @param {string} params.rangeEnd - Inclusive upper bound on weekKey.
+ * @returns {number}
+ */
+export function getEnrolmentLessonsHeldInRange({ weeklyTimetables, enrolmentId, instrument, rangeStart, rangeEnd }) {
+  if (!weeklyTimetables) return 0;
+  let count = 0;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
+    const data = weeklyTimetables[sk];
+    for (const l of (data?.lessons || [])) {
+      if (l.enrolmentId !== enrolmentId) continue;
+      if (l.instrument !== instrument) continue;
+      if (l.isCancelled === true) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Return WTT.missed entries for the given enrolment+instrument whose
+ * weekKey is in [rangeStart, rangeEnd] inclusive. When
+ * makeupEligibleOnly is true, restrict to entries with makeupEligible
+ * === true. Returns the raw entries — callers take .length for count
+ * or render details directly.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.enrolmentId
+ * @param {string} params.instrument
+ * @param {string} params.rangeStart
+ * @param {string} params.rangeEnd
+ * @param {boolean} [params.makeupEligibleOnly] - Default false.
+ * @returns {Object[]}
+ */
+export function getEnrolmentMissedInRange({ weeklyTimetables, enrolmentId, instrument, rangeStart, rangeEnd, makeupEligibleOnly = false }) {
+  const out = [];
+  if (!weeklyTimetables) return out;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (m.enrolmentId !== enrolmentId) continue;
+      if (m.instrument !== instrument) continue;
+      if (makeupEligibleOnly && !m.makeupEligible) continue;
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+/**
+ * Count of isMakeup === true lessons for the given enrolment+instrument
+ * whose weekKey falls inside the term_break immediately preceding
+ * nextTermStart. Holiday weeks belong to the previous term's reckoning
+ * by convention. Tightening from legacy _countHolidayCatchups: filter
+ * explicitly by isMakeup === true (legacy lacked this — was a no-op in
+ * practice but worth being explicit). Defensively skips isCancelled.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.enrolmentId
+ * @param {string} params.instrument
+ * @param {Array} params.interruptions
+ * @param {string} params.nextTermStart - First day of the term whose deductions are being computed.
+ * @returns {number}
+ */
+export function getEnrolmentHolidayCatchupsForTerm({ weeklyTimetables, enrolmentId, instrument, interruptions, nextTermStart }) {
+  const prevBreak = _findPrevBreak(interruptions, nextTermStart);
+  if (!prevBreak) return 0;
+  return countCatchupsInRange({
+    weeklyTimetables, enrolmentId, instrument,
+    rangeStart: prevBreak.start, rangeEnd: prevBreak.end,
+  });
+}
+
+/**
+ * Count-based replacement for InvoicingManager's legacy
+ * mkpEligPending / holidayStamped / remainingCatchups / covered /
+ * deductions / extras block (sites at lines 381-393 and 465-477).
+ * For an enrolment+instrument in the prev term:
+ *   mkpEligPending = count of makeupEligible missed entries
+ *   catchups       = in-term catchups + holiday-week catchups
+ *   covered        = min(catchups, mkpEligPending)
+ *   deductions     = pending - covered
+ *   extras         = catchups - covered
+ *
+ * Pairing happens implicitly through the counts — no per-entry
+ * matching required.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.enrolmentId
+ * @param {string} params.instrument
+ * @param {{start: string, end: string}} params.prevTerm
+ * @param {Array} params.interruptions
+ * @param {string} params.nextTermStart
+ * @returns {{mkpEligPending: number, catchups: number, deductions: number, extras: number}}
+ */
+export function getEnrolmentTermDeductionMath({ weeklyTimetables, enrolmentId, instrument, prevTerm, interruptions, nextTermStart }) {
+  const mkpEligPending = getEnrolmentMissedInRange({
+    weeklyTimetables, enrolmentId, instrument,
+    rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
+    makeupEligibleOnly: true,
+  }).length;
+  const inTermCatchups = countCatchupsInRange({
+    weeklyTimetables, enrolmentId, instrument,
+    rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
+  });
+  const holidayCatchups = getEnrolmentHolidayCatchupsForTerm({
+    weeklyTimetables, enrolmentId, instrument, interruptions, nextTermStart,
+  });
+  const catchups = inTermCatchups + holidayCatchups;
+  const covered = Math.min(catchups, mkpEligPending);
+  const deductions = mkpEligPending - covered;
+  const extras = catchups - covered;
+  return { mkpEligPending, catchups, deductions, extras };
+}
+
+/**
+ * Count isMakeup === true lessons for the given enrolment+instrument
+ * whose weekKey is in [rangeStart, rangeEnd] inclusive. Defensively
+ * skips isCancelled === true. Used by getEnrolmentTermDeductionMath
+ * for in-term catchups and as the inner walker for
+ * getEnrolmentHolidayCatchupsForTerm.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.enrolmentId
+ * @param {string} params.instrument
+ * @param {string} params.rangeStart
+ * @param {string} params.rangeEnd
+ * @returns {number}
+ */
+export function countCatchupsInRange({ weeklyTimetables, enrolmentId, instrument, rangeStart, rangeEnd }) {
+  if (!weeklyTimetables) return 0;
+  let count = 0;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
+    const data = weeklyTimetables[sk];
+    for (const l of (data?.lessons || [])) {
+      if (l.enrolmentId !== enrolmentId) continue;
+      if (l.instrument !== instrument) continue;
+      if (l.isMakeup !== true) continue;
+      if (l.isCancelled === true) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * For a group: weekKeys where the group session has a missed entry,
+ * with weekKey in [rangeStart, rangeEnd] inclusive. Scope by
+ * isGroup === true && groupId === <id> — NOT by lessonKey (WTT
+ * entries don't carry lessonKey; that was tallyEntries-only).
+ *
+ * Returns Set<weekKey> — Set semantics are needed for deduping if
+ * multiple missed entries land on the same weekKey for the same
+ * group session. This is the documented exception to the
+ * counts-only public API for these helpers.
+ *
+ * When makeupEligibleOnly is true, include only weeks where the
+ * missed entry has makeupEligible === true.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.groupId
+ * @param {string} params.rangeStart
+ * @param {string} params.rangeEnd
+ * @param {boolean} [params.makeupEligibleOnly] - Default false.
+ * @returns {Set<string>}
+ */
+export function getGroupMissedWeeksInRange({ weeklyTimetables, groupId, rangeStart, rangeEnd, makeupEligibleOnly = false }) {
+  const out = new Set();
+  if (!weeklyTimetables) return out;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
+    const data = weeklyTimetables[sk];
+    for (const m of (data?.missed || [])) {
+      if (m.isGroup !== true) continue;
+      if (m.groupId !== groupId) continue;
+      if (makeupEligibleOnly && !m.makeupEligible) continue;
+      out.add(weekKey);
+    }
+  }
+  return out;
+}
+
+// Internal — count of isMakeup === true group lessons for the given
+// groupId whose weekKey is in [rangeStart, rangeEnd] inclusive.
+// Defensively skips isCancelled === true. Sole consumer is
+// getGroupTermDeductionMath; group-side analog of countCatchupsInRange.
+function _countGroupCatchupsInRange(weeklyTimetables, groupId, rangeStart, rangeEnd) {
+  if (!weeklyTimetables) return 0;
+  let count = 0;
+  for (const sk of Object.keys(weeklyTimetables)) {
+    const weekKey = sk.split("|")[0];
+    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
+    const data = weeklyTimetables[sk];
+    for (const l of (data?.lessons || [])) {
+      if (l.isGroup !== true) continue;
+      if (l.groupId !== groupId) continue;
+      if (l.isMakeup !== true) continue;
+      if (l.isCancelled === true) continue;
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Group-path analog of getEnrolmentTermDeductionMath. Same return
+ * shape (numbers, not Sets — the Set in getGroupMissedWeeksInRange
+ * collapses to .size at this layer). Collapses InvoicingManager's
+ * Sites E + F at lines 498-518 into a single helper call per group
+ * per parent. Result applies identically to every member of the
+ * group on their respective invoices.
+ *
+ * Site F's per-student madeUpWeeks subtraction does NOT survive —
+ * empirically verified zero impact across full tallyEntries history
+ * (no group rows ever had madeUp = true). Workflow clarification:
+ * groups operate as units; if individuals are absent the group
+ * lesson still goes ahead and they're billed.
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {string} params.groupId
+ * @param {{start: string, end: string}} params.prevTerm
+ * @param {Array} params.interruptions
+ * @param {string} params.nextTermStart
+ * @returns {{missedCount: number, catchupCount: number, deductions: number, extras: number}}
+ */
+export function getGroupTermDeductionMath({ weeklyTimetables, groupId, prevTerm, interruptions, nextTermStart }) {
+  const missedCount = getGroupMissedWeeksInRange({
+    weeklyTimetables, groupId,
+    rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
+    makeupEligibleOnly: true,
+  }).size;
+  const inTermCatchups = _countGroupCatchupsInRange(
+    weeklyTimetables, groupId, prevTerm.start, prevTerm.end,
+  );
+  const prevBreak = _findPrevBreak(interruptions, nextTermStart);
+  const holidayCatchups = prevBreak
+    ? _countGroupCatchupsInRange(weeklyTimetables, groupId, prevBreak.start, prevBreak.end)
+    : 0;
+  const catchupCount = inTermCatchups + holidayCatchups;
+  const covered = Math.min(catchupCount, missedCount);
+  const deductions = missedCount - covered;
+  const extras = catchupCount - covered;
+  return { missedCount, catchupCount, deductions, extras };
+}
