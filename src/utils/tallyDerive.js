@@ -573,9 +573,7 @@ export function getWeekTallySummary({ weeklyTimetables, weekKey, schools, termBr
 // ============================================================
 
 // Internal — find the term_break immediately preceding nextTermStart.
-// Returns { start, end } or null. Mirrors the InvoicingManager
-// _sortedBreaks + reverse-find pattern used by _countHolidayCatchups
-// and _countHolidayStampedMakeups (which 7.1.2 deletes).
+// Returns { start, end } or null.
 function _findPrevBreak(interruptions, nextTermStart) {
   const breaks = (interruptions || [])
     .filter(i => i.type === "term_break")
@@ -653,9 +651,8 @@ export function getEnrolmentMissedInRange({ weeklyTimetables, enrolmentId, instr
  * Count of isMakeup === true lessons for the given enrolment+instrument
  * whose weekKey falls inside the term_break immediately preceding
  * nextTermStart. Holiday weeks belong to the previous term's reckoning
- * by convention. Tightening from legacy _countHolidayCatchups: filter
- * explicitly by isMakeup === true (legacy lacked this — was a no-op in
- * practice but worth being explicit). Defensively skips isCancelled.
+ * by convention. Filters explicitly by isMakeup === true. Defensively
+ * skips isCancelled.
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables

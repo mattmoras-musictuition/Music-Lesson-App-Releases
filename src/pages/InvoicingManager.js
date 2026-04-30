@@ -11,6 +11,8 @@ import {
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { STORAGE_KEYS } from "../constants";
+import { enrolmentIdFor } from "../utils/enrolmentsDB";
+import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
 import { supabase } from "../supabaseClient";
 // Session 95: preferredFirstName — extracts "Jenny" from "Jennifer (Jenny) Smith",
@@ -222,39 +224,6 @@ function _countWeekday(dowNum, start, end) {
   return n;
 }
 
-function _countHolidayCatchups(weeklyTimetables, studentId, instrument, interruptions, nextTermStart) {
-  const breaks = _sortedBreaks(interruptions);
-  const prevBreak = [...breaks].reverse().find(b => b.end < nextTermStart);
-  if (!prevBreak) return 0;
-  let n = 0;
-  for (const [key, week] of Object.entries(weeklyTimetables || {})) {
-    const wkDate = key.split("|")[0];
-    if (wkDate < prevBreak.start || wkDate > prevBreak.end) continue;
-    for (const l of (week.lessons || [])) {
-      if (l.studentId === studentId && l.instrument === instrument && !l.isCancelled) n++;
-    }
-  }
-  return n;
-}
-
-// Session 97: counts prev-term missed entries that have already been stamped
-// `madeUp:true` by a holiday catch-up (i.e. they have `madeUpWeekKey` falling
-// within the previous term break). These entries are conceptually "consumed"
-// by the corresponding holiday lesson in `_countHolidayCatchups` — when we
-// compute deductions/extras we subtract them from the catchups total so the
-// pair cancels out (no deduction owed, no extra to bill). Without this, the
-// session 95 `!e.madeUp` filter caused holiday catch-ups to flip from
-// neutral to a `+1 Holiday Lessons` charge.
-function _countHolidayStampedMakeups(prevMissedAll, interruptions, nextTermStart) {
-  const breaks = _sortedBreaks(interruptions);
-  const prevBreak = [...breaks].reverse().find(b => b.end < nextTermStart);
-  if (!prevBreak) return 0;
-  return prevMissedAll.filter(e =>
-    e.makeupEligible && e.madeUp && e.madeUpWeekKey &&
-    e.madeUpWeekKey >= prevBreak.start && e.madeUpWeekKey <= prevBreak.end
-  ).length;
-}
-
 // ─────────────────────────────────────────────────────────────
 // PARENT UTILITIES
 // ─────────────────────────────────────────────────────────────
@@ -302,7 +271,7 @@ function _allParents(students) {
 // ─────────────────────────────────────────────────────────────
 // INVOICE GENERATION
 // ─────────────────────────────────────────────────────────────
-function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
+function buildInvoices({ students, enrolments, groups, timetable, tallyEntries, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
   // Filter students by scope
   let active = students.filter(s => s.status !== "archived");
   if (scopeType === "school" && scopeSchoolId)
@@ -355,36 +324,15 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
             description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
 
         if (prevTerm && indRate > 0) {
-          // Session 97: removed the prior `activeSlotDays` day-of-week filter.
-          // Its stated purpose was to "ignore inactive/removed slots", but that
-          // case is already handled by the outer loop only iterating over
-          // instruments the student has in the CURRENT timetable. The day
-          // filter was silently dropping prev-term missed entries whenever a
-          // student moved lesson days between terms (very common at term
-          // boundaries) — a missed Tuesday lesson last term would not deduct
-          // if the student is now scheduled on Wednesdays.
-          const prevMissedAll = tallyEntries.filter(e =>
-            e.studentId === student.id && e.instrument === instr &&
-            e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end &&
-            e.status !== "completed" && !e.invoiced
-          );
-          const catchups = _countHolidayCatchups(weeklyTimetables, student.id, instr, interruptions, termInfo.start);
-          // Session 97: replace the blunt `!e.madeUp` filter (session 95) with
-          // a finer split. Only entries that are makeup-eligible AND not yet
-          // made up are deduction candidates. Entries already stamped madeUp
-          // by a holiday catch-up "consume" one slot from `catchups` so the
-          // pair cancels (no deduction, no Holiday Lessons extra). Entries
-          // stamped madeUp by mid-term catch-ups or manual marking have no
-          // madeUpWeekKey in the holiday range, so they're simply excluded
-          // from both pending and the catchups pool — preserving session 95's
-          // mid-term-catchup fix.
-          const mkpEligPending  = prevMissedAll.filter(e => e.makeupEligible && !e.madeUp).length;
-          const holidayStamped  = _countHolidayStampedMakeups(prevMissedAll, interruptions, termInfo.start);
-          const remainingCatchups = Math.max(0, catchups - holidayStamped);
-          const covered    = Math.min(remainingCatchups, mkpEligPending);
-          const deductions = mkpEligPending - covered;
-          const extras     = remainingCatchups - covered;
-
+          const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
+          const { deductions, extras } = getEnrolmentTermDeductionMath({
+            weeklyTimetables,
+            enrolmentId,
+            instrument: instr,
+            prevTerm,
+            interruptions,
+            nextTermStart: termInfo.start,
+          });
           if (deductions > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
               description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
@@ -394,80 +342,60 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
         }
       }
 
-      // ── Tally-based fallback (private / non-timetabled students) ──
-      // Only runs if student has no individual MTT lessons AND is not in any scheduled
-      // group. Students in groups are invoiced entirely by the group section below.
+      // ── Enrolment-based fallback (private / non-timetabled students) ──
+      // Runs only when the student has no individual MTT lessons AND is not in
+      // any scheduled group. Forward-projects current-term billing using a
+      // (instrument, day) frequency derived from the student's prev-term WTT
+      // lessons. Per-enrolment deductions/extras come from HELPER 4.
       const isInAnyGroup = (groups || []).some(g => g.status === "scheduled" && (g.studentIds || []).includes(student.id));
       if (Object.keys(byInstr).length === 0 && indRate > 0 && !isInAnyGroup) {
-        const termTally = tallyEntries.filter(e =>
-          e.studentId === student.id && e.weekKey >= termInfo.start && e.weekKey <= termInfo.end &&
-          !(e.lessonKey || "").startsWith("group|")
-        );
-
-        if (termTally.length > 0) {
-          // Term has started — count from actual tally entries
-          const tallyByInstr = {};
-          for (const e of termTally) {
-            const instr = e.instrument || "Lesson";
-            if (!tallyByInstr[instr]) tallyByInstr[instr] = { completed: 0 };
-            if (e.status === "completed") tallyByInstr[instr].completed++;
-          }
-          for (const [instr, counts] of Object.entries(tallyByInstr)) {
-            const billable = counts.completed;
-            if (billable > 0)
-              lines.push({ id: uid(), type: "lesson", studentName: student.name,
-                description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
-          }
-        } else {
-          // Term hasn't started yet (or no tally entries) — infer lesson schedule from
-          // previous term's entries and count forward into the invoice term
-          const refEntries = prevTerm
-            ? tallyEntries.filter(e => e.studentId === student.id && e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end)
-            : tallyEntries.filter(e => e.studentId === student.id && e.weekKey < termInfo.start);
-          // Group by instrument, find the most-used lesson day for each
-          const schedByInstr = {};
-          for (const e of refEntries) {
-            const instr = e.instrument || "Lesson";
-            if (!schedByInstr[instr]) schedByInstr[instr] = {};
-            if (e.day) schedByInstr[instr][e.day] = (schedByInstr[instr][e.day] || 0) + 1;
-          }
-          for (const [instr, dayCounts] of Object.entries(schedByInstr)) {
-            // Use the most frequently occurring day as the scheduled lesson day
-            const topDay = Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
-            if (!topDay) continue;
-            const termN = _countWeekday(_dowNum(topDay), termInfo.start, termInfo.end);
-            if (termN > 0)
-              lines.push({ id: uid(), type: "lesson", studentName: student.name,
-                description: `${instr} Lessons`, qty: termN, rate: indRate, subtotal: termN * indRate, schoolName });
+        // Walk prev-term WTT once: capture day-frequency per instrument (for
+        // forward-projection) and the union of instruments touched by lessons
+        // or missed entries (for deduction iteration).
+        const schedByInstr = {};
+        const prevTermInstruments = new Set();
+        if (prevTerm) {
+          for (const [sk, week] of Object.entries(weeklyTimetables || {})) {
+            const wk = sk.split("|")[0];
+            if (wk < prevTerm.start || wk > prevTerm.end) continue;
+            for (const lesson of (week.lessons || [])) {
+              if (lesson.studentId !== student.id || lesson.isGroup || !lesson.instrument) continue;
+              prevTermInstruments.add(lesson.instrument);
+              if (!lesson.day) continue;
+              if (!schedByInstr[lesson.instrument]) schedByInstr[lesson.instrument] = {};
+              schedByInstr[lesson.instrument][lesson.day] = (schedByInstr[lesson.instrument][lesson.day] || 0) + 1;
+            }
+            for (const m of (week.missed || [])) {
+              if (m.studentId !== student.id || m.isGroup || !m.instrument) continue;
+              prevTermInstruments.add(m.instrument);
+            }
           }
         }
-        // Previous term missed/catchup deductions (same logic, without timetable day filter)
+        // Forward-project current-term billing using each instrument's most-used
+        // prev-term day. Instruments touched only by missed entries (no lesson
+        // day data) skip projection — they appear only as deduction lines below.
+        for (const [instr, dayCounts] of Object.entries(schedByInstr)) {
+          const topDay = Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+          if (!topDay) continue;
+          const termN = _countWeekday(_dowNum(topDay), termInfo.start, termInfo.end);
+          if (termN > 0)
+            lines.push({ id: uid(), type: "lesson", studentName: student.name,
+              description: `${instr} Lessons`, qty: termN, rate: indRate, subtotal: termN * indRate, schoolName });
+        }
+        // Per-enrolment prev-term deductions for every instrument with prev-term
+        // WTT activity. HELPER 4 returns zero counts when enrolmentIdFor produces
+        // null — safe fallback for any data-integrity edges.
         if (prevTerm) {
-          const prevTally = tallyEntries.filter(e =>
-            e.studentId === student.id && e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end
-          );
-          const prevByInstr = {};
-          for (const e of prevTally) {
-            const instr = e.instrument || "Lesson";
-            if (!prevByInstr[instr]) prevByInstr[instr] = [];
-            prevByInstr[instr].push(e);
-          }
-          for (const [instr, entries] of Object.entries(prevByInstr)) {
-            // Session 97: same refactor as the individual-lesson path above.
-            // `missedAll` keeps madeUp entries in the pool so we can correctly
-            // tell whether catchups should cancel against them or be billed
-            // as extras. `mkpEligPending` excludes already-made-up entries
-            // (preserving session 95's mid-term-catchup fix); `holidayStamped`
-            // identifies the subset whose madeUp came from a holiday catch-up
-            // already counted in `catchups`, so the pair cancels cleanly.
-            const missedAll = entries.filter(e => e.status !== "completed" && !e.invoiced);
-            const catchups = _countHolidayCatchups(weeklyTimetables, student.id, instr, interruptions, termInfo.start);
-            const mkpEligPending = missedAll.filter(e => e.makeupEligible && !e.madeUp).length;
-            const holidayStamped = _countHolidayStampedMakeups(missedAll, interruptions, termInfo.start);
-            const remainingCatchups = Math.max(0, catchups - holidayStamped);
-            const covered = Math.min(remainingCatchups, mkpEligPending);
-            const deductions = mkpEligPending - covered;
-            const extras = remainingCatchups - covered;
+          for (const instr of prevTermInstruments) {
+            const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
+            const { deductions, extras } = getEnrolmentTermDeductionMath({
+              weeklyTimetables,
+              enrolmentId,
+              instrument: instr,
+              prevTerm,
+              interruptions,
+              nextTermStart: termInfo.start,
+            });
             if (deductions > 0)
               lines.push({ id: uid(), type: "adjustment", studentName: student.name,
                 description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
@@ -490,32 +418,19 @@ function buildInvoices({ students, groups, timetable, tallyEntries, weeklyTimeta
             description: grp.name || `Group`, qty: bill, rate: grpRate, subtotal: bill * grpRate, schoolName });
 
         if (prevTerm) {
-          // Count missed group lesson occasions using ALL group members' tally entries,
-          // deduplicated by weekKey. This handles cases where tally entries were only
-          // created for some members (e.g. one member has entries, another doesn't) —
-          // the group missed the lesson so all members should get the deduction.
-          const allMemberIds = new Set(grp.studentIds || []);
-          const groupMissedEntries = tallyEntries.filter(e =>
-            allMemberIds.has(e.studentId) &&
-            e.lessonKey === `group|${grp.id}` &&
-            e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end &&
-            e.status !== "completed" && e.makeupEligible && !e.invoiced
-          );
-          // Unique weeks across all members = number of group occasions missed
-          const missedWeeks = new Set(groupMissedEntries.map(e => e.weekKey));
-          // Subtract any weeks this specific student has already made up
-          const madeUpWeeks = new Set(
-            tallyEntries.filter(e =>
-              e.studentId === student.id &&
-              e.lessonKey === `group|${grp.id}` &&
-              e.weekKey >= prevTerm.start && e.weekKey <= prevTerm.end &&
-              e.madeUp
-            ).map(e => e.weekKey)
-          );
-          const grpMissed = [...missedWeeks].filter(w => !madeUpWeeks.has(w)).length;
-          if (grpMissed > 0 && grpRate > 0)
+          const groupMath = getGroupTermDeductionMath({
+            weeklyTimetables,
+            groupId: grp.id,
+            prevTerm,
+            interruptions,
+            nextTermStart: termInfo.start,
+          });
+          if (groupMath.deductions > 0 && grpRate > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-              description: `${grp.name || "Group"} – Missed`, qty: grpMissed, rate: -grpRate, subtotal: -grpMissed * grpRate, schoolName });
+              description: `${grp.name || "Group"} – Missed`, qty: groupMath.deductions, rate: -grpRate, subtotal: -groupMath.deductions * grpRate, schoolName });
+          if (groupMath.extras > 0 && grpRate > 0)
+            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+              description: `${grp.name || "Group"} – Holiday Lessons`, qty: groupMath.extras, rate: grpRate, subtotal: groupMath.extras * grpRate, schoolName });
         }
       }
     }
@@ -900,11 +815,17 @@ export function InvoicingManager({
     // Rate validation (only for "all" scope or "school" scope)
     if (scopeType !== "parent") {
       const schoolsWithLessons = new Set((timetable?.lessons || []).map(l => l.schoolId));
-      // Also include schools with active students who have tally entries (e.g. private students)
+      // Also include schools with active students who have WTT activity at that school.
       if (selTerm) {
         for (const s of students.filter(st => st.status !== "archived" && st.schoolId)) {
-          if (!schoolsWithLessons.has(s.schoolId) && tallyEntries.some(e => e.studentId === s.id && e.weekKey >= selTerm.start && e.weekKey <= selTerm.end))
-            schoolsWithLessons.add(s.schoolId);
+          if (schoolsWithLessons.has(s.schoolId)) continue;
+          const hasActivityAtSchool = Object.entries(weeklyTimetables || {}).some(([wk, week]) => {
+            const [, weekSchoolId] = wk.split("|");
+            if (weekSchoolId !== s.schoolId) return false;
+            return (week.lessons || []).some(l => l.studentId === s.id) ||
+                   (week.missed  || []).some(m => m.studentId === s.id);
+          });
+          if (hasActivityAtSchool) schoolsWithLessons.add(s.schoolId);
         }
       }
       const checkSchools = scopeType === "school" && scopeSchoolId
@@ -919,7 +840,7 @@ export function InvoicingManager({
     }
 
     const { invoices: newInvs, nextNum, skippedNoLessons, totalParents } = buildInvoices({
-      students, groups, timetable, tallyEntries, weeklyTimetables,
+      students, enrolments, groups, timetable, tallyEntries, weeklyTimetables,
       schools, rates, interruptions, termInfo: selTerm,
       invoiceDate, dueDate, startNum: settings.nextInvoiceNumber,
       scopeType, scopeSchoolId, scopeParentKey,
