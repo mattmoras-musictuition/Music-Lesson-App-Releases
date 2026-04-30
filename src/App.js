@@ -2681,6 +2681,7 @@ export default function MusicTimetableApp() {
           if (!data) return prev;
           const missedEntry = {
             ...foundLesson,
+            enrolmentId: enrolmentIdFor(foundLesson.studentId, foundLesson.instrument, enrolments, foundLesson.groupId),
             reason: reason || "other",
             reasonDetail: reasonDetail || "",
             notes: notes || "",
@@ -2744,6 +2745,7 @@ export default function MusicTimetableApp() {
             const moveIds = new Set(lessonsToMove.map(l => l.id));
             const missedEntries = lessonsToMove.map(l => ({
               ...l,
+              enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
               reason: reason || "other",
               reasonDetail: reasonDetail || "",
               notes: "",
@@ -2933,6 +2935,7 @@ export default function MusicTimetableApp() {
             const moveIds = new Set(lessonsToMove.map(l => l.id));
             const missedEntries = lessonsToMove.map(l => ({
               ...l,
+              enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
               reason: reason || "other",
               reasonDetail: reasonDetail || "",
               notes: "",
