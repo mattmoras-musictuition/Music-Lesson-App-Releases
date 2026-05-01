@@ -672,7 +672,6 @@ export function InvoicingManager({
   weeklyTimetables, interruptions,
   notify, goBack, goForward, historyCursor, pageHistory,
   viewState, setViewState,
-  onCloseTermTally,
 }) {
   const { colors } = useTheme();
 
@@ -720,7 +719,6 @@ export function InvoicingManager({
   // Invoice list filters
   const [invSearch,     setInvSearch]     = useState("");
   const [bulkSending, setBulkSending]         = useState(false);
-  const [confirmCloseTerm, setConfirmCloseTerm] = useState(false);
   // School accordion — exactly one school banner open at a time (null = all closed).
   // Sub-banners (Drafted / Sent) remember per-school state so re-opening a school
   // restores the previous sub-layout instead of resetting.
@@ -1273,59 +1271,6 @@ export function InvoicingManager({
         )}
       </div>
 
-      {/* ── Clear Tally ─────────────────────────────────────────────── */}
-      {(() => {
-        if (!selTerm) return null;
-        const prev = _findPrevTerm(interruptions, selTerm.start);
-        if (!prev) return null;
-        const toStampCount = tallyEntries.filter(e =>
-          e.weekKey >= prev.start && e.weekKey <= prev.end &&
-          e.makeupEligible && e.status !== "completed" && !e.invoiced
-        ).length;
-        if (toStampCount === 0) return null;
-        const sentN = invoices.filter(i => i.status === "sent").length;
-        const allSent = invoices.length > 0 && sentN === invoices.length;
-        const canClose = allSent;
-        return (
-          <div style={{ marginTop: 20, padding: "16px 20px", background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12 }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 200 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4 }}>Clear Tally</div>
-                <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
-                  {`Stamps ${toStampCount} makeup-eligible missed lesson${toStampCount !== 1 ? "s" : ""} from ${_fmtLong(prev.start)}–${_fmtLong(prev.end)} as invoiced, so they won't be deducted again if invoices are regenerated.`}
-                  {!allSent && (
-                    <span style={{ display: "block", marginTop: 4, color: colors.amber, fontWeight: 600 }}>
-                      {invoices.length === 0 ? "Generate and send invoices first." : "Send all invoices first."}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div style={{ flexShrink: 0, display: "flex", gap: 8, alignItems: "center" }}>
-                {!confirmCloseTerm ? (
-                  <button
-                    disabled={!canClose}
-                    onClick={() => setConfirmCloseTerm(true)}
-                    style={{ padding: "7px 16px", borderRadius: 8, border: `1px solid ${canClose ? colors.accent + "80" : colors.border}`, background: "none", color: canClose ? colors.accent : colors.textMuted, fontSize: 12, fontWeight: 600, cursor: canClose ? "pointer" : "not-allowed", fontFamily: "inherit", opacity: canClose ? 1 : 0.5 }}>
-                    Clear Tally
-                  </button>
-                ) : (
-                  <>
-                    <span style={{ fontSize: 12, color: colors.textMuted }}>Mark {toStampCount} entr{toStampCount !== 1 ? "ies" : "y"} as invoiced?</span>
-                    <button onClick={() => { onCloseTermTally(prev.start, prev.end); setConfirmCloseTerm(false); notify(`Tally cleared — ${toStampCount} entr${toStampCount !== 1 ? "ies" : "y"} marked as invoiced.`); }}
-                      style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: colors.success, color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                      ✓ Confirm
-                    </button>
-                    <button onClick={() => setConfirmCloseTerm(false)}
-                      style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${colors.border}`, background: "none", color: colors.textMuted, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
-                      Cancel
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </div>
   );
 

@@ -2575,23 +2575,6 @@ export default function MusicTimetableApp() {
     reader.readAsDataURL(file);
   };
 
-  // ── Close Term — stamp previous term's tally entries as invoiced ─────────
-  // Called from InvoicingManager after all invoices for a term have been sent.
-  // Stamps makeupEligible missed entries in the given date range so they can't
-  // be double-deducted if invoices are ever regenerated.
-  const handleCloseTermTally = (termStart, termEnd) => {
-    setTallyEntries(prev => prev.map(e => {
-      if (
-        e.weekKey >= termStart && e.weekKey <= termEnd &&
-        e.makeupEligible && e.status !== "completed" && !e.invoiced
-      ) {
-        return { ...e, invoiced: true };
-      }
-      return e;
-    }));
-  };
-
-
   // ── Undo last Claude Action ──────────────────────────────────
   // Restores a single pre-action snapshot of the four state slices
   // that Claude Actions can mutate: tally, weekly timetable, students, teachers.
@@ -6430,7 +6413,6 @@ export default function MusicTimetableApp() {
             notify={notify}
             goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory}
             viewState={invoicingViewState} setViewState={setInvoicingViewState}
-            onCloseTermTally={handleCloseTermTally}
           />}
         </div>
       </div>
