@@ -6408,11 +6408,10 @@ export default function MusicTimetableApp() {
             }}
           />}
           {page === "invoicing" && <InvoicingManager
-            students={students} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} groups={groups} timetable={timetable}
-            tallyEntries={tallyEntries} weeklyTimetables={weeklyTimetables} interruptions={interruptions}
+            students={students} enrolments={enrolments} schools={schools} groups={groups} timetable={timetable}
+            weeklyTimetables={weeklyTimetables} interruptions={interruptions}
             notify={notify}
             goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory}
-            viewState={invoicingViewState} setViewState={setInvoicingViewState}
           />}
         </div>
       </div>

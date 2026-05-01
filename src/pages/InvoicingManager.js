@@ -271,7 +271,7 @@ function _allParents(students) {
 // ─────────────────────────────────────────────────────────────
 // INVOICE GENERATION
 // ─────────────────────────────────────────────────────────────
-function buildInvoices({ students, enrolments, groups, timetable, tallyEntries, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
+function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
   // Filter students by scope
   let active = students.filter(s => s.status !== "archived");
   if (scopeType === "school" && scopeSchoolId)
@@ -668,10 +668,9 @@ function _plainText(invoice, settings) {
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────
 export function InvoicingManager({
-  students, enrolments, setEnrolments, schools, groups, timetable, tallyEntries,
+  students, enrolments, schools, groups, timetable,
   weeklyTimetables, interruptions,
   notify, goBack, goForward, historyCursor, pageHistory,
-  viewState, setViewState,
 }) {
   const { colors } = useTheme();
 
@@ -838,7 +837,7 @@ export function InvoicingManager({
     }
 
     const { invoices: newInvs, nextNum, skippedNoLessons, totalParents } = buildInvoices({
-      students, enrolments, groups, timetable, tallyEntries, weeklyTimetables,
+      students, enrolments, groups, timetable, weeklyTimetables,
       schools, rates, interruptions, termInfo: selTerm,
       invoiceDate, dueDate, startNum: settings.nextInvoiceNumber,
       scopeType, scopeSchoolId, scopeParentKey,
