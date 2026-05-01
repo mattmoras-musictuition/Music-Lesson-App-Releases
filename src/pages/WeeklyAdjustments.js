@@ -1199,10 +1199,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const scheduledLessons = _preAbsentIds.size > 0
       ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_preAbsentIds.has(l.studentId))
       : result.lessons;
-    const allMissed = [...result.missed, ..._absentLessons.map(l => {
-      const tallyEntry = _preAbsentEntries.find(e => e.studentId === l.studentId);
-      return { ...l, reason: tallyEntry?.reason || "informed_absence" };
-    })];
+    const allMissed = [
+      ...result.missed.map(m => ({ ...m, enrolmentId: enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId) })),
+      ..._absentLessons.map(l => {
+        const tallyEntry = _preAbsentEntries.find(e => e.studentId === l.studentId);
+        return { ...l, reason: tallyEntry?.reason || "informed_absence", enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId) };
+      }),
+    ];
 
     const allMissedNormalized = allMissed.map(m => {
       const isClashOrCancel = m.reason && (
@@ -1260,10 +1263,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const _allScheduledLessons = _allPreAbsentIds.size > 0
         ? result.lessons.filter(l => l.isBandSession || l.isGroup || !_allPreAbsentIds.has(l.studentId))
         : result.lessons;
-      const _allMissed = [...result.missed, ..._allAbsentLessons.map(l => {
-        const tallyEntry = _allPreAbsentEntries.find(e => e.studentId === l.studentId);
-        return { ...l, reason: tallyEntry?.reason || "informed_absence" };
-      })];
+      const _allMissed = [
+        ...result.missed.map(m => ({ ...m, enrolmentId: enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId) })),
+        ..._allAbsentLessons.map(l => {
+          const tallyEntry = _allPreAbsentEntries.find(e => e.studentId === l.studentId);
+          return { ...l, reason: tallyEntry?.reason || "informed_absence", enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId) };
+        }),
+      ];
       setWeeklyTimetables(prev => ({
         ...prev,
         [sk]: { lessons: [...existingBandSessionsAll, ..._allScheduledLessons], missed: _allMissed, generatedAt: new Date().toISOString() }
@@ -1493,10 +1499,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const newDayLessons = newDayLessonsFiltered;
     const otherDayMissed = existing ? existing.missed.filter(m => m.day !== targetDay) : [];
     const newDayMissed = [
-      ...result.missed.filter(m => m.day === targetDay),
+      ...result.missed.filter(m => m.day === targetDay).map(m => ({ ...m, enrolmentId: enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId) })),
       ..._dayAbsentLessons.map(l => {
         const tallyEntry = _dayPreAbsentEntries.find(e => e.studentId === l.studentId);
-        return { ...l, reason: tallyEntry?.reason || "informed_absence" };
+        return { ...l, reason: tallyEntry?.reason || "informed_absence", enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId) };
       }),
     ];
 
@@ -1582,6 +1588,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!lesson) return;
     const missedEntry = {
       ...lesson,
+      enrolmentId: enrolmentIdFor(lesson.studentId, lesson.instrument, enrolments, lesson.groupId),
       reason: "",
       reasonDetail: "",
       notes: "",
@@ -2068,6 +2075,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 const data = out[sk] || { lessons: [], missed: [] };
                 const newMissedEntry = {
                   ...l,
+                  enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
                   reason: finalReason,
                   reasonDetail: finalReasonDetail,
                   notes: finalDetails,

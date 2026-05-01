@@ -19,6 +19,7 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
+import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
@@ -2574,23 +2575,6 @@ export default function MusicTimetableApp() {
     reader.readAsDataURL(file);
   };
 
-  // ── Close Term — stamp previous term's tally entries as invoiced ─────────
-  // Called from InvoicingManager after all invoices for a term have been sent.
-  // Stamps makeupEligible missed entries in the given date range so they can't
-  // be double-deducted if invoices are ever regenerated.
-  const handleCloseTermTally = (termStart, termEnd) => {
-    setTallyEntries(prev => prev.map(e => {
-      if (
-        e.weekKey >= termStart && e.weekKey <= termEnd &&
-        e.makeupEligible && e.status !== "completed" && !e.invoiced
-      ) {
-        return { ...e, invoiced: true };
-      }
-      return e;
-    }));
-  };
-
-
   // ── Undo last Claude Action ──────────────────────────────────
   // Restores a single pre-action snapshot of the four state slices
   // that Claude Actions can mutate: tally, weekly timetable, students, teachers.
@@ -2680,6 +2664,7 @@ export default function MusicTimetableApp() {
           if (!data) return prev;
           const missedEntry = {
             ...foundLesson,
+            enrolmentId: enrolmentIdFor(foundLesson.studentId, foundLesson.instrument, enrolments, foundLesson.groupId),
             reason: reason || "other",
             reasonDetail: reasonDetail || "",
             notes: notes || "",
@@ -2743,6 +2728,7 @@ export default function MusicTimetableApp() {
             const moveIds = new Set(lessonsToMove.map(l => l.id));
             const missedEntries = lessonsToMove.map(l => ({
               ...l,
+              enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
               reason: reason || "other",
               reasonDetail: reasonDetail || "",
               notes: "",
@@ -2932,6 +2918,7 @@ export default function MusicTimetableApp() {
             const moveIds = new Set(lessonsToMove.map(l => l.id));
             const missedEntries = lessonsToMove.map(l => ({
               ...l,
+              enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId),
               reason: reason || "other",
               reasonDetail: reasonDetail || "",
               notes: "",
@@ -3254,6 +3241,16 @@ export default function MusicTimetableApp() {
           createdAt: new Date().toISOString(),
         };
         setStudents(prev => [...prev, newStudent]);
+        // Mirror instruments[] into enrolments — form-side path does this via
+        // commitSaveStudent; AI tools bypassed it pre-7.1.1.5 and produced
+        // the missing-enrolment cases logged in session 117.
+        const todayISO = new Date().toISOString().split("T")[0];
+        setEnrolments(prev => syncEnrolmentsFromInstruments({
+          studentId: newStudent.id,
+          newInstruments: newStudent.instruments || [],
+          enrolments: prev,
+          todayDate: todayISO,
+        }));
         const instStr = (instruments || []).map(i => {
           const t = teachers.find(t => t.id === i.teacherId);
           return `${i.name}${t ? ` with ${t.name}` : ""}`;
@@ -3283,6 +3280,18 @@ export default function MusicTimetableApp() {
         }));
         if (Object.keys(patch).length === 0) return `No fields provided — nothing changed for ${studentName}.`;
         setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, ...patch }));
+        // Mirror instruments[] into enrolments only when instruments was in the
+        // input. Skipping the guard would treat name-only edits as "remove all
+        // instruments" and silently end-date every active enrolment.
+        if (instruments !== undefined) {
+          const todayISO = new Date().toISOString().split("T")[0];
+          setEnrolments(prev => syncEnrolmentsFromInstruments({
+            studentId,
+            newInstruments: patch.instruments,
+            enrolments: prev,
+            todayDate: todayISO,
+          }));
+        }
         const changes = Object.entries(patch).map(([k, v]) => {
           if (k === "instruments") return `instruments → ${v.map(i => i.name).join(", ")}`;
           if (k === "schoolId") { const sn = schools.find(s => s.id === v)?.name || v; return `school → ${sn}`; }
@@ -3327,6 +3336,19 @@ export default function MusicTimetableApp() {
         if (!existing) return `No student found with ID ${studentId} — nothing changed.`;
         if (existing.status !== "archived") return `${studentName} is not archived (current status: ${existing.status}) — nothing changed.`;
         setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, status: "pending", archivedAt: undefined }));
+        // Symmetric with archive_student: clear endDate ONLY on enrolments that
+        // were end-dated by the matching archive event. Enrolments ended on
+        // other dates stay ended (refinement D — endDate is permanent).
+        // archivedAt is a full ISO timestamp; endDate is date-only — strip to
+        // date for the same-day match.
+        if (existing.archivedAt) {
+          const archiveDate = existing.archivedAt.split("T")[0];
+          setEnrolments(prev => prev.map(e =>
+            e.studentId === studentId && e.endDate === archiveDate
+              ? { ...e, endDate: undefined }
+              : e
+          ));
+        }
         notify(`Restored student: ${studentName}`, "success");
         return `Done — ${studentName} has been restored to pending status and will appear in the student list again.`;
       }
@@ -6386,12 +6408,10 @@ export default function MusicTimetableApp() {
             }}
           />}
           {page === "invoicing" && <InvoicingManager
-            students={students} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} groups={groups} timetable={timetable}
-            tallyEntries={tallyEntries} weeklyTimetables={weeklyTimetables} interruptions={interruptions}
+            students={students} enrolments={enrolments} schools={schools} groups={groups} timetable={timetable}
+            weeklyTimetables={weeklyTimetables} interruptions={interruptions}
             notify={notify}
             goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory}
-            viewState={invoicingViewState} setViewState={setInvoicingViewState}
-            onCloseTermTally={handleCloseTermTally}
           />}
         </div>
       </div>
