@@ -681,7 +681,10 @@ export function MessagesView({
         .insert({ thread_id: activeThreadId, sender_id: ADMIN_ID, sender_type: ADMIN_TYPE, body, attachment_url: att?.url || null, attachment_type: att?.type || null, reply_to_id: replyingTo?.id || null })
         .select()
         .single();
-      if (error) throw error;
+      if (error || !data) {
+        // dev-mode wrapper returns { data: null, error: null }; bail before corrupting optimistic state
+        throw error || new Error('insert returned no data');
+      }
       setMessages(prev => prev.map(m => m.id === optimistic.id ? data : m));
       setLastMessages(prev => ({ ...prev, [activeThreadId]: data }));
       setThreads(prev => {
@@ -731,7 +734,10 @@ export function MessagesView({
         .insert({ name, is_group: isGroup, created_by: ADMIN_ID, created_by_type: ADMIN_TYPE })
         .select()
         .single();
-      if (tErr) throw tErr;
+      if (tErr || !thread) {
+        // dev-mode wrapper returns { data: null, error: null }; bail before reading thread.id
+        throw tErr || new Error('insert returned no data');
+      }
 
       // Insert members
       const memberRows = [
