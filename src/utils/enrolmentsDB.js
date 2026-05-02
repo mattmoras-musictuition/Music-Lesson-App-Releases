@@ -21,6 +21,24 @@ export function enrolmentIdFor(studentId, instrument, enrolments, groupId) {
   return match ? match.id : null;
 }
 
+// Active enrolments for a student: those without an endDate.
+// Pure read-side helper. Use this everywhere instead of student.instruments
+// (which was stripped from the data layer by Spec 1 Commit 2b).
+export function activeEnrolmentsFor(studentId, enrolments) {
+  return (enrolments || []).filter(e => e.studentId === studentId && !e.endDate);
+}
+
+// Adapter — return active enrolments shaped like the legacy student.instruments[]
+// element format ({ name, teacherId, isGroup }). Drop-in replacement for
+// `student.instruments || []` at sites still written against the old shape.
+export function instrumentsFromEnrolments(studentId, enrolments) {
+  return activeEnrolmentsFor(studentId, enrolments).map(e => ({
+    name: e.instrument,
+    teacherId: e.teacherId || "",
+    isGroup: e.isGroup || false,
+  }));
+}
+
 // Stamp enrolmentId on every lesson in an array. Idempotent —
 // re-stamping a stamped lesson resolves to the same id (or null
 // if the underlying enrolment has been removed).

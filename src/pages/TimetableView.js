@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Calendar, Send } from "lucide-react";
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -520,10 +521,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     } else {
       // Use live teacher from student's current instrument record, not stored lesson.teacherId
       const _allStu = allStudents || students;
-      const _liveInst = (_allStu.find(s => s.id === lesson.studentId)?.instruments || [])
-        .find(i => i.name === lesson.instrument)
-        || (_allStu.find(s => s.id === lesson.studentId)?.instruments || [])
-        .find(i => !i.isGroup);
+      const _matchedStu = _allStu.find(s => s.id === lesson.studentId);
+      const _liveInsts = _matchedStu ? instrumentsFromEnrolments(_matchedStu.id, enrolments) : [];
+      const _liveInst = _liveInsts.find(i => i.name === lesson.instrument)
+        || _liveInsts.find(i => !i.isGroup);
       const _liveTeacherId = _liveInst?.teacherId || lesson.teacherId;
       const teacher = teachers.find(t => t.id === _liveTeacherId);
       if (teacher) {
@@ -775,13 +776,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     schoolUnscheduled.map(u => `${u.student?.id}|${u.instrument}`).filter(Boolean)
   );
   const derivedUnscheduled = allStu
-    .filter(s =>
-      s.schoolId === selectedSchool &&
-      s.status === "active" &&
-      (s.instruments || []).some(i => !i.isGroup)
-    )
-    .flatMap(s =>
-      (s.instruments || []).filter(i =>
+    .filter(s => s.schoolId === selectedSchool && s.status === "active")
+    .flatMap(s => {
+      const insts = instrumentsFromEnrolments(s.id, enrolments);
+      return insts.filter(i =>
         !i.isGroup &&
         !scheduledStudentInstruments.has(`${s.id}|${i.name}`) &&
         !alreadyInUnscheduledInstruments.has(`${s.id}|${i.name}`)
@@ -790,8 +788,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
         instrument: i.name,
         reason: "Unscheduled",
         _derived: true,
-      }))
-    );
+      }));
+    });
 
   const allSchoolUnscheduled = [...schoolUnscheduled, ...derivedUnscheduled];
 
@@ -965,7 +963,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 const sId = contextMenu.schoolId;
                 const pendingRows = (pendingStudents || [])
                   .filter(s => s.schoolId === sId && s.status === "pending")
-                  .flatMap(s => (s.instruments && s.instruments.length ? s.instruments : [{ name: "", teacherId: "" }]).map(inst => ({ ...s, _inst: inst })))
+                  .flatMap(s => {
+                    const insts = instrumentsFromEnrolments(s.id, enrolments);
+                    const items = insts.length > 0 ? insts : [{ name: "", teacherId: "", isGroup: false }];
+                    return items.map(inst => ({ ...s, _inst: inst }));
+                  })
                   .filter(row => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === row.id && (l.instrument || "") === (row._inst.name || ""))));
                 const subMenuW = 216;
                 const menuRect = mttMenuRef.current ? mttMenuRef.current.getBoundingClientRect() : null;
@@ -1004,7 +1006,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                     <button key={ui} onClick={() => {
                       const student = u.student;
                       if (!student) return;
-                      const instrumentName = u.instrument || student.instruments?.[0]?.name;
+                      const instrumentName = u.instrument || instrumentsFromEnrolments(student.id, enrolments)[0]?.name;
                       if (!instrumentName) return;
                       handleDropUnsched(`unsched:${student.id}:${instrumentName}`, contextMenu.day, contextMenu.time);
                       setContextMenu(null); setMttAddSubmenu(null);
@@ -1583,7 +1585,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                             const hasAckedWarning = constraintAcked;
                             const isExpanded = expandedWarnings.has(l.id);
                             const _cardStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null;
-                            const liveInst = _cardStu ? (_cardStu.instruments?.find(i => i.name === l.instrument) ? l.instrument : (_cardStu.instruments?.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument;
+                            const _cardInsts = _cardStu ? instrumentsFromEnrolments(_cardStu.id, enrolments) : [];
+                            const liveInst = _cardStu ? (_cardInsts.find(i => i.name === l.instrument) ? l.instrument : (_cardInsts.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument;
                             return (
                             <div key={l.id} draggable
                               onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {}; }}
@@ -1632,7 +1635,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 );
                               })()}
                               <div style={{ fontWeight: 600, color: colors.text }}>{l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{l.isGroup && l.studentNames ? (() => { const allStu = allStudents || students; const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = allStu.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""; return names + classSuffix; })() : (() => { const st = (allStudents || students).find(s => s.id === l.studentId); return buildPreferredDisplayName(st?.name || l.studentName) + (st?.className ? " · " + st.className : ""); })()}</div>
-                              {(() => { const _mttStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; const _liveInst = _mttStu ? (_mttStu.instruments?.find(i => i.name === l.instrument) ? l.instrument : (_mttStu.instruments?.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument; const _tn = getLiveTeacherName(l, allStudents || students, teachers); const _unassigned = isLessonUnassigned(l, allStudents || students); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{_liveInst ? `${_liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
+                              {(() => { const _mttStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; const _mttInsts = _mttStu ? instrumentsFromEnrolments(_mttStu.id, enrolments) : []; const _liveInst = _mttStu ? (_mttInsts.find(i => i.name === l.instrument) ? l.instrument : (_mttInsts.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument; const _tn = getLiveTeacherName(l, allStudents || students, teachers); const _unassigned = isLessonUnassigned(l, allStudents || students); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{_liveInst ? `${_liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
                               {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                               {l.noteMismatch && <div style={{ color: "#D97706", fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }} title={l.noteMismatch}><AlertTriangle size={10} /> not at requested time</div>}
                               {isExpanded && (
@@ -1767,21 +1770,24 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 </div>
                 {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to place it, or use Place</div>}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
-                  {allSchoolUnscheduled.map((u, i) => (
+                  {allSchoolUnscheduled.map((u, i) => {
+                    const _uInstName = u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name;
+                    return (
                     <div key={i} draggable
-                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${u.instrument || (u.student.instruments || [])[0]?.name}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
+                      onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${_uInstName}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
                       onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
-                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isUnschedCard: true, studentId: u.student.id, instrument: u.instrument || u.student.instruments?.[0]?.name, studentName: u.student.name }); }}
+                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isUnschedCard: true, studentId: u.student.id, instrument: _uInstName, studentName: u.student.name }); }}
                       style={{
                         padding: "6px 10px", background: colors.cardBg, borderRadius: 8, fontSize: 12,
                         border: `1px solid ${colors.danger}40`, borderLeft: `3px solid ${colors.danger}`,
                         cursor: "grab", opacity: draggingId === `unsched:${i}` ? 0.4 : 1,
                         transition: "opacity 0.15s", maxWidth: 280
                       }}>
-                      <div style={{ fontWeight: 600 }}>{u.student.name} — {(u.instrument || (u.student.instruments || [])[0]?.name) + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
+                      <div style={{ fontWeight: 600 }}>{u.student.name} — {_uInstName + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
                       {u.reason && u.reason !== "Unassigned" && !u._derived && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{u.reason}</div>}
                     </div>
-                  ))}
+                    );
+                  })}
                   {!hasItems && unschedDragOver && (
                     <div style={{ fontSize: 12, color: colors.danger, fontStyle: "italic" }}>Drop to remove from timetable</div>
                   )}
@@ -1797,12 +1803,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const PENDING_PURPLE_BORDER = darkMode ? "#7C3AED60" : "#C4B5FD";
             const schoolPending = (pendingStudents || [])
               .filter(s => s.schoolId === selectedSchool)
-              .flatMap(s =>
-                (s.instruments && s.instruments.length > 0 ? s.instruments : [{ name: "", teacherId: "" }])
+              .flatMap(s => {
+                const insts = instrumentsFromEnrolments(s.id, enrolments);
+                // Placeholder row when student has no enrolments — preserves prior fallback
+                // behaviour so instrument-less pending students still appear in the waiting list.
+                const items = insts.length > 0 ? insts : [{ name: "", teacherId: "", isGroup: false }];
+                return items
                   .filter(inst => !inst.isGroup)
                   .filter(inst => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === s.id && l.instrument === inst.name)))
-                  .map(inst => ({ student: s, instrument: inst.name, teacherName: teachers.find(t => t.id === inst.teacherId)?.name || "" }))
-              );
+                  .map(inst => ({ student: s, instrument: inst.name, teacherName: teachers.find(t => t.id === inst.teacherId)?.name || "" }));
+              });
             const hasItems = schoolPending.length > 0;
             return (
               <Card style={{ flex: "1 1 0", minWidth: 0, marginTop: 0,
