@@ -120,7 +120,7 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHo
     makeupEligible: isMissed ? !!wttEntry.makeupEligible : false,
     madeUp: isMissed ? !!wttEntry.madeUp : false,
 
-    // Holiday compat (preserves legacy isHolidayCatchup filter at TallyView:851)
+    // Holiday compat (preserves legacy isHolidayCatchup filter)
     isHolidayCatchup: isLesson && !!wttEntry.isMakeup && weekIsHoliday,
     bandSession: !!wttEntry.isBandSession,
 

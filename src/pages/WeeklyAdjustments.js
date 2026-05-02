@@ -4182,7 +4182,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               // pointerEvents:none + dim when locked — keeps the grid visible
               // (Matt can still read it) but blocks every drag/click edit.
               // Mirrors the same pattern used by the non-holiday grid.
-              <div style={{ marginTop: 0, pointerEvents: isLocked ? "none" : "auto", opacity: isLocked ? 0.7 : 1 }}>
+              <div style={{ marginTop: 0, opacity: isLocked ? 0.7 : 1 }}>
                 {/* Stats row */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
                   <Card style={{ flex: 1, padding: "8px 14px" }}>
@@ -4201,6 +4201,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                 {/* Catch-up timetable grid */}
                 <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { setCatchupSelectedCards(new Set()); setSelectedCatchupDays(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 210px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
+                  <div style={{ pointerEvents: isLocked ? "none" : "auto" }}>
                   <div style={{ display: "grid", gridTemplateColumns: `60px repeat(7, minmax(140px, 1fr))`, gap: 1, background: colors.border, minWidth: "calc(60px + 7 * 140px + 6 * 140px)" }}>
 
                     {/* Corner header */}
@@ -4445,6 +4446,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       })}
                     </div>
                   )}
+                  </div>
                 </div>
               </div>
             );
@@ -4728,7 +4730,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
           {/* Weekly Grid */}
           {!isHolidayWeek && (weeklyData ? (
-            <div style={{ pointerEvents: isLocked ? "none" : "auto" }}>
+            <div>
               <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
                 <Card style={{ flex: 1, padding: "8px 14px" }}>
                   <span style={{ fontSize: 16, fontWeight: 700, color: colors.accent }}>{weeklyData.lessons.length}</span>
@@ -4791,6 +4793,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                 return (
                   <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { if (selectedCards.size > 0) setSelectedCards(new Set()); if (selectedDays.size > 0) setSelectedDays(new Set()); if (selectedMissed.size > 0) setSelectedMissed(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 200px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
+                    <div style={{ pointerEvents: isLocked ? "none" : "auto" }}>
                     <div style={{ display: "grid", gridTemplateColumns: `50px repeat(${schoolDays.length}, 200px)`, gap: 1, background: colors.border, minWidth: `calc(50px + ${schoolDays.length} * 200px + 1000px)` }}>
                       {/* Header row */}
                       <div style={{ background: colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
@@ -5167,6 +5170,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         </React.Fragment>
                         );
                       })}
+                    </div>
                     </div>
                   </div>
                 );

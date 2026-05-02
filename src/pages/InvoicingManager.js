@@ -338,7 +338,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
               description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
           if (extras > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-              description: `${instr} – Holiday Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
+              description: `${instr} – Extra Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
         }
       }
 
@@ -401,7 +401,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
                 description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
             if (extras > 0)
               lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-                description: `${instr} – Holiday Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
+                description: `${instr} – Extra Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
           }
         }
       }
@@ -430,7 +430,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
               description: `${grp.name || "Group"} – Missed`, qty: groupMath.deductions, rate: -grpRate, subtotal: -groupMath.deductions * grpRate, schoolName });
           if (groupMath.extras > 0 && grpRate > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
-              description: `${grp.name || "Group"} – Holiday Lessons`, qty: groupMath.extras, rate: grpRate, subtotal: groupMath.extras * grpRate, schoolName });
+              description: `${grp.name || "Group"} – Extra Lessons`, qty: groupMath.extras, rate: grpRate, subtotal: groupMath.extras * grpRate, schoolName });
         }
       }
     }
