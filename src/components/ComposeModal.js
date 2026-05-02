@@ -531,6 +531,8 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
           bodyHtml: applyMergeCtx(bodySource, ctx),
           label: ctx.parent_name || addr,
           attachments: itemAttachments,
+          cc: cc.length > 0 ? cc : undefined,
+          bcc: bcc.length > 0 ? bcc : undefined,
           // Session 95: invoiceId lets the queue processor fire setSent only
           // for rows whose email actually succeeded. Optional — undefined for
           // non-invoice batch sends.
@@ -1115,7 +1117,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
               ) : (
                 pickerItems.map((item, i) => (
                   <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < pickerItems.length - 1 ? `1px solid ${colors.borderLight}` : "none", background: colors.cardBg }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.sidebarHover}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.bg}
                     onMouseLeave={e => e.currentTarget.style.background = colors.cardBg}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, color: colors.text, marginBottom: 2 }}>{item.label || "—"}</div>

@@ -198,10 +198,12 @@ ipcMain.handle("gmail-disconnect", () => {
   return { ok: true };
 });
 
-ipcMain.handle("gmail-send", async (_e, { to, from, subject, bodyHtml, attachments }) => {
+ipcMain.handle("gmail-send", async (_e, { to, from, cc, bcc, subject, bodyHtml, attachments }) => {
   try {
     const accessToken = await getValidAccessToken();
     const toHeader = Array.isArray(to) ? to.join(", ") : to;
+    const ccHeader = Array.isArray(cc) ? cc.join(", ") : cc;
+    const bccHeader = Array.isArray(bcc) ? bcc.join(", ") : bcc;
     const subjectEncoded = `=?UTF-8?B?${Buffer.from(subject || "").toString("base64")}?=`;
 
     let mimeMessage;
@@ -238,6 +240,8 @@ ipcMain.handle("gmail-send", async (_e, { to, from, subject, bodyHtml, attachmen
       mimeMessage = [
         `From: ${from || "me"}`,
         `To: ${toHeader}`,
+        ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
+        ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
         `Subject: ${subjectEncoded}`,
         `MIME-Version: 1.0`,
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -250,6 +254,8 @@ ipcMain.handle("gmail-send", async (_e, { to, from, subject, bodyHtml, attachmen
       mimeMessage = [
         `From: ${from || "me"}`,
         `To: ${toHeader}`,
+        ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
+        ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
         `Subject: ${subjectEncoded}`,
         `MIME-Version: 1.0`,
         `Content-Type: text/html; charset=UTF-8`,
