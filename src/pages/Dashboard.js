@@ -3334,36 +3334,45 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* Blue — response required today + informational */}
-                      {responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${responseRequiredBlue.length} email${responseRequiredBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                      {(() => { const visibleResponseBlue = responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseBlue.length} email${visibleResponseBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: darkMode ? colors.blue600 : colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${darkMode ? colors.blue600 : colors.sidebarActive}40`, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${darkMode ? colors.blue600 : colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {responseRequiredBlue.length} question{responseRequiredBlue.length !== 1 ? "s" : ""} today</span>
+                          <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseBlue.length} question{visibleResponseBlue.length !== 1 ? "s" : ""} today</span>
                           <DismissBtn groupType="alert-response-blue" color={darkMode ? colors.blue600 : colors.sidebarActive} />
                         </div>
-                      )}
+                      ); })()}
                       {/* Lesson change requests from parents */}
-                      {lessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") && (
+                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleLessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") && (
                         <div draggable
-                          onDragStart={() => setAlertDragging({ text: `Review ${lessonChangeEmails.length} lesson change request${lessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: lessonChangeEmails })}
+                          onDragStart={() => setAlertDragging({ text: `Review ${visibleLessonChangeEmails.length} lesson change request${visibleLessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: lessonChangeEmails })}
                           onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set(["parent"])); setEmailSchoolFilter(new Set()); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.accent, items: lessonChangeEmails.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase(); const parentStudent = students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr)); const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null; const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark); return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><RefreshCw size={11} /> {lessonChangeEmails.length} lesson change{lessonChangeEmails.length !== 1 ? "s" : ""}</span>
+                          <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><RefreshCw size={11} /> {visibleLessonChangeEmails.length} lesson change{visibleLessonChangeEmails.length !== 1 ? "s" : ""}</span>
                           <DismissBtn groupType="alert-lesson-change" color={colors.accent} />
                         </div>
-                      )}
+                      ); })()}
                       {pendingOnly > 0 && !pendingDismissed && (() => {
-                        const pendingStudents = students.filter(s => s.status === "pending").flatMap(s =>
-                          (s.instruments || []).filter(i => !i.isGroup).map(i => ({
+                        const pendingStudents = students.filter(s => s.status === "pending").flatMap(s => {
+                          const nonGroup = (s.instruments || []).filter(i => !i.isGroup);
+                          if (nonGroup.length === 0) {
+                            // Placeholder row — keeps dropdown items aligned with the
+                            // Math.max(1, ...) floor in pendingOnly count for instrument-less students.
+                            return [{
+                              studentId: s.id, studentName: s.name, instrument: "(no instrument)", schoolId: s.schoolId || "",
+                              parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                            }];
+                          }
+                          return nonGroup.map(i => ({
                             studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
                             parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
-                          }))
-                        );
+                          }));
+                        });
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${pendingOnly} pending student${pendingOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-pending", pendingOrTrialStudents: pendingStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
@@ -3376,12 +3385,21 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {trialOnly > 0 && !trialDismissed && (() => {
-                        const trialStudents = students.filter(s => s.status === "trial").flatMap(s =>
-                          (s.instruments || []).filter(i => !i.isGroup).map(i => ({
+                        const trialStudents = students.filter(s => s.status === "trial").flatMap(s => {
+                          const nonGroup = (s.instruments || []).filter(i => !i.isGroup);
+                          if (nonGroup.length === 0) {
+                            // Placeholder row — keeps dropdown items aligned with the
+                            // Math.max(1, ...) floor in trialOnly count for instrument-less students.
+                            return [{
+                              studentId: s.id, studentName: s.name, instrument: "(no instrument)", schoolId: s.schoolId || "",
+                              parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                            }];
+                          }
+                          return nonGroup.map(i => ({
                             studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
                             parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
-                          }))
-                        );
+                          }));
+                        });
                         return (
                           <div draggable onDragStart={() => setAlertDragging({ text: `Follow up ${trialOnly} trial student${trialOnly !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-trial", pendingOrTrialStudents: trialStudents })} onDragEnd={() => setAlertDragging(null)}
                             onClick={() => onNavigate("pending")}
@@ -3528,14 +3546,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           </div>
                         );
                       })()}
-                      {/* ── Reminders chip ── */}
-                      {sortedReminders.length > 0 && (
-                        <div
-                          onClick={handleRemindersToggle}
-                          style={{ padding: "3px 10px", background: colors.bg, border: `1.5px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
-                          <span style={{ color: colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Bell size={11} /> {sortedReminders.length} reminder{sortedReminders.length !== 1 ? "s" : ""}</span>
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
