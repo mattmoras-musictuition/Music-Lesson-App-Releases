@@ -468,7 +468,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           }
         }
         {
-          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students) === lesson.teacherId && l.day === newDay && l.start === slot.start);
+          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments) === lesson.teacherId && l.day === newDay && l.start === slot.start);
           if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
         }
       }
@@ -515,7 +515,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     }
 
     // Check teacher availability
-    const _liveTeacherUnassigned = isLessonUnassigned(lesson, (allStudents || students));
+    const _liveTeacherUnassigned = isLessonUnassigned(lesson, (allStudents || students), enrolments);
     if (_liveTeacherUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     } else {
@@ -537,7 +537,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       }
       // Check teacher double-booking (another lesson at the same time)
       {
-        const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students) === _liveTeacherId && l.day === newDay && l.start === slot.start);
+        const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments) === _liveTeacherId && l.day === newDay && l.start === slot.start);
         if (conflict) warnings.push(`${teacher?.name || lesson.teacherName} already has ${conflict.studentName} at this time`);
       }
     }
@@ -1635,7 +1635,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 );
                               })()}
                               <div style={{ fontWeight: 600, color: colors.text }}>{l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{l.isGroup && l.studentNames ? (() => { const allStu = allStudents || students; const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = allStu.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""; return names + classSuffix; })() : (() => { const st = (allStudents || students).find(s => s.id === l.studentId); return buildPreferredDisplayName(st?.name || l.studentName) + (st?.className ? " · " + st.className : ""); })()}</div>
-                              {(() => { const _mttStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; const _mttInsts = _mttStu ? instrumentsFromEnrolments(_mttStu.id, enrolments) : []; const _liveInst = _mttStu ? (_mttInsts.find(i => i.name === l.instrument) ? l.instrument : (_mttInsts.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument; const _tn = getLiveTeacherName(l, allStudents || students, teachers); const _unassigned = isLessonUnassigned(l, allStudents || students); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{_liveInst ? `${_liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
+                              {(() => { const _mttStu = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; const _mttInsts = _mttStu ? instrumentsFromEnrolments(_mttStu.id, enrolments) : []; const _liveInst = _mttStu ? (_mttInsts.find(i => i.name === l.instrument) ? l.instrument : (_mttInsts.find(i => !i.isGroup)?.name || l.instrument)) : l.instrument; const _tn = getLiveTeacherName(l, allStudents || students, teachers, enrolments); const _unassigned = isLessonUnassigned(l, allStudents || students, enrolments); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{_liveInst ? `${_liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}</div>; })()}
                               {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                               {l.noteMismatch && <div style={{ color: "#D97706", fontSize: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 3 }} title={l.noteMismatch}><AlertTriangle size={10} /> not at requested time</div>}
                               {isExpanded && (

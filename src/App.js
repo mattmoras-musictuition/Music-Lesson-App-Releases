@@ -4267,7 +4267,7 @@ export default function MusicTimetableApp() {
       : { scheduled: [], failed: [] };
 
     // Generate individual lessons around the group lessons
-    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrichedSpecialists, {
+    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
       existingLessons: groupLessons.scheduled
     });
     result.unscheduled = [...result.unscheduled, ...groupLessons.failed];
@@ -4279,7 +4279,7 @@ export default function MusicTimetableApp() {
       setGroups(prev => prev.map(g => scheduledGroupIds.has(g.id) ? { ...g, status: "scheduled" } : g));
     }
 
-    compactTimetable(result, schools, students, teachers, specialists);
+    compactTimetable(result, schools, students, teachers, enrolments, specialists);
     // Post-compaction double-booking check
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
@@ -4384,7 +4384,7 @@ export default function MusicTimetableApp() {
       ? scheduleReadyGroups(tempGroupsForSched, otherLessons, schools, students, teachers, enrichedSpecialists)
       : { scheduled: [], failed: [] };
 
-    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrichedSpecialists, {
+    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
       existingLessons: [...otherLessons, ...groupLessons.scheduled],
       targetSchoolId: schoolId
     });
@@ -4400,7 +4400,7 @@ export default function MusicTimetableApp() {
       return g;
     }));
 
-    compactTimetable(result, schools, students, teachers, specialists);
+    compactTimetable(result, schools, students, teachers, enrolments, specialists);
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
       const conflict = result.lessons.find((o, j) => j < i && o.teacherId === l.teacherId && o.day === l.day &&
@@ -4673,7 +4673,7 @@ export default function MusicTimetableApp() {
 
     const tempStudents = pendingToSchedule.map(s => ({ ...s, status: "active" }));
     const result = generateMasterTimetable(
-      schools, tempStudents, teachers, specialists,
+      schools, tempStudents, teachers, enrolments, specialists,
       { existingLessons, targetSchoolId: schoolId || null }
     );
     const newLessons = result.lessons.filter(l => !existingLessons.some(el => el.id === l.id));
@@ -4694,7 +4694,7 @@ export default function MusicTimetableApp() {
       lessons: mergedLessons,
       unscheduled: [...keptUnscheduled, ...newUnscheduled]
     };
-    compactTimetable(mergedResult, schools, students, teachers, specialists);
+    compactTimetable(mergedResult, schools, students, teachers, enrolments, specialists);
     setTimetable({ ...mergedResult, lessons: stampEnrolmentIds(mergedResult.lessons, enrolments) });
 
     const sched = newLessons.length;
