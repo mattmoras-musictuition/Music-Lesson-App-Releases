@@ -8,7 +8,7 @@ import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos, getTermWeekLabel } from "../utils/helpers";
 import { Tag, PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
-import { enrolmentIdFor } from "../utils/enrolmentsDB";
+import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
 export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory }) {
   const { colors } = useTheme();
@@ -70,7 +70,8 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
       if (!ms || !ms.day || !ms.time || !ms.weekKey) return;
       const school = schools.find(sc => sc.id === student.schoolId);
       if (!school) return;
-      const inst = student.instruments?.[0] || {};
+      const inst = instrumentsFromEnrolments(student.id, enrolments)[0];
+      if (!inst) { notify("Student has no instruments — set one before scheduling a trial", "warning"); return; }
       const slot = (school.slots || []).find(sl => sl.start === ms.time);
       const endTime = slot ? slot.end : ms.time;
       const storageKey = ms.weekKey + "|" + student.schoolId;
@@ -96,7 +97,7 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
     else if (pendingSortCol === "status") { av = a.status || ""; bv = b.status || ""; }
     else if (pendingSortCol === "school") { av = schools.find(sc => sc.id === a.schoolId)?.name || ""; bv = schools.find(sc => sc.id === b.schoolId)?.name || ""; }
     else if (pendingSortCol === "class") { av = a.className || ""; bv = b.className || ""; }
-    else if (pendingSortCol === "instrument") { av = a.instruments?.[0]?.name || ""; bv = b.instruments?.[0]?.name || ""; }
+    else if (pendingSortCol === "instrument") { av = instrumentsFromEnrolments(a.id, enrolments)[0]?.name || ""; bv = instrumentsFromEnrolments(b.id, enrolments)[0]?.name || ""; }
     const cmp = av.localeCompare(bv, undefined, { numeric: true });
     return pendingSortDir === "asc" ? cmp : -cmp;
   });
@@ -122,9 +123,11 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {schools.map(school => {
-            const schoolRows = sortedPendingStudents.filter(s => s.schoolId === school.id).flatMap(s =>
-              ((s.instruments && s.instruments.length > 0) ? s.instruments : [{ name: "", teacherId: "" }]).map(inst => ({ ...s, _inst: inst }))
-            );
+            const schoolRows = sortedPendingStudents.filter(s => s.schoolId === school.id).flatMap(s => {
+              const insts = instrumentsFromEnrolments(s.id, enrolments);
+              const items = insts.length > 0 ? insts : [{ name: "", teacherId: "", isGroup: false }];
+              return items.map(inst => ({ ...s, _inst: inst }));
+            });
             if (schoolRows.length === 0) return null;
             return (
               <div key={school.id} style={{ borderRadius: 10, overflow: "hidden", border: `2px solid ${colors.sidebarHover}` }}>

@@ -7,6 +7,7 @@ import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus
 import { instruments_colors } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor, getInitials, openCompose } from "../utils/helpers";
+import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
 import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -15,10 +16,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const { colors } = useTheme();
 
   // ── Enrolment helpers (Commit 2b) ────────────────────────────
-  // Active enrolments for a student: no endDate.
-  function activeEnrolmentsFor(studentId, enrolments) {
-    return (enrolments || []).filter(e => e.studentId === studentId && !e.endDate);
-  }
+  // activeEnrolmentsFor lifted to src/utils/enrolmentsDB.js — see import above.
 
   // All enrolments (active + ended) for a student.
   function allEnrolmentsFor(studentId, enrolments) {

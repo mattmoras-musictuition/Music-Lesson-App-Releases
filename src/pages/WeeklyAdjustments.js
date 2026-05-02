@@ -16,7 +16,7 @@ import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, cla
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
-import { enrolmentIdFor } from "../utils/enrolmentsDB";
+import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -622,7 +622,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       warnings.push("No teacher assigned — assign a teacher in student details");
     }
     // Use live teacher from student's instrument record, not the stored lesson snapshot
-    const liveInst = student ? (student.instruments || []).find(i => i.name === lesson.instrument) || (student.instruments || []).find(i => !i.isGroup) : null;
+    const liveInsts = student ? instrumentsFromEnrolments(student.id, enrolments) : [];
+    const liveInst = student ? (liveInsts.find(i => i.name === lesson.instrument) || liveInsts.find(i => !i.isGroup)) : null;
     const liveTeacherId = liveInst?.teacherId || lesson.teacherId;
     const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
     if (teacher) {
@@ -5088,10 +5089,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   const isExpanded = expandedWarnings.has(l.id);
                                   // Live instrument: if the student's instrument changed, reflect it on the card
                                   const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
+                                  const _cardWInsts = _cardStuW ? instrumentsFromEnrolments(_cardStuW.id, enrolments) : [];
                                   const liveInst = _cardStuW
-                                    ? (_cardStuW.instruments?.find(i => i.name === l.instrument)
+                                    ? (_cardWInsts.find(i => i.name === l.instrument)
                                         ? l.instrument
-                                        : (_cardStuW.instruments?.find(i => !i.isGroup)?.name || l.instrument))
+                                        : (_cardWInsts.find(i => !i.isGroup)?.name || l.instrument))
                                     : l.instrument;
                                   return (
                                   <div key={li} draggable

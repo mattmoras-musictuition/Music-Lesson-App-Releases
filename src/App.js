@@ -18,7 +18,7 @@ import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
-import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds } from "./utils/enrolmentsDB";
+import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
@@ -1897,7 +1897,7 @@ export default function MusicTimetableApp() {
         const stu = students.find(s => s.id === lesson.studentId);
         if (!stu) return { orphan: true, reason: "student not found" };
 
-        const inst = (stu.instruments || []).find(
+        const inst = instrumentsFromEnrolments(stu.id, enrolments).find(
           i => normalize(i.name) === normalize(lesson.instrument)
         );
         if (!inst) return { orphan: true, reason: "instrument not in student record" };
@@ -2646,7 +2646,7 @@ export default function MusicTimetableApp() {
 
         if (!foundLesson) return `No active lesson found for ${studentName}${instrument ? ` (${instrument})` : ""} on ${dayName} ${date} — nothing recorded.`;
 
-        const instr = foundLesson.instrument || instrument || student?.instruments?.[0]?.name || "";
+        const instr = foundLesson.instrument || instrument || (student ? instrumentsFromEnrolments(student.id, enrolments)[0]?.name : "") || "";
         const lessonKey = `${studentId}|${instr}`;
 
         // Duplicate check — scan the same WTT entry's missed array for an existing match
@@ -4227,9 +4227,9 @@ export default function MusicTimetableApp() {
 
     // Data validation warnings
     const warnings = [];
-    const noTeacher = allSchedulable.filter(s => !(s.instruments || []).some(i => i.teacherId));
+    const noTeacher = allSchedulable.filter(s => !instrumentsFromEnrolments(s.id, enrolments).some(i => i.teacherId));
     if (noTeacher.length > 0) warnings.push(`${noTeacher.length} student${noTeacher.length > 1 ? "s" : ""} without assigned teacher: ${noTeacher.slice(0, 5).map(s => s.name).join(", ")}${noTeacher.length > 5 ? "..." : ""}`);
-    const noInstrument = allSchedulable.filter(s => !s.instruments || s.instruments.length === 0 || !s.instruments[0].name);
+    const noInstrument = allSchedulable.filter(s => instrumentsFromEnrolments(s.id, enrolments).length === 0);
     if (noInstrument.length > 0) warnings.push(`${noInstrument.length} student${noInstrument.length > 1 ? "s" : ""} without instruments: ${noInstrument.slice(0, 5).map(s => s.name).join(", ")}${noInstrument.length > 5 ? "..." : ""}`);
     const noSlots = schools.filter(s => !s.slots || s.slots.length === 0);
     if (noSlots.length > 0) warnings.push(`${noSlots.length} school${noSlots.length > 1 ? "s" : ""} without time slots: ${noSlots.map(s => s.name).join(", ")}`);
@@ -4628,9 +4628,10 @@ export default function MusicTimetableApp() {
       if (!school) { notify("School not found", "warning"); return; }
       const slot = school.slots.find(s => s.start === time);
       if (!slot) { notify("Invalid time slot", "warning"); return; }
+      const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
       const inst = instrumentName
-        ? (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0]
-        : (student.instruments || [])[0];
+        ? studentInsts.find(i => i.name === instrumentName) || studentInsts[0]
+        : studentInsts[0];
       if (!inst) { notify("Student has no instruments", "warning"); return; }
       let teacher = null;
       if (inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
@@ -4717,7 +4718,7 @@ export default function MusicTimetableApp() {
     if (!slot) { notify("Invalid time slot", "warning"); return; }
 
     // Find a compatible teacher
-    const inst = (student.instruments || [])[0];
+    const inst = instrumentsFromEnrolments(student.id, enrolments)[0];
     if (!inst) { notify("Student has no instruments", "warning"); return; }
     let teacher = null;
     if (inst && inst.teacherId) {
@@ -6233,7 +6234,7 @@ export default function MusicTimetableApp() {
                 return { ...prev, lessons: newLessons };
               } else {
                 // Active student — add to unscheduled so they can be re-placed
-                const instName = lesson.instrument || student?.instruments?.[0]?.name || "";
+                const instName = lesson.instrument || (student ? instrumentsFromEnrolments(student.id, enrolments)[0]?.name : "") || "";
                 const alreadyUnscheduled = prev.unscheduled.some(u => u.student.id === lesson.studentId && (u.instrument || "") === instName);
                 const newUnscheduled = alreadyUnscheduled ? prev.unscheduled : [
                   ...prev.unscheduled,
@@ -6271,7 +6272,8 @@ export default function MusicTimetableApp() {
             if (!school) return;
             const slot = school.slots.find(s => s.start === time);
             if (!slot) return;
-            const inst = (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0];
+            const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+            const inst = studentInsts.find(i => i.name === instrumentName) || studentInsts[0];
             if (!inst) return;
             let teacher = null;
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
@@ -6289,7 +6291,7 @@ export default function MusicTimetableApp() {
             setTimetable(prev => ({
               ...prev,
               lessons: [...prev.lessons, lesson],
-              unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || (u.student.instruments || [])[0]?.name) === instrumentName))
+              unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrumentName))
             }));
           }} onPlacePending={(data, day, time) => {
             const parts = data.split(":");
@@ -6302,7 +6304,8 @@ export default function MusicTimetableApp() {
             if (!school) return;
             const slot = school.slots.find(s => s.start === time);
             if (!slot) return;
-            const inst = (student.instruments || []).find(i => i.name === instrumentName) || (student.instruments || [])[0];
+            const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+            const inst = studentInsts.find(i => i.name === instrumentName) || studentInsts[0];
             if (!inst) return;
             let teacher = null;
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
@@ -6334,7 +6337,7 @@ export default function MusicTimetableApp() {
           }} onUndo={undoTimetablePage} onRedo={redoTimetablePage} undoCount={ttPageUndoCount()} redoCount={ttPageRedoCount()} onDismissUnscheduled={(studentId, instrument) => {
               setTimetable(prev => ({
                 ...prev,
-                unscheduled: (prev.unscheduled || []).filter(u => !(u.student?.id === studentId && (u.instrument || u.student?.instruments?.[0]?.name) === instrument))
+                unscheduled: (prev.unscheduled || []).filter(u => !(u.student?.id === studentId && (u.instrument || (u.student?.id ? instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name : undefined)) === instrument))
               }));
             }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} onLoadVersion={(schoolId, lessons) => {
             setTimetable(prev => {
