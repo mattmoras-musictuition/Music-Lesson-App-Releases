@@ -7,6 +7,7 @@
 import { uid, timeToMin } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { DAYS } from "../constants";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
 // ── getSpecialistSubject ──────────────────────────────────────────────────────
 // Used inside generateMasterTimetable AND exported for TimetableView warnings.
@@ -206,7 +207,7 @@ export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, 
 
 // ── generateMasterTimetable ───────────────────────────────────────────────────
 
-export function generateMasterTimetable(schools, students, teachers, specialistTimetable = [], { existingLessons = [], targetSchoolId = null } = {}) {
+export function generateMasterTimetable(schools, students, teachers, enrolments, specialistTimetable = [], { existingLessons = [], targetSchoolId = null } = {}) {
   const activeStudents = students.filter(s => s.status === "active");
   const studentsToSchedule = targetSchoolId
     ? activeStudents.filter(s => s.schoolId === targetSchoolId)
@@ -325,16 +326,18 @@ export function generateMasterTimetable(schools, students, teachers, specialistT
     const aRequired = (aHints.requiredTimes || []).length;
     const bRequired = (bHints.requiredTimes || []).length;
     if (aRequired !== bRequired) return bRequired - aRequired;
+    const aInsts = instrumentsFromEnrolments(a.id, enrolments);
+    const bInsts = instrumentsFromEnrolments(b.id, enrolments);
     const aConstraints = (a.outsideClassOnly ? 3 : 0) + (a.outsideClassPreferred ? 2 : 0) +
-      (a.instruments.some(i => i.teacherId) ? 2 : 0) +
+      (aInsts.some(i => i.teacherId) ? 2 : 0) +
       ((aHints.avoidDays || []).length * 2) + ((aHints.avoidTimes || []).length * 2) +
       ((aHints.preferredDays || []).length) + ((aHints.preferredTimes || []).length) +
-      (a.instruments.length > 1 ? 2 : 0) + (a.instruments.some(i => i.isGroup) ? 2 : 0);
+      (aInsts.length > 1 ? 2 : 0) + (aInsts.some(i => i.isGroup) ? 2 : 0);
     const bConstraints = (b.outsideClassOnly ? 3 : 0) + (b.outsideClassPreferred ? 2 : 0) +
-      (b.instruments.some(i => i.teacherId) ? 2 : 0) +
+      (bInsts.some(i => i.teacherId) ? 2 : 0) +
       ((bHints.avoidDays || []).length * 2) + ((bHints.avoidTimes || []).length * 2) +
       ((bHints.preferredDays || []).length) + ((bHints.preferredTimes || []).length) +
-      (b.instruments.length > 1 ? 2 : 0) + (b.instruments.some(i => i.isGroup) ? 2 : 0);
+      (bInsts.length > 1 ? 2 : 0) + (bInsts.some(i => i.isGroup) ? 2 : 0);
     if (aConstraints !== bConstraints) return bConstraints - aConstraints;
     if (a.schoolId !== b.schoolId) return a.schoolId < b.schoolId ? -1 : 1;
     if ((a.className || "") !== (b.className || "")) return (a.className || "").localeCompare(b.className || "");
@@ -369,7 +372,14 @@ export function generateMasterTimetable(schools, students, teachers, specialistT
       if (reqDayCounts[d] > 1) requiredSameDayAllowed.add(d);
     }
 
-    const individualInsts = (student.instruments || []).filter(i => !i.isGroup);
+    const individualInsts = instrumentsFromEnrolments(student.id, enrolments).filter(i => !i.isGroup);
+    if (individualInsts.length === 0) {
+      // Pre-Spec-1 the generator silently dropped students with no instruments[].
+      // Post-migration: emit an explicit unscheduled reason so the data state is
+      // visible rather than the student vanishing from the timetable invisibly.
+      unscheduled.push({ student, reason: "No instruments — set one in student details" });
+      continue;
+    }
     const studentExistingDays = studentDayMap[student.id] || new Set();
     const hasGroupLesson = studentExistingDays.size > 0;
     const isMultiInstrument = individualInsts.length > 1 || hasGroupLesson;
@@ -799,7 +809,7 @@ export function generateMasterTimetable(schools, students, teachers, specialistT
 
 // ── compactTimetable ──────────────────────────────────────────────────────────
 
-export function compactTimetable(result, schools, students, teachers, specialists) {
+export function compactTimetable(result, schools, students, teachers, enrolments, specialists) {
   var lessons = result.lessons;
 
   var specLookupC = {};
@@ -845,7 +855,7 @@ export function compactTimetable(result, schools, students, teachers, specialist
     var student = students.find(function(s) { return s.id === lesson.studentId; });
     if (!student) return false;
     if (student.outsideClassOnly) return true;
-    var studentInsts = student.instruments || [];
+    var studentInsts = instrumentsFromEnrolments(student.id, enrolments);
     var hasGroup = studentInsts.some(function(i) { return i.isGroup; });
     var isMulti = studentInsts.filter(function(i) { return !i.isGroup; }).length > 1 || hasGroup;
     if (isMulti) {

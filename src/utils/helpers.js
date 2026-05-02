@@ -5,6 +5,7 @@
 
 import { DAYS, instruments_colors } from "../constants";
 import { supabase } from "../supabaseClient";
+import { instrumentsFromEnrolments } from "./enrolmentsDB";
 
 // ── ID generation ─────────────────────────────────────────────────────────────
 
@@ -156,14 +157,15 @@ export const bandDisplayName = (lesson, members) =>
 
 // Derive the current teacher name for a lesson from live student/teacher data.
 // Falls back to stored teacherName if no instrument match found.
-export const getLiveTeacherName = (lesson, students, teachers) => {
+export const getLiveTeacherName = (lesson, students, teachers, enrolments) => {
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherName || "";
   const student = students.find(s => s.id === lesson.studentId);
   if (student) {
     // Try the stored instrument first; if the student's instrument has changed,
     // fall back to their current primary non-group instrument.
-    const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
-      || (student.instruments || []).find(i => !i.isGroup);
+    const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+    const inst = studentInsts.find(i => i.name === lesson.instrument)
+      || studentInsts.find(i => !i.isGroup);
     if (inst) {
       if (!inst.teacherId) return "Unassigned";
       const teacher = teachers.find(t => t.id === inst.teacherId);
@@ -176,22 +178,24 @@ export const getLiveTeacherName = (lesson, students, teachers) => {
 // Returns the live teacher ID for a lesson, derived from current student data.
 // Use this when checking teacher conflicts between lessons so stale stored teacherIds
 // don't cause false positives or missed warnings after teacher reassignments.
-export const getLiveTeacherId = (lesson, students) => {
+export const getLiveTeacherId = (lesson, students, enrolments) => {
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherId;
   const student = students.find(s => s.id === lesson.studentId);
   if (!student) return lesson.teacherId;
-  const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
-    || (student.instruments || []).find(i => !i.isGroup);
+  const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+  const inst = studentInsts.find(i => i.name === lesson.instrument)
+    || studentInsts.find(i => !i.isGroup);
   return inst?.teacherId || lesson.teacherId || null;
 };
 
 // Returns true if the lesson's instrument has no assigned teacher in current student data.
-export const isLessonUnassigned = (lesson, students) => {
+export const isLessonUnassigned = (lesson, students, enrolments) => {
   if (lesson.isGroup || lesson.isBandSession) return false;
   const student = students.find(s => s.id === lesson.studentId);
   if (!student) return false;
-  const inst = (student.instruments || []).find(i => i.name === lesson.instrument)
-    || (student.instruments || []).find(i => !i.isGroup);
+  const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+  const inst = studentInsts.find(i => i.name === lesson.instrument)
+    || studentInsts.find(i => !i.isGroup);
   return inst ? !inst.teacherId : false;
 };
 
