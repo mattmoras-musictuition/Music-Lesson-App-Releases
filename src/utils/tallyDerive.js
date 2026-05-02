@@ -25,6 +25,7 @@
 // ============================================================
 
 import { getTermWeekLabel } from "./helpers";
+import { isDayPast6pm } from "./tallyHelpers";
 
 // Internal predicate — single source of "open catch-up" semantics.
 // Mirrors the audit's banked follow-up #1 (single-source predicate)
@@ -37,20 +38,18 @@ function isOpenCatchup(m) {
 // Derive a single cell's state for a given enrolment + week + WTT entry.
 // Returns one of: "inactive", "blank", "completed", "missed-makeup-owed",
 // "missed-caught-up", "missed-no-catchup".
-export function deriveTallyCell({ enrolment, week, wttEntry, today }) {
+//
+// Lessons flip to "completed" at 6pm Melbourne on their own day (per-cell
+// threshold via isDayPast6pm), not at week-end — see tallyHelpers:isDayPast6pm.
+export function deriveTallyCell({ enrolment, week, wttEntry }) {
   if (!enrolment) return "blank";
   if (enrolment.startDate && week.weekKey < enrolment.startDate) return "inactive";
   if (enrolment.endDate && week.weekKey > enrolment.endDate) return "inactive";
 
-  const weekStart = new Date(week.weekKey + "T00:00:00");
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 5); // through end-of-Friday
-  const weekHasPassed = today >= weekEnd;
-
   if (!wttEntry) return "blank";
 
   if (wttEntry.kind === "lesson") {
-    return weekHasPassed ? "completed" : "blank";
+    return isDayPast6pm(wttEntry.day, week.weekKey) ? "completed" : "blank";
   }
 
   // wttEntry.kind === "missed"
@@ -141,7 +140,6 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHo
 // - Archived students appear if their enrolment date range overlaps the term.
 // Returns { tallyRows, entryMap }.
 export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetables, timetable, schoolFilter }) {
-  const today = new Date();
   const tallyRows = [];
   const entryMap = {};
   const seen = new Set();
@@ -212,7 +210,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
       else if (missedMatch) wttWithKind = { ...missedMatch, kind: "missed" };
 
-      const state = deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind, today });
+      const state = deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind });
       cells[week.weekKey] = { state, wttEntry: wttWithKind };
 
       const shimEntry = buildShimEntry({
@@ -538,7 +536,12 @@ export function getWeekTallySummary({ weeklyTimetables, weekKey, schools, termBr
     for (const sk of Object.keys(weeklyTimetables)) {
       if (!sk.startsWith(weekKey + "|")) continue;
       const data = weeklyTimetables[sk];
-      completed += (data?.lessons?.length || 0);
+      // Per-day 6pm Melbourne threshold — matches deriveTallyCell. Skips
+      // future-day lessons within the current week (caller already filters
+      // future weeks; this is the in-week refinement).
+      for (const lesson of (data?.lessons || [])) {
+        if (isDayPast6pm(lesson.day, weekKey)) completed++;
+      }
       for (const m of (data?.missed || [])) {
         const schoolName = (schools || []).find(s => s.id === m.schoolId)?.name || "";
         missed.push({
