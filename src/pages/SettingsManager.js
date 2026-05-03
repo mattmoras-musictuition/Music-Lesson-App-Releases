@@ -9,6 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 import { setInstColorOverrides } from "../utils/helpers";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { supabase } from "../supabaseClient";
 // Session 95: EmailTemplatesEditor lives in ContactsEditors but is no longer
 // reached from the Contacts page — it's now a Settings section.
@@ -373,10 +374,10 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
   const activeInstruments = React.useMemo(() => {
     const names = new Set();
     (students || []).filter(s => s.status === "active").forEach(s => {
-      (s.instruments || []).filter(i => !i.isGroup).forEach(i => { if (i.name) names.add(i.name); });
+      instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).forEach(i => { if (i.name) names.add(i.name); });
     });
     return [...names].sort();
-  }, [students]);
+  }, [students, enrolments]);
 
   const handleInstColorChange = (inst, color) => {
     const updated = { ...customInstColors, [inst]: color };

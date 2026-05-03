@@ -13,6 +13,7 @@ import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, findOpenC
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -253,7 +254,7 @@ export function Dashboard({ schools, students, enrolments, teachers, specialists
   // Unacknowledged timetable warnings
   const archivedStudentIds = new Set(students.filter(s => s.status === "archived").map(s => s.id));
   const unschedCount = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)).length : 0;
-  const unassignedCount = students.filter(s => s.status === "active" && (s.instruments || []).some(i => !i.isGroup && !i.teacherId)).length;
+  const unassignedCount = students.filter(s => s.status === "active" && instrumentsFromEnrolments(s.id, enrolments).some(i => !i.isGroup && !i.teacherId)).length;
   const [bannerTip, setBannerTip] = React.useState(null);
   const [dashPanels, setDashPanels] = React.useState(() => { try { return { emails: false, todo: false, alerts: false, ...JSON.parse(localStorage.getItem(STORAGE_KEYS.dashPanels) || "{}") }; } catch { return { emails: false, todo: false, alerts: false }; } });
   const saveDashPanels = (next) => { setDashPanels(next); try { localStorage.setItem(STORAGE_KEYS.dashPanels, JSON.stringify(next)); } catch {} };
@@ -1368,8 +1369,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const rrYellow = allRR.filter(e => emailAgeMs2(e) >= startOfYesterday && emailAgeMs2(e) < startOfToday);
     const rrBlue = allRR.filter(e => emailAgeMs2(e) >= startOfToday);
 
-    const pendingOnly = students.filter(s => s.status === "pending").reduce((s, st) => s + Math.max(1, (st.instruments || []).filter(i => !i.isGroup).length), 0);
-    const trialOnly = students.filter(s => s.status === "trial").reduce((s, st) => s + Math.max(1, (st.instruments || []).filter(i => !i.isGroup).length), 0);
+    const pendingOnly = students.filter(s => s.status === "pending").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
+    const trialOnly = students.filter(s => s.status === "trial").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
 
     const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr2 && i.date <= alertIntrEnd);
 
@@ -1401,11 +1402,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (lcEmails.length > 0 && !dismissed("alert-lesson-change")) count++;
     if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
     const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
-    const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && (s.instruments || []).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
+    const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -2570,10 +2571,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       {/* ── Emails / To Do / Alerts — unified banner card ── */}
       {(() => {
         // Alerts data
-        const unassignedStudents = students.filter(s => s.status === "active" && (s.instruments || []).some(i => !i.isGroup && !i.teacherId));
+        const unassignedStudents = students.filter(s => s.status === "active" && instrumentsFromEnrolments(s.id, enrolments).some(i => !i.isGroup && !i.teacherId));
         // Unassigned group students — active/pending/trial students with a group instrument not yet placed in any group
         const assignedGroupStudentIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
-        const unassignedGroupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && (s.instruments || []).some(i => i.isGroup) && !assignedGroupStudentIds.has(s.id));
+        const unassignedGroupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupStudentIds.has(s.id));
         const unassignedGroupCount = unassignedGroupStudents.length;
         const unschedEntries = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)) : [];
         // Incomplete student profiles — missing school, class, or parent contact
@@ -2613,8 +2614,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const responseRequiredRed = allResponseRequired.filter(e => emailAgeMs(e) < startOfYesterday);
         const responseRequiredYellow = allResponseRequired.filter(e => emailAgeMs(e) >= startOfYesterday && emailAgeMs(e) < startOfToday);
         const responseRequiredBlue = allResponseRequired.filter(e => emailAgeMs(e) >= startOfToday);
-        const pendingOnly = students.filter(s => s.status === "pending").reduce((sum, s) => sum + Math.max(1, (s.instruments || []).filter(i => !i.isGroup).length), 0);
-        const trialOnly = students.filter(s => s.status === "trial").reduce((sum, s) => sum + Math.max(1, (s.instruments || []).filter(i => !i.isGroup).length), 0);
+        const pendingOnly = students.filter(s => s.status === "pending").reduce((sum, s) => sum + Math.max(1, instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).length), 0);
+        const trialOnly = students.filter(s => s.status === "trial").reduce((sum, s) => sum + Math.max(1, instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).length), 0);
         // Interruptions: today through next 14 days
         const alertIntrEnd = toLocalDateStr((() => { const d = new Date(monday); d.setDate(d.getDate() + 14); return d; })());
         const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr && i.date <= alertIntrEnd);
@@ -3112,9 +3113,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     <div style={{ padding: `0 ${remindersBtnW + 30}px 0 ${pillW + 24}px`, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))`, WebkitMaskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))` }}>
                       {/* Red — blockers + urgent */}
                       {unassignedCount > 0 && !isAlertDismissed("alert-unassigned") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${(s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (setStudentsViewState) setStudentsViewState(prev => ({ ...prev, filter: { ...prev.filter, hasWarning: "any" } })); onNavigate("students"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = (s.instruments || []).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unassignedCount} unassigned</span>
@@ -3122,9 +3123,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       )}
                       {unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Place ${unassignedGroupCount} student${unassignedGroupCount !== 1 ? "s" : ""} in groups`, tag: "admin", groupType: "alert-unassigned-groups", adminItems: unassignedGroupStudents.map(s => ({ text: `${s.name} — ${(s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Place ${unassignedGroupCount} student${unassignedGroupCount !== 1 ? "s" : ""} in groups`, tag: "admin", groupType: "alert-unassigned-groups", adminItems: unassignedGroupStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => i.isGroup).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => onNavigate("groups-bands")}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "NO GROUP ASSIGNED", borderColor: "#D97706", items: unassignedGroupStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || "#D97706"; const instrs = (s.instruments || []).filter(i => i.isGroup).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "NO GROUP ASSIGNED", borderColor: "#D97706", items: unassignedGroupStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || "#D97706"; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => i.isGroup).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: "1px solid #D97706", borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: "#D97706", fontWeight: 700 }}>{unassignedGroupCount} ungrouped</span>
@@ -3359,7 +3360,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       ); })()}
                       {pendingOnly > 0 && !pendingDismissed && (() => {
                         const pendingStudents = students.filter(s => s.status === "pending").flatMap(s => {
-                          const nonGroup = (s.instruments || []).filter(i => !i.isGroup);
+                          const nonGroup = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup);
                           if (nonGroup.length === 0) {
                             // Placeholder row — keeps dropdown items aligned with the
                             // Math.max(1, ...) floor in pendingOnly count for instrument-less students.
@@ -3386,7 +3387,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       })()}
                       {trialOnly > 0 && !trialDismissed && (() => {
                         const trialStudents = students.filter(s => s.status === "trial").flatMap(s => {
-                          const nonGroup = (s.instruments || []).filter(i => !i.isGroup);
+                          const nonGroup = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup);
                           if (nonGroup.length === 0) {
                             // Placeholder row — keeps dropdown items aligned with the
                             // Math.max(1, ...) floor in trialOnly count for instrument-less students.
@@ -4390,7 +4391,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                                   textTransform: "uppercase", letterSpacing: "0.04em" }}>
                                                   {s.status === "trial" ? "Trial" : s.status === "pending" ? "Pending" : "Unscheduled"}
                                                 </span>
-                                                {s.instruments?.length > 0 && <span style={{ color: colors.textMuted }}>— {s.instruments.map(i => i.name).join(", ")}</span>}
+                                                {(() => { const _ins = instrumentsFromEnrolments(s.id, enrolments); return _ins.length > 0 && <span style={{ color: colors.textMuted }}>— {_ins.map(i => i.name).join(", ")}</span>; })()}
                                               </div>
                                             ))}
                                           </div>

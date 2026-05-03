@@ -1099,7 +1099,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
 
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
@@ -1395,7 +1395,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       setGenerating(true);
       try {
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
-        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${(s.instruments || []).map(i => i.name).join("+")})`).join("\n");
+        const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
         const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
         const schoolGroups2 = groups.filter(g => g.schoolId === selectedSchool && g.status === "scheduled");
@@ -3400,7 +3400,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
                               <span>{s.name}</span>
-                              <span style={{ fontSize: 11, color: colors.gray500 }}>{(s.instruments && s.instruments[0]?.name) || ""}</span>
+                              <span style={{ fontSize: 11, color: colors.gray500 }}>{instrumentsFromEnrolments(s.id, enrolments)[0]?.name || ""}</span>
                             </button>
                           ))}
                         </>}
@@ -3461,7 +3461,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
                               <span>{s.name}</span>
-                              <span style={{ fontSize: 11, color: colors.textMuted }}>{s.instruments?.[0]?.name || ""}</span>
+                              <span style={{ fontSize: 11, color: colors.textMuted }}>{instrumentsFromEnrolments(s.id, enrolments)[0]?.name || ""}</span>
                             </button>
                           ))}
                         </>}
