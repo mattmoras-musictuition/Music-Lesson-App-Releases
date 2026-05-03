@@ -375,6 +375,16 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
     const allInsts = instrumentsFromEnrolments(student.id, enrolments);
     const individualInsts = allInsts.filter(i => !i.isGroup);
     if (individualInsts.length === 0) {
+      // Suppress emit when student is already covered by a placed group lesson.
+      // scheduleReadyGroups runs before this loop and feeds placed group lessons
+      // into existingLessons; the entry-time traversal populates studentDayMap
+      // for each member of every group lesson. A non-empty studentDayMap means
+      // the student has effective scheduling via group — emitting here would
+      // be a false positive. Genuinely orphaned group-only students (group
+      // failed to schedule) still fall through and emit.
+      if (allInsts.length > 0 && (studentDayMap[student.id] || new Set()).size > 0) {
+        continue;
+      }
       // Pre-Spec-1 the generator silently dropped students with no instruments[].
       // Post-migration: emit an explicit unscheduled reason so the data state is
       // visible rather than the student vanishing from the timetable invisibly.
