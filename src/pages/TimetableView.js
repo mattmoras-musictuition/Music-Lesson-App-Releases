@@ -270,6 +270,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       classTeacher: null,
       bands: [],
       groupMembers: [],
+      bandMembers: [],
     };
 
     if (lesson.isGroup) {
@@ -286,6 +287,21 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           parentName: parentName || null,
           bands: studentBands,
           classTeacher: (() => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : null; })(),
+        };
+      }).filter(Boolean);
+    } else if (lesson.isBandSession) {
+      info.title = lesson.bandName || "Band";
+      info.time = "";
+      const memberArr = lesson.members || [];
+      info.bandMembers = memberArr.map(m => {
+        const st = stu.find(s => s.id === m.studentId);
+        if (!st) return null;
+        const ct = getClassTeacher(st, contacts || []);
+        return {
+          name: buildPreferredDisplayName(st.name),
+          instrument: m.instrument || "",
+          className: st.className || st.class_name || "",
+          classTeacher: ct ? ct.name : "",
         };
       }).filter(Boolean);
     } else {
@@ -326,7 +342,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
         <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
           {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
         </div>
-        <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>
+        {info.time && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>}
         {!info.groupMembers.length && (
           <>
             {(info.className || info.classTeacher) && (
@@ -362,6 +378,23 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 )}
                 {m.bands.length > 0 && (
                   <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {info.bandMembers.length > 0 && (
+          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+              Members
+            </div>
+            {info.bandMembers.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.bandMembers.length - 1 ? 4 : 0 }}>
+                <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
+                {m.className && (
+                  <div style={{ color: colors.textMuted }}>
+                    Class: {m.className}{m.classTeacher ? ` – ${m.classTeacher}` : ""}
+                  </div>
                 )}
               </div>
             ))}
