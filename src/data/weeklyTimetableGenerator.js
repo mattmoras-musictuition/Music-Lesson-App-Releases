@@ -5,6 +5,7 @@
 // ============================================================
 
 import { timeToMin, groupDisplayName } from "../utils/helpers";
+import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
 
 // ── classMatchesInterruption ──────────────────────────────────────────────────
@@ -525,7 +526,9 @@ export function printWeeklyTimetable(weeklyTimetables, schools, students, weekDa
     if (missed.length > 0) {
       html += `<div class="missed-section"><strong style="font-size:11px;color:#6b7280">Cancelled/Missed:</strong><br>`;
       for (const m of missed) {
-        html += `<span class="missed-chip">${m.studentName} (${m.instrument}) ${m.day}${m.reason ? " — " + m.reason : ""}</span>`;
+        const reasonProse = getMissedReasonProse(m.reason, m.reasonDetail);
+        const reasonText = reasonProse ? ` — ${reasonProse}` : "";
+        html += `<span class="missed-chip">${m.studentName} (${m.instrument}) ${m.day}${reasonText}</span>`;
       }
       html += `</div>`;
     }
