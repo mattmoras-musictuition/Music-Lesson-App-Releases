@@ -341,6 +341,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       classTeacher: null,
       bands: [],
       groupMembers: [],
+      bandMembers: [],
     };
 
     if (lesson.isGroup) {
@@ -357,6 +358,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           parentName: parentName || null,
           bands: studentBands,
           classTeacher: (() => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : null; })(),
+        };
+      }).filter(Boolean);
+    } else if (lesson.isBandSession) {
+      info.title = lesson.bandName || "Band";
+      info.time = "";
+      const memberArr = lesson.members || [];
+      info.bandMembers = memberArr.map(m => {
+        const st = students.find(s => s.id === m.studentId);
+        if (!st) return null;
+        const ct = getClassTeacher(st, contacts || []);
+        return {
+          name: buildPreferredDisplayName(st.name),
+          instrument: m.instrument || "",
+          className: st.className || st.class_name || "",
+          classTeacher: ct ? ct.name : "",
         };
       }).filter(Boolean);
     } else {
@@ -416,7 +432,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
           {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
         </div>
-        <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>
+        {info.time && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>}
         {!info.groupMembers.length && (
           <>
             {(info.className || info.classTeacher) && (
@@ -452,6 +468,23 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 )}
                 {m.bands.length > 0 && (
                   <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {info.bandMembers.length > 0 && (
+          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+              Members
+            </div>
+            {info.bandMembers.map((m, i) => (
+              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.bandMembers.length - 1 ? 4 : 0 }}>
+                <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
+                {m.className && (
+                  <div style={{ color: colors.textMuted }}>
+                    Class: {m.className}{m.classTeacher ? ` – ${m.classTeacher}` : ""}
+                  </div>
                 )}
               </div>
             ))}
@@ -5175,7 +5208,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
                                       {l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}
-                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : classes.join(", ")) : ""); })() : (() => { const st = students.find(s => s.id === l.studentId); return getPrefDisplayName(st?.name || l.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}</span>
+                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", ")) : ""); })() : (() => { const st = students.find(s => s.id === l.studentId); return getPrefDisplayName(st?.name || l.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}</span>
                                       {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
@@ -5282,7 +5315,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         position: "relative",
                       }}>
                       {m.isMakeup && <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Missed catch-up lesson"><RotateCcw size={11} /></span>}
-                      <div style={{ fontWeight: 600 }}>{m.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{m.isGroup ? m.groupName : getPrefDisplayName(missedStudent?.name || m.studentName)}{missedClassName ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{missedClassName}</span> : null}</div>
+                      <div style={{ fontWeight: 600 }}>{m.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{m.isGroup ? (() => { const grp = (groups || []).find(g => g.id === m.groupId); const memberStudents = (grp?.studentIds || []).map(sid => students.find(s => s.id === sid)).filter(Boolean); const names = memberStudents.length > 0 ? memberStudents.map(s => (s.name || "").split(" ")[0]).join(", ") : (m.groupName || "Group"); const classes = memberStudents.map(s => s.className || "").filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", ")) : ""; return names + classSuffix; })() : getPrefDisplayName(missedStudent?.name || m.studentName)}{missedClassName ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{missedClassName}</span> : null}</div>
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}
                       </div>
