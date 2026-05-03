@@ -372,12 +372,17 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
       if (reqDayCounts[d] > 1) requiredSameDayAllowed.add(d);
     }
 
-    const individualInsts = instrumentsFromEnrolments(student.id, enrolments).filter(i => !i.isGroup);
+    const allInsts = instrumentsFromEnrolments(student.id, enrolments);
+    const individualInsts = allInsts.filter(i => !i.isGroup);
     if (individualInsts.length === 0) {
       // Pre-Spec-1 the generator silently dropped students with no instruments[].
       // Post-migration: emit an explicit unscheduled reason so the data state is
       // visible rather than the student vanishing from the timetable invisibly.
-      unscheduled.push({ student, reason: "No instruments — set one in student details" });
+      // Disambiguate: zero enrolments vs group-only — different remediation paths.
+      const reason = allInsts.length === 0
+        ? "No instruments — set one in student details"
+        : "Group-only enrolment — manage via Groups & Bands";
+      unscheduled.push({ student, reason });
       continue;
     }
     const studentExistingDays = studentDayMap[student.id] || new Set();
