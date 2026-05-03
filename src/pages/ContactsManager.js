@@ -16,7 +16,7 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS }
 const CONTACT_ROLES = ["Principal", "Assistant Principal", "Office Manager", "Business Manager", "Classroom Teacher", "Specialist Teacher", "Other"];
 const CLASS_ROLES = ["Classroom Teacher", "Specialist Teacher"];
 
-export function ContactsManager({ contacts, setContacts, schools, students, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
+export function ContactsManager({ contacts, setContacts, schools, students, enrolments, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
   const { colors, darkMode } = useTheme();
   const ROW_HOVER_BG = darkMode ? colors.sidebarHover : "#EDF2FA";
   const [section, setSection] = useState("parents"); // "parents" | "school"

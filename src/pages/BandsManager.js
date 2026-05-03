@@ -21,7 +21,7 @@ function bandDisplayName(student, allMembers) {
   return parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
 }
 
-export function BandsManager({ bands, setBands, schools, students, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
+export function BandsManager({ bands, setBands, schools, students, enrolments, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
   const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);

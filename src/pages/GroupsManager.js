@@ -10,7 +10,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, toTimeLabel } from "../utils/helpers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function GroupsManager({ groups, setGroups, students, schools, teachers, timetable, onRevertGroup, onAddGroupToMaster, notify, focusGroupId, onClearFocusGroup, onReturn, onViewStudent, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0 }) {
+export function GroupsManager({ groups, setGroups, students, enrolments, schools, teachers, timetable, onRevertGroup, onAddGroupToMaster, notify, focusGroupId, onClearFocusGroup, onReturn, onViewStudent, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0 }) {
   const { colors } = useTheme();
   const [form, setForm] = useState(() => {
     if (focusGroupId) { const g = groups.find(gr => gr.id === focusGroupId); return g ? { ...g, studentIds: [...(g.studentIds || [])] } : null; }
