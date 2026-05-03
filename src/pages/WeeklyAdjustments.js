@@ -4,12 +4,13 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
-import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, TALLY_REASONS, BAND_COLOR } from "../constants";
+import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks, isDayPast6pm } from "../utils/tallyHelpers";
 import { hasMissedEntry, getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
+import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
@@ -1941,7 +1942,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               }
             };
           });
-          const displayReason = TALLY_REASONS.find(r => r.value === finalReason)?.label || finalReasonDetail || "Other";
+          const displayReason = getMissedReasonLabel(finalReason, finalReasonDetail) || "Other";
           notify(`Missed lesson recorded${displayReason ? ": " + displayReason : ""}`);
           setTallyPrompt(null); setTallyConfirm(null);
         };
@@ -2259,7 +2260,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const missedLesson = missedIdx >= 0 ? weeklyData.missed[missedIdx] : null;
             if (!missedLesson) return null;
             const currentReason = missedLesson.reason || null;
-            const currentReasonLabel = currentReason ? (TALLY_REASONS.find(r => r.value === currentReason)?.label || currentReason) : null;
+            const currentReasonDetail = missedLesson.reasonDetail || "";
+            const currentReasonLabel = currentReason ? getMissedReasonLabel(currentReason, currentReasonDetail) : null;
             const missedSt = !missedLesson.isGroup ? students.find(s => s.id === missedLesson.studentId) : null;
             const parentEmails = missedSt ? getParentEmails(missedSt) : [];
             const school = schools.find(s => s.id === (missedLesson.schoolId || selectedSchool));
@@ -2274,11 +2276,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   </div>
                 )}
                 <button
-                  onClick={() => { setMissedModal({ type: "single", missedIndex: missedIdx, lesson: missedLesson, weekKey, category: null, reasonDetail: "", catchup: null, details: "" }); setContextMenu(null); }}
+                  onClick={() => { setMissedModal({ type: "single", missedIndex: missedIdx, lesson: missedLesson, weekKey, category: missedLesson.reason || null, reasonDetail: missedLesson.reasonDetail || "", catchup: missedLesson.makeupEligible === true ? true : missedLesson.makeupEligible === false ? false : null, details: missedLesson.notes || "" }); setContextMenu(null); }}
                   style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
                   onMouseEnter={e => e.currentTarget.style.background = colors.bg}
                   onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                  <StickyNote size={13} style={{ flexShrink: 0, color: colors.textMuted }} /> {currentReason ? "Change reason" : "Add reason"}
+                  <StickyNote size={13} style={{ flexShrink: 0, color: colors.textMuted }} /> {currentReason ? "Edit reason…" : "Add reason…"}
                 </button>
                 {parentEmails.length > 0 && (
                   <button
@@ -5234,6 +5236,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           isMultiMissed, selectedMissedIndices: isMultiMissed ? [...selectedMissed] : null,
                           lessonName: m.isGroup && m.studentNames ? `${m.studentNames.join(", ")} — ${m.instrument}` : `${m.studentName} — ${m.instrument}` }); }}
                       onDoubleClick={() => { if (m.isGroup && onViewGroup) onViewGroup(m.groupId); else if (!m.isGroup && onViewStudent) onViewStudent(m.studentId); }}
+                      onMouseEnter={e => {
+                        let info;
+                        if (m.isGroup) {
+                          const grp = (groups || []).find(g => g.id === m.groupId);
+                          if (!grp) return;
+                          const adapted = { ...m, studentIds: grp.studentIds || [] };
+                          info = buildPopoverInfo(adapted);
+                        } else {
+                          info = buildPopoverInfo(m);
+                        }
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        setHoverPopover({ info, rect, color: getInstColor(m.instrument) });
+                      }}
+                      onMouseLeave={() => setHoverPopover(null)}
                       style={{
                         padding: "6px 10px", background: isSelectedMissed ? getInstColor(m.instrument) + "30" : getInstColor(m.instrument) + "18", borderRadius: 8, fontSize: 12,
                         border: `1px solid ${isSelectedMissed ? getInstColor(m.instrument) : getInstColor(m.instrument) + "40"}`,
@@ -5248,7 +5264,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}
                       </div>
-                      {m.reason ? <div style={{ color: m.reason === "extended_absence" ? colors.warning : colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "extended_absence" ? "Extended Absence — half fees" : m.reason === "informed_absence" ? "Pre-marked absent" : m.reason}</div> : null}
+                      {m.reason ? <div style={{ color: m.reason === "extended_absence" ? colors.warning : colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "extended_absence" ? "Extended Absence — half fees" : m.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(m.reason, m.reasonDetail)}</div> : null}
                     </div>
                     );
                   })}

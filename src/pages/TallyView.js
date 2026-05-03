@@ -7,6 +7,7 @@ import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "luci
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose } from "../utils/helpers";
 import { deriveTallyRows } from "../utils/tallyDerive";
+import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
@@ -577,12 +578,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                     .map((w, wi) => ({ w, entry: rowEntries[wi] }))
                                     .filter(({ entry }) => entry?.status === "missed")
                                     .map(({ w, entry }) => {
-                                      const cat = entry.reason === "informed_absence" ? "Informed absence"
-                                        : entry.reason === "uninformed_absence" ? "Uninformed absence"
-                                        : entry.reason === "teacher_absent" ? "Teacher absent"
-                                        : "Missed";
-                                      const detail = entry.reasonDetail ? ` (${entry.reasonDetail})` : "";
-                                      return `  • ${w.label}${detail ? ` — ${cat}${detail}` : ` — ${cat}`}`;
+                                      const reasonText = getMissedReasonProse(entry.reason, entry.reasonDetail) || "Missed";
+                                      return `  • ${w.label} — ${reasonText}`;
                                     });
                                   const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
                                   if (lesson.isGroup) {
@@ -767,12 +764,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                   .map((w, wi) => ({ w, entry: rowEntries[wi] }))
                                   .filter(({ entry }) => entry?.status === "missed")
                                   .map(({ w, entry }) => {
-                                    const cat = entry.reason === "informed_absence" ? "Informed absence"
-                                      : entry.reason === "uninformed_absence" ? "Uninformed absence"
-                                      : entry.reason === "teacher_absent" ? "Teacher absent"
-                                      : "Missed";
-                                    const detail = entry.reasonDetail ? ` (${entry.reasonDetail})` : "";
-                                    return `  • ${w.label}${detail ? ` — ${cat}${detail}` : ` — ${cat}`}`;
+                                    const reasonText = getMissedReasonProse(entry.reason, entry.reasonDetail) || "Missed";
+                                    return `  • ${w.label} — ${reasonText}`;
                                   });
                                 const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
                                 const subject = `${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons — ${termLabel} summary`;
