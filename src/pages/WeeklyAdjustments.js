@@ -377,11 +377,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   const renderHoverPopover = () => {
     if (!hoverPopover) return null;
-    const { info, rect, color } = hoverPopover;
+    const { type = "student", info, rect, color } = hoverPopover;
     const spaceBelow = window.innerHeight - rect.bottom;
     const topPos = spaceBelow > 200 ? rect.bottom + 6 : rect.top - 6;
     const anchor = spaceBelow > 200 ? "top" : "bottom";
     const popLeft = Math.min(rect.left, window.innerWidth - 260);
+
+    if (type === "constraints") {
+      const warnings = hoverPopover.warnings || [];
+      return (
+        <div style={{
+          position: "fixed", left: popLeft,
+          [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+          zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
+          padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
+        }}>
+          {warnings.map((w, wi) => (
+            <div key={wi} style={{ color: colors.danger, fontWeight: 500, fontSize: 11, display: "flex", alignItems: "center", gap: 5, marginBottom: wi < warnings.length - 1 ? 4 : 0 }}>
+              <AlertTriangle size={11} style={{ flexShrink: 0 }} /> {w}
+            </div>
+          ))}
+        </div>
+      );
+    }
 
     return (
       <div style={{
@@ -4361,7 +4380,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         if (draggingId) return;
                                         const rect = e.currentTarget.getBoundingClientRect();
                                         const info = buildPopoverInfo(activeLesson);
-                                        setHoverPopover({ info, rect, color: getInstColor(activeLesson.instrument) });
+                                        setHoverPopover({ type: "student", info, rect, color: getInstColor(activeLesson.instrument) });
                                       }}
                                       onMouseLeave={() => setHoverPopover(null)}
                                       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupCard: true, lessonId: activeLesson.id }); }}
@@ -5056,7 +5075,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                           if (draggingId || expandedWarnings.size > 0) return;
                                           const rect = e.currentTarget.getBoundingClientRect();
                                           const info = buildPopoverInfo(l);
-                                          setHoverPopover({ info, rect, color: instruments_colors.Band });
+                                          setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band });
                                         }}
                                         onMouseLeave={() => setHoverPopover(null)}
                                         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isBandSession: true, lessonId: l.id, bandName: l.bandName, bandId: l.bandId }); }}
@@ -5068,11 +5087,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         }}>
                                         {hasBandWarning && (
                                           <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }}
+                                            onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: bandWarnings, rect, color: colors.danger }); }}
+                                            onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band }); }}
                                             style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>
                                         )}
                                         {bandWarningAcked && !hasBandWarning && (
-                                          <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }}
-                                            style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }} title="Click to view warnings"><AlertTriangle size={11} /></span>
+                                          <span onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: bandWarnings, rect, color: colors.danger }); }}
+                                            onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band }); }}
+                                            style={{ position: "absolute", bottom: 2, right: 5, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}><AlertTriangle size={11} /></span>
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
@@ -5113,7 +5135,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       const rect = e.currentTarget.getBoundingClientRect();
                                       const _popColor = getInstColor(liveInst, l.isGroup);
                                       const info = buildPopoverInfo(l);
-                                      setHoverPopover({ info, rect, color: _popColor });
+                                      setHoverPopover({ type: "student", info, rect, color: _popColor });
                                     }}
                                     onMouseLeave={() => setHoverPopover(null)}
                                     onContextMenu={e => { e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
@@ -5147,8 +5169,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       borderBottom: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : l.adjusted && !showRed && !hasAckedWarning ? "3px solid #F59E0B" : "none",
                                       opacity: draggingId === l.id ? 0.4 : isDayConfirmed ? 0.5 : 1, transition: "opacity 0.15s",
                                     }} title={l.isGroup ? l.groupName || l.studentName : l.adjustReason || undefined}>
-                                    {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
-                                    {hasAckedWarning && !showRed && <span onClick={e => { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); if (next.has(l.id)) next.delete(l.id); else next.add(l.id); return next; }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }} title="Click to view warnings"><AlertTriangle size={11} /></span>}
+                                    {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
+                                    {hasAckedWarning && !showRed && <span onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}><AlertTriangle size={11} /></span>}
                                     {l.isMakeup && <span onClick={e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); }} style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson — click to remove"><RotateCcw size={11} /></span>}
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
@@ -5247,7 +5269,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           info = buildPopoverInfo(m);
                         }
                         const rect = e.currentTarget.getBoundingClientRect();
-                        setHoverPopover({ info, rect, color: getInstColor(m.instrument) });
+                        setHoverPopover({ type: "student", info, rect, color: getInstColor(m.instrument) });
                       }}
                       onMouseLeave={() => setHoverPopover(null)}
                       style={{
