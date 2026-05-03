@@ -7,6 +7,7 @@ import { Mail, Phone, StickyNote, Pencil, Trash2, Check, X, Users, Building2, Do
 import { STORAGE_KEYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, openCompose, openGmailSequential, getParentEmails } from "../utils/helpers";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 // Session 95: EmailTemplatesEditor is no longer imported here — templates
 // moved to Settings. AiEmailRulesEditor and AiImportContacts still render
 // inline on the Contacts page.
@@ -16,7 +17,7 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS }
 const CONTACT_ROLES = ["Principal", "Assistant Principal", "Office Manager", "Business Manager", "Classroom Teacher", "Specialist Teacher", "Other"];
 const CLASS_ROLES = ["Classroom Teacher", "Specialist Teacher"];
 
-export function ContactsManager({ contacts, setContacts, schools, students, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
+export function ContactsManager({ contacts, setContacts, schools, students, enrolments, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
   const { colors, darkMode } = useTheme();
   const ROW_HOVER_BG = darkMode ? colors.sidebarHover : "#EDF2FA";
   const [section, setSection] = useState("parents"); // "parents" | "school"
@@ -86,8 +87,8 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
           map[dedupKey]._studentNames.push(st.name);
           map[dedupKey]._schoolIds.push(st.schoolId);
         }
-        (st.instruments || []).forEach(inst => { if (inst.name && !map[dedupKey]._instrumentNames.includes(inst.name)) map[dedupKey]._instrumentNames.push(inst.name); });
-        (st.instruments || []).forEach(inst => { if (inst.teacherId && !map[dedupKey]._teacherIds.includes(inst.teacherId)) map[dedupKey]._teacherIds.push(inst.teacherId); });
+        instrumentsFromEnrolments(st.id, enrolments).forEach(inst => { if (inst.name && !map[dedupKey]._instrumentNames.includes(inst.name)) map[dedupKey]._instrumentNames.push(inst.name); });
+        instrumentsFromEnrolments(st.id, enrolments).forEach(inst => { if (inst.teacherId && !map[dedupKey]._teacherIds.includes(inst.teacherId)) map[dedupKey]._teacherIds.push(inst.teacherId); });
       }
     }
     for (const c of contacts.filter(c => c.type === "parent")) {
@@ -98,7 +99,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, setS
       }
     }
     return Object.values(map);
-  }, [students, contacts]);
+  }, [students, contacts, enrolments]);
 
   const addManualParent = () => {
     const id = uid();

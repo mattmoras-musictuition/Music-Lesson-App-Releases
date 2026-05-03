@@ -7,6 +7,7 @@ import { X, Trash2, Link, Piano, Eye, Printer, Mail, Library } from "lucide-reac
 import { BAND_LINK_CATEGORIES, BAND_COLOR, BAND_INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { Card, PageTitle, NavButtons, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ResourcePicker } from "../components/ResourcePicker";
@@ -21,7 +22,7 @@ function bandDisplayName(student, allMembers) {
   return parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
 }
 
-export function BandsManager({ bands, setBands, schools, students, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
+export function BandsManager({ bands, setBands, schools, students, enrolments, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
   const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
@@ -56,7 +57,7 @@ export function BandsManager({ bands, setBands, schools, students, teachers, res
 
   const addMember = (student) => {
     if (!form || form.members.some(m => m.studentId === student.id)) return;
-    const instrument = (student.instruments && student.instruments[0]?.name) || "";
+    const instrument = instrumentsFromEnrolments(student.id, enrolments)[0]?.name || "";
     setForm(prev => ({ ...prev, members: [...prev.members, { id: uid(), studentId: student.id, instrument }] }));
     setMemberSearch("");
   };
@@ -169,7 +170,7 @@ export function BandsManager({ bands, setBands, schools, students, teachers, res
                       onMouseEnter={e => { setMemberSearchIdx(idx); e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => e.currentTarget.style.background = idx === memberSearchIdx ? colors.sidebarHover : "none"}>
                       <span>{s.name}</span>
-                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.className} · {(s.instruments || []).map(i => i.name).join(", ")}</span>
+                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.className} · {instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join(", ")}</span>
                     </button>
                   ))}
                 </div>

@@ -9,6 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 import { setInstColorOverrides } from "../utils/helpers";
+import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { supabase } from "../supabaseClient";
 // Session 95: EmailTemplatesEditor lives in ContactsEditors but is no longer
 // reached from the Contacts page — it's now a Settings section.
@@ -207,7 +208,7 @@ function ContextTriggersPanel({ contextTriggers, setContextTriggers, colors, row
   );
 }
 
-export function SettingsManager({ apiKey, setApiKey, schools, students, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, contacts, bands, masterBreaks, resources, documents, onRestore, onBackup, notify, resetKey, updateInfo, noUpdateFlash, setNoUpdateFlash, updateProgress, APP_VERSION, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, claudeBudget, setClaudeBudget, tokenUsage, claudePersonalContext, setClaudePersonalContext, claudeMemory, setClaudeMemory, darkMode, toggleDarkMode, soundSettings, setSoundSettings, onPreviewSound, contextTriggers, setContextTriggers, emailStyle, setEmailStyle, messengerDisplayName, setMessengerDisplayName, messengerBubbleColour, setMessengerBubbleColour, orphanedLessons = [], onGoToOrphanStudent, onDeleteOrphanedLesson }) {
+export function SettingsManager({ apiKey, setApiKey, schools, students, enrolments, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, contacts, bands, masterBreaks, resources, documents, onRestore, onBackup, notify, resetKey, updateInfo, noUpdateFlash, setNoUpdateFlash, updateProgress, APP_VERSION, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, claudeBudget, setClaudeBudget, tokenUsage, claudePersonalContext, setClaudePersonalContext, claudeMemory, setClaudeMemory, darkMode, toggleDarkMode, soundSettings, setSoundSettings, onPreviewSound, contextTriggers, setContextTriggers, emailStyle, setEmailStyle, messengerDisplayName, setMessengerDisplayName, messengerBubbleColour, setMessengerBubbleColour, orphanedLessons = [], onGoToOrphanStudent, onDeleteOrphanedLesson }) {
   const { colors } = useTheme();
   const fileRef = useRef(null);
   const [gmailStatus, setGmailStatus] = React.useState(null);
@@ -373,10 +374,10 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, teachers
   const activeInstruments = React.useMemo(() => {
     const names = new Set();
     (students || []).filter(s => s.status === "active").forEach(s => {
-      (s.instruments || []).filter(i => !i.isGroup).forEach(i => { if (i.name) names.add(i.name); });
+      instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).forEach(i => { if (i.name) names.add(i.name); });
     });
     return [...names].sort();
-  }, [students]);
+  }, [students, enrolments]);
 
   const handleInstColorChange = (inst, color) => {
     const updated = { ...customInstColors, [inst]: color };
