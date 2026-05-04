@@ -447,6 +447,35 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     notify(`Link inserted: ${label}`);
   };
 
+  // Attach a stored document file (private bucket) as an email attachment.
+  // Sibling to fetchAndAttachTemplateDocs at line ~235, which covers the
+  // template-driven auto-attach flow with a slightly different post-condition
+  // (_autoAttached flag for cleanup on template re-pick). This handler is for
+  // user-initiated single-doc attach via the document picker.
+  const attachStoredDocument = async (doc) => {
+    if (!doc.storage_path) {
+      notify("This document has no file to attach", "warning");
+      return;
+    }
+    try {
+      const base64 = await downloadAsBase64(BUCKET_DOCUMENTS, doc.storage_path);
+      if (!base64) {
+        notify("Could not download document file (it may be missing or inaccessible)", "danger");
+        return;
+      }
+      setAttachments(prev => [...prev, {
+        filename: doc.filename || doc.label || "document",
+        contentBase64: base64,
+        mimeType: doc.mime_type || "application/octet-stream",
+      }]);
+      setAttachPicker(null);
+      setPickerSearch("");
+      notify(`Attached: ${doc.filename || doc.label}`);
+    } catch (err) {
+      notify("Could not attach document: " + err.message, "danger");
+    }
+  };
+
   // Strip quoted/replied content from a body before placing it in the editor.
   // Handles HTML (DOM-based: removes blockquote, .gmail_quote, .gmail_attr etc.)
   // and falls back to plain-text line scanning for non-HTML bodies.
@@ -1082,7 +1111,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                   onMouseEnter={e => e.currentTarget.style.background = colors.bg}
                   onMouseLeave={e => e.currentTarget.style.background = "none"}>
                   <FileText size={14} style={{ color: colors.textMuted, flexShrink: 0 }} />
-                  <span>Document link</span>
+                  <span>Document</span>
                   {documents.length > 0 && <span style={{ marginLeft: "auto", fontSize: 11, color: colors.textMuted }}>{documents.length}</span>}
                 </button>
               </div>
@@ -1109,7 +1138,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
             {/* Picker header */}
             <div style={{ background: colors.sidebarHover, padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
               <span style={{ fontWeight: 700, fontSize: 14, color: "#fff", display: "inline-flex", alignItems: "center", gap: 8 }}>
-                {attachPicker === "resource" ? <><Library size={14} /> Insert Resource Link</> : <><FileText size={14} /> Insert Document Link</>}
+                {attachPicker === "resource" ? <><Library size={14} /> Insert Resource Link</> : <><FileText size={14} /> Add Document</>}
               </span>
               <button onClick={() => { setAttachPicker(null); setPickerSearch(""); }}
                 style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.7)", display: "inline-flex", alignItems: "center" }}>
@@ -1148,13 +1177,22 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={() => insertBodyLink(item.label, item.url)}
-                      disabled={!item.url}
-                      title={item.url ? "Insert link into email body" : "No link saved for this item"}
-                      style={{ flexShrink: 0, padding: "6px 12px", border: "none", borderRadius: 7, background: item.url ? colors.sidebarHover : colors.borderLight, color: item.url ? "#fff" : colors.textMuted, fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: item.url ? "pointer" : "not-allowed", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                      <Link size={12} /> Insert link
-                    </button>
+                    {attachPicker === "document" && item.storage_path ? (
+                      <button
+                        onClick={() => attachStoredDocument(item)}
+                        title="Attach file to email"
+                        style={{ flexShrink: 0, padding: "6px 12px", border: "none", borderRadius: 7, background: colors.sidebarHover, color: "#fff", fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <Paperclip size={12} /> Attach File
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => insertBodyLink(item.label, item.url)}
+                        disabled={!item.url}
+                        title={item.url ? "Insert link into email body" : "No link or file saved for this item"}
+                        style={{ flexShrink: 0, padding: "6px 12px", border: "none", borderRadius: 7, background: item.url ? colors.sidebarHover : colors.borderLight, color: item.url ? "#fff" : colors.textMuted, fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: item.url ? "pointer" : "not-allowed", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <Link size={12} /> Insert link
+                      </button>
+                    )}
                   </div>
                 ))
               )}
