@@ -776,9 +776,23 @@ For other: {"type":"other","summary":""}`,
     const sc = document.querySelector("[data-printarea]");
     if (!sc) { setAlertDropdown(data); return; }
     const cRect = sc.getBoundingClientRect();
+    let absLeft;
+    if (data.anchor === "right") {
+      // Right-anchored opener: align dropdown's right edge to chip's right edge,
+      // clamped so it never spills off the viewport. Only the lesson-change pill
+      // uses this; other pills keep the default left-flush behaviour below.
+      const DROPDOWN_WIDTH = 400;
+      const VIEWPORT_MARGIN = 12;
+      const desiredLeft = data.rect.right - DROPDOWN_WIDTH;
+      const maxLeft = window.innerWidth - DROPDOWN_WIDTH - VIEWPORT_MARGIN;
+      const finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(desiredLeft, maxLeft));
+      absLeft = finalLeft - cRect.left;
+    } else {
+      absLeft = data.rect.left - cRect.left;
+    }
     setAlertDropdown({
       ...data,
-      absLeft: data.rect.left - cRect.left,
+      absLeft,
       absBottom: data.rect.bottom - cRect.top + sc.scrollTop,
     });
   }, []);
@@ -1316,6 +1330,29 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     });
   }, [todayStr]);
 
+  // Lesson-change email dismissals — keyed by email id, persistent across midnight
+  // (parallel to alertDismissals but no `date` field and no daily reset)
+  const [lessonChangeDismissals, setLessonChangeDismissals] = React.useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.lessonChangeDismissals) || "{}");
+      if (stored && typeof stored.dismissed === "object") return stored;
+      return { dismissed: {} };
+    } catch { return { dismissed: {} }; }
+  });
+  const dismissLessonChange = (emailId) => {
+    const next = { dismissed: { ...lessonChangeDismissals.dismissed, [emailId]: true } };
+    setLessonChangeDismissals(next);
+    try { localStorage.setItem(STORAGE_KEYS.lessonChangeDismissals, JSON.stringify(next)); } catch {}
+  };
+  const dismissLessonChangesBulk = (emailIds) => {
+    if (!emailIds || emailIds.length === 0) return;
+    const additions = Object.fromEntries(emailIds.map(id => [id, true]));
+    const next = { dismissed: { ...lessonChangeDismissals.dismissed, ...additions } };
+    setLessonChangeDismissals(next);
+    try { localStorage.setItem(STORAGE_KEYS.lessonChangeDismissals, JSON.stringify(next)); } catch {}
+  };
+  const isLessonChangeDismissed = (emailId) => !!lessonChangeDismissals.dismissed[emailId];
+
   // ── Sidebar badge counts ────────────────────────────────────
   const unreadEmailCount = useMemo(() =>
     inboxEmails.filter(e => !emailReadIds.has(e.id)).length,
@@ -1399,14 +1436,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (catchupTotal > 0 && !dismissed("alert-catchup")) count++;
     if (pendingOnly > 0 && !dismissed("alert-pending")) count++;
     if (trialOnly > 0 && !dismissed("alert-trial")) count++;
-    if (lcEmails.length > 0 && !dismissed("alert-lesson-change")) count++;
+    if (lcEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !dismissed("alert-lesson-change")) count++;
     if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
     const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
     const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, groups, sentEmails]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -2692,7 +2729,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           + (catchupTotal > 0 && !isAlertDismissed("alert-catchup") ? 1 : 0)
           + (pendingOnly > 0 && !pendingDismissed ? 1 : 0)
           + (trialOnly > 0 && !trialDismissed ? 1 : 0)
-          + (lessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
+          + (lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
           + (upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") ? 1 : 0)
           + (unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") ? 1 : 0)
           + (upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") ? 1 : 0);
@@ -2736,6 +2773,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...keys } };
           setAlertDismissals(next);
           try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
+          // Lesson-change emails live in their own persistent store (no midnight reset),
+          // so route them through the dedicated bulk helper to preserve global Dismiss-all coverage.
+          const visibleLessonChangeIds = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id);
+          if (visibleLessonChangeIds.length > 0) dismissLessonChangesBulk(visibleLessonChangeIds);
         };
 
         const CATEGORY_FILTERS = [
@@ -2908,7 +2949,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             {/* Missed-this-week dropdown panel */}
             {/* Generic alert dropdown panel */}
             {alertDropdown && (() => {
-              const { rect, title, borderColor, items, sections } = alertDropdown;
+              const { rect, title, borderColor, items, sections, headerAction } = alertDropdown;
               const removeDropdownItem = (idx, sectionIdx) => {
                 setAlertDropdown(prev => {
                   if (!prev) return prev;
@@ -2935,8 +2976,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       else if (item.navigateTo) { onNavigate(item.navigateTo); setAlertDropdown(null); }
                     } : undefined}
                     style={{ padding: "4px 10px", background: item.chipBg || (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2"), border: `1px solid ${item.chipBorder || borderColor || colors.danger}`, borderRadius: 16, fontSize: 11, cursor: item.dragPayload ? "grab" : isClickable ? "pointer" : "default", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", userSelect: "none", width: "100%", boxSizing: "border-box" }}>
-                    <span style={{ color: item.chipColor || colors.danger, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</span>
-                    <span onClick={e => { e.stopPropagation(); if (item.dismissKey) dismissAlert(item.dismissKey); removeDropdownItem(i, sectionIdx); }}
+                    <span style={{ color: item.chipColor || colors.danger, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.label}</span>
+                    <span onClick={e => { e.stopPropagation(); if (item.onDismiss) item.onDismiss(); else if (item.dismissKey) dismissAlert(item.dismissKey); removeDropdownItem(i, sectionIdx); }}
                       style={{ color: item.chipColor || colors.danger, opacity: 0.4, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", flexShrink: 0, marginLeft: "auto" }}
                       onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                       onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>
@@ -2947,10 +2988,20 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               };
               return (
                 <div
-                  style={{ position: "absolute", left: alertDropdown.absLeft, top: (alertDropdown.absBottom || 0) + 6, zIndex: 49, background: colors.cardBg, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
+                  style={{ position: "absolute", left: alertDropdown.absLeft, top: (alertDropdown.absBottom || 0) + 6, zIndex: 49, background: colors.cardBg, border: `1.5px solid ${borderColor || colors.danger}`, borderRadius: 10, boxShadow: "0 4px 18px rgba(0,0,0,0.13)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6, minWidth: 180, maxWidth: 400, maxHeight: "60vh", overflowY: "auto", scrollbarWidth: "thin" }}
                   onMouseEnter={() => clearTimeout(alertDropdownTimer.current)}
                   onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}>
-                  {title && <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, marginBottom: 2, letterSpacing: "0.04em" }}>{title}</div>}
+                  {title && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, marginBottom: 2, letterSpacing: "0.04em", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                      <span>{title}</span>
+                      {headerAction && (
+                        <span onClick={e => { e.stopPropagation(); headerAction.onClick(); }}
+                          style={{ cursor: "pointer", color: colors.accentDark, textTransform: "none", letterSpacing: 0, fontSize: 10, fontWeight: 600, textDecoration: "underline" }}>
+                          {headerAction.label}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {sections ? sections.map((section, si) => (
                     <div key={si} style={{ marginTop: si > 0 ? 8 : 0 }}>
                       {sections.length > 1 && section.headingDragPayload && (
@@ -3346,12 +3397,46 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       ); })()}
                       {/* Lesson change requests from parents */}
-                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleLessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") && (
+                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)); return visibleLessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") && (
                         <div draggable
-                          onDragStart={() => setAlertDragging({ text: `Review ${visibleLessonChangeEmails.length} lesson change request${visibleLessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: lessonChangeEmails })}
+                          onDragStart={() => setAlertDragging({ text: `Review ${visibleLessonChangeEmails.length} lesson change request${visibleLessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: visibleLessonChangeEmails })}
                           onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set(["parent"])); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "LESSON CHANGE REQUESTS", borderColor: colors.accent, items: lessonChangeEmails.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase(); const parentStudent = students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr)); const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null; const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark); return { label: `${n} — ${em.subject || "(no subject)"}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => {
+                            clearTimeout(alertDropdownTimer.current);
+                            const r = e.currentTarget.getBoundingClientRect();
+                            const visEms = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id));
+                            const visIds = visEms.map(em => em.id);
+                            openAlertDropdown({
+                              rect: r,
+                              anchor: "right",
+                              title: "LESSON CHANGE REQUESTS",
+                              borderColor: colors.accent,
+                              headerAction: visEms.length > 1 ? {
+                                label: `Dismiss all ${visEms.length}`,
+                                onClick: () => {
+                                  if (window.confirm(`Dismiss all ${visEms.length} lesson change request${visEms.length !== 1 ? "s" : ""}?`)) {
+                                    dismissLessonChangesBulk(visIds);
+                                    setAlertDropdown(null);
+                                  }
+                                }
+                              } : undefined,
+                              items: visEms.map(em => {
+                                const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown";
+                                const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase();
+                                const parentStudent = students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr));
+                                const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null;
+                                const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark);
+                                return {
+                                  label: `${n} — ${em.subject || "(no subject)"}`,
+                                  chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor,
+                                  openEmailId: em.id,
+                                  onDismiss: () => dismissLessonChange(em.id),
+                                  dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] }
+                                };
+                              })
+                            });
+                          }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><RefreshCw size={11} /> {visibleLessonChangeEmails.length} lesson change{visibleLessonChangeEmails.length !== 1 ? "s" : ""}</span>

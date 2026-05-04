@@ -86,6 +86,7 @@ export const STORAGE_KEYS = {
   inboxArchivedIds:       "mt-inbox-archived-ids",
   dashPanels:             "mt-dash-panels",
   alertDismissals:        "mt-alert-dismissals",
+  lessonChangeDismissals: "mt-lesson-change-dismissals",
   emailCategoryOverrides: "mt-email-category-overrides",
   emailNoReplyOverrides:  "mt-email-noreply-overrides",
   emailManuallyUnpinned:  "mt-email-manually-unpinned",
