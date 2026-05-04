@@ -47,6 +47,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const [attachments, setAttachments] = React.useState(initial.attachments || []);
   const [minimised, setMinimised] = React.useState(false);
   const bodyRef = React.useRef(null);
+  const lastSelectionRef = React.useRef(null);
   const [gmailConnected, setGmailConnected] = React.useState(false);
   const toWrapRef = React.useRef(null);
   const ccWrapRef = React.useRef(null);
@@ -423,6 +424,13 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     chipDragRef.current = null;
   };
 
+  const restoreSelection = () => {
+    if (!lastSelectionRef.current) return;
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(lastSelectionRef.current);
+  };
+
   const execFormat = (cmd, value) => { bodyRef.current.focus(); document.execCommand(cmd, false, value); };
   const insertLink = () => { const url = window.prompt("URL:"); if (url) execFormat("createLink", url); };
 
@@ -431,6 +439,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     if (!url) { notify("This item has no link saved", "warning"); return; }
     if (bodyRef.current) {
       bodyRef.current.focus();
+      restoreSelection();
       document.execCommand("insertHTML", false, ` <a href="${url}">${label}</a> `);
     }
     setAttachPicker(null);
@@ -874,6 +883,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
           {/* Body */}
           <div ref={bodyRef} contentEditable suppressContentEditableWarning
             autoCorrect="off"
+            onBlur={() => {
+              const sel = window.getSelection();
+              if (sel && sel.rangeCount > 0 && bodyRef.current && bodyRef.current.contains(sel.anchorNode)) {
+                lastSelectionRef.current = sel.getRangeAt(0).cloneRange();
+              }
+            }}
             style={{ flex: 1, minHeight: 200, border: `1px solid ${colors.inputBorder}`, borderRadius: 8, padding: "10px 12px", fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.inputBg, outline: "none", lineHeight: 1.6, overflowY: "auto" }} />
 
           {/* PNG inline preview */}
