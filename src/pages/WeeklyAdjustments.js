@@ -19,7 +19,7 @@ import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -143,7 +143,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [dragOverMissed, setDragOverMissed] = useState(false);
   const [dragOverStaging, setDragOverStaging] = useState(false);
   const [constraintWarnings, setConstraintWarnings] = useState({});
-  const [ackedConstraints, setAckedConstraints] = useState(new Set());
   const [expandedWarnings, setExpandedWarnings] = useState(new Set());
   const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
@@ -869,7 +868,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   //   a student's teacher or instrument changes (previously only warned lessons were rechecked).
   useEffect(() => {
     const lessons = weeklyData?.lessons || [];
-    if (lessons.length === 0) return;
     setConstraintWarnings(prev => {
       const updated = { ...prev };
       let changed = false;
@@ -900,7 +898,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       return changed ? updated : prev;
     });
-  }, [weeklyTimetables, storageKey, students, teachers]);
+  }, [weeklyTimetables, storageKey, students, teachers, schools, enrolments, bands, groups, interruptions, specialists, timetable]);
 
 
   useEffect(() => {
@@ -1044,8 +1042,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   useEffect(() => {
     setAdjustmentNotes(weeklyData?.notes || "");
-    setConstraintWarnings({});
-    setAckedConstraints(new Set());
   }, [storageKey]);
 
   const weekInterruptions = interruptions.filter(i => {
