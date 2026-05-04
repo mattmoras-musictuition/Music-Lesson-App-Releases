@@ -3,13 +3,15 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
-import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw } from "lucide-react";
+import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil } from "lucide-react";
 import { DAYS, INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor } from "../utils/helpers";
 import { parseTeacherCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 import { supabase } from "../supabaseClient";
+import { deleteSlip } from "../data/slipsDB";
+import { SlipEditModal } from "./SlipEditModal";
 
 // ── Term week helpers (standalone, no props needed) ────────────────────────
 
@@ -80,6 +82,10 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
   const [invSlips,      setInvSlips]      = useState({}); // { invoiceId: [slips] }
   const [deleteConfirm, setDeleteConfirm] = useState(null); // invoice object
   const [deleting,      setDeleting]      = useState(false);
+  const [editingSlip,   setEditingSlip]   = useState(null); // slip object being edited
+  const [deletingSlip,  setDeletingSlip]  = useState(null); // slip object pending delete confirm
+  const [slipDeleting,  setSlipDeleting]  = useState(false);
+  const [slipDeleteError, setSlipDeleteError] = useState(null);
 
   useEffect(() => {
     if (!teacherId) return;
@@ -195,6 +201,24 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
                   <span style={pill(slip.slip_type === "extra" ? "yellow" : "blue")}>
                     {slip.slip_type === "extra" ? "Extra" : "Confirmed"}
                   </span>
+                  <button
+                    onClick={() => setEditingSlip(slip)}
+                    title="Edit slip"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", marginLeft: 4, opacity: 0.6 }}
+                    onMouseEnter={e => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.color = colors.accent; }}
+                    onMouseLeave={e => { e.currentTarget.style.opacity = "0.6"; e.currentTarget.style.color = colors.textMuted; }}
+                  >
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    onClick={() => setDeletingSlip(slip)}
+                    title="Delete slip"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", marginLeft: 2, opacity: 0.6 }}
+                    onMouseEnter={e => { e.currentTarget.style.opacity = "1"; e.currentTarget.style.color = colors.danger; }}
+                    onMouseLeave={e => { e.currentTarget.style.opacity = "0.6"; e.currentTarget.style.color = colors.textMuted; }}
+                  >
+                    <Trash2 size={13} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -292,6 +316,62 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
               <Btn variant="secondary" onClick={() => setDeleteConfirm(null)} disabled={deleting}>Cancel</Btn>
               <Btn variant="danger" onClick={deleteInvoice} disabled={deleting}>
                 {deleting ? "Deleting…" : "Yes, delete invoice"}
+              </Btn>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Slip edit modal */}
+      {editingSlip && (
+        <SlipEditModal
+          slip={editingSlip}
+          colors={colors}
+          onClose={() => setEditingSlip(null)}
+          onSaved={(updatedSlip) => {
+            setCurrentSlips(prev => prev.map(s => s.id === updatedSlip.id ? updatedSlip : s));
+            setEditingSlip(null);
+          }}
+        />
+      )}
+
+      {/* Slip delete confirmation modal */}
+      {deletingSlip && (
+        <>
+          <div onClick={() => !slipDeleting && setDeletingSlip(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 10000 }} />
+          <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: 380, maxWidth: "90vw", padding: 24, fontFamily: "inherit" }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+              <Trash2 size={16} color={colors.danger} />
+              Delete slip?
+            </div>
+            <p style={{ fontSize: 13, color: colors.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
+              This will permanently remove the slip from the teacher's current totals. This cannot be undone.
+            </p>
+            {slipDeleteError && (
+              <div style={{ color: colors.danger, fontSize: 12, marginBottom: 12 }}>{slipDeleteError}</div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => { setDeletingSlip(null); setSlipDeleteError(null); }} disabled={slipDeleting}>Cancel</Btn>
+              <Btn
+                variant="danger"
+                disabled={slipDeleting}
+                onClick={async () => {
+                  setSlipDeleting(true);
+                  setSlipDeleteError(null);
+                  try {
+                    const { error } = await deleteSlip(deletingSlip.id);
+                    if (error) throw error;
+                    setCurrentSlips(prev => prev.filter(s => s.id !== deletingSlip.id));
+                    setDeletingSlip(null);
+                  } catch (e) {
+                    console.error("deleteSlip error:", e);
+                    setSlipDeleteError(e.message || "Failed to delete slip");
+                  } finally {
+                    setSlipDeleting(false);
+                  }
+                }}
+              >
+                {slipDeleting ? "Deleting…" : "Delete"}
               </Btn>
             </div>
           </div>
