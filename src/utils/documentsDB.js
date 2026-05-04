@@ -14,6 +14,10 @@ function rowToDocument(row) {
     expiryDate:  row.expiry_date  || "",
     url:         row.url          || "",
     notes:       row.notes        || "",
+    storage_path: row.storage_path || "",
+    filename:    row.filename     || "",
+    size_bytes:  row.size_bytes   ?? null,
+    mime_type:   row.mime_type    || "",
   };
 }
 
@@ -28,6 +32,10 @@ function documentToRow(document, userId) {
     expiry_date: document.expiryDate  || null,
     url:         document.url         || "",
     notes:       document.notes       || "",
+    storage_path: document.storage_path || "",
+    filename:    document.filename    || "",
+    size_bytes:  document.size_bytes  ?? null,
+    mime_type:   document.mime_type   || "",
   };
 }
 
