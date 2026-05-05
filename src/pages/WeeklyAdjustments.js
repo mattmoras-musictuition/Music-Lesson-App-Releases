@@ -19,7 +19,7 @@ import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -194,6 +194,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const catchupSlotSubRef = React.useRef(null);
   const catchupSlotHideTimer = React.useRef(null);
   const [dayTeacherChips, setDayTeacherChips] = useState({}); // { [day]: teacherId[] } chips added per day column
+  // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
+  // Default empty = all days hidden. Session-scoped (not persisted).
+  const [dayGhostsVisible, setDayGhostsVisible] = useState({});
   const [pendingSubmenu, setPendingSubmenu] = useState(null);
   const [addLessonSubmenu, setAddLessonSubmenu] = useState(null);
   const [missedZoneSubmenu, setMissedZoneSubmenu] = useState(null);
@@ -773,6 +776,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
   const currentSchool = schools.find(s => s.id === selectedSchool);
+
+  // Flatten all teacher_actuals lessons for the current (week, school)
+  // across every teacher into a single array. Used by the ghost layer
+  // in each slot cell.
+  const currentTeacherActualsLessons = useMemo(() => {
+    if (!selectedSchool) return [];
+    const prefix = `${weekKey}|${selectedSchool}|`;
+    return Object.entries(teacherActuals)
+      .filter(([k]) => k.startsWith(prefix))
+      .flatMap(([, entry]) => entry.lessons || []);
+  }, [teacherActuals, weekKey, selectedSchool]);
   // ── Drag overlay: precomputed per-slot warnings + specialist tags ──
 
   // Term week number
@@ -4855,6 +4869,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isResettingThis = resettingDay === dayDateStr;
                         const isConfirmingThis = confirmingDay === dayDateStr;
                         const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
+                        // Header label "Mon 4 May" — reuses precomputed dayDateStr.
+                        const colDate = dayDateStr ? new Date(`${dayDateStr}T00:00:00`) : null;
+                        const headerLabel = colDate
+                          ? `${colDate.toLocaleDateString("en-AU", { weekday: "short" })} ${colDate.getDate()} ${colDate.toLocaleDateString("en-AU", { month: "short" })}`
+                          : d;
                         return (
                           <div key={d}
                             style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
@@ -4879,43 +4898,69 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               setDayHeaderSubmenu(null);
                               setSwapTeacherSubmenu(null);
                             }}>
-                            {/* Confirmed indicator / reset button — top-left */}
-                            {isDayConfirmed && (
-                              <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
-                                {isResettingThis ? (
-                                  <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                                ) : (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); setResetConfirm(dayDateStr); }}
-                                    title="Reset confirmed day"
-                                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.75 }}
-                                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                    onMouseLeave={e => e.currentTarget.style.opacity = "0.75"}
-                                  >
-                                    <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
-                                  </button>
+                            {/* Top row: [confirm/reset] [Day Date Month] [Actuals] */}
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                              {/* Left: confirm or reset (when applicable) */}
+                              <span style={{ width: 13, height: 13, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
+                                {isDayConfirmed && (
+                                  isResettingThis ? (
+                                    <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                                  ) : (
+                                    <button
+                                      onClick={e => { e.stopPropagation(); setResetConfirm(dayDateStr); }}
+                                      title="Reset confirmed day"
+                                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.75 }}
+                                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                      onMouseLeave={e => e.currentTarget.style.opacity = "0.75"}>
+                                      <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
+                                    </button>
+                                  )
                                 )}
-                              </div>
-                            )}
-                            {/* Confirm button (admin) — shown when day has lessons but is not yet confirmed */}
-                            {!isDayConfirmed && dayHasLessons && (
-                              <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
-                                {isConfirmingThis ? (
-                                  <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(34,197,94,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                                ) : (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); confirmDay(dayDateStr, d); }}
-                                    title="Confirm day (admin)"
-                                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
-                                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                    onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}
-                                  >
-                                    <Check size={12} color="rgba(34,197,94,0.9)" />
-                                  </button>
+                                {!isDayConfirmed && dayHasLessons && (
+                                  isConfirmingThis ? (
+                                    <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(34,197,94,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                                  ) : (
+                                    <button
+                                      onClick={e => { e.stopPropagation(); confirmDay(dayDateStr, d); }}
+                                      title="Confirm day (admin)"
+                                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
+                                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                                      onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}>
+                                      <Check size={12} color="rgba(34,197,94,0.9)" />
+                                    </button>
+                                  )
                                 )}
-                              </div>
-                            )}
-                            {d}
+                              </span>
+                              {/* Middle: day label "Mon 4 May" */}
+                              <span style={{ flex: 1, textAlign: "center" }}>{headerLabel}</span>
+                              {/* Right: Actuals toggle */}
+                              {(() => {
+                                const ghostKey = `${weekKey}_${d}`;
+                                const ghostsVisible = !!dayGhostsVisible[ghostKey];
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={e => { e.stopPropagation(); setDayGhostsVisible(prev => ({ ...prev, [ghostKey]: !prev[ghostKey] })); }}
+                                    title={ghostsVisible ? "Hide teacher actuals" : "Show teacher actuals"}
+                                    style={{
+                                      padding: "2px 8px",
+                                      fontSize: 11,
+                                      fontWeight: 500,
+                                      border: "1px solid rgba(255,255,255,0.35)",
+                                      background: "rgba(255,255,255,0.08)",
+                                      color: "inherit",
+                                      fontFamily: "inherit",
+                                      borderRadius: 999,
+                                      cursor: "pointer",
+                                      opacity: ghostsVisible ? 1 : 0.55,
+                                      transition: "opacity 0.12s",
+                                      flexShrink: 0,
+                                    }}>
+                                    Actuals
+                                  </button>
+                                );
+                              })()}
+                            </div>
                             {isDayConfirmed && (
                               <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
                             )}
@@ -5040,11 +5085,72 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   background: isDayConfirmed
                                     ? (darkMode ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.04)")
                                     : isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : blocked ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : colors.cardBg,
-                                  padding: 4, minHeight: 32, display: "flex", flexDirection: "column", gap: 3,
+                                  position: "relative",
+                                  padding: 4, minHeight: 56, display: "flex", flexDirection: "column", gap: 3,
                                   outline: "none",
                                   transition: "background 0.15s, outline 0.15s"
                                 }}
                               >
+                                {/* Teacher-actuals ghost cards — read-only,
+                                    pointer-events:none, behind admin cards.
+                                    Gated by per-day toggle. */}
+                                {(() => {
+                                  const ghostKey = `${weekKey}_${day}`;
+                                  if (!dayGhostsVisible[ghostKey]) return null;
+                                  const cellHasAdminCard = cellLessons.length > 0;
+                                  const cellHasDraggingCard = cellLessons.some(l => l.id === draggingId);
+                                  // Hide ghosts when an admin card occupies this slot, UNLESS the
+                                  // admin card is being dragged (drag-reveal shows what's underneath).
+                                  if (cellHasAdminCard && !cellHasDraggingCard) return null;
+                                  const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time);
+                                  return cellGhosts.map((g, gi) => {
+                                    const color = getInstColor(g.instrument, g.isGroup);
+                                    const isGroup = !!g.isGroup;
+                                    let displayName;
+                                    let classSuffix = "";
+                                    if (isGroup) {
+                                      displayName = groupDisplayName(g);
+                                    } else {
+                                      const ghostSt = students.find(s => s.id === g.studentId);
+                                      displayName = getPrefDisplayName(ghostSt?.name || g.studentName || "");
+                                      if (ghostSt?.className) classSuffix = ` · ${ghostSt.className}`;
+                                    }
+                                    const teacherFirst = g.teacherName ? g.teacherName.split(" ")[0] : "";
+                                    return (
+                                      <div
+                                        key={`ghost-${g.id || gi}`}
+                                        aria-hidden="true"
+                                        title="Teacher's actual (read-only)"
+                                        style={{
+                                          position: "absolute",
+                                          top: 4, left: 4, right: 4,
+                                          padding: "6px 10px",
+                                          borderRadius: 6,
+                                          fontSize: 13,
+                                          lineHeight: 1.4,
+                                          background: color + "18",
+                                          borderLeft: `3px solid ${color}`,
+                                          borderStyle: "dashed",
+                                          borderTop: `1px dashed ${color}40`,
+                                          borderRight: `1px dashed ${color}40`,
+                                          borderBottom: `1px dashed ${color}40`,
+                                          cursor: "default",
+                                          opacity: 0.42,
+                                          transition: "opacity 0.12s",
+                                          pointerEvents: "none",
+                                          zIndex: 0,
+                                        }}>
+                                        <div style={{ fontWeight: 600, color: colors.text }}>
+                                          {isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3 }} />}
+                                          {displayName}{classSuffix}
+                                        </div>
+                                        <div style={{ color: colors.textLight, fontSize: 12 }}>
+                                          {g.instrument || ""}{teacherFirst ? ` · ${teacherFirst}` : ""}
+                                        </div>
+                                      </div>
+                                    );
+                                  });
+                                })()}
                                 {cellBreak && (
                                   <div
                                     draggable
@@ -5190,7 +5296,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       }, 220);
                                     }}
                                     style={{
-                                      padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4, cursor: "grab", position: "relative",
+                                      padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4, cursor: "grab", position: "relative", zIndex: 1,
                                       background: selectedCards.has(l.id) ? `${colors.sidebarActive}18` : showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
                                       borderLeft: `3px solid ${selectedCards.has(l.id) ? colors.sidebarActive : showRed ? colors.danger : getInstColor(liveInst, l.isGroup)}`,
                                       borderTop: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
