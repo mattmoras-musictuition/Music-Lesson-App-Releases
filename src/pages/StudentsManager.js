@@ -54,7 +54,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     return [];
   });
   const [isAddingEnrolment, setIsAddingEnrolment] = useState(false);
-  const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", teacherId: "" });
+  const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", teacherId: "", isGroup: false });
   const [endingEnrolment, setEndingEnrolment] = useState(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
@@ -158,7 +158,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   // modals, or history-expanded state leaking across students.
   useEffect(() => {
     setIsAddingEnrolment(false);
-    setNewEnrolmentDraft({ instrument: "", teacherId: "" });
+    setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false });
     setEndingEnrolment(null);
     setHistoryExpanded(form?.status === "archived");
   }, [form?.id]);
@@ -1189,7 +1189,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5 }}>Enrolments</label>
                   {!isArchived && !isAddingEnrolment && (
-                    <Btn variant="ghost" onClick={() => { setIsAddingEnrolment(true); setNewEnrolmentDraft({ instrument: "", teacherId: "" }); }} style={{ fontSize: 12 }}>
+                    <Btn variant="ghost" onClick={() => { setIsAddingEnrolment(true); setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false }); }} style={{ fontSize: 12 }}>
                       + Add enrolment
                     </Btn>
                   )}
@@ -1271,6 +1271,14 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       <option value="">Unassigned</option>
                       {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                     </select>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "5px 10px", border: `1px solid ${newEnrolmentDraft.isGroup ? colors.accent : colors.inputBorder}`, borderRadius: 6, background: newEnrolmentDraft.isGroup ? colors.accentLight : "transparent", transition: "background 0.15s, border-color 0.15s", flexShrink: 0 }}
+                      title="Mark as group enrolment (waiting for a group to form, or joining an existing group)">
+                      <input type="checkbox" checked={!!newEnrolmentDraft.isGroup}
+                        onChange={e => setNewEnrolmentDraft(d => ({ ...d, isGroup: e.target.checked }))}
+                        style={{ margin: 0, cursor: "pointer" }} />
+                      <Users size={12} color={newEnrolmentDraft.isGroup ? colors.accentDark : colors.textMuted} />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: newEnrolmentDraft.isGroup ? colors.accentDark : colors.textLight }}>Group</span>
+                    </label>
                     <Btn
                       onClick={() => {
                         if (!newEnrolmentDraft.instrument) { notify("Pick an instrument", "warning"); return; }
@@ -1279,19 +1287,19 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           studentId: form.id,
                           instrument: newEnrolmentDraft.instrument,
                           teacherId: newEnrolmentDraft.teacherId || "",
-                          isGroup: false,
+                          isGroup: newEnrolmentDraft.isGroup,
                           groupId: undefined,
                           startDate: new Date().toISOString().split("T")[0],
                           endDate: undefined,
                         }]);
                         setIsAddingEnrolment(false);
-                        setNewEnrolmentDraft({ instrument: "", teacherId: "" });
+                        setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false });
                       }}
                       disabled={addableInstruments.length === 0 || !newEnrolmentDraft.instrument}
                       style={{ fontSize: 12 }}>
                       Save
                     </Btn>
-                    <Btn variant="secondary" onClick={() => { setIsAddingEnrolment(false); setNewEnrolmentDraft({ instrument: "", teacherId: "" }); }} style={{ fontSize: 12 }}>Cancel</Btn>
+                    <Btn variant="secondary" onClick={() => { setIsAddingEnrolment(false); setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false }); }} style={{ fontSize: 12 }}>Cancel</Btn>
                   </div>
                 )}
 
