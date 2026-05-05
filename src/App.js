@@ -32,6 +32,7 @@ import { loadMasterBreaksFromSupabase, syncMasterBreaksToSupabase } from "./util
 import { loadTallyEntriesFromSupabase, syncTallyEntriesToSupabase } from "./utils/tallyEntriesDB";
 import { loadTimetableFromSupabase, syncTimetableToSupabase } from "./utils/timetableDB";
 import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } from "./utils/weeklyAdjustmentsDB";
+import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase } from "./utils/helpers";
@@ -966,6 +967,13 @@ export default function MusicTimetableApp() {
       return weeklyRedoStack.current.pop();
     });
   };
+  // Teacher actuals — read-only mirror of teacher_actuals table for the
+  // admin-side ghost layer (see WeeklyAdjustments). Teacher app writes;
+  // drain_teacher_actuals cron drains past-day rows into weekly_adjustments
+  // at 6pm Melbourne. Subscription-driven, no undo machinery.
+  const [teacherActuals, setTeacherActuals] = useState({});
+  // shape: { "weekKey|schoolId|teacherId": { lessons, missed, notes, updatedAt } }
+  const teacherActualsRef = useRef(teacherActuals);
   const [tallyEntries, setTallyEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   // storageReady is set to true only after initial load confirms data came from storage.
@@ -1340,6 +1348,45 @@ export default function MusicTimetableApp() {
     load();
     sub = supabase.channel("admin-voice-notes")
       .on("postgres_changes", { event: "*", schema: "public", table: "voice_notes" }, load)
+      .subscribe();
+    return () => { supabase.removeChannel(sub); };
+  }, []);
+
+  // ── teacher_actuals: initial load + realtime subscription ──────
+  // Event-payload-driven (not full-reload) — applies the changed row
+  // directly to the local map. DELETE handler is critical: the 6pm
+  // drain cron deletes drained rows, which makes the corresponding
+  // ghost entries fade automatically as the data has merged into
+  // weekly_adjustments.
+  useEffect(() => {
+    let sub;
+    const load = async () => {
+      const data = await loadTeacherActualsFromSupabase();
+      setTeacherActuals(data);
+    };
+    load();
+    sub = supabase
+      .channel("admin-teacher-actuals")
+      .on("postgres_changes",
+          { event: "*", schema: "public", table: "teacher_actuals" },
+          (payload) => {
+            setTeacherActuals((prev) => {
+              const next = { ...prev };
+              if (payload.eventType === "DELETE") {
+                const old = payload.old;
+                if (old?.week_key && old?.school_id && old?.teacher_id) {
+                  delete next[teacherActualsStorageKey(old.week_key, old.school_id, old.teacher_id)];
+                }
+                return next;
+              }
+              const row = payload.new;
+              if (!row?.week_key || !row?.school_id || !row?.teacher_id) {
+                return prev;
+              }
+              next[teacherActualsStorageKey(row.week_key, row.school_id, row.teacher_id)] = teacherActualsRowToEntry(row);
+              return next;
+            });
+          })
       .subscribe();
     return () => { supabase.removeChannel(sub); };
   }, []);
@@ -2120,9 +2167,12 @@ export default function MusicTimetableApp() {
     console.log("[migration] Spec 1 Commit 5 transform applied:", result.stats);
   }, [weeklyTimetables]);
 
-  // ── Polling: pick up weekly_adjustments changes from teacher app ─────────
-  // Polls every 4 seconds. Skips rows that this app just wrote (own-write
-  // tracking) and rows we've already processed (last-seen tracking).
+  // ── Polling: pick up cross-device admin writes + 6pm cron drain output ──
+  // Polls weekly_adjustments every 4 seconds. The teacher app writes to
+  // teacher_actuals (separate table) — see the admin-teacher-actuals
+  // subscription above for the realtime read of teacher-side data.
+  // Skips rows this app just wrote (own-write tracking) and rows we've
+  // already processed (last-seen tracking).
   useEffect(() => {
     const poll = async () => {
       // Skip the entire poll cycle if we have a write pending or in-flight —
@@ -2197,6 +2247,7 @@ export default function MusicTimetableApp() {
 
   // Keep refs in sync with latest state (for use in timer/backfill without stale closures)
   useEffect(() => { weeklyTimetablesRef.current = weeklyTimetables; }, [weeklyTimetables]);
+  useEffect(() => { teacherActualsRef.current = teacherActuals; }, [teacherActuals]);
   useEffect(() => { timetableRef.current = timetable; }, [timetable]);
   useEffect(() => { studentsRef.current = students; }, [students]);
   useEffect(() => { enrolmentsRef.current = enrolments; }, [enrolments]);
@@ -6349,7 +6400,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

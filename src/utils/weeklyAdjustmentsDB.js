@@ -79,10 +79,12 @@ export async function syncWeeklyAdjustmentsToSupabase(weeklyTimetables, userId) 
   if (entries.length === 0) return;
 
   // Upsert all current local entries in batches of 200.
-  // Conflict key is now (week_key, school_id) — no user_id — so admin and
-  // teacher share a single row per week/school rather than creating duplicates.
-  // The delete step has been removed: we no longer own all rows in the table
-  // (teachers may have written rows the admin doesn't hold locally).
+  // Conflict key is (week_key, school_id) — single admin-side row per
+  // week+school. Teacher app no longer writes this table directly;
+  // teacher actuals live in teacher_actuals and are merged in by the
+  // drain_teacher_actuals pg_cron at 6pm Melbourne.
+  // The delete step has been removed: drained rows from the cron
+  // appear here without admin holding them locally first.
   const rows = entries.map(([key, value]) => {
     const pipeIdx = key.indexOf("|");
     const weekKey  = key.substring(0, pipeIdx);
