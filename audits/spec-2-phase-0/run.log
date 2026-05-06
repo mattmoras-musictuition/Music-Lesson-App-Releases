@@ -1,0 +1,133 @@
+Spec 2 Phase 0 audit — starting
+today:    2026-05-06
+out:      audits/spec-2-phase-0/data.json
+Email:    matt@mattmorasmusic.com
+Password: 
+
+=== SCHEMA PROBE ===
+  teachers               : 27 cols → id, user_id, name, email, phone, color, notes, instruments, availability, teacher_breaks, updated_at, hourly_rate, has_account, invoice_business_name, invoice_abn, invoice_address, invoice_email, invoice_phone, invoice_bank_bsb, invoice_bank_account_name, invoice_bank_account_number, invoice_gst_registered, invoice_payment_terms, invoice_logo_url, personalEmail, sort_order, last_seen
+  schools                : 15 cols → id, user_id, name, acronym, days, slots, specialist_policy, teacher_breaks, newsletter_url, newsletter_guidance, sender_email, timetable_upload_url, notes, updated_at, color
+  students               : 17 cols → id, user_id, name, school_id, class_name, instruments, status, notes, outside_class_only, outside_class_preferred, available_before, available_after, avoid_times, preferred_times, parents, created_at, teacher_notes
+  enrolments             : 10 cols → id, user_id, student_id, instrument, teacher_id, is_group, group_id, start_date, end_date, updated_at
+  groups                 : 12 cols → id, user_id, name, school_id, instrument, min_size, max_size, teacher_id, student_ids, status, notes, created_at
+  bands                  : 10 cols → id, user_id, name, school_id, teacher_id, teacher_instrument, members, links, notes, created_at
+  interruptions          : 13 cols → id, user_id, type, title, date, end_date, start_time, end_time, school_id, affects_classes, notes, source, created_at
+  weekly_adjustments     : 10 cols → id, user_id, week_key, school_id, lessons, missed, notes, generated_at, breaks, updated_at
+
+=== BULK FETCH ===
+  teachers               : 5 rows
+  schools                : 3 rows
+  students               : 105 rows
+  enrolments             : 112 rows
+  groups                 : 3 rows
+  bands                  : 13 rows
+  interruptions          : 58 rows
+  weekly_adjustments     : 26 rows
+
+=== TERM DISTRIBUTION ===
+  current term (from today): 2025-T1
+  termKey                rows  lessons
+  2025-T1                 26      517
+  scope (current + future populated) : 26 rows
+  past sample (terms —): 0 rows
+
+=== PER-(SCHOOL, DAY) TEACHER DISTRIBUTION — current + future populated ===
+  pairs with 1 teacher  : 8
+  pairs with 2 teachers : 3
+  pairs with 3+ teachers: 4
+  pairs with 0 teachers : 0  (cards exist but all teacherId empty)
+  total (school, day) pairs in scope: 15
+
+  multi-teacher pairs (showing time bands per teacher):
+  ─ Moorabbin Primary School / Tuesday  (3 teachers)
+     Matt Moras                    starts: 08:00–15:00  (63 slot-instances)
+     Xandri Hawkins                starts: 09:30–10:00  (2 slot-instances)
+     Rauzah Hamzah                 starts: 09:00–09:30  (2 slot-instances)
+  ─ Moorabbin Primary School / Friday  (3 teachers)
+     Xandri Hawkins                starts: 09:30–11:10  (3 slot-instances)
+     Phillip Thomas                starts: 10:30–15:00  (7 slot-instances)
+     Matt Moras                    starts: 09:00–14:00  (27 slot-instances)
+  ─ East Bentleigh Primary School / Wednesday  (2 teachers)
+     Matt Moras                    starts: 09:00–15:00  (45 slot-instances)
+     Rauzah Hamzah                 starts: 10:00–11:30  (4 slot-instances)
+  ─ East Bentleigh Primary School / Thursday  (3 teachers)
+     Matt Moras                    starts: 09:00–15:00  (42 slot-instances)
+     Xandri Hawkins                starts: 12:30–12:30  (4 slot-instances)
+     Rauzah Hamzah                 starts: 09:30–14:00  (8 slot-instances)
+  ─ East Bentleigh Primary School / Monday  (2 teachers)
+     Rauzah Hamzah                 starts: 10:00–16:30  (57 slot-instances)
+     Matt Moras                    starts: 09:00–09:30  (2 slot-instances)
+  ─ East Bentleigh Primary School / Friday  (2 teachers)
+     Rauzah Hamzah                 starts: 10:00–14:00  (14 slot-instances)
+     Xandri Hawkins                starts: 09:00–13:30  (21 slot-instances)
+  ─ Moorabbin Primary School / Monday  (3 teachers)
+     Phillip Thomas                starts: 09:00–12:40  (7 slot-instances)
+     Matt Moras                    starts: 12:10–12:10  (1 slot-instances)
+     Xandri Hawkins                starts: 09:30–10:00  (2 slot-instances)
+
+=== STORED-VS-LIVE TEACHER DIVERGENCE — current + future populated ===
+  total lessons in scope : 517
+  stored=live (match)    : 506
+  stored≠live (diverge)  : 0
+  stored teacherId null  : 0
+  live teacherId null    : 11
+  live source unmatched  : 11  (no enrolment / group / band found for the card)
+
+  per-enrolment divergence frequency:
+    1     divergent week(s): 0 enrolments
+    2-5   divergent week(s): 0 enrolments
+    6-10  divergent week(s): 0 enrolments
+    11+   divergent week(s): 0 enrolments
+
+  divergence samples (first 25):
+
+=== ORPHAN / BROKEN FK — stored lesson.teacherId ===
+  null/empty teacherId   : 0
+  valid FK to teachers   : 514
+  broken FK              : 3  (teacherId set but not in teachers table)
+
+  broken-FK samples:
+    2026-04-20 Monday 09:00  bad=_test_tch_  student=s1 
+    2026-04-20 Friday 10:00  bad=_test_tch_  student=s2 
+    2026-04-27 Monday 09:00  bad=_test_tch_  student=s3 
+
+=== (SCHOOL, DAY, TEACHER) TRIO ANALYSIS — grouped by teacher_id status ===
+
+  status=real  trios: 24
+    Moorabbin Primary School Wednesday  Rauzah Hamzah                  73 lessons across 7/9 weeks (73 solo / 0 group / 0 band)
+    Moorabbin Primary School Tuesday    Matt Moras                     63 lessons across 8/9 weeks (63 solo / 0 group / 0 band)
+    Moorabbin Primary School Thursday   Xandri Hawkins                 58 lessons across 7/9 weeks (51 solo / 7 group / 0 band)
+    East Bentleigh Primary School Monday     Rauzah Hamzah                  57 lessons across 6/9 weeks (57 solo / 0 group / 0 band)
+    East Bentleigh Primary School Wednesday  Matt Moras                     45 lessons across 6/9 weeks (38 solo / 7 group / 0 band)
+    East Bentleigh Primary School Thursday   Matt Moras                     42 lessons across 7/9 weeks (38 solo / 0 group / 4 band)
+    Solway Primary School  Thursday   Lucas Pipolo                   34 lessons across 7/9 weeks (34 solo / 0 group / 0 band)
+    Solway Primary School  Tuesday    Lucas Pipolo                   31 lessons across 6/9 weeks (31 solo / 0 group / 0 band)
+    Moorabbin Primary School Friday     Matt Moras                     27 lessons across 3/9 weeks (27 solo / 0 group / 0 band)
+    East Bentleigh Primary School Friday     Xandri Hawkins                 21 lessons across 4/9 weeks (15 solo / 6 group / 0 band)
+    East Bentleigh Primary School Friday     Rauzah Hamzah                  14 lessons across 5/9 weeks (14 solo / 0 group / 0 band)
+    East Bentleigh Primary School Thursday   Rauzah Hamzah                   8 lessons across 5/9 weeks (8 solo / 0 group / 0 band)
+    Moorabbin Primary School Friday     Phillip Thomas                  7 lessons across 4/9 weeks (6 solo / 1 group / 0 band)
+    Moorabbin Primary School Monday     Phillip Thomas                  7 lessons across 2/9 weeks (7 solo / 0 group / 0 band)
+    __catchup__            Thursday   Matt Moras                      5 lessons across 2/9 weeks (5 solo / 0 group / 0 band)
+    East Bentleigh Primary School Thursday   Xandri Hawkins                  4 lessons across 4/9 weeks (4 solo / 0 group / 0 band)
+    East Bentleigh Primary School Wednesday  Rauzah Hamzah                   4 lessons across 4/9 weeks (4 solo / 0 group / 0 band)
+    Moorabbin Primary School Friday     Xandri Hawkins                  3 lessons across 1/9 weeks (3 solo / 0 group / 0 band)
+    Moorabbin Primary School Tuesday    Xandri Hawkins                  2 lessons across 1/9 weeks (2 solo / 0 group / 0 band)
+    Moorabbin Primary School Tuesday    Rauzah Hamzah                   2 lessons across 1/9 weeks (2 solo / 0 group / 0 band)
+    East Bentleigh Primary School Monday     Matt Moras                      2 lessons across 1/9 weeks (2 solo / 0 group / 0 band)
+    Moorabbin Primary School Monday     Xandri Hawkins                  2 lessons across 1/9 weeks (2 solo / 0 group / 0 band)
+    __catchup__            Friday     Matt Moras                      2 lessons across 1/9 weeks (2 solo / 0 group / 0 band)
+    Moorabbin Primary School Monday     Matt Moras                      1 lessons across 1/9 weeks (1 solo / 0 group / 0 band)
+
+  status=null  trios: 0
+
+  status=broken  trios: 2
+    _test_school_          Monday     (unknown:_test_tch_)            2 lessons across 2/9 weeks (2 solo / 0 group / 0 band)
+    _test_school_          Friday     (unknown:_test_tch_)            1 lessons across 1/9 weeks (1 solo / 0 group / 0 band)
+
+  (no past-term sample rows available — skipped)
+
+=== WRITING DATA.JSON ===
+  wrote audits/spec-2-phase-0/data.json
+
+  Audit complete. Use data.json + this stdout transcript for the report.
