@@ -17,6 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
+import { loadTeacherCoverageFromSupabase } from "./utils/teacherCoverageDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -838,6 +839,10 @@ export default function MusicTimetableApp() {
       return newVal;
     });
   };
+  // Spec 2 cluster 4a — teacher_coverage lanes (one row per active
+  // (school, day, teacher) tuple). No undo wrapper yet; lane mutations
+  // arrive with the Add/Remove Staff UI in cluster 9.
+  const [teacherCoverage, setTeacherCoverage] = useState([]);
   const [specialists, setSpecialists] = useState([]);
   const [interruptions, setInterruptions] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -1672,6 +1677,20 @@ export default function MusicTimetableApp() {
         logError("Failed to load teachers from Supabase", err.message);
         t = migrateData("teachers", await loadData(STORAGE_KEYS.teachers, []));
       }
+      // ── Teacher coverage (lanes): try Supabase first, fall back to localStorage ──
+      let tc;
+      try {
+        const supabaseTeacherCoverage = await loadTeacherCoverageFromSupabase();
+        if (supabaseTeacherCoverage.length > 0) {
+          tc = supabaseTeacherCoverage;
+          saveData(STORAGE_KEYS.teacherCoverage, tc);
+        } else {
+          tc = await loadData(STORAGE_KEYS.teacherCoverage, []);
+        }
+      } catch (err) {
+        logError("Failed to load teacher_coverage from Supabase", err.message);
+        tc = await loadData(STORAGE_KEYS.teacherCoverage, []);
+      }
       // ── Specialists: try Supabase first, fall back to localStorage ──
       let sp;
       try {
@@ -1857,6 +1876,7 @@ export default function MusicTimetableApp() {
       setStudents(st);
       setEnrolments(en);
       setTeachersRaw(t);
+      setTeacherCoverage(tc);
       setSpecialists(sp);
       setInterruptions(ir);
       setGroups(gr.length > 0 ? gr : []);
