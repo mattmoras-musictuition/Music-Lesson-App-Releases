@@ -560,7 +560,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       const school = schools.find(s => s.id === lesson.schoolId);
       const liveBand = bands?.find(b => b.id === lesson.bandId);
-      const effectiveBandTeacherId = liveBand?.teacherId || lesson.teacherId;
+      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage) || liveBand?.teacherId || lesson.teacherId;
       const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -609,7 +609,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const school = schools.find(s => s.id === lesson.schoolId);
       // Look up current teacher from live groups state rather than stored lesson.teacherId
       const liveGroup = groups?.find(g => g.id === lesson.groupId);
-      const effectiveGroupTeacherId = liveGroup?.teacherId || lesson.teacherId;
+      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage) || liveGroup?.teacherId || lesson.teacherId;
       const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -677,10 +677,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (_wttUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     }
-    // Use live teacher from student's instrument record, not the stored lesson snapshot
-    const liveInsts = student ? instrumentsFromEnrolments(student.id, enrolments) : [];
-    const liveInst = student ? (liveInsts.find(i => i.name === lesson.instrument) || liveInsts.find(i => !i.isGroup)) : null;
-    const liveTeacherId = liveInst?.teacherId || lesson.teacherId;
+    // Lane-first via getLiveTeacherId; fallback chain (instrument enrolment → stamped) lives in the helper.
+    const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage);
     const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
     if (teacher) {
       const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -1024,8 +1022,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     try {
       const teacherIds = [...new Set(
         (weeklyData?.lessons || [])
-          .filter(l => l.day === dayName && l.teacherId)
-          .map(l => l.teacherId)
+          .filter(l => l.day === dayName)
+          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage))
+          .filter(Boolean)
       )];
       if (teacherIds.length === 0) {
         if (notify) notify("No lessons found for this day");
@@ -2447,7 +2446,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const staffEmailSet = new Set();
             const staffRows = [];
             dayLessons.forEach(l => {
-              const tid = l._swapTeacherId || l.teacherId;
+              const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage);
               const t = teachers.find(x => x.id === tid);
               if (t?.email && !staffEmailSet.has(t.email)) {
                 staffEmailSet.add(t.email);
@@ -3705,7 +3704,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const _wttLesson = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
                   const _wttSt = !contextMenu.isGroup && students.find(s => s.id === contextMenu.studentId);
                   const _wttSchoolSender = schools.find(s => s.id === (selectedSchool || _wttLesson?.schoolId || _wttSt?.schoolId))?.senderEmail || "";
-                  const lessonTeacher = _wttLesson?.teacherId ? teachers.find(t => t.id === _wttLesson.teacherId) : null;
+                  const _wttResolvedTid = _wttLesson ? getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage) : null;
+                  const lessonTeacher = _wttResolvedTid ? teachers.find(t => t.id === _wttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
                   const lessonTeacherFirst = lessonTeacher ? lessonTeacher.name.split(" ")[0] : null;
@@ -3977,7 +3977,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Aggregate music staff (teachers on selected lessons)
                   const staffMap = {}; // email -> { name, color }
                   selLessons.forEach(l => {
-                    const tid = l._swapTeacherId || l.teacherId;
+                    const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage);
                     const tname = l._swapTeacherName || l.teacherName;
                     const t = teachers.find(x => x.id === tid);
                     const email = t?.email;
@@ -4148,7 +4148,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const lesson = (weeklyData?.lessons || []).find(l => l.id === contextMenu.lessonId);
                   if (!lesson) return null;
                   const schoolName = schools.find(s => s.id === (lesson.schoolId || selectedSchool))?.name || "";
-                  const teacherName = teachers.find(t => t.id === lesson.teacherId)?.name || "";
+                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, students, enrolments, teacherCoverage))?.name || "";
                   const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
                   return (
                     <>
