@@ -9,6 +9,7 @@
 // ============================================================
 
 import { timeToMin, getBreaksForSchool, getSchoolAcronym, downloadFile } from "../utils/helpers";
+import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { DAYS, instruments_colors } from "../constants";
 import { getXLSX } from "../utils/api";
 
@@ -79,8 +80,9 @@ function sharedLandscapeCss() {
 
 export function buildGridRows(lessons, students, school, teachers, opts) {
   var allDays = opts && opts.allDays === false ? false : true;
+  var teacherCoverage = opts && opts.teacherCoverage;
   var days = allDays ? DAYS : DAYS.filter(function(d) { return lessons.some(function(l) { return l.day === d; }); });
-  var breaks = school ? getBreaksForSchool(school, teachers || [], lessons) : [];
+  var breaks = school ? getBreaksForSchool(school, teachers || [], lessons, teacherCoverage) : [];
   var lessonTimes = [...new Set(lessons.map(function(l) { return l.start; }))];
   var breakTimes = breaks.map(function(b) { return b.start; });
   var slotTimes = school ? (school.slots || []).map(function(s) { return s.start; }) : [];
@@ -350,7 +352,7 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   // days that have lessons). Useful for a part-time staff member's
   // schedule — Monday-Wednesday-only teacher gets a 3-day grid rather
   // than a 5-day grid with blanks on Thu/Fri.
-  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null };
+  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
   var showSeparate = !schoolId && !teacherName && !className;
   var body = buildHeaderBand(title, null, meta);
   if (showSeparate) {
@@ -395,7 +397,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
       if (nm.length > maxNameLen) maxNameLen = nm.length;
     });
     var dayColWidth = Math.min(170, Math.max(105, maxNameLen * 6.5 + 16));
-    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers); });
+    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage }); });
     // Session 96: single header band per teacher instead of separate h1 + meta.
     var metaLine = schoolName + " \u00b7 " + sourceLabel + " \u00b7 " + tLessons.length + " lesson" + (tLessons.length !== 1 ? "s" : "");
     body += buildHeaderBand(tName, "Teacher schedule", metaLine);
@@ -410,7 +412,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
 
 // ── Teacher schedule grid ─────────────────────────────────────────────────────
 
-export function getTeacherBreaksForSchedule(school, teachers, lessons) {
+export function getTeacherBreaksForSchedule(school, teachers, lessons, teacherCoverage) {
   var breaks = [];
   var tb = (school ? school.teacherBreaks || [] : []);
   for (var i = 0; i < tb.length; i++) {
@@ -418,7 +420,7 @@ export function getTeacherBreaksForSchedule(school, teachers, lessons) {
     breaks.push({ start: b.start, end: b.end, day: b.day || "All", label: "Break" });
   }
   if (breaks.length === 0) {
-    var tids = [...new Set(lessons.filter(function(l) { return school && l.schoolId === school.id; }).map(function(l) { return l.teacherId; }))];
+    var tids = [...new Set(lessons.filter(function(l) { return school && l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage) || l.teacherId; }))];
     var seen = {};
     for (var i2 = 0; i2 < tids.length; i2++) {
       var t = teachers.find(function(t2) { return t2.id === tids[i2]; });
@@ -434,11 +436,12 @@ export function getTeacherBreaksForSchedule(school, teachers, lessons) {
   return breaks;
 }
 
-export function buildTeacherSchoolGrid(tLessons, students, school, teachers) {
+export function buildTeacherSchoolGrid(tLessons, students, school, teachers, opts) {
+  var teacherCoverage = opts && opts.teacherCoverage;
   var days = ["Monday","Tuesday","Wednesday","Thursday","Friday"].filter(function(d) {
     return tLessons.some(function(l) { return l.day === d; });
   });
-  var breaks = school ? getTeacherBreaksForSchedule(school, teachers || [], tLessons) : [];
+  var breaks = school ? getTeacherBreaksForSchedule(school, teachers || [], tLessons, teacherCoverage) : [];
   var lessonTimes = [...new Set(tLessons.map(function(l) { return l.start; }))];
   var breakTimes = breaks.map(function(b) { return b.start; });
   var allTimes = [...new Set(lessonTimes.concat(breakTimes))].sort(function(a,b){ return timeToMin(a)-timeToMin(b); });
@@ -542,7 +545,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
   if (filtered.length === 0) throw new Error("No lessons match the selected filters");
   var filename = filenameBase + (day ? "-" + day : "");
   var showSeparate = !schoolId && !teacherName && !className;
-  var gridOpts = { allDays: !day, specialists: opts.specialists || null };
+  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
 
   if (format === "csv") {
     const Papa = window.Papa;
@@ -630,7 +633,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
       html = buildDaysListHtml(filtered, students, pdfTitle, pdfMeta);
     } else {
       var body = buildHeaderBand(pdfTitle, null, pdfMeta);
-      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null };
+      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
       if (showSeparate) {
         var groups3 = groupLessonsBySchool(filtered, schools);
         for (var g3 = 0; g3 < groups3.length; g3++) {
@@ -674,7 +677,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
       for (var sg = 0; sg < teacherSchoolGroups.length; sg++) {
         var sgSchool = teacherSchoolGroups[sg].school;
         var sgLessons = teacherSchoolGroups[sg].lessons;
-        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers);
+        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers, { teacherCoverage: opts && opts.teacherCoverage });
         var sgDays = sgGrid.days;
         aoa.push([getSchoolAcronym(sgSchool) + " — " + sgSchool.name]);
         aoa.push(["Time"].concat(sgDays));
@@ -709,7 +712,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
         return aMin - bMin;
       });
       var sg2Grids = teacherSchoolGroups2.map(function(sg) {
-        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers);
+        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage });
       });
       var maxNameLen = 0;
       tLessons2.forEach(function(l) {

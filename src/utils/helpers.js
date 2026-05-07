@@ -160,6 +160,7 @@ export const bandDisplayName = (lesson, members) =>
 // Cluster 5a: lane-first via bucket_id. Falls back to stored teacherName if no
 // instrument match found.
 export const getLiveTeacherName = (lesson, students, teachers, enrolments, teacherCoverage) => {
+  if (!lesson) return "";
   const laneTid = getCardTeacherId(lesson, teacherCoverage);
   if (laneTid) {
     const t = teachers.find(x => x.id === laneTid);
@@ -186,6 +187,7 @@ export const getLiveTeacherName = (lesson, students, teachers, enrolments, teach
 // Cluster 5a: lane-first via bucket_id (Path B). Falls back to existing chain
 // for legacy cards without bucket_id and for lane-misses.
 export const getLiveTeacherId = (lesson, students, enrolments, teacherCoverage) => {
+  if (!lesson) return null;
   const laneTid = getCardTeacherId(lesson, teacherCoverage);
   if (laneTid) return laneTid;
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherId;
@@ -200,6 +202,7 @@ export const getLiveTeacherId = (lesson, students, enrolments, teacherCoverage) 
 // Returns true if the lesson's instrument has no assigned teacher in current student data.
 // Cluster 5a: lane-first — if a lane resolves a teacher, the lesson is assigned.
 export const isLessonUnassigned = (lesson, students, enrolments, teacherCoverage) => {
+  if (!lesson) return false;
   const laneTid = getCardTeacherId(lesson, teacherCoverage);
   if (laneTid) return false;
   if (lesson.isGroup || lesson.isBandSession) return false;
@@ -388,7 +391,7 @@ export function downloadFile(content, filename, mimeType) {
 
 // ── School / break grid helpers ───────────────────────────────────────────────
 
-export function getBreaksForSchool(school, teachers, lessons) {
+export function getBreaksForSchool(school, teachers, lessons, teacherCoverage) {
   var breaks = [];
   // School-level slot breaks (recess, lunch)
   if (school && school.slots) {
@@ -408,7 +411,7 @@ export function getBreaksForSchool(school, teachers, lessons) {
   }
   // Teacher-level breaks if no school breaks found
   if (breaks.length === 0) {
-    var tids = [...new Set(lessons.filter(function(l) { return l.schoolId === school.id; }).map(function(l) { return l.teacherId; }))];
+    var tids = [...new Set(lessons.filter(function(l) { return l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage) || l.teacherId; }))];
     var seen = {};
     for (var i2 = 0; i2 < tids.length; i2++) {
       var t = teachers.find(function(t2) { return t2.id === tids[i2]; });

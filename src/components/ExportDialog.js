@@ -30,7 +30,7 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
   // Source is derived from sourceTab + selectedPastWeek
@@ -177,7 +177,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
   const getExportHtml = React.useCallback((singleDay) => {
     const dayFilter = singleDay || (day.size === 1 ? [...day][0] : null);
     if (exportType === "teacher_schedules") {
-      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel });
+      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage });
     }
     const parts = [];
     if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
@@ -190,6 +190,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
       className: className || null, day: dayFilter,
       title: `${sourceLabel} Timetable — ${filterLabel}`,
       specialists: specialists || null,
+      teacherCoverage,
     });
   }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists]);
 
@@ -287,6 +288,7 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                 className: className || null, day: exportDay || null,
                 title: `${sourceLabel} Timetable — ${filterLabel}`,
                 specialists: specialists || null,
+                teacherCoverage,
               });
             }
           } else if (exportType === "teacher_schedules") {
@@ -306,11 +308,11 @@ export function ExportDialog({ lessons, students, schools, teachers, contacts, s
                   // Session 96: also register teacher-schedule PDFs in Documents.
                   uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
-                  await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase });
+                  await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage });
                 }
               }
             } else {
-              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase });
+              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage });
             }
           }
         }
