@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, findLaneId } from "./utils/teacherCoverageDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -1976,6 +1976,11 @@ export default function MusicTimetableApp() {
         const liveTeacherId   = inst.teacherId;
         const liveTeacherName = teacher.name || "";
         const liveStudentName = stu.name || "";
+
+        // Cluster 4c: skip cluster-4 cards (no teacherId stamp). Lane resolves teacher
+        // at render time; cluster 5 will reframe this useEffect's solo-card sync logic
+        // and cluster 12 will strip the teacherName/teacherId fields entirely.
+        if (!lesson.teacherId) return null;
 
         if (
           lesson.teacherId   === liveTeacherId   &&
@@ -4521,33 +4526,43 @@ export default function MusicTimetableApp() {
   // in sync when a scheduled group is edited in GroupsManager
   React.useEffect(() => {
     if (!timetable) return;
-    let needUpdate = false;
-    const updatedLessons = timetable.lessons.map(l => {
-      if (!l.groupId) return l;
-      const group = groups.find(g => g.id === l.groupId);
-      if (!group) return l;
-      const changes = {};
-      // Sync teacher
-      if (group.teacherId && l.teacherId !== group.teacherId) {
-        const newTeacher = teachers.find(t => t.id === group.teacherId);
-        if (newTeacher) { changes.teacherId = newTeacher.id; changes.teacherName = newTeacher.name; }
-      }
-      // Sync group name
-      if (group.name && l.groupName !== group.name) {
-        changes.groupName = group.name; changes.studentName = group.name;
-      }
-      // Sync student list
-      const groupStudentIds = group.studentIds || [];
-      if (JSON.stringify(l.studentIds || []) !== JSON.stringify(groupStudentIds)) {
-        changes.studentIds = [...groupStudentIds];
-        changes.studentNames = groupStudentIds.map(sid => students.find(s => s.id === sid)?.name || "?");
-        if (groupStudentIds.length > 0 && l.studentId !== groupStudentIds[0]) changes.studentId = groupStudentIds[0];
-      }
-      if (Object.keys(changes).length === 0) return l;
-      needUpdate = true;
-      return { ...l, ...changes };
+    // Spec 2 cluster 4c — functional-setter restructure to eliminate stale-closure
+    // write-back. The .map runs inside the setter against prev.lessons (latest
+    // state), so a regenerate that already wrote fresh bucket_id-stamped cards
+    // can't be clobbered by a closure-captured snapshot.
+    setTimetable(prev => {
+      if (!prev) return prev;
+      let needUpdate = false;
+      const updatedLessons = prev.lessons.map(l => {
+        if (!l.groupId) return l;
+        const group = groups.find(g => g.id === l.groupId);
+        if (!group) return l;
+        const changes = {};
+        // Sync teacher — guarded for cluster-4 cards (cards with bucket_id and
+        // no teacherId stay lane-managed; legacy cards with teacherId still
+        // sync until cluster 12 strips them in Phase 3 cleanup).
+        if (group.teacherId && l.teacherId && l.teacherId !== group.teacherId) {
+          const newTeacher = teachers.find(t => t.id === group.teacherId);
+          if (newTeacher) { changes.teacherId = newTeacher.id; changes.teacherName = newTeacher.name; }
+        }
+        // Sync group name
+        if (group.name && l.groupName !== group.name) {
+          changes.groupName = group.name; changes.studentName = group.name;
+        }
+        // Sync student list
+        const groupStudentIds = group.studentIds || [];
+        if (JSON.stringify(l.studentIds || []) !== JSON.stringify(groupStudentIds)) {
+          changes.studentIds = [...groupStudentIds];
+          changes.studentNames = groupStudentIds.map(sid => students.find(s => s.id === sid)?.name || "?");
+          if (groupStudentIds.length > 0 && l.studentId !== groupStudentIds[0]) changes.studentId = groupStudentIds[0];
+        }
+        if (Object.keys(changes).length === 0) return l;
+        needUpdate = true;
+        return { ...l, ...changes };
+      });
+      if (!needUpdate) return prev;
+      return { ...prev, lessons: updatedLessons };
     });
-    if (needUpdate) setTimetable(prev => ({ ...prev, lessons: updatedLessons }));
   }, [groups]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Smart group scheduling: tries to fit a group into the master timetable
@@ -4572,12 +4587,17 @@ export default function MusicTimetableApp() {
     if (manualDay && manualTime) {
       const slot = school.slots.find(s => s.start === manualTime);
       if (!slot) return { success: false, reason: "Invalid time slot" };
+      // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+      const bucketId = findLaneId(teacherCoverage, school.id, manualDay, teacher.id);
+      if (!bucketId) {
+        return { success: false, reason: `no covering lane for (${school.name}, ${manualDay}, ${teacher.name})` };
+      }
       const lesson = {
         id: uid(), isGroup: true, groupId: group.id, groupName: group.name,
         studentId: group.studentIds[0], studentName: group.name,
         studentIds: [...group.studentIds],
         studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-        teacherId: teacher.id, teacherName: teacher.name,
+        bucket_id: bucketId, teacherName: teacher.name,
         schoolId: school.id, schoolName: school.name,
         day: manualDay, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
@@ -4602,10 +4622,18 @@ export default function MusicTimetableApp() {
       });
     };
 
+    // Spec 2 cluster 4c — track whether any day had a covering lane,
+    // so the fallthrough error distinguishes "no slot" from "no lane".
+    let anyLaneFound = false;
+
     // Try each day the teacher is available
     for (const day of school.days) {
       const dayAvail = teacherAvail.find(a => a.day === day);
       if (!dayAvail) continue;
+      // Spec 2 cluster 4c — skip days without a covering lane.
+      const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+      if (!bucketId) continue;
+      anyLaneFound = true;
       const availStart = timeToMin(dayAvail.start);
       const availEnd = timeToMin(dayAvail.end);
 
@@ -4648,7 +4676,7 @@ export default function MusicTimetableApp() {
               studentId: group.studentIds[0], studentName: group.name,
               studentIds: [...group.studentIds],
               studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-              teacherId: teacher.id, teacherName: teacher.name,
+              bucket_id: bucketId, teacherName: teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -4674,7 +4702,7 @@ export default function MusicTimetableApp() {
           studentId: group.studentIds[0], studentName: group.name,
           studentIds: [...group.studentIds],
           studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-          teacherId: teacher.id, teacherName: teacher.name,
+          bucket_id: bucketId, teacherName: teacher.name,
           schoolId: school.id, schoolName: school.name,
           day, slotId: slot.id, slotName: slot.name,
           start: slot.start, end: slot.end,
@@ -4687,7 +4715,12 @@ export default function MusicTimetableApp() {
       }
     }
 
-    return { success: false, reason: "No available slot — all class-time slots are occupied" };
+    return {
+      success: false,
+      reason: anyLaneFound
+        ? "No available slot — all class-time slots are occupied"
+        : `no covering lane for ${teacher.name} at ${school.name} on any day. Add staff first.`
+    };
   };
 
   // Incremental scheduling: add pending students + ready groups without disturbing existing lessons
@@ -4713,10 +4746,16 @@ export default function MusicTimetableApp() {
         t.availability.some(a => a.schoolId === school.id && a.day === day)
       );
       if (!teacher) { notify("No compatible teacher available for " + inst.name, "warning"); return; }
+      // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+      const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+      if (!bucketId) {
+        notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+        return;
+      }
       const lesson = {
         id: uid(),
         studentId: student.id, studentName: student.name,
-        teacherId: teacher.id, teacherName: teacher.name,
+        bucket_id: bucketId, teacherName: teacher.name,
         schoolId: school.id, schoolName: school.name,
         day, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
@@ -4804,11 +4843,17 @@ export default function MusicTimetableApp() {
       );
     }
     if (!teacher) { notify("No compatible teacher available", "warning"); return; }
+    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+    const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+    if (!bucketId) {
+      notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+      return;
+    }
 
     const lesson = {
       id: uid(),
       studentId: student.id, studentName: student.name,
-      teacherId: teacher.id, teacherName: teacher.name,
+      bucket_id: bucketId, teacherName: teacher.name,
       schoolId: school.id, schoolName: school.name,
       day, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
@@ -6352,9 +6397,15 @@ export default function MusicTimetableApp() {
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
             if (!teacher) teacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
             if (!teacher) { notify("No compatible teacher available for " + student.name, "warning"); return; }
+            // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+            if (!bucketId) {
+              notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+              return;
+            }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              teacherId: teacher.id, teacherName: teacher.name,
+              bucket_id: bucketId, teacherName: teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -6384,9 +6435,15 @@ export default function MusicTimetableApp() {
             if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
             if (!teacher) teacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
             if (!teacher) { notify("No compatible teacher available for " + student.name, "warning"); return; }
+            // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+            if (!bucketId) {
+              notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+              return;
+            }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              teacherId: teacher.id, teacherName: teacher.name,
+              bucket_id: bucketId, teacherName: teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,

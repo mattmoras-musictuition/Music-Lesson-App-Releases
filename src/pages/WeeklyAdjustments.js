@@ -18,6 +18,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { findLaneId } from "../utils/teacherCoverageDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -1110,11 +1111,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         });
       }
     }
+    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+    const bandBucketId = band.teacherId
+      ? findLaneId(teacherCoverage, band.schoolId, day, band.teacherId)
+      : null;
+    if (!bandBucketId) {
+      const sName = schools.find(s => s.id === band.schoolId)?.name || band.schoolId;
+      if (notify) notify(`No covering lane for ${teacher?.name || "(unassigned)"} at ${sName} on ${day}. Add staff first.`, "warning");
+      return;
+    }
     const bandLesson = {
       id: uid(), isBandSession: true,
       bandId: band.id, bandName: band.name || "TBC",
       schoolId: band.schoolId,
-      teacherId: band.teacherId || "", teacherName: teacher?.name || "",
+      bucket_id: bandBucketId, teacherName: teacher?.name || "",
       day, start: time, end: time,
       members: band.members || [],
       removedLessons: bandRemovedLessons,
@@ -1829,9 +1839,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         if (matchAny) { bandRemovedLessons.push(matchAny); lessons = lessons.filter(l => l.id !== matchAny.id); }
       }
       const teacher = teachers.find(t => t.id === band.teacherId);
+      // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+      const dropBucketId = band.teacherId
+        ? findLaneId(teacherCoverage, band.schoolId, newDay, band.teacherId)
+        : null;
+      if (!dropBucketId) {
+        const sName = schools.find(s => s.id === band.schoolId)?.name || band.schoolId;
+        if (notify) notify(`No covering lane for ${teacher?.name || "(unassigned)"} at ${sName} on ${newDay}. Add staff first.`, "warning");
+        return;
+      }
       const bandLesson = {
         id: staged.id, isBandSession: true, bandId: band.id, bandName: band.name,
-        schoolId: band.schoolId, teacherId: band.teacherId || "",
+        schoolId: band.schoolId, bucket_id: dropBucketId,
         teacherName: teacher?.name || "",
         day: newDay, start: slot.start, end: slot.end, slotId: slot.id,
         weekDate: dayDate?.date || "", fromStaged: true,
@@ -2693,6 +2712,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   return (
                     <button key={pairKey} onClick={() => {
                       if (alreadyStaged) return;
+                      // Spec 2 cluster 4c — staged entry: no day/slot yet, so
+                      // bucket_id is deferred until drag-into-slot stamps it.
                       const stagedCard = {
                         id: uid(), studentId: s.id, studentName: s.name,
                         schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
@@ -2735,6 +2756,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       return (
                         <button key={band.id} disabled={disabled} onClick={() => {
                           if (disabled) return;
+                          // Spec 2 cluster 4c — staged entry: bucket_id deferred until drag-into-slot.
                           const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, teacherId: band.teacherId || "", members: band.members || [] };
                           setWeeklyTimetables(prev => {
                             const entry = prev[storageKey] || { lessons: [], missed: [] };
@@ -2829,7 +2851,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 <button key={e.studentId + "|" + e.instrument} disabled={alreadyPlaced}
                                   onClick={() => {
                                     if (alreadyPlaced) return;
-                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, teacherId: e.teacherId || "", teacherName: e.teacherName || "", enrolmentId: enrolmentIdFor(e.studentId, e.instrument, enrolments), day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
+                                    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+                                    const cuBucketId = e.teacherId
+                                      ? findLaneId(teacherCoverage, contextMenu.schoolId, contextMenu.day, e.teacherId)
+                                      : null;
+                                    if (!cuBucketId) {
+                                      const sName = schools.find(sc => sc.id === contextMenu.schoolId)?.name || contextMenu.schoolId;
+                                      if (notify) notify(`No covering lane for ${e.teacherName || "(unassigned)"} at ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
+                                      return;
+                                    }
+                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, bucket_id: cuBucketId, teacherName: e.teacherName || "", enrolmentId: enrolmentIdFor(e.studentId, e.instrument, enrolments), day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
                                     setCatchupLessons(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), newLesson] }));
                                     if (notify) notify(`${e.studentName} — catch-up scheduled`);
                                     setContextMenu(null); setCatchupSlotSubTeacher(null);
@@ -3312,15 +3343,32 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     return;
                   }
                   const teacher = teachers.find(t => t.id === activeEnrolment.teacherId);
+                  // Spec 2 cluster 4c — internal bucket_id resolution. Caller's
+                  // opts.teacherId (if any) overrides activeEnrolment.teacherId
+                  // for the lookup; teacherId/teacherName are stripped from the
+                  // stamped card, bucket_id replaces them.
+                  const { teacherId: _optsTid, teacherName: _optsTname, ...restOpts } = opts || {};
+                  const stampTeacherId = _optsTid || activeEnrolment.teacherId || "";
+                  const stampTeacherName = _optsTname
+                    || (stampTeacherId && teachers.find(t => t.id === stampTeacherId)?.name)
+                    || teacher?.name || "";
+                  const bucketId = stampTeacherId
+                    ? findLaneId(teacherCoverage, sId, contextMenu.day, stampTeacherId)
+                    : null;
+                  if (!bucketId) {
+                    const sName = schools.find(sc => sc.id === sId)?.name || sId;
+                    if (notify) notify(`No covering lane for ${stampTeacherName || "(unassigned)"} at ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
+                    return;
+                  }
                   const newLesson = {
                     id: uid(), studentId: s.id, studentName: s.name,
                     schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                     instrument: activeEnrolment.instrument,
-                    teacherId: activeEnrolment.teacherId || "",
-                    teacherName: teacher?.name || "",
+                    bucket_id: bucketId,
+                    teacherName: stampTeacherName,
                     enrolmentId: activeEnrolment.id,
                     day: contextMenu.day, start: contextMenu.time, end: contextMenu.time,
-                    ...opts
+                    ...restOpts
                   };
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
@@ -3352,13 +3400,26 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // Hoist data needed by submenu types
                 const schoolBands = (bands || []).filter(b => b.schoolId === sId && (b.members || []).length > 0);
                 const placeOne = (ml) => {
+                  // Spec 2 cluster 4c — internal bucket_id resolution.
+                  const stampTeacherId = ml.teacherId || "";
+                  const stampTeacherName = ml.teacherName
+                    || (stampTeacherId && teachers.find(t => t.id === stampTeacherId)?.name)
+                    || "";
+                  const bucketId = stampTeacherId
+                    ? findLaneId(teacherCoverage, ml.schoolId, wkDay, stampTeacherId)
+                    : null;
+                  if (!bucketId) {
+                    const sName = schools.find(sc => sc.id === ml.schoolId)?.name || ml.schoolId;
+                    if (notify) notify(`No covering lane for ${stampTeacherName || "(unassigned)"} at ${sName} on ${wkDay}. Add staff first.`, "warning");
+                    return;
+                  }
                   const newLesson = {
                     id: uid(), studentId: ml.studentId, studentName: ml.studentName,
                     isGroup: ml.isGroup || false, groupId: ml.groupId || undefined,
                     groupName: ml.groupName || undefined, studentIds: ml.studentIds || undefined,
                     studentNames: ml.studentNames || undefined, members: ml.members || undefined,
                     schoolId: ml.schoolId, schoolName: ml.schoolName || "",
-                    instrument: ml.instrument, teacherId: ml.teacherId || "", teacherName: ml.teacherName || "",
+                    instrument: ml.instrument, bucket_id: bucketId, teacherName: stampTeacherName,
                     enrolmentId: ml.enrolmentId || enrolmentIdFor(ml.studentId, ml.instrument, enrolments, ml.groupId),
                     day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false,
                   };
@@ -3485,11 +3546,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               }
                               const teacherForTemp = activeEnrolment.teacherId
                                 ? teachers.find(t => t.id === activeEnrolment.teacherId) : null;
+                              // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
+                              const tempBucketId = activeEnrolment.teacherId
+                                ? findLaneId(teacherCoverage, sId, wkDay, activeEnrolment.teacherId)
+                                : null;
+                              if (!tempBucketId) {
+                                const sName = schools.find(sc => sc.id === sId)?.name || sId;
+                                if (notify) notify(`No covering lane for ${teacherForTemp?.name || "(unassigned)"} at ${sName} on ${wkDay}. Add staff first.`, "warning");
+                                return;
+                              }
                               const newLesson = {
                                 id: uid(), studentId: s.id, studentName: s.name,
                                 schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                                 instrument: activeEnrolment.instrument,
-                                teacherId: activeEnrolment.teacherId || "",
+                                bucket_id: tempBucketId,
                                 teacherName: teacherForTemp?.name || "",
                                 enrolmentId: activeEnrolment.id,
                                 day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
@@ -5452,14 +5522,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     if (!lid || lid.startsWith("staged:") || lid.startsWith("missed:") || lid.startsWith("wbreak:")) return;
                     const draggedLesson = (weeklyData.lessons || []).find(l => l.id === lid);
                     if (!draggedLesson || !draggedLesson.fromStaged) return;
+                    // Spec 2 cluster 4c — card→staged transition. Card has bucket_id (post-4b);
+                    // staged entries deliberately carry teacherId+teacherName instead (no day/slot →
+                    // no bucket_id). Resolve teacherId from the card's bucket_id via Map; fall back
+                    // to draggedLesson.teacherId for legacy pre-4b cards.
+                    const bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
+                    const stagedTeacherId = (draggedLesson.bucket_id && bucketIdToTeacherId.get(draggedLesson.bucket_id))
+                      || draggedLesson.teacherId
+                      || "";
                     let restoredCard;
                     if (draggedLesson.isBandSession) {
-                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, teacherId: draggedLesson.teacherId, members: draggedLesson.members || [] };
+                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, teacherId: stagedTeacherId, members: draggedLesson.members || [] };
                     } else {
                       restoredCard = {
                         id: draggedLesson.id, studentId: draggedLesson.studentId, studentName: draggedLesson.studentName,
                         schoolId: draggedLesson.schoolId, schoolName: draggedLesson.schoolName,
-                        instrument: draggedLesson.instrument, teacherId: draggedLesson.teacherId, teacherName: draggedLesson.teacherName,
+                        instrument: draggedLesson.instrument, teacherId: stagedTeacherId, teacherName: draggedLesson.teacherName,
                         isMakeup: true, makeupForTallyId: draggedLesson.makeupForTallyId,
                       };
                     }
