@@ -8,6 +8,7 @@ import { uid, timeToMin } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { DAYS } from "../constants";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { findLaneId } from "../utils/teacherCoverageDB";
 
 // ── getSpecialistSubject ──────────────────────────────────────────────────────
 // Used inside generateMasterTimetable AND exported for TimetableView warnings.
@@ -77,16 +78,23 @@ export function isSlotAllowed(slot, student, school, mustBeOutsideClass, slotIsS
 
 // ── scheduleReadyGroups ───────────────────────────────────────────────────────
 
-export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, students, teachers, specialists) {
+export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, students, teachers, specialists, teacherCoverage = []) {
   const readyGroups = readyGroupsOrAll.filter(g => g.status === "ready");
   const scheduled = [];
   const failed = [];
 
+  // Spec 2 cluster 4b — bucket_id → teacherId Map. Existing lessons carry
+  // bucket_id post-4b; resolve to teacherId for the teacher-busy bookkeeping.
+  const bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
+  const getCardTeacherId = (lesson) => bucketIdToTeacherId.get(lesson.bucket_id) || null;
+
   // Build teacher slot usage from existing lessons
   const teacherUsed = {};
   for (const l of existingLessons) {
-    if (!teacherUsed[l.teacherId]) teacherUsed[l.teacherId] = new Set();
-    teacherUsed[l.teacherId].add(`${l.day}|${l.start}`);
+    const lTeacherId = getCardTeacherId(l);
+    if (!lTeacherId) continue;
+    if (!teacherUsed[lTeacherId]) teacherUsed[lTeacherId] = new Set();
+    teacherUsed[lTeacherId].add(`${l.day}|${l.start}`);
   }
 
   for (const group of readyGroups) {
@@ -108,7 +116,7 @@ export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, 
 
     // Build list of teacher's existing lesson times for adjacency scoring
     const teacherExistingTimes = existingLessons
-      .filter(l => l.teacherId === teacher.id && l.schoolId === school.id)
+      .filter(l => getCardTeacherId(l) === teacher.id && l.schoolId === school.id)
       .map(l => ({ day: l.day, start: timeToMin(l.start), end: timeToMin(l.end) }));
 
     // Prefer days where teacher already has lessons (packing)
@@ -177,6 +185,20 @@ export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, 
           if (isSpec) continue;
         }
 
+        // Spec 2 cluster 4b — resolve lane before stamping. Skip if no
+        // active lane covers (school, day, teacher); the regenerate flow
+        // surfaces missing lanes via the failed/unscheduled arrays.
+        const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+        if (!bucketId) {
+          failed.push({
+            student: { id: group.id, name: group.name, schoolId: group.schoolId },
+            instrument: group.instrument || "Group",
+            reason: `no covering lane for (${school.name}, ${day}, ${teacher.name})`,
+            isGroup: true,
+          });
+          booked = true; // suppress the "No available slot" fallback below — lane absence is the actual reason
+          break;
+        }
         const lesson = {
           id: uid(),
           isGroup: true, groupId: group.id, groupName: group.name,
@@ -184,7 +206,7 @@ export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, 
           studentName: group.name,
           studentIds: [...group.studentIds],
           studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-          teacherId: teacher.id, teacherName: teacher.name,
+          bucket_id: bucketId, teacherName: teacher.name,
           schoolId: school.id, schoolName: school.name,
           day, slotId: slot.id, slotName: slot.name,
           start: slot.start, end: slot.end,
@@ -207,7 +229,7 @@ export function scheduleReadyGroups(readyGroupsOrAll, existingLessons, schools, 
 
 // ── generateMasterTimetable ───────────────────────────────────────────────────
 
-export function generateMasterTimetable(schools, students, teachers, enrolments, specialistTimetable = [], { existingLessons = [], targetSchoolId = null } = {}) {
+export function generateMasterTimetable(schools, students, teachers, enrolments, specialistTimetable = [], { existingLessons = [], targetSchoolId = null, teacherCoverage = [] } = {}) {
   const activeStudents = students.filter(s => s.status === "active");
   const studentsToSchedule = targetSchoolId
     ? activeStudents.filter(s => s.schoolId === targetSchoolId)
@@ -219,11 +241,17 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
   const teacherSchedule = {};
   teachers.forEach(t => { teacherSchedule[t.id] = []; });
 
+  // Spec 2 cluster 4b — bucket_id → teacherId Map for resolving existingLessons
+  // (which carry bucket_id, not teacherId, post-4b).
+  const bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
+  const getCardTeacherId = (lesson) => bucketIdToTeacherId.get(lesson.bucket_id) || null;
+
   // Pre-populate teacher schedules with existing lessons from other schools
   const studentDayMap = {};
   for (const el of existingLessons) {
-    if (teacherSchedule[el.teacherId]) {
-      teacherSchedule[el.teacherId].push({
+    const elTeacherId = getCardTeacherId(el);
+    if (elTeacherId && teacherSchedule[elTeacherId]) {
+      teacherSchedule[elTeacherId].push({
         day: el.day, slotId: el.slotId, schoolId: el.schoolId,
         start: el.start, end: el.end
       });
@@ -413,6 +441,11 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
         const mustBeOutsideClass = isMultiInstrument && classTimeUsed;
         let scheduled = false;
 
+        // Spec 2 cluster 4b — accumulator for (day, teacher) combos skipped
+        // because no active lane covers them. Surfaced into the perInstResults
+        // reason if the lesson doesn't schedule anywhere.
+        const laneAbsentDays = new Set();
+
         let compatibleTeachers = teachers.filter(t => {
           const teachesInst = t.instruments.find(ti => ti.name === inst.name);
           const teachesAtSchool = t.availability.some(a => a.schoolId === school.id);
@@ -578,10 +611,18 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
             }
             if (travelConflict) continue;
             if (lessons.find(l => l.studentId === student.id && l.day === day && l.slotId === slot.id)) continue;
+            // Spec 2 cluster 4b — resolve lane before stamping bucket_id.
+            // No active lane covering (school, day, teacher) → skip teacher
+            // for this slot; absence accumulates into laneAbsentDays.
+            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+            if (!bucketId) {
+              laneAbsentDays.add(`${day}|${teacher.name}`);
+              continue;
+            }
             const lesson = {
               id: uid(),
               studentId: student.id, studentName: student.name,
-              teacherId: teacher.id, teacherName: teacher.name,
+              bucket_id: bucketId, teacherName: teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -658,11 +699,19 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
             if (lessons.find(l => l.studentId === student.id && l.day === day && l.slotId === slot.id)) {
               reasons.push(`student already has lesson at ${slot.start}`); continue;
             }
+            // Spec 2 cluster 4b — resolve lane before stamping. Skip if no
+            // active lane covers this (school, day, teacher).
+            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+            if (!bucketId) {
+              laneAbsentDays.add(`${day}|${teacher.name}`);
+              reasons.push(`${teacher.name}: no covering lane on ${day}`);
+              continue;
+            }
             const slotIsSpecialist = isSpecialistTime(school.id, student.className, day, slot.start, slot.end);
             const lesson = {
               id: uid(),
               studentId: student.id, studentName: student.name,
-              teacherId: teacher.id, teacherName: teacher.name,
+              bucket_id: bucketId, teacherName: teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -745,11 +794,26 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
           }
         }
 
+        // Spec 2 cluster 4b — if scheduling failed AND every attempt was
+        // blocked by lane absence, surface that as the reason. Otherwise the
+        // existing fallback messaging applies.
+        let failReason = null;
+        if (!scheduled) {
+          if (laneAbsentDays.size > 0) {
+            const combos = [...laneAbsentDays].map(k => {
+              const [d, tname] = k.split("|");
+              return `${school.name}/${d}/${tname}`;
+            }).join(", ");
+            failReason = `no covering lane (${combos})`;
+          } else if (noteMismatch) {
+            failReason = `No slot available (requested: ${allRequiredTimes.map(rt => `${rt.day} ${rt.start}`).join(", ")}${pass1FailReason ? ` — ${pass1FailReason}` : ""})`;
+          } else {
+            failReason = "No available slot";
+          }
+        }
         perInstResults.push({
           inst, scheduled, noteMismatch, pass1FailReason,
-          reason: !scheduled ? (noteMismatch
-            ? `No slot available (requested: ${allRequiredTimes.map(rt => `${rt.day} ${rt.start}`).join(", ")}${pass1FailReason ? ` — ${pass1FailReason}` : ""})`
-            : "No available slot") : null
+          reason: failReason,
         });
         if (!scheduled) allScheduled = false;
       }
@@ -794,11 +858,16 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
     }
   }
 
-  // SAFETY: detect and remove any teacher double-bookings
+  // SAFETY: detect and remove any teacher double-bookings.
+  // Spec 2 cluster 4b — resolve teacherId via bucket_id Map; the check is
+  // cross-school same-teacher (so bucket_id equality isn't sufficient).
   const dbFound = [];
   for (let i = 0; i < lessons.length; i++) {
+    const tIdI = getCardTeacherId(lessons[i]);
+    if (!tIdI) continue;
     for (let j = i + 1; j < lessons.length; j++) {
-      if (lessons[i].teacherId === lessons[j].teacherId &&
+      const tIdJ = getCardTeacherId(lessons[j]);
+      if (tIdI === tIdJ &&
           lessons[i].day === lessons[j].day &&
           timeToMin(lessons[i].start) < timeToMin(lessons[j].end) &&
           timeToMin(lessons[j].start) < timeToMin(lessons[i].end)) {
@@ -824,8 +893,15 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
 
 // ── compactTimetable ──────────────────────────────────────────────────────────
 
-export function compactTimetable(result, schools, students, teachers, enrolments, specialists) {
+export function compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage = []) {
   var lessons = result.lessons;
+
+  // Spec 2 cluster 4b — bucket_id → teacherId Map for cross-day / cross-school
+  // teacher equality checks. Cards carry bucket_id (not teacherId) post-cluster-4b.
+  var bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
+  var getCardTeacherId = function(lesson) {
+    return bucketIdToTeacherId.get(lesson.bucket_id) || null;
+  };
 
   var specLookupC = {};
   for (var spi0 = 0; spi0 < (specialists || []).length; spi0++) {
@@ -887,12 +963,13 @@ export function compactTimetable(result, schools, students, teachers, enrolments
     return false;
   };
 
+  // bucket_id IS the (school, day, teacher) tuple — use it directly as the combos key.
   var combos = {};
   for (var li = 0; li < lessons.length; li++) {
     var lesson = lessons[li];
-    var key = lesson.teacherId + '|' + lesson.schoolId + '|' + lesson.day;
-    if (!combos[key]) combos[key] = [];
-    combos[key].push(lesson);
+    if (!lesson.bucket_id) continue; // skip non-lane-stamped cards (e.g. legacy)
+    if (!combos[lesson.bucket_id]) combos[lesson.bucket_id] = [];
+    combos[lesson.bucket_id].push(lesson);
   }
 
   var totalMoved = 0;
@@ -901,9 +978,10 @@ export function compactTimetable(result, schools, students, teachers, enrolments
     var comboLessons = combos[comboKeys[ci]];
     if (comboLessons.length < 2) continue;
 
-    var teacherId = comboLessons[0].teacherId;
+    var teacherId = getCardTeacherId(comboLessons[0]);
     var schoolId = comboLessons[0].schoolId;
     var day = comboLessons[0].day;
+    if (!teacherId) continue; // bucket_id missing from teacherCoverage map → can't resolve
     var sch = schools.find(function(s) { return s.id === schoolId; });
     if (!sch) continue;
 
@@ -930,7 +1008,7 @@ export function compactTimetable(result, schools, students, teachers, enrolments
     if (movable.length < 1) continue;
 
     var otherSchoolLessons = lessons.filter(function(l) {
-      return l.teacherId === teacherId && l.day === day && l.schoolId !== schoolId;
+      return getCardTeacherId(l) === teacherId && l.day === day && l.schoolId !== schoolId;
     });
     var isTeacherBusyElsewhere = function(slotStart, slotEnd) {
       var sS = timeToMin(slotStart), sE = timeToMin(slotEnd);
@@ -1028,11 +1106,16 @@ export function compactTimetable(result, schools, students, teachers, enrolments
   }
 
   // CROSS-DAY BALANCING: even out lesson counts across days
+  // Cross-day balancing groups by (teacher, school) deliberately spanning days,
+  // so bucket_id (which includes day) can't be the key. Resolve teacherId via
+  // the Map.
   var teacherSchoolCombos = {};
   for (var tsi = 0; tsi < lessons.length; tsi++) {
     var tsLesson = lessons[tsi];
-    var tsKey = tsLesson.teacherId + '|' + tsLesson.schoolId;
-    if (!teacherSchoolCombos[tsKey]) teacherSchoolCombos[tsKey] = { teacherId: tsLesson.teacherId, schoolId: tsLesson.schoolId, lessons: [] };
+    var tsTeacherId = getCardTeacherId(tsLesson);
+    if (!tsTeacherId) continue;
+    var tsKey = tsTeacherId + '|' + tsLesson.schoolId;
+    if (!teacherSchoolCombos[tsKey]) teacherSchoolCombos[tsKey] = { teacherId: tsTeacherId, schoolId: tsLesson.schoolId, lessons: [] };
     teacherSchoolCombos[tsKey].lessons.push(tsLesson);
   }
 
@@ -1078,7 +1161,7 @@ export function compactTimetable(result, schools, students, teachers, enrolments
       var lightAvailEnd = timeToMin(lightAvail.end);
       var occupiedOnLight = {};
       for (var oli = 0; oli < lessons.length; oli++) {
-        if (lessons[oli].teacherId === tId && lessons[oli].day === lightestDay && lessons[oli].schoolId === sId) {
+        if (getCardTeacherId(lessons[oli]) === tId && lessons[oli].day === lightestDay && lessons[oli].schoolId === sId) {
           occupiedOnLight[lessons[oli].start] = true;
         }
       }
@@ -1109,7 +1192,7 @@ export function compactTimetable(result, schools, students, teachers, enrolments
           if (occupiedOnLight[lSlot.start]) continue;
           if (isTeacherOnBreak(tId, sId, lightestDay, lSlot.start, lSlot.end)) continue;
           var crossSchool = lessons.some(function(l) {
-            return l.teacherId === tId && l.day === lightestDay && l.schoolId !== sId &&
+            return getCardTeacherId(l) === tId && l.day === lightestDay && l.schoolId !== sId &&
               timeToMin(l.start) < lsEnd && lsStart < timeToMin(l.end);
           });
           if (crossSchool) continue;

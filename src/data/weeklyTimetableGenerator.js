@@ -31,10 +31,16 @@ export function buildWeeklyAIPrompt({ school, weekLabel, weekDates, todayDay, to
 
 // ── generateWeeklyTimetable ───────────────────────────────────────────────────
 
-export function generateWeeklyTimetable(masterLessons, school, students, teachers, specialists, interruptions, weekDates, aiHints = [], masterBreaksForSchool = []) {
+export function generateWeeklyTimetable(masterLessons, school, students, teachers, specialists, interruptions, weekDates, aiHints = [], masterBreaksForSchool = [], teacherCoverage = []) {
   const schoolLessons = masterLessons.filter(l => l.schoolId === school.id);
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+
+  // Spec 2 cluster 4b — bucket_id → teacherId Map. Cards post-4b carry
+  // bucket_id, not teacherId; the teacher-busy bookkeeping below (teacherSched)
+  // and the conflict predicates resolve teacherId via this Map.
+  const bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
+  const getCardTeacherId = (lesson) => bucketIdToTeacherId.get(lesson.bucket_id) || null;
 
   // Build interruption lookup for this week at this school
   const weekInterruptions = interruptions.filter(i => {
@@ -255,15 +261,22 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
         missed.push({ ...lesson, reason: "Master break conflict" });
         continue;
       }
-      const teacherId = swapHint ? swapHint.replacementTeacherId : lesson.teacherId;
+      // Spec 2 cluster 4b — Path B: swapHint operates on teacherName only;
+      // bucket_id propagates through unchanged from the source MTT card.
+      // TODO(cluster-6): swapHint becomes a lane_overrides row; this
+      // teacherName-override pathway gets deleted then.
+      const sourceTeacherId = getCardTeacherId(lesson);
+      const teacherId = swapHint ? swapHint.replacementTeacherId : sourceTeacherId;
       const teacherName = swapHint
         ? (teachers.find(t => t.id === swapHint.replacementTeacherId)?.name || lesson.teacherName)
         : lesson.teacherName;
-      if (!teacherSched[teacherId]) teacherSched[teacherId] = [];
-      teacherSched[teacherId].push({ day: lesson.day, start: lesson.start, end: lesson.end });
+      if (teacherId) {
+        if (!teacherSched[teacherId]) teacherSched[teacherId] = [];
+        teacherSched[teacherId].push({ day: lesson.day, start: lesson.start, end: lesson.end });
+      }
       placed.push({
         ...lesson,
-        teacherId,
+        // bucket_id propagates via spread; teacherName retained per Path B
         teacherName,
         weekDate: weekDateMap[lesson.day],
         duringSpecialist: getSpecialistTag(lesson, lesson.day, lesson.start, lesson.end),
@@ -281,6 +294,10 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
     const ft = reschedHint?.targetStart || null;
     let found = false;
 
+    // Spec 2 cluster 4b — resolve teacherId from bucket_id for the
+    // re-scheduling teacher-busy predicates.
+    const lessonTeacherId = getCardTeacherId(lesson);
+
     if (ft && fd) {
       // Specific target time given — find nearest slot
       const targetMin = timeToMin(ft);
@@ -288,10 +305,10 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
         const diff = Math.abs(timeToMin(s.start) - targetMin);
         return !best || diff < best.diff ? { slot: s, diff } : best;
       }, null)?.slot;
-      if (targetSlot && isTeacherFree(lesson.teacherId, fd, targetSlot.start, targetSlot.end)) {
+      if (targetSlot && lessonTeacherId && isTeacherFree(lessonTeacherId, fd, targetSlot.start, targetSlot.end)) {
         if (!isSlotBlocked(fd, targetSlot.start, targetSlot.end, className)) {
           placed.push({ ...lesson, day: fd, slotId: targetSlot.id, slotName: targetSlot.name, start: targetSlot.start, end: targetSlot.end, weekDate: weekDateMap[fd], adjusted: true, adjustReason: `Moved to ${fd} ${targetSlot.start}`, duringSpecialist: getSpecialistTag(lesson, fd, targetSlot.start, targetSlot.end) });
-          teacherSched[lesson.teacherId].push({ day: fd, start: targetSlot.start, end: targetSlot.end });
+          teacherSched[lessonTeacherId].push({ day: fd, start: targetSlot.start, end: targetSlot.end });
           found = true;
         }
       }
@@ -310,12 +327,13 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
           if (slot.type !== "class" && !["recess", "lunch", "before_school", "after_school"].includes(slot.type)) continue;
           if (!isAiDirectedDay && isSlotBlocked(day, slot.start, slot.end, className)) continue;
           if (!isAiDirectedDay && !lesson.duringSpecialist && isSpecialistClash(className, day, slot.start, slot.end)) continue;
-          if (isAiDirectedDay ? !isTeacherFreeOverride(lesson.teacherId, day, slot.start) : !isTeacherFree(lesson.teacherId, day, slot.start, slot.end)) continue;
+          if (!lessonTeacherId) continue;
+          if (isAiDirectedDay ? !isTeacherFreeOverride(lessonTeacherId, day, slot.start) : !isTeacherFree(lessonTeacherId, day, slot.start, slot.end)) continue;
           if (getNotAvailUntil(lesson, day) > timeToMin(slot.start)) continue;
           if (isBlockedWindow(lesson, day, slot.start, slot.end)) continue;
           const reason = fd ? `Rescheduled to ${day}` : day === lesson.day ? "Time changed (interruption)" : `Moved to ${day} (interruption)`;
           placed.push({ ...lesson, day, slotId: slot.id, slotName: slot.name, start: slot.start, end: slot.end, weekDate: weekDateMap[day], adjusted: true, adjustReason: reason, duringSpecialist: getSpecialistTag(lesson, day, slot.start, slot.end) });
-          teacherSched[lesson.teacherId].push({ day, start: slot.start, end: slot.end });
+          teacherSched[lessonTeacherId].push({ day, start: slot.start, end: slot.end });
           found = true;
           break;
         }
@@ -347,6 +365,9 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
 
 // ── Print functions ───────────────────────────────────────────────────────────
 
+// TODO(cluster-5): teacherName is read from the stamped lesson field for now;
+// cluster 5 swaps render-side teacher resolution to lane lookup via bucket_id.
+// Phase 3 cleanup (cluster 12) strips teacherName from JSONB cards entirely.
 export function printMasterTimetable(timetable, schools, students, teachers) {
   if (!timetable || !timetable.lessons || timetable.lessons.length === 0) return;
   const DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];

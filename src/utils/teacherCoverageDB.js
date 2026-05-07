@@ -96,4 +96,28 @@ export async function loadTeacherCoverageFromSupabase() {
  *                               schoolsDB.js pattern.
  */
 
+// ── Lookup helper ────────────────────────────────────────────
+
+/**
+ * Resolve the active lane id for a (school, day, teacher) tuple.
+ * Returns null if no active lane covers that combination — consumers
+ * MUST handle null (Phase 1 contract: missing-lane lessons skip with a
+ * "no covering lane" reason and surface in the unscheduled array).
+ *
+ * @param {TeacherCoverage[]} teacherCoverage  All loaded lanes.
+ * @param {string} schoolId
+ * @param {string} day
+ * @param {string} teacherId
+ * @returns {string|null}
+ */
+export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
+  const lane = (teacherCoverage || []).find(
+    l => l.schoolId === schoolId &&
+         l.day === day &&
+         l.teacherId === teacherId &&
+         l.status === "active"
+  );
+  return lane ? lane.id : null;
+}
+
 // syncTeacherCoverageToSupabase lands in cluster 9 (Add/Remove Staff UI).

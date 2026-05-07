@@ -19,7 +19,7 @@ import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -1243,7 +1243,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const bandStudentIds = new Set(existingBandSessions.flatMap(l => (l.members || []).map(m => m.studentId)));
     const filteredMasterLessons = timetable.lessons.filter(l => !bandStudentIds.has(l.studentId));
     const result = generateWeeklyTimetable(
-      filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2
+      filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage
     );
 
     // Skip students with a pre-marked informed_absence or extended_absence for this week — remove from
@@ -1310,7 +1310,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const bandStudentIdsAll = new Set(existingBandSessionsAll.flatMap(l => (l.members || []).map(m => m.studentId)));
       const filteredAll = timetable.lessons.filter(l => !bandStudentIdsAll.has(l.studentId));
       const result = generateWeeklyTimetable(
-        filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks
+        filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage
       );
       const _allPreAbsentEntries = getMissedEntries({
         weeklyTimetables,
@@ -1534,7 +1534,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const bandStudentIdsDay = new Set(existingBandSessionsDay.flatMap(l => (l.members || []).map(m => m.studentId)));
     const filteredMasterDay = timetable.lessons.filter(l => !bandStudentIdsDay.has(l.studentId));
     const result = generateWeeklyTimetable(
-      filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3
+      filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage
     );
 
     // Skip students with a pre-marked informed_absence or extended_absence for this week

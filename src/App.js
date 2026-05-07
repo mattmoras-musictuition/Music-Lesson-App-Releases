@@ -4334,12 +4334,13 @@ export default function MusicTimetableApp() {
     // Eligible = any group with enough members, regardless of status
     const eligibleGroups = groups.filter(g => (g.studentIds || []).length >= g.minSize && g.status !== "scheduled");
     const groupLessons = eligibleGroups.length > 0
-      ? scheduleReadyGroups(eligibleGroups.map(g => ({ ...g, status: "ready" })), [], schools, students, teachers, enrichedSpecialists)
+      ? scheduleReadyGroups(eligibleGroups.map(g => ({ ...g, status: "ready" })), [], schools, students, teachers, enrichedSpecialists, teacherCoverage)
       : { scheduled: [], failed: [] };
 
     // Generate individual lessons around the group lessons
     const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
-      existingLessons: groupLessons.scheduled
+      existingLessons: groupLessons.scheduled,
+      teacherCoverage
     });
     result.unscheduled = [...result.unscheduled, ...groupLessons.failed];
 
@@ -4350,7 +4351,7 @@ export default function MusicTimetableApp() {
       setGroups(prev => prev.map(g => scheduledGroupIds.has(g.id) ? { ...g, status: "scheduled" } : g));
     }
 
-    compactTimetable(result, schools, students, teachers, enrolments, specialists);
+    compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
     // Post-compaction double-booking check
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
@@ -4452,12 +4453,13 @@ export default function MusicTimetableApp() {
     const allGroupsToSchedule = [...eligibleSchoolGroups, ...prevScheduledGroups];
     const tempGroupsForSched = allGroupsToSchedule.map(g => ({ ...g, status: "ready" }));
     const groupLessons = tempGroupsForSched.length > 0
-      ? scheduleReadyGroups(tempGroupsForSched, otherLessons, schools, students, teachers, enrichedSpecialists)
+      ? scheduleReadyGroups(tempGroupsForSched, otherLessons, schools, students, teachers, enrichedSpecialists, teacherCoverage)
       : { scheduled: [], failed: [] };
 
     const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
       existingLessons: [...otherLessons, ...groupLessons.scheduled],
-      targetSchoolId: schoolId
+      targetSchoolId: schoolId,
+      teacherCoverage
     });
     result.unscheduled = [...otherUnscheduled, ...result.unscheduled.filter(u => u.student.schoolId === schoolId), ...groupLessons.failed];
 
@@ -4471,7 +4473,7 @@ export default function MusicTimetableApp() {
       return g;
     }));
 
-    compactTimetable(result, schools, students, teachers, enrolments, specialists);
+    compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
       const conflict = result.lessons.find((o, j) => j < i && o.teacherId === l.teacherId && o.day === l.day &&
@@ -4745,7 +4747,7 @@ export default function MusicTimetableApp() {
     const tempStudents = pendingToSchedule.map(s => ({ ...s, status: "active" }));
     const result = generateMasterTimetable(
       schools, tempStudents, teachers, enrolments, specialists,
-      { existingLessons, targetSchoolId: schoolId || null }
+      { existingLessons, targetSchoolId: schoolId || null, teacherCoverage }
     );
     const newLessons = result.lessons.filter(l => !existingLessons.some(el => el.id === l.id));
     const newUnscheduled = result.unscheduled;
@@ -4765,7 +4767,7 @@ export default function MusicTimetableApp() {
       lessons: mergedLessons,
       unscheduled: [...keptUnscheduled, ...newUnscheduled]
     };
-    compactTimetable(mergedResult, schools, students, teachers, enrolments, specialists);
+    compactTimetable(mergedResult, schools, students, teachers, enrolments, specialists, teacherCoverage);
     setTimetable({ ...mergedResult, lessons: stampEnrolmentIds(mergedResult.lessons, enrolments) });
 
     const sched = newLessons.length;
@@ -6420,7 +6422,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
