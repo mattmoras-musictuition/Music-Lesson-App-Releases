@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, findLaneId } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId } from "./utils/teacherCoverageDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -4360,8 +4360,13 @@ export default function MusicTimetableApp() {
     // Post-compaction double-booking check
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
-      const conflict = result.lessons.find((o, j) => j < i && o.teacherId === l.teacherId && o.day === l.day &&
-        timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end));
+      const lTid = getCardTeacherId(l, teacherCoverage) || l.teacherId;
+      const conflict = result.lessons.find((o, j) => {
+        if (j >= i) return false;
+        const oTid = getCardTeacherId(o, teacherCoverage) || o.teacherId;
+        return lTid && oTid && oTid === lTid && o.day === l.day &&
+          timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
+      });
       if (conflict) {
         result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${l.teacherName} on ${l.day} at ${l.start}` });
         result.lessons.splice(i, 1);
@@ -4481,8 +4486,13 @@ export default function MusicTimetableApp() {
     compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
-      const conflict = result.lessons.find((o, j) => j < i && o.teacherId === l.teacherId && o.day === l.day &&
-        timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end));
+      const lTid = getCardTeacherId(l, teacherCoverage) || l.teacherId;
+      const conflict = result.lessons.find((o, j) => {
+        if (j >= i) return false;
+        const oTid = getCardTeacherId(o, teacherCoverage) || o.teacherId;
+        return lTid && oTid && oTid === lTid && o.day === l.day &&
+          timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
+      });
       if (conflict) {
         result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${l.teacherName} on ${l.day} at ${l.start}` });
         result.lessons.splice(i, 1);
@@ -4638,7 +4648,9 @@ export default function MusicTimetableApp() {
       const availEnd = timeToMin(dayAvail.end);
 
       // Get all teacher lessons on this day at this school
-      const teacherDayLessons = timetable.lessons.filter(l => l.teacherId === teacher.id && l.day === day);
+      const teacherDayLessons = timetable.lessons.filter(l =>
+        (getCardTeacherId(l, teacherCoverage) || l.teacherId) === teacher.id && l.day === day
+      );
 
       // Try each class-time slot (not before/after school)
       for (const slot of classSlots) {
