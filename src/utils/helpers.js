@@ -6,6 +6,7 @@
 import { DAYS, instruments_colors } from "../constants";
 import { supabase } from "../supabaseClient";
 import { instrumentsFromEnrolments } from "./enrolmentsDB";
+import { getCardTeacherId } from "./teacherCoverageDB";
 
 // ── ID generation ─────────────────────────────────────────────────────────────
 
@@ -156,8 +157,14 @@ export const bandDisplayName = (lesson, members) =>
   lesson.bandName || lesson.groupName || (members && members.length > 0 ? members.map(m => m.name.split(" ")[0]).join(", ") : null) || "Band";
 
 // Derive the current teacher name for a lesson from live student/teacher data.
-// Falls back to stored teacherName if no instrument match found.
-export const getLiveTeacherName = (lesson, students, teachers, enrolments) => {
+// Cluster 5a: lane-first via bucket_id. Falls back to stored teacherName if no
+// instrument match found.
+export const getLiveTeacherName = (lesson, students, teachers, enrolments, teacherCoverage) => {
+  const laneTid = getCardTeacherId(lesson, teacherCoverage);
+  if (laneTid) {
+    const t = teachers.find(x => x.id === laneTid);
+    if (t?.name) return t.name;
+  }
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherName || "";
   const student = students.find(s => s.id === lesson.studentId);
   if (student) {
@@ -176,9 +183,11 @@ export const getLiveTeacherName = (lesson, students, teachers, enrolments) => {
 };
 
 // Returns the live teacher ID for a lesson, derived from current student data.
-// Use this when checking teacher conflicts between lessons so stale stored teacherIds
-// don't cause false positives or missed warnings after teacher reassignments.
-export const getLiveTeacherId = (lesson, students, enrolments) => {
+// Cluster 5a: lane-first via bucket_id (Path B). Falls back to existing chain
+// for legacy cards without bucket_id and for lane-misses.
+export const getLiveTeacherId = (lesson, students, enrolments, teacherCoverage) => {
+  const laneTid = getCardTeacherId(lesson, teacherCoverage);
+  if (laneTid) return laneTid;
   if (lesson.isGroup || lesson.isBandSession) return lesson.teacherId;
   const student = students.find(s => s.id === lesson.studentId);
   if (!student) return lesson.teacherId;
@@ -189,7 +198,10 @@ export const getLiveTeacherId = (lesson, students, enrolments) => {
 };
 
 // Returns true if the lesson's instrument has no assigned teacher in current student data.
-export const isLessonUnassigned = (lesson, students, enrolments) => {
+// Cluster 5a: lane-first — if a lane resolves a teacher, the lesson is assigned.
+export const isLessonUnassigned = (lesson, students, enrolments, teacherCoverage) => {
+  const laneTid = getCardTeacherId(lesson, teacherCoverage);
+  if (laneTid) return false;
   if (lesson.isGroup || lesson.isBandSession) return false;
   const student = students.find(s => s.id === lesson.studentId);
   if (!student) return false;

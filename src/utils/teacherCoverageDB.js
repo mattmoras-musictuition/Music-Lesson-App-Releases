@@ -120,4 +120,18 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
   return lane ? lane.id : null;
 }
 
+/**
+ * Spec 2 cluster 5a — read-side teacher resolution.
+ * Resolves a lesson card's teacher via its lane (bucket_id → teacher_coverage).
+ * Returns null if the card has no bucket_id, the lane row isn't found, or
+ * teacherCoverage isn't an array. Does NOT fall back to lesson.teacherId —
+ * callers (e.g. getLiveTeacherId) own the Path-B fallback chain.
+ */
+export function getCardTeacherId(lesson, teacherCoverage) {
+  if (!lesson?.bucket_id) return null;
+  if (!Array.isArray(teacherCoverage)) return null;
+  const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
+  return lane?.teacherId || null;
+}
+
 // syncTeacherCoverageToSupabase lands in cluster 9 (Add/Remove Staff UI).
