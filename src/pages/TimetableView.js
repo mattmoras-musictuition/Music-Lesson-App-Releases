@@ -488,7 +488,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       }
       // Teacher availability and double-booking for groups
       const school = schools.find(s => s.id === lesson.schoolId);
-      const teacher = teachers.find(t => t.id === lesson.teacherId);
+      const lessonResolvedTid = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
+      const teacher = teachers.find(t => t.id === lessonResolvedTid);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
         if (!dayAvail) {
@@ -501,7 +502,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           }
         }
         {
-          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === lesson.teacherId && l.day === newDay && l.start === slot.start);
+          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === lessonResolvedTid && l.day === newDay && l.start === slot.start);
           if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
         }
       }
@@ -552,13 +553,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     if (_liveTeacherUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     } else {
-      // Use live teacher from student's current instrument record, not stored lesson.teacherId
-      const _allStu = allStudents || students;
-      const _matchedStu = _allStu.find(s => s.id === lesson.studentId);
-      const _liveInsts = _matchedStu ? instrumentsFromEnrolments(_matchedStu.id, enrolments) : [];
-      const _liveInst = _liveInsts.find(i => i.name === lesson.instrument)
-        || _liveInsts.find(i => !i.isGroup);
-      const _liveTeacherId = _liveInst?.teacherId || lesson.teacherId;
+      // Lane-first via getLiveTeacherId; legacy fallback chain (instrument enrolment → stamped) lives in the helper.
+      const _liveTeacherId = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
       const teacher = teachers.find(t => t.id === _liveTeacherId);
       if (teacher) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -784,7 +780,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     return true;
   });
   let filteredLessons = schoolLessons;
-  if (filterTeacher) filteredLessons = filteredLessons.filter(l => l.teacherId === filterTeacher);
+  if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
 
   // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {
@@ -847,7 +843,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const gridRows = allTimes.map(time => ({ type: "lesson", time }));
 
   // Teachers with lessons at this school
-  const schoolTeachers = [...new Set(schoolLessons.map(l => l.teacherId))].map(tid => teachers.find(t => t.id === tid)).filter(Boolean);
+  const schoolTeachers = [...new Set(schoolLessons.map(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage)))].map(tid => teachers.find(t => t.id === tid)).filter(Boolean);
 
   const handleExportSchool = () => {
     onExport(); // Opens export dialog for master timetable
@@ -891,7 +887,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const staffEmailSet = new Set();
             const staffRows = [];
             dayLessons.forEach(l => {
-              const t = teachers.find(x => x.id === l.teacherId);
+              const t = teachers.find(x => x.id === getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage));
               if (t?.email && !staffEmailSet.has(t.email)) { staffEmailSet.add(t.email); staffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null }); }
             });
             const allStaffEmails = [...staffEmailSet];
@@ -1090,7 +1086,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const _mttLesson = timetable && timetable.lessons.find(l => l.id === contextMenu.lessonId);
                   const _mttSt = !contextMenu.isGroup && allStu2.find(s => s.id === contextMenu.studentId);
                   const _mttSchoolSender = schools.find(s => s.id === (_mttLesson?.schoolId || _mttSt?.schoolId))?.senderEmail || "";
-                  const lessonTeacher = _mttLesson?.teacherId ? teachers.find(t => t.id === _mttLesson.teacherId) : null;
+                  const _mttResolvedTid = _mttLesson ? getLiveTeacherId(_mttLesson, allStu2 || students, enrolments, teacherCoverage) : null;
+                  const lessonTeacher = _mttResolvedTid ? teachers.find(t => t.id === _mttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
                   const lessonTeacherFirst = lessonTeacher ? lessonTeacher.name.split(" ")[0] : null;
@@ -1275,7 +1272,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const lesson = timetable?.lessons.find(l => l.id === contextMenu.lessonId);
                   if (!lesson) return null;
                   const schoolName = schools.find(s => s.id === lesson.schoolId)?.name || "";
-                  const teacherName = teachers.find(t => t.id === lesson.teacherId)?.name || "";
+                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage))?.name || "";
                   const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
                   return (
                     <>
