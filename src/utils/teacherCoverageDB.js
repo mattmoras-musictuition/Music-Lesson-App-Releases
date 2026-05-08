@@ -157,19 +157,27 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
  * default border colour and `teacher.id` for the override-aware colour, with
  * divergence between the two surfacing the substitution at the card level.
  *
- * Multi-lane case (Q7 — theoretical, current data is universally single-lane):
- * picks the first active lane in teacherCoverage. Cluster 8 view-switching
- * will refine.
+ * Multi-lane case (cluster 8a): picks the lane referenced by
+ * viewedLanes[schoolId][day] when supplied AND that lane id is still in
+ * the active set (defensive against deleted/archived lanes — covers
+ * cluster 9's Remove Staff transition without special handling). Falls
+ * back to the first-added active lane otherwise. When viewedLanes is
+ * null (MTT, single-lane data, pre-cluster-8 callers), behaviour matches
+ * cluster 7 — first-added active lane wins.
  *
  * @returns {{ lane, teacher } | null}  null when no active lane exists for
  *          (schoolId, day). `teacher` may be null if the resolved teacherId
  *          isn't in `teachers` (defensive).
  */
-export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides = null, weekKey = null) {
-  const lane = (teacherCoverage || []).find(
+export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides = null, weekKey = null, viewedLanes = null) {
+  const dayLanes = (teacherCoverage || []).filter(
     l => l.schoolId === schoolId && l.day === day && l.status === "active"
   );
-  if (!lane) return null;
+  if (dayLanes.length === 0) return null;
+  const storedLaneId = viewedLanes?.[schoolId]?.[day];
+  const lane = (storedLaneId && dayLanes.some(l => l.id === storedLaneId))
+    ? dayLanes.find(l => l.id === storedLaneId)
+    : dayLanes[0];
   let effectiveTeacherId = lane.teacherId;
   if (Array.isArray(laneOverrides) && weekKey) {
     const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lane.id);

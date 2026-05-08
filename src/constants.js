@@ -47,6 +47,7 @@ export const STORAGE_KEYS = {
   enrolments:             "mt-enrolments",
   teachers:               "mt-teachers",
   teacherCoverage:        "mt-teacher-coverage",
+  viewedLanes:            "mt-viewed-lanes",
   timetable:              "mt-timetable",
   specialists:            "mt-specialists",
   specialistsBak:         "mt-specialists-bak",

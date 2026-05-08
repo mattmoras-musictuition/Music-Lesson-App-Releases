@@ -20,7 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -844,11 +844,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const weeklyData = weeklyTimetables[storageKey] || null;
 
   // Archived students are hidden from the grid — their slot becomes free.
+  // Cluster 8a: when a (school, day) has 2+ active lanes, also restrict the
+  // grid to lessons bound to the day's viewed lane (or, for legacy cards
+  // without bucket_id, only show under the default first-added lane).
   // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
   const displayLessons = (weeklyData?.lessons || []).filter(l => {
-    if (l.isGroup || !l.studentId) return true;
-    const liveStu = students.find(s => s.id === l.studentId);
-    return liveStu?.status !== "archived";
+    if (!l.isGroup && l.studentId) {
+      const liveStu = students.find(s => s.id === l.studentId);
+      if (liveStu?.status === "archived") return false;
+    }
+    const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === l.day && c.status === "active");
+    if (dayLanes.length < 2) return true;
+    const storedLaneId = viewedLanes?.[selectedSchool]?.[l.day];
+    const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
+    if (l.bucket_id) return l.bucket_id === targetLaneId;
+    return targetLaneId === dayLanes[0].id;
   });
 
   const catchupData = { lessons: catchupLessons[weekKey] || [] };
@@ -4996,7 +5006,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isResettingThis = resettingDay === dayDateStr;
                         const isConfirmingThis = confirmingDay === dayDateStr;
                         const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
-                        const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey)?.teacher;
+                        const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey, viewedLanes)?.teacher;
+                        const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
+                        const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
                         // Header label "Mon 4 May" — reuses precomputed dayDateStr.
                         const colDate = dayDateStr ? new Date(`${dayDateStr}T00:00:00`) : null;
                         const headerLabel = colDate
@@ -5061,7 +5073,37 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               </span>
                               {/* Middle: day label "Mon 4 May" */}
                               <span style={{ flex: 1, textAlign: "center" }}>{headerLabel}</span>
-                              {/* Right: Actuals toggle */}
+                            </div>
+                            {isDayConfirmed && (
+                              <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
+                            )}
+                            {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
+                            {/* Bottom row: lane chips (left, when 2+ lanes) + Actuals (right) */}
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                              {dayLanes.length >= 2 ? (
+                                <div style={{ display: "flex", gap: 3 }}>
+                                  {dayLanes.map(lane => {
+                                    const t = teachers.find(tt => tt.id === lane.teacherId);
+                                    if (!t) return null;
+                                    const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                                    const isActive = lane.id === viewedLaneId;
+                                    return (
+                                      <button key={lane.id}
+                                        onClick={e => { e.stopPropagation(); onSwitchLane && onSwitchLane(selectedSchool, d, lane.id); }}
+                                        title={t.name}
+                                        style={{
+                                          height: 20, minWidth: 26, padding: "0 4px", borderRadius: 4,
+                                          fontSize: 10, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+                                          background: t.color || colors.sidebarActive, color: "#fff",
+                                          opacity: isActive ? 1 : 0.65,
+                                          border: isActive ? "2px solid #fff" : "none",
+                                        }}>
+                                        {initials}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : <div />}
                               {(() => {
                                 const ghostKey = `${weekKey}_${d}`;
                                 const ghostsVisible = !!dayGhostsVisible[ghostKey];
@@ -5089,10 +5131,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 );
                               })()}
                             </div>
-                            {isDayConfirmed && (
-                              <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
-                            )}
-                            {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
                             {/* Teacher chips — added via right-click */}
                             {(dayTeacherChips[d] || []).length > 0 && (
                               <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 4, flexWrap: "wrap" }}>
@@ -5230,7 +5268,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   // Hide ghosts when an admin card occupies this slot, UNLESS the
                                   // admin card is being dragged (drag-reveal shows what's underneath).
                                   if (cellHasAdminCard && !cellHasDraggingCard) return null;
-                                  const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time);
+                                  // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
+                                  const ghostDayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === day && c.status === "active");
+                                  const ghostViewedTeacher = ghostDayLanes.length >= 2 ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher : null;
+                                  const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time && (!ghostViewedTeacher || g.teacherId === ghostViewedTeacher.id));
                                   return cellGhosts.map((g, gi) => {
                                     const color = getInstColor(g.instrument, g.isGroup);
                                     const isGroup = !!g.isGroup;
