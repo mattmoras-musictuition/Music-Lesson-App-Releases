@@ -28,6 +28,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
+import { uid } from "./helpers";
 
 // ── Shape converter ──────────────────────────────────────────
 
@@ -53,6 +54,11 @@ function fromRow(row) {
 //
 // RLS scopes to auth.uid() = user_id (per the cluster 1 schema policy);
 // no client-side .eq("user_id", ...) filter needed.
+// Cluster 9a (Q9 fix): created_at-asc tiebroken by id gives a stable
+// "first-added on left" ordering — surfaced via cluster 8 chips and
+// the dayLanes[0] default in getDayLaneTeacher / displayLessons /
+// filteredLessons. Cluster 4a originally sorted by teacher_id as a
+// placeholder before insertion order mattered.
 export async function loadTeacherCoverageFromSupabase() {
   const { data, error } = await supabase
     .from("teacher_coverage")
@@ -60,7 +66,8 @@ export async function loadTeacherCoverageFromSupabase() {
     .eq("status", "active")
     .order("school_id")
     .order("day")
-    .order("teacher_id");
+    .order("created_at", { ascending: true })
+    .order("id");
   if (error) throw error;
   return (data || []).map(fromRow);
 }
@@ -187,4 +194,31 @@ export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, lane
   return { lane, teacher };
 }
 
-// syncTeacherCoverageToSupabase lands in cluster 9 (Add/Remove Staff UI).
+// ── Write helpers (cluster 9 — Add/Remove Staff UI) ─────────
+
+/**
+ * Single-row insert. Generates a fresh client-side uid() for the row id
+ * and writes status='active' (RLS-scoped to auth.uid() = user_id). Throws
+ * if userId is falsy. Returns a camelCase row shape matching fromRow's
+ * contract so callers can splice the new lane into local teacherCoverage
+ * state without re-fetching.
+ *
+ * Cluster 9a lands this; cluster 9b adds archiveTeacherCoverage alongside
+ * the Remove Staff flow.
+ *
+ * Safe under the dev Proxy short-circuit: the supabase.from() call is
+ * suppressed in dev, but the returned object is built from the inputs,
+ * so local-state updates work in both dev and prod.
+ */
+export async function insertTeacherCoverage({ schoolId, day, teacherId, userId }) {
+  if (!userId) throw new Error("No user ID — cannot insert teacher coverage");
+  const id = uid();
+  const nowIso = new Date().toISOString();
+  const { error } = await supabase
+    .from("teacher_coverage")
+    .insert({ id, user_id: userId, school_id: schoolId, day, teacher_id: teacherId, status: "active" });
+  if (error) throw error;
+  return { id, userId, schoolId, day, teacherId, status: "active", notes: null, createdAt: nowIso, updatedAt: nowIso };
+}
+
+// archiveTeacherCoverage lands in cluster 9b (Remove Staff UI).

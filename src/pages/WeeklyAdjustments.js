@@ -20,7 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, onAddStaff, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -2577,12 +2577,58 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     </>
                   );
                 })()}
-                {/* Spec 2 cluster 6c — Substitute teacher (single-day, single-lane) */}
+                {/* Spec 2 cluster 9a — Manage Staff (Add only; 9b appends Remove entries to the same panel) */}
+                {(() => {
+                  if (isLocked) return null;
+                  const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  const assignedTeacherIds = new Set(dayLanes.map(l => l.teacherId));
+                  const notAddedTeachers = teachers
+                    .filter(t => !assignedTeacherIds.has(t.id))
+                    .sort((a, b) => a.name.localeCompare(b.name));
+                  if (notAddedTeachers.length === 0) return null;
+                  const isOpen = dayHeaderSubmenu?.type === "manageStaff";
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={dayHeaderSubRef}
+                            onMouseEnter={keepDayHeaderOpen}
+                            onMouseLeave={scheduleDayHeaderClose}
+                            style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            {notAddedTeachers.map(t => (
+                              <button key={t.id} onClick={() => { onAddStaff && onAddStaff(selectedSchool, day, t.id); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                                {t.name.split(" ")[0]}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => {
+                            keepDayHeaderOpen();
+                            e.currentTarget.style.background = colors.bg;
+                            if (!isOpen) setDayHeaderSubmenu({ type: "manageStaff", y: e.currentTarget.getBoundingClientRect().top });
+                          }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Users size={13} /> Manage Staff</span>
+                          <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+                {/* Spec 2 cluster 6c — Substitute teacher (single-day; cluster 9a Q8 — viewed-lane aware) */}
                 {(() => {
                   if (isLocked) return null;
                   const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
                   if (dayLanes.length === 0) return null;
-                  const targetLane = dayLanes[0];
+                  const storedLaneId = viewedLanes?.[selectedSchool]?.[day];
+                  const targetLane = (storedLaneId && dayLanes.find(l => l.id === storedLaneId)) || dayLanes[0];
                   const originalTeacher = teachers.find(t => t.id === targetLane.teacherId);
                   if (!originalTeacher) return null;
                   const existingOverride = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === targetLane.id);
