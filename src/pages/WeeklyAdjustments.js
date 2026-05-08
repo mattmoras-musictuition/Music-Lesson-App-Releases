@@ -20,7 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId } from "../utils/teacherCoverageDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -2564,6 +2564,63 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           Clear chips
                         </button>
                       )}
+                    </>
+                  );
+                })()}
+                {/* Spec 2 cluster 6c — Substitute teacher (single-day, single-lane) */}
+                {(() => {
+                  if (isLocked) return null;
+                  const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  if (dayLanes.length === 0) return null;
+                  const targetLane = dayLanes[0];
+                  const originalTeacher = teachers.find(t => t.id === targetLane.teacherId);
+                  if (!originalTeacher) return null;
+                  const existingOverride = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === targetLane.id);
+                  const overrideTeacher = existingOverride ? teachers.find(t => t.id === existingOverride.overrideTeacherId) : null;
+                  const availTeachers = teachers.filter(t => t.id !== originalTeacher.id && t.availability && t.availability.some(a => a.schoolId === selectedSchool));
+                  if (availTeachers.length === 0 && !existingOverride) return null;
+                  const isOpen = dayHeaderSubmenu?.type === "substitute";
+                  const triggerLabel = existingOverride && overrideTeacher ? `Substitute: ${overrideTeacher.name.split(" ")[0]}` : "Set substitute";
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={dayHeaderSubRef}
+                            onMouseEnter={keepDayHeaderOpen}
+                            onMouseLeave={scheduleDayHeaderClose}
+                            style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            {existingOverride && (
+                              <button onClick={() => { onClearLaneOverride && onClearLaneOverride(weekKey, targetLane.id); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                                style={{ display: "flex", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Restore {originalTeacher.name.split(" ")[0]}</span>
+                              </button>
+                            )}
+                            {availTeachers.map(t => (
+                              <button key={t.id} onClick={() => { onSetLaneOverride && onSetLaneOverride(weekKey, targetLane.id, t.id); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                                {t.name.split(" ")[0]}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => {
+                            keepDayHeaderOpen();
+                            e.currentTarget.style.background = colors.bg;
+                            if (!isOpen) setDayHeaderSubmenu({ type: "substitute", y: e.currentTarget.getBoundingClientRect().top });
+                          }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> {triggerLabel}</span>
+                          <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      </div>
                     </>
                   );
                 })()}
@@ -5384,7 +5441,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
-                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); return <div style={{ color: _unassigned ? colors.danger : l._swapTeacherId ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); const _overrideActive = !l._swapTeacherId && l.bucket_id && laneOverrides.some(o => o.weekKey === weekKey && o.bucketId === l.bucket_id); return <div style={{ color: _unassigned ? colors.danger : (l._swapTeacherId || _overrideActive) ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
                                     {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                                     {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
                                     {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}
