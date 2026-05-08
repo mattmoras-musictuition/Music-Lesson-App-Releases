@@ -1666,11 +1666,17 @@ export default function MusicTimetableApp() {
 
   // Spec 2 cluster 9b — Remove Staff. Archives the lane row (status='archived')
   // then sweeps MTT + WTT current/future-week lessons (regular + catchup keys)
-  // referencing the archived bucket_id. Past weeks are preserved unconditionally
-  // (Q3=a). lane_overrides rows are left intact (Q12=a — orphan rows are inert
-  // since the bucket is gone from the active set). Catchup keys are matched
+  // bound to that lane. Past weeks are preserved unconditionally (Q3=a).
+  // lane_overrides rows are left intact (Q12=a — orphan rows are inert since
+  // the bucket is gone from the active set). Catchup keys are matched
   // regardless of school suffix because catchup lessons carry per-lesson
   // schoolId and bucket_id is unique per lane (Q4=a).
+  //
+  // Cluster 9b follow-up: lessonBelongsToLane mirrors the cluster 8a/8b
+  // renderer filter (TimetableView L788, WeeklyAdjustments L856) so legacy
+  // lessons without bucket_id (pre-cluster-4c data) bind to the first-added
+  // active lane on (school, day) and get swept correctly. Cluster 13 dedupe
+  // candidate.
   const handleRemoveStaff = React.useCallback(async (lane) => {
     if (!sessionUserId) return;
     if (!lane) return;
@@ -1679,15 +1685,32 @@ export default function MusicTimetableApp() {
     const teacherName = teacher?.name || "(unknown teacher)";
     const schoolName = school?.name || "(unknown school)";
 
+    // Cluster 8a/8b parity: legacy lessons without bucket_id bind to the
+    // first-added active lane on (school, day). Loader sort is created_at
+    // ASC + id (cluster 9a Q9 fix), so dayLanes[0] is the first-added.
+    const dayLanes = (teacherCoverage || []).filter(c =>
+      c.schoolId === lane.schoolId && c.day === lane.day && c.status === "active"
+    );
+    const isFirstAddedLane = dayLanes.length > 0 && dayLanes[0].id === lane.id;
+
+    // Stamped: match by bucket_id. Legacy: match by (day, schoolId) +
+    // first-added binding. Mirrors TimetableView L788 / WeeklyAdjustments L856.
+    const lessonBelongsToLane = (l) => {
+      if (l.bucket_id) return l.bucket_id === lane.id;
+      if (l.day !== lane.day) return false;
+      if (l.schoolId !== lane.schoolId) return false;
+      return isFirstAddedLane;
+    };
+
     // Lesson count: MTT + WTT current+future (regular + catchup keys).
-    const mttCount = (timetable?.lessons || []).filter(l => l.bucket_id === lane.id).length;
+    const mttCount = (timetable?.lessons || []).filter(lessonBelongsToLane).length;
     const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
     let wttCount = 0;
     Object.entries(weeklyTimetables || {}).forEach(([key, data]) => {
       const [weekKey, suffix] = key.split("|");
       if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
       if (weekKey < currentMondayStr) return;
-      wttCount += (data.lessons || []).filter(l => l.bucket_id === lane.id).length;
+      wttCount += (data.lessons || []).filter(lessonBelongsToLane).length;
     });
     const total = mttCount + wttCount;
 
@@ -1701,9 +1724,9 @@ export default function MusicTimetableApp() {
     // Archive — only step that can throw.
     try {
       await archiveTeacherCoverage({ id: lane.id });
-    } catch (err) {
-      logError("Remove staff failed", err.message);
+    } catch (e) {
       try { notify(`Failed to remove ${teacherName}`, "error"); } catch (_) {}
+      if (logError) logError("Remove staff failed", e?.message);
       return;
     }
 
@@ -1711,7 +1734,7 @@ export default function MusicTimetableApp() {
     setTeacherCoverage(prev => prev.filter(l => l.id !== lane.id));
     setTimetable(prev => {
       if (!prev) return prev;
-      return { ...prev, lessons: (prev.lessons || []).filter(l => l.bucket_id !== lane.id) };
+      return { ...prev, lessons: (prev.lessons || []).filter(l => !lessonBelongsToLane(l)) };
     });
     setWeeklyTimetables(prev => {
       const next = { ...prev };
@@ -1719,13 +1742,13 @@ export default function MusicTimetableApp() {
         const [weekKey, suffix] = key.split("|");
         if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
         if (weekKey < currentMondayStr) return;
-        next[key] = { ...data, lessons: (data.lessons || []).filter(l => l.bucket_id !== lane.id) };
+        next[key] = { ...data, lessons: (data.lessons || []).filter(l => !lessonBelongsToLane(l)) };
       });
       return next;
     });
 
     try { notify(`Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
-  }, [sessionUserId, teachers, schools, timetable, weeklyTimetables, logError]);
+  }, [sessionUserId, teachers, schools, teacherCoverage, timetable, weeklyTimetables, logError]);
 
   // Load data on mount — uses test data as fallback when storage is empty
   useEffect(() => {
