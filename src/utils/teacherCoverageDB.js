@@ -144,4 +144,39 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
   return lane?.teacherId || null;
 }
 
+/**
+ * Spec 2 cluster 7 — day-level lane resolution.
+ * Returns the day's primary active lane row alongside the effective teacher
+ * for that lane. The lane row carries the default teacher (lane.teacherId);
+ * the effective teacher is override-aware when laneOverrides + weekKey are
+ * provided — a (weekKey, bucketId) row's overrideTeacherId wins. When no
+ * override applies, the effective teacher matches the lane teacher.
+ *
+ * Cluster 7 day headers consume `teacher` (override-aware on WTT, lane-only
+ * on MTT). Cluster 11 card borders will read both — `lane.teacherId` for the
+ * default border colour and `teacher.id` for the override-aware colour, with
+ * divergence between the two surfacing the substitution at the card level.
+ *
+ * Multi-lane case (Q7 — theoretical, current data is universally single-lane):
+ * picks the first active lane in teacherCoverage. Cluster 8 view-switching
+ * will refine.
+ *
+ * @returns {{ lane, teacher } | null}  null when no active lane exists for
+ *          (schoolId, day). `teacher` may be null if the resolved teacherId
+ *          isn't in `teachers` (defensive).
+ */
+export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides = null, weekKey = null) {
+  const lane = (teacherCoverage || []).find(
+    l => l.schoolId === schoolId && l.day === day && l.status === "active"
+  );
+  if (!lane) return null;
+  let effectiveTeacherId = lane.teacherId;
+  if (Array.isArray(laneOverrides) && weekKey) {
+    const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lane.id);
+    if (override?.overrideTeacherId) effectiveTeacherId = override.overrideTeacherId;
+  }
+  const teacher = (teachers || []).find(t => t.id === effectiveTeacherId) || null;
+  return { lane, teacher };
+}
+
 // syncTeacherCoverageToSupabase lands in cluster 9 (Add/Remove Staff UI).

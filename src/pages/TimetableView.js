@@ -7,6 +7,7 @@ import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plu
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { getDayLaneTeacher } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1466,11 +1467,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 <div style={{ background: colors.sidebarHover, color: colors.cardBg, padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
                 {DAYS.map(d => {
                   const daySelected = mttSelectedDays.has(d);
+                  const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d)?.teacher;
                   return (
                     <div key={d}
                       onClick={e => { e.stopPropagation(); setMttSelectedDays(prev => { const next = new Set(prev); if (next.has(d)) next.delete(d); else next.add(d); return next; }); }}
                       onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, isDayHeader: true, isMtt: true, day: d, schoolId: selectedSchool }); }}
-                      style={{ background: daySelected ? colors.accent : colors.sidebarHover, color: colors.cardBg, padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>{d}</div>
+                      style={{ background: daySelected ? colors.accent : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>{d}</div>
                   );
                 })}
 

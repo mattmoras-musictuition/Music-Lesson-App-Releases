@@ -18,7 +18,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getCardTeacherId } from "../utils/teacherCoverageDB";
+import { findLaneId, getCardTeacherId, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -4996,6 +4996,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isResettingThis = resettingDay === dayDateStr;
                         const isConfirmingThis = confirmingDay === dayDateStr;
                         const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
+                        const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey)?.teacher;
                         // Header label "Mon 4 May" — reuses precomputed dayDateStr.
                         const colDate = dayDateStr ? new Date(`${dayDateStr}T00:00:00`) : null;
                         const headerLabel = colDate
@@ -5003,7 +5004,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           : d;
                         return (
                           <div key={d}
-                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
+                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
                             onClick={e => {
                               e.stopPropagation();
                               const dayLessonIds = (weeklyData?.lessons || []).filter(l => l.day === d).map(l => l.id);
