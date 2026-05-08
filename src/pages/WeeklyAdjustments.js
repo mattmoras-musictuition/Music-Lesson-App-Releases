@@ -20,7 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId } from "../utils/teacherCoverageDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -560,7 +560,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       const school = schools.find(s => s.id === lesson.schoolId);
       const liveBand = bands?.find(b => b.id === lesson.bandId);
-      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage) || liveBand?.teacherId || lesson.teacherId;
+      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId || lesson.teacherId;
       const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -572,7 +572,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
           }
         }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
+        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
         if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
       }
       const targetDate = weekDateMap[newDay];
@@ -609,7 +609,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const school = schools.find(s => s.id === lesson.schoolId);
       // Look up current teacher from live groups state rather than stored lesson.teacherId
       const liveGroup = groups?.find(g => g.id === lesson.groupId);
-      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage) || liveGroup?.teacherId || lesson.teacherId;
+      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId || lesson.teacherId;
       const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -622,7 +622,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
           }
         }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
+        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
         if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
       }
       // Interruption check for groups
@@ -673,12 +673,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     }
     if (hints.avoidDays && hints.avoidDays.includes(newDay)) warnings.push(`Student should avoid ${newDay}`);
     if (hints.preferredDays && hints.preferredDays.length > 0 && !hints.preferredDays.includes(newDay)) warnings.push(`Preferred day${hints.preferredDays.length > 1 ? "s" : ""}: ${hints.preferredDays.join(", ")}`);
-    const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage);
+    const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
     if (_wttUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
     }
     // Lane-first via getLiveTeacherId; fallback chain (instrument enrolment → stamped) lives in the helper.
-    const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage);
+    const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
     const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
     if (teacher) {
       const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -687,7 +687,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // Teacher double-booking: another lesson at the same time with the same teacher
       const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
       const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
-      const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage) === liveTeacherId && l.day === newDay && l.start === slot.start);
+      const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === liveTeacherId && l.day === newDay && l.start === slot.start);
       if (conflict1) warnings.push(`${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
     }
 
@@ -1023,7 +1023,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const teacherIds = [...new Set(
         (weeklyData?.lessons || [])
           .filter(l => l.day === dayName)
-          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage))
+          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey))
           .filter(Boolean)
       )];
       if (teacherIds.length === 0) {
@@ -2446,7 +2446,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const staffEmailSet = new Set();
             const staffRows = [];
             dayLessons.forEach(l => {
-              const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage);
+              const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
               const t = teachers.find(x => x.id === tid);
               if (t?.email && !staffEmailSet.has(t.email)) {
                 staffEmailSet.add(t.email);
@@ -3704,7 +3704,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const _wttLesson = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
                   const _wttSt = !contextMenu.isGroup && students.find(s => s.id === contextMenu.studentId);
                   const _wttSchoolSender = schools.find(s => s.id === (selectedSchool || _wttLesson?.schoolId || _wttSt?.schoolId))?.senderEmail || "";
-                  const _wttResolvedTid = _wttLesson ? getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage) : null;
+                  const _wttResolvedTid = _wttLesson ? getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey) : null;
                   const lessonTeacher = _wttResolvedTid ? teachers.find(t => t.id === _wttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
@@ -3977,7 +3977,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Aggregate music staff (teachers on selected lessons)
                   const staffMap = {}; // email -> { name, color }
                   selLessons.forEach(l => {
-                    const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage);
+                    const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
                     const tname = l._swapTeacherName || l.teacherName;
                     const t = teachers.find(x => x.id === tid);
                     const email = t?.email;
@@ -4148,7 +4148,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const lesson = (weeklyData?.lessons || []).find(l => l.id === contextMenu.lessonId);
                   if (!lesson) return null;
                   const schoolName = schools.find(s => s.id === (lesson.schoolId || selectedSchool))?.name || "";
-                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, students, enrolments, teacherCoverage))?.name || "";
+                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey))?.name || "";
                   const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
                   return (
                     <>
@@ -5384,7 +5384,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
-                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students, enrolments, teacherCoverage); return <div style={{ color: _unassigned ? colors.danger : l._swapTeacherId ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); return <div style={{ color: _unassigned ? colors.danger : l._swapTeacherId ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
                                     {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                                     {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
                                     {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}
