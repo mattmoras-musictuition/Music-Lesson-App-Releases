@@ -121,14 +121,24 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
 }
 
 /**
- * Spec 2 cluster 5a — read-side teacher resolution.
- * Resolves a lesson card's teacher via its lane (bucket_id → teacher_coverage).
- * Returns null if the card has no bucket_id, the lane row isn't found, or
- * teacherCoverage isn't an array. Does NOT fall back to lesson.teacherId —
- * callers (e.g. getLiveTeacherId) own the Path-B fallback chain.
+ * Read-side teacher resolution.
+ * Cluster 6b1: override-first when week context provided (WTT callers) —
+ *   a per-week (weekKey, bucketId) row in laneOverrides wins.
+ * Cluster 5a: lane-first lookup as the fallback — bucket_id → teacher_coverage.
+ * Returns null if the card has no bucket_id, no matching override or lane row
+ * is found, or teacherCoverage isn't an array. Does NOT fall back to
+ * lesson.teacherId — callers (e.g. getLiveTeacherId) own the Path-B fallback
+ * chain.
+ *
+ * laneOverrides + weekKey default to null so MTT callers (no week context)
+ * keep the cluster 5a behaviour unchanged.
  */
-export function getCardTeacherId(lesson, teacherCoverage) {
+export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, weekKey = null) {
   if (!lesson?.bucket_id) return null;
+  if (Array.isArray(laneOverrides) && weekKey) {
+    const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lesson?.bucket_id);
+    if (override?.overrideTeacherId) return override.overrideTeacherId;
+  }
   if (!Array.isArray(teacherCoverage)) return null;
   const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
   return lane?.teacherId || null;
