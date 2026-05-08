@@ -28,7 +28,7 @@ function buildPreferredDisplayName(name) {
 
 
 
-export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const viewMode = viewState.viewMode;
@@ -782,6 +782,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   });
   let filteredLessons = schoolLessons;
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
+  // Cluster 8b: in multi-lane days, restrict to the viewed lane's bucket_id;
+  // legacy cards without bucket_id bind to the default first-added lane.
+  filteredLessons = filteredLessons.filter(l => {
+    const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === l.day && c.status === "active");
+    if (dayLanes.length < 2) return true;
+    const storedLaneId = viewedLanes?.[selectedSchool]?.[l.day];
+    const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
+    if (l.bucket_id) return l.bucket_id === targetLaneId;
+    return targetLaneId === dayLanes[0].id;
+  });
 
   // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {
@@ -1467,12 +1477,40 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 <div style={{ background: colors.sidebarHover, color: colors.cardBg, padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
                 {DAYS.map(d => {
                   const daySelected = mttSelectedDays.has(d);
-                  const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d)?.teacher;
+                  const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, null, null, viewedLanes)?.teacher;
+                  const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
+                  const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
                   return (
                     <div key={d}
                       onClick={e => { e.stopPropagation(); setMttSelectedDays(prev => { const next = new Set(prev); if (next.has(d)) next.delete(d); else next.add(d); return next; }); }}
                       onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, isDayHeader: true, isMtt: true, day: d, schoolId: selectedSchool }); }}
-                      style={{ background: daySelected ? colors.accent : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>{d}</div>
+                      style={{ background: daySelected ? colors.accent : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>
+                      <span>{d}</span>
+                      {dayLanes.length >= 2 && (
+                        <div style={{ display: "flex", justifyContent: "flex-start", gap: 3, marginTop: 4 }}>
+                          {dayLanes.map(lane => {
+                            const t = teachers.find(tt => tt.id === lane.teacherId);
+                            if (!t) return null;
+                            const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
+                            const isActive = lane.id === viewedLaneId;
+                            return (
+                              <button key={lane.id}
+                                onClick={e => { e.stopPropagation(); onSwitchLane && onSwitchLane(selectedSchool, d, lane.id); }}
+                                title={t.name}
+                                style={{
+                                  height: 20, minWidth: 26, padding: "0 4px", borderRadius: 4,
+                                  fontSize: 10, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+                                  background: t.color || colors.sidebarActive, color: "#fff",
+                                  opacity: isActive ? 1 : 0.65,
+                                  border: isActive ? "2px solid #fff" : "none",
+                                }}>
+                                {initials}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
 
