@@ -28,7 +28,7 @@ function buildPreferredDisplayName(name) {
 
 
 
-export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const viewMode = viewState.viewMode;
@@ -972,14 +972,18 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {mkMttEmailRow("Parents", allParentEmails, parentRows, "parents", colors.accent)}
                 {mkMttEmailRow("Class Teachers", allTeacherEmails, teacherRows, "teachers", colors.sidebarActive)}
                 {mkMttEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
-                {/* Spec 2 cluster 9a — Manage Staff (MTT side; 9b appends Remove entries) */}
+                {/* Spec 2 cluster 9b — Manage Staff (MTT side; Add + Remove combined) */}
                 {(() => {
                   const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
                   const assignedTeacherIds = new Set(dayLanes.map(l => l.teacherId));
                   const notAddedTeachers = teachers
                     .filter(t => !assignedTeacherIds.has(t.id))
                     .sort((a, b) => a.name.localeCompare(b.name));
-                  if (notAddedTeachers.length === 0) return null;
+                  const assignedTeachers = dayLanes
+                    .map(l => ({ lane: l, teacher: teachers.find(t => t.id === l.teacherId) }))
+                    .filter(x => x.teacher)
+                    .sort((a, b) => a.teacher.name.localeCompare(b.teacher.name));
+                  if (notAddedTeachers.length === 0 && assignedTeachers.length === 0) return null;
                   const isOpen = mttDayHeaderSubmenu?.type === "manageStaff";
                   return (
                     <>
@@ -994,6 +998,17 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 onMouseEnter={hov} onMouseLeave={unhov}>
                                 {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
                                 {t.name.split(" ")[0]}
+                              </button>
+                            ))}
+                            {notAddedTeachers.length > 0 && assignedTeachers.length > 0 && (
+                              <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                            )}
+                            {assignedTeachers.map(({ lane, teacher }) => (
+                              <button key={lane.id} onClick={() => { onRemoveStaff && onRemoveStaff(lane); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
+                                onMouseEnter={hov} onMouseLeave={unhov}>
+                                {teacher.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: teacher.color, flexShrink: 0, display: "inline-block" }} />}
+                                {teacher.name.split(" ")[0]}
                               </button>
                             ))}
                           </div>
