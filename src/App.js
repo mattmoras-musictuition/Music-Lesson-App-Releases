@@ -18,6 +18,7 @@ import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId } from "./utils/teacherCoverageDB";
+import { loadLaneOverridesFromSupabase } from "./utils/laneOverridesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -843,6 +844,9 @@ export default function MusicTimetableApp() {
   // (school, day, teacher) tuple). No undo wrapper yet; lane mutations
   // arrive with the Add/Remove Staff UI in cluster 9.
   const [teacherCoverage, setTeacherCoverage] = useState([]);
+  // Spec 2 cluster 6a — per-week substitution overrides on (week_key, bucket_id).
+  // Empty until cluster 6c's substitution UI lands; resolution helper arrives in 6b.
+  const [laneOverrides, setLaneOverrides] = useState([]);
   const [specialists, setSpecialists] = useState([]);
   const [interruptions, setInterruptions] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -1691,6 +1695,14 @@ export default function MusicTimetableApp() {
         logError("Failed to load teacher_coverage from Supabase", err.message);
         tc = await loadData(STORAGE_KEYS.teacherCoverage, []);
       }
+      // ── Lane overrides: Supabase only (no localStorage cache — week-keyed substitution data) ──
+      let lo;
+      try {
+        lo = await loadLaneOverridesFromSupabase();
+      } catch (err) {
+        logError("Failed to load lane_overrides from Supabase", err.message);
+        lo = [];
+      }
       // ── Specialists: try Supabase first, fall back to localStorage ──
       let sp;
       try {
@@ -1877,6 +1889,7 @@ export default function MusicTimetableApp() {
       setEnrolments(en);
       setTeachersRaw(t);
       setTeacherCoverage(tc);
+      setLaneOverrides(lo);
       setSpecialists(sp);
       setInterruptions(ir);
       setGroups(gr.length > 0 ? gr : []);
@@ -6492,7 +6505,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
