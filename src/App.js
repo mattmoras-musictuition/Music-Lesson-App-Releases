@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, insertTeacherCoverage } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
@@ -1663,6 +1663,69 @@ export default function MusicTimetableApp() {
       try { notify("Failed to add staff", "error"); } catch (_) {}
     }
   }, [sessionUserId, logError]);
+
+  // Spec 2 cluster 9b — Remove Staff. Archives the lane row (status='archived')
+  // then sweeps MTT + WTT current/future-week lessons (regular + catchup keys)
+  // referencing the archived bucket_id. Past weeks are preserved unconditionally
+  // (Q3=a). lane_overrides rows are left intact (Q12=a — orphan rows are inert
+  // since the bucket is gone from the active set). Catchup keys are matched
+  // regardless of school suffix because catchup lessons carry per-lesson
+  // schoolId and bucket_id is unique per lane (Q4=a).
+  const handleRemoveStaff = React.useCallback(async (lane) => {
+    if (!sessionUserId) return;
+    if (!lane) return;
+    const teacher = teachers.find(t => t.id === lane.teacherId);
+    const school = schools.find(s => s.id === lane.schoolId);
+    const teacherName = teacher?.name || "(unknown teacher)";
+    const schoolName = school?.name || "(unknown school)";
+
+    // Lesson count: MTT + WTT current+future (regular + catchup keys).
+    const mttCount = (timetable?.lessons || []).filter(l => l.bucket_id === lane.id).length;
+    const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
+    let wttCount = 0;
+    Object.entries(weeklyTimetables || {}).forEach(([key, data]) => {
+      const [weekKey, suffix] = key.split("|");
+      if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
+      if (weekKey < currentMondayStr) return;
+      wttCount += (data.lessons || []).filter(l => l.bucket_id === lane.id).length;
+    });
+    const total = mttCount + wttCount;
+
+    // Q9=b — count=0 fallback wording.
+    const modalText = total === 0
+      ? `Remove ${teacherName} from ${lane.day}s at ${schoolName}? No lessons are currently scheduled.`
+      : `Remove ${teacherName} from ${lane.day}s at ${schoolName}? ${total} current and future lessons will be unscheduled.`;
+
+    if (!window.confirm(modalText)) return;
+
+    // Archive — only step that can throw.
+    try {
+      await archiveTeacherCoverage({ id: lane.id });
+    } catch (err) {
+      logError("Remove staff failed", err.message);
+      try { notify(`Failed to remove ${teacherName}`, "error"); } catch (_) {}
+      return;
+    }
+
+    // Local-state sweep — synchronous filters, can't fail individually.
+    setTeacherCoverage(prev => prev.filter(l => l.id !== lane.id));
+    setTimetable(prev => {
+      if (!prev) return prev;
+      return { ...prev, lessons: (prev.lessons || []).filter(l => l.bucket_id !== lane.id) };
+    });
+    setWeeklyTimetables(prev => {
+      const next = { ...prev };
+      Object.entries(next).forEach(([key, data]) => {
+        const [weekKey, suffix] = key.split("|");
+        if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
+        if (weekKey < currentMondayStr) return;
+        next[key] = { ...data, lessons: (data.lessons || []).filter(l => l.bucket_id !== lane.id) };
+      });
+      return next;
+    });
+
+    try { notify(`Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
+  }, [sessionUserId, teachers, schools, timetable, weeklyTimetables, logError]);
 
   // Load data on mount — uses test data as fallback when storage is empty
   useEffect(() => {
@@ -6406,7 +6469,7 @@ export default function MusicTimetableApp() {
               {groupsBandsTab === "bands" && <BandsManager bands={bands} setBands={setBands} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} hideTitle={true} triggerNew={triggerNewBand} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
             </div>
           )}
-          {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
+          {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
             setTimetable(prev => {
               if (!prev) return prev;
               const lesson = prev.lessons.find(l => l.id === lessonId);
