@@ -221,4 +221,24 @@ export async function insertTeacherCoverage({ schoolId, day, teacherId, userId }
   return { id, userId, schoolId, day, teacherId, status: "active", notes: null, createdAt: nowIso, updatedAt: nowIso };
 }
 
-// archiveTeacherCoverage lands in cluster 9b (Remove Staff UI).
+/**
+ * Single-row archive — flips status to 'archived' + bumps updated_at.
+ * Mirrors deleteLaneOverride's surgical shape (the closer sibling — both are
+ * "remove from active set" operations). Returns void; caller updates local
+ * state independently. RLS scopes UPDATE by auth.uid() = user_id; no
+ * client-side guard needed beyond the existing user-presence check at the
+ * caller.
+ *
+ * Safe under the dev Proxy short-circuit: the supabase.from() call is
+ * suppressed in dev; the void return means caller's local-state filter
+ * fires unconditionally — correct in both dev and prod.
+ *
+ * Cluster 9b — Remove Staff UI.
+ */
+export async function archiveTeacherCoverage({ id }) {
+  const { error } = await supabase
+    .from("teacher_coverage")
+    .update({ status: "archived", updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
