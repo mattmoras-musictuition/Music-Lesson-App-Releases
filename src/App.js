@@ -290,22 +290,6 @@ const ACTION_TOOLS = [
     },
   },
   {
-    name: "reassign_teacher_day",
-    description: "Reassign all of a teacher's lessons on a specific day to a different teacher in the weekly timetable. Use when the user says a teacher is unavailable and another teacher is covering.",
-    input_schema: {
-      type: "object",
-      properties: {
-        date:            { type: "string", description: "The date in YYYY-MM-DD format" },
-        fromTeacherId:   { type: "string", description: "ID of the teacher whose lessons will be reassigned" },
-        fromTeacherName: { type: "string", description: "Name of the original teacher (for confirmation)" },
-        toTeacherId:     { type: "string", description: "ID of the replacement teacher" },
-        toTeacherName:   { type: "string", description: "Name of the replacement teacher (for confirmation)" },
-        schoolId:        { type: "string", description: "Optional — limit to one school. Omit to reassign across all schools on that day." },
-      },
-      required: ["date", "fromTeacherId", "fromTeacherName", "toTeacherId", "toTeacherName"],
-    },
-  },
-  {
     name: "move_wtt_lesson",
     description: "Move a student's lesson to a different day or time in the weekly timetable. Can move within the same week or to a different week. Use when the user asks to reschedule a specific lesson.",
     input_schema: {
@@ -3154,38 +3138,6 @@ export default function MusicTimetableApp() {
         return `Done — moved all ${movedCount} of ${studentName}'s lessons to missed zone for the week of ${weekKey}. Catch-ups ${eligible ? "are" : "are not"} owed.`;
       }
 
-      // ── reassign_teacher_day ─────────────────────────────────────────────
-      if (name === "reassign_teacher_day") {
-        const { date, fromTeacherId, fromTeacherName, toTeacherId, toTeacherName, schoolId } = input;
-        const { dayName, weekKey } = buildDateParts(date);
-        // Find affected storage keys and count before updating
-        const affectedKeys = [];
-        let totalCount = 0;
-        for (const [sk, data] of Object.entries(weeklyTimetables || {})) {
-          const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
-          if (schoolId && sk_schoolId !== schoolId) continue;
-          const count = (data.lessons || []).filter(l => l.teacherId === fromTeacherId && l.day === dayName && !l.isCancelled).length;
-          if (count > 0) { affectedKeys.push(sk); totalCount += count; }
-        }
-        if (totalCount === 0) return `No active lessons found for ${fromTeacherName} on ${dayName} ${date} — nothing changed.`;
-        setWeeklyTimetables(prev => {
-          const next = { ...prev };
-          for (const sk of affectedKeys) {
-            const data = next[sk];
-            const updatedLessons = (data.lessons || []).map(l =>
-              l.teacherId === fromTeacherId && l.day === dayName && !l.isCancelled
-                ? { ...l, teacherId: toTeacherId, teacherName: toTeacherName, adjusted: true }
-                : l
-            );
-            next[sk] = { ...data, lessons: updatedLessons };
-          }
-          return next;
-        });
-        notify(`Reassigned ${totalCount} lesson${totalCount !== 1 ? "s" : ""} to ${toTeacherName} — ${dayName}`, "info");
-        return `Done — reassigned ${totalCount} lesson${totalCount !== 1 ? "s" : ""} on ${dayName} ${date} from ${fromTeacherName} to ${toTeacherName}.`;
-      }
-
       // ── move_wtt_lesson ──────────────────────────────────────────────────
       if (name === "move_wtt_lesson") {
         const { studentId, studentName, fromDate, toDate, toStart, toEnd, instrument } = input;
@@ -4317,7 +4269,6 @@ export default function MusicTimetableApp() {
     lines.push("- draft_email: Open the email compose window pre-filled. This ONLY drafts — it never sends. Always use this tool rather than writing out email text, even if the user asks you to 'write' or 'send' an email.");
     lines.push("- cancel_wtt_lesson: Mark a lesson as cancelled (crossed out/unscheduled) for a week WITHOUT creating a tally entry. Use ONLY for genuine cancellations where no absence record is needed — e.g. school decided not to run lessons, teacher day off with no cover. For student absences, use mark_lesson_missed instead.");
     lines.push("- mark_student_absent_week: Move ALL of a student's lessons for a given week to the missed zone and record them in the tally. Use when a student will be away all week.");
-    lines.push("- reassign_teacher_day: Move all of a teacher's lessons on a specific day to a different teacher in the WTT. Use when a teacher is unavailable and someone else is covering.");
     lines.push("- move_wtt_lesson: Move a student's lesson to a different day or time in the WTT. Can move within the same week or to a different week. The student's school stays fixed. Specify fromDate (current lesson date), toDate (new date), and toStart (new start time). If the student has multiple lessons that week, specify instrument to disambiguate.");
     lines.push("- swap_student_lessons: Swap the lesson times of two students within the same week. Each gets the other's day and start/end time. Both are marked as adjusted. Specify weekOf (any date in the target week). Use studentAInstrument / studentBInstrument if either student has multiple lessons that week.");
     lines.push("- update_tally_entry: Edit an existing missed tally entry — change the reason, reasonDetail, makeupEligible (catch-up owed), or notes. Identify the entry by studentId + weekOf + day. Optionally add instrument if the student has multiple lessons that week. Only include fields you want to change.");
