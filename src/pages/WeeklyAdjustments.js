@@ -2583,38 +2583,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 {mkEmailRow("Parents", allParentEmails, parentRows, "parents", colors.accent)}
                 {mkEmailRow("Class Teachers", allTeacherEmails, teacherRows, "teachers", colors.sidebarActive)}
                 {mkEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
-                {/* Add / clear teacher chips */}
-                {(() => {
-                  const currentChips = dayTeacherChips[day] || [];
-                  const notAdded = teachers.filter(t => !currentChips.includes(t.id));
-                  if (notAdded.length === 0 && currentChips.length === 0) return null;
-                  return (
-                    <>
-                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
-                      <div style={{ padding: "4px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Teacher Chips</div>
-                      {notAdded.map(t => {
-                        const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                        return (
-                          <button key={t.id} onClick={() => { setDayTeacherChips(prev => ({ ...prev, [day]: [...(prev[day] || []), t.id] })); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                            style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                            onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                            onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                            <span style={{ width: 22, height: 17, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
-                            Add {t.name.split(" ")[0]}
-                          </button>
-                        );
-                      })}
-                      {currentChips.length > 0 && (
-                        <button onClick={() => { setDayTeacherChips(prev => ({ ...prev, [day]: [] })); setCatchupDayTeacher(prev => { const n = { ...prev }; delete n[day]; return n; }); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textMuted, fontFamily: "inherit" }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                          Clear chips
-                        </button>
-                      )}
-                    </>
-                  );
-                })()}
                 {/* Spec 2 cluster 6c — Substitute teacher (single-day; cluster 9a Q8 — viewed-lane aware) */}
                 {(() => {
                   if (isLocked) return null;
