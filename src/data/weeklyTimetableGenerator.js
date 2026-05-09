@@ -7,6 +7,7 @@
 import { timeToMin, groupDisplayName } from "../utils/helpers";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
+import { getCardTeacherId } from "../utils/teacherCoverageDB";
 
 // ── classMatchesInterruption ──────────────────────────────────────────────────
 
@@ -35,12 +36,6 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
   const schoolLessons = masterLessons.filter(l => l.schoolId === school.id);
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
-
-  // Spec 2 cluster 4b — bucket_id → teacherId Map. Cards post-4b carry
-  // bucket_id, not teacherId; the teacher-busy bookkeeping below (teacherSched)
-  // and the conflict predicates resolve teacherId via this Map.
-  const bucketIdToTeacherId = new Map((teacherCoverage || []).map(l => [l.id, l.teacherId]));
-  const getCardTeacherId = (lesson) => bucketIdToTeacherId.get(lesson.bucket_id) || null;
 
   // Build interruption lookup for this week at this school
   const weekInterruptions = interruptions.filter(i => {
@@ -265,7 +260,7 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
       // bucket_id propagates through unchanged from the source MTT card.
       // TODO(cluster-6): swapHint becomes a lane_overrides row; this
       // teacherName-override pathway gets deleted then.
-      const sourceTeacherId = getCardTeacherId(lesson);
+      const sourceTeacherId = getCardTeacherId(lesson, teacherCoverage);
       const teacherId = swapHint ? swapHint.replacementTeacherId : sourceTeacherId;
       const teacherName = swapHint
         ? (teachers.find(t => t.id === swapHint.replacementTeacherId)?.name || lesson.teacherName)
@@ -296,7 +291,7 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
 
     // Spec 2 cluster 4b — resolve teacherId from bucket_id for the
     // re-scheduling teacher-busy predicates.
-    const lessonTeacherId = getCardTeacherId(lesson);
+    const lessonTeacherId = getCardTeacherId(lesson, teacherCoverage);
 
     if (ft && fd) {
       // Specific target time given — find nearest slot

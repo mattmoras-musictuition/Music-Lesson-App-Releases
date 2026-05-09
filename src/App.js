@@ -4451,10 +4451,10 @@ export default function MusicTimetableApp() {
     // Post-compaction double-booking check
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
-      const lTid = getCardTeacherId(l, teacherCoverage) || l.teacherId;
+      const lTid = getCardTeacherId(l, teacherCoverage);
       const conflict = result.lessons.find((o, j) => {
         if (j >= i) return false;
-        const oTid = getCardTeacherId(o, teacherCoverage) || o.teacherId;
+        const oTid = getCardTeacherId(o, teacherCoverage);
         return lTid && oTid && oTid === lTid && o.day === l.day &&
           timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
       });
@@ -4577,10 +4577,10 @@ export default function MusicTimetableApp() {
     compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
     for (let i = result.lessons.length - 1; i >= 0; i--) {
       const l = result.lessons[i];
-      const lTid = getCardTeacherId(l, teacherCoverage) || l.teacherId;
+      const lTid = getCardTeacherId(l, teacherCoverage);
       const conflict = result.lessons.find((o, j) => {
         if (j >= i) return false;
-        const oTid = getCardTeacherId(o, teacherCoverage) || o.teacherId;
+        const oTid = getCardTeacherId(o, teacherCoverage);
         return lTid && oTid && oTid === lTid && o.day === l.day &&
           timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
       });
@@ -4694,7 +4694,7 @@ export default function MusicTimetableApp() {
         studentId: group.studentIds[0], studentName: group.name,
         studentIds: [...group.studentIds],
         studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-        bucket_id: bucketId, teacherName: teacher.name,
+        bucket_id: bucketId,
         schoolId: school.id, schoolName: school.name,
         day: manualDay, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
@@ -4736,7 +4736,7 @@ export default function MusicTimetableApp() {
 
       // Get all teacher lessons on this day at this school
       const teacherDayLessons = timetable.lessons.filter(l =>
-        (getCardTeacherId(l, teacherCoverage) || l.teacherId) === teacher.id && l.day === day
+        getCardTeacherId(l, teacherCoverage) === teacher.id && l.day === day
       );
 
       // Try each class-time slot (not before/after school)
@@ -4775,7 +4775,7 @@ export default function MusicTimetableApp() {
               studentId: group.studentIds[0], studentName: group.name,
               studentIds: [...group.studentIds],
               studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-              bucket_id: bucketId, teacherName: teacher.name,
+              bucket_id: bucketId,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -4801,7 +4801,7 @@ export default function MusicTimetableApp() {
           studentId: group.studentIds[0], studentName: group.name,
           studentIds: [...group.studentIds],
           studentNames: group.studentIds.map(sid => students.find(s => s.id === sid)?.name || "?"),
-          bucket_id: bucketId, teacherName: teacher.name,
+          bucket_id: bucketId,
           schoolId: school.id, schoolName: school.name,
           day, slotId: slot.id, slotName: slot.name,
           start: slot.start, end: slot.end,
@@ -4869,7 +4869,7 @@ export default function MusicTimetableApp() {
       const lesson = {
         id: uid(),
         studentId: student.id, studentName: student.name,
-        bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
+        bucket_id: destLane.lane.id,
         schoolId: school.id, schoolName: school.name,
         day, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
@@ -5000,7 +5000,7 @@ export default function MusicTimetableApp() {
     const lesson = {
       id: uid(),
       studentId: student.id, studentName: student.name,
-      bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
+      bucket_id: destLane.lane.id,
       schoolId: school.id, schoolName: school.name,
       day, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
@@ -6429,8 +6429,7 @@ export default function MusicTimetableApp() {
                   lessons: (prev.lessons || []).map(l => {
                     const change = matchChange(l);
                     if (!change) return l;
-                    const newTeacher = teachers.find(t => t.id === change.newTeacherId);
-                    return { ...l, teacherId: change.newTeacherId, teacherName: newTeacher?.name || "" };
+                    return { ...l };
                   })
                 }));
               }
@@ -6442,8 +6441,7 @@ export default function MusicTimetableApp() {
                   next[key] = { ...entry, lessons: (entry.lessons || []).map(l => {
                     const change = matchChange(l);
                     if (!change) return l;
-                    const newTeacher = teachers.find(t => t.id === change.newTeacherId);
-                    return { ...l, teacherId: change.newTeacherId, teacherName: newTeacher?.name || "" };
+                    return { ...l };
                   })};
                 }
                 return next;
@@ -6544,7 +6542,7 @@ export default function MusicTimetableApp() {
                   }
                 }
               }
-              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, bucket_id: destBucketId, teacherName: destLane.teacher.name, _pinned: false } : l) };
+              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, bucket_id: destBucketId, _pinned: false } : l) };
             });
           }} onDeleteLesson={(lessonId) => {
             setTimetable(prev => {
@@ -6629,7 +6627,7 @@ export default function MusicTimetableApp() {
             }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
+              bucket_id: destLane.lane.id,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
@@ -6696,7 +6694,7 @@ export default function MusicTimetableApp() {
             }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
+              bucket_id: destLane.lane.id,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,

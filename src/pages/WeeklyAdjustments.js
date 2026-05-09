@@ -1761,8 +1761,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return;
     }
     const destBucketId = destLane.lane.id;
-    // Cluster 12a: stamped lesson.teacherName fallback removed.
-    const destTeacherName = destLane.teacher?.name || "";
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
@@ -1776,7 +1774,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             weekDate: dayDate?.date || l.weekDate,
             adjusted: false, adjustReason: undefined,
             bucket_id: destBucketId,
-            teacherName: destTeacherName,
             duringSpecialist: l.isBandSession ? false : getSpecialistForSlot(l, newDay, slot)
           } : l)
         }
@@ -2935,7 +2932,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const k = m.studentId + "|" + m.instrument;
               // Skip only when all catch-ups for this student+instrument are already scheduled
               if ((scheduledCountMap[k] || 0) >= (owedCountMap[k] || 0)) continue;
-              const tid = getCardTeacherId(m, teacherCoverage) || m.teacherId || "__none__";
+              const tid = getCardTeacherId(m, teacherCoverage) || "__none__";
               if (!owedByTeacher[tid]) owedByTeacher[tid] = [];
               owedByTeacher[tid].push({ ...m, weekKey: r.weekKey });
             }
@@ -3491,7 +3488,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                     instrument: activeEnrolment.instrument,
                     bucket_id: destLane.lane.id,
-                    teacherName: destLane.teacher?.name || "",
                     enrolmentId: activeEnrolment.id,
                     day: contextMenu.day, start: contextMenu.time, end: contextMenu.time,
                     ...restOpts
@@ -3682,7 +3678,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                                 instrument: activeEnrolment.instrument,
                                 bucket_id: tempBucketId,
-                                teacherName: teacherForTemp?.name || "",
                                 enrolmentId: activeEnrolment.id,
                                 day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
                               };
