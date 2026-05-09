@@ -6493,13 +6493,34 @@ export default function MusicTimetableApp() {
             </div>
           )}
           {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
+            // Spec 2 cluster 10b Commit 1 — day-change bucket_id recompute.
+            // Pre-existing latent bug fix: bucket_id stayed stale on day-moves
+            // since cluster 4c, leaving cross-teacher moves with wrong lane
+            // resolution. Cross-teacher moves are REJECTED here as the
+            // transitional behaviour; Commit 2 replaces this branch with the
+            // reassign modal flow.
+            const lesson = timetable?.lessons.find(l => l.id === lessonId);
+            if (!lesson) return;
+            const school = schools.find(s => s.id === lesson.schoolId);
+            if (!school) return;
+            const slot = school.slots.find(s => s.start === newTime);
+            if (!slot) return;
+            // Path B fallback — legacy cards without bucket_id resolution skip
+            // the recompute (consistent with cluster 5's rendering pattern).
+            // currentTid empty means no teacherCoverage row to point at.
+            const currentTid = getCardTeacherId(lesson, teacherCoverage) || lesson.teacherId || "";
+            let destBucketId = lesson.bucket_id;
+            if (currentTid) {
+              const destLaneId = findLaneId(teacherCoverage, lesson.schoolId, newDay, currentTid);
+              if (!destLaneId) {
+                const teacherName = teachers.find(t => t.id === currentTid)?.name || "(unassigned)";
+                notify(`Cannot move to ${newDay} — ${teacherName} doesn't cover that day at ${school.name}. Cluster 10b Commit 2 will add a reassign-or-substitute prompt here.`, "warning");
+                return;
+              }
+              destBucketId = destLaneId;
+            }
             setTimetable(prev => {
               if (!prev) return prev;
-              const lesson = prev.lessons.find(l => l.id === lessonId);
-              if (!lesson) return prev;
-              const school = schools.find(s => s.id === lesson.schoolId);
-              const slot = school?.slots.find(s => s.start === newTime);
-              if (!slot) return prev;
               // Recalculate duringSpecialist for new position
               const student = students.find(s => s.id === lesson.studentId);
               const className = student?.className || "";
@@ -6513,7 +6534,7 @@ export default function MusicTimetableApp() {
                   }
                 }
               }
-              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, _pinned: false } : l) };
+              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, bucket_id: destBucketId, _pinned: false } : l) };
             });
           }} onDeleteLesson={(lessonId) => {
             setTimetable(prev => {

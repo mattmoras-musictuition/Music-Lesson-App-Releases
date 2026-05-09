@@ -1747,6 +1747,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!slot) return;
     const lesson = weeklyData.lessons.find(l => l.id === lessonId);
     const oldDay = lesson?.day;
+    // Spec 2 cluster 10b Commit 1 — day-change bucket_id recompute.
+    // Mirrors the App.js MTT onMoveLesson change. Cross-teacher moves are
+    // REJECTED here as the transitional behaviour; Commit 2 replaces this
+    // with Q2=β lane-only stamp via getDayLaneTeacher (override-aware).
+    // Path B fallback for legacy cards: skip recompute when currentTid is
+    // empty (no teacherCoverage row to point at).
+    let destBucketId = lesson?.bucket_id;
+    if (lesson) {
+      const currentTid = getCardTeacherId(lesson, teacherCoverage) || lesson.teacherId || "";
+      if (currentTid) {
+        const destLaneId = findLaneId(teacherCoverage, lesson.schoolId, newDay, currentTid);
+        if (!destLaneId) {
+          const teacherName = teachers.find(t => t.id === currentTid)?.name || "(unassigned)";
+          if (notify) notify(`Cannot move to ${newDay} — ${teacherName} doesn't cover that day at ${currentSchool.name}. Cluster 10b Commit 2 will add a reassign-or-substitute prompt here.`, "warning");
+          return;
+        }
+        destBucketId = destLaneId;
+      }
+    }
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
@@ -1759,6 +1778,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name,
             weekDate: dayDate?.date || l.weekDate,
             adjusted: false, adjustReason: undefined,
+            bucket_id: destBucketId,
             duringSpecialist: l.isBandSession ? false : getSpecialistForSlot(l, newDay, slot)
           } : l)
         }
