@@ -7,7 +7,7 @@ import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plu
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -785,14 +785,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
   // Cluster 8b: in multi-lane days, restrict to the viewed lane's bucket_id;
   // legacy cards without bucket_id bind to the default first-added lane.
-  filteredLessons = filteredLessons.filter(l => {
-    const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === l.day && c.status === "active");
-    if (dayLanes.length < 2) return true;
-    const storedLaneId = viewedLanes?.[selectedSchool]?.[l.day];
-    const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-    if (l.bucket_id) return l.bucket_id === targetLaneId;
-    return targetLaneId === dayLanes[0].id;
-  });
+  filteredLessons = filteredLessons.filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool));
 
   // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {
@@ -873,18 +866,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             // Spec 2 cluster 10 — lane-filter the day-header email aggregation.
             // Per-lesson because multi-day select means each lesson's day has its
             // own viewed lane. Lane resolved from l.schoolId (not selectedSchool)
-            // since MTT spans schools when no school is selected. Mirrors the
-            // pattern at WeeklyAdjustments L856 (cluster 8a) and TimetableView
-            // L788 (cluster 8b). Cluster 13 dedupe candidate.
+            // since MTT spans schools when no school is selected.
             const dayLessons = (timetable?.lessons || []).filter(l => {
               if (!activeDays.includes(l.day)) return false;
               if (selectedSchool && l.schoolId !== selectedSchool) return false;
-              const dayLanes = teacherCoverage.filter(c => c.schoolId === l.schoolId && c.day === l.day && c.status === "active");
-              if (dayLanes.length < 2) return true;
-              const storedLaneId = viewedLanes?.[l.schoolId]?.[l.day];
-              const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-              if (l.bucket_id) return l.bucket_id === targetLaneId;
-              return targetLaneId === dayLanes[0].id;
+              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, l.schoolId);
             });
             const parentEmailSet = new Set();
             const parentRows = [];

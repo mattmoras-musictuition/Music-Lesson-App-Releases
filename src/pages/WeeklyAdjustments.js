@@ -18,7 +18,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getCardTeacherId, getDayLaneTeacher } from "../utils/teacherCoverageDB";
+import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -855,12 +855,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const liveStu = students.find(s => s.id === l.studentId);
       if (liveStu?.status === "archived") return false;
     }
-    const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === l.day && c.status === "active");
-    if (dayLanes.length < 2) return true;
-    const storedLaneId = viewedLanes?.[selectedSchool]?.[l.day];
-    const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-    if (l.bucket_id) return l.bucket_id === targetLaneId;
-    return targetLaneId === dayLanes[0].id;
+    return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
   });
 
   const catchupData = { lessons: catchupLessons[weekKey] || [] };
@@ -1644,22 +1639,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (day) {
       // Spec 2 cluster 10 — lane-filter the per-day clear so chip-A trash
       // doesn't nuke chip-B's lessons. Single-lane days behave identically
-      // to today (isMultiLane=false → inViewedLane returns true).
-      const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === day && c.status === "active");
-      const isMultiLane = dayLanes.length >= 2;
-      let targetLaneId = null;
-      if (isMultiLane) {
-        const storedLaneId = viewedLanes?.[selectedSchool]?.[day];
-        targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-      }
-      const inViewedLane = (l) => {
-        if (!isMultiLane) return true;
-        if (l.bucket_id) return l.bucket_id === targetLaneId;
-        return targetLaneId === dayLanes[0].id;
-      };
-      const beforeCount = (weeklyData.lessons || []).filter(l => l.day === day && inViewedLane(l)).length;
-      const clearedLessons = (weeklyData.lessons || []).filter(l => l.day !== day || !inViewedLane(l));
-      const clearedMissed = (weeklyData.missed || []).filter(m => m.day !== day || !inViewedLane(m));
+      // to today (helper returns true for single-lane / zero-lane days).
+      const beforeCount = (weeklyData.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool)).length;
+      const clearedLessons = (weeklyData.lessons || []).filter(l => l.day !== day || !lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool));
+      const clearedMissed = (weeklyData.missed || []).filter(m => m.day !== day || !lessonBelongsToViewedLane(m, viewedLanes, teacherCoverage, selectedSchool));
       setWeeklyTimetables(prev => ({
         ...prev,
         [storageKey]: { ...(prev[storageKey] || {}), lessons: clearedLessons, missed: clearedMissed }
@@ -2469,17 +2452,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const activeDays = selectedDays.size > 0 ? [...selectedDays] : [day];
             // Spec 2 cluster 10 — lane-filter the day-header email aggregation.
             // Per-lesson because multi-day select means each lesson's day has
-            // its own viewed lane. Mirrors the pattern at WeeklyAdjustments
-            // L856 (cluster 8a) and TimetableView L788 (cluster 8b). Cluster 13
-            // dedupe candidate.
+            // its own viewed lane.
             const dayLessons = (weeklyData?.lessons || []).filter(l => {
               if (!activeDays.includes(l.day)) return false;
-              const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === l.day && c.status === "active");
-              if (dayLanes.length < 2) return true;
-              const storedLaneId = viewedLanes?.[selectedSchool]?.[l.day];
-              const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-              if (l.bucket_id) return l.bucket_id === targetLaneId;
-              return targetLaneId === dayLanes[0].id;
+              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
             });
             // Collect all parent emails
             const parentEmailSet = new Set();
@@ -4891,19 +4867,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       // filters to days with lessons).
                       if (confirmClearWeek === "all") return "Clear full week?";
                       const day = confirmClearWeek;
-                      const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === day && c.status === "active");
-                      const isMultiLane = dayLanes.length >= 2;
-                      let targetLaneId = null;
-                      if (isMultiLane) {
-                        const storedLaneId = viewedLanes?.[selectedSchool]?.[day];
-                        targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-                      }
-                      const inViewedLane = (l) => {
-                        if (!isMultiLane) return true;
-                        if (l.bucket_id) return l.bucket_id === targetLaneId;
-                        return targetLaneId === dayLanes[0].id;
-                      };
-                      const count = (weeklyData?.lessons || []).filter(l => l.day === day && inViewedLane(l)).length;
+                      const count = (weeklyData?.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool)).length;
                       const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher;
                       if (!laneTeacher) return `Clear ${day}?`;
                       const firstName = laneTeacher.name.split(" ")[0];
@@ -4915,19 +4879,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 ) : showClearMenu ? (() => {
                   // Spec 2 cluster 10 — multi-lane day appears only if the
                   // viewed lane has lessons there. Single-lane days fall back
-                  // to the original any-lesson check.
+                  // to the original any-lesson check via the helper's
+                  // single-lane true short-circuit.
                   const menuDays = (currentSchool?.days || DAYS).filter(d => {
-                    const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
-                    if (dayLanes.length < 2) {
-                      return (weeklyData?.lessons || []).some(l => l.day === d);
-                    }
-                    const storedLaneId = viewedLanes?.[selectedSchool]?.[d];
-                    const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
-                    return (weeklyData?.lessons || []).some(l => {
-                      if (l.day !== d) return false;
-                      if (l.bucket_id) return l.bucket_id === targetLaneId;
-                      return targetLaneId === dayLanes[0].id;
-                    });
+                    return (weeklyData?.lessons || []).some(l => l.day === d && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool));
                   });
                   return (
                     <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>

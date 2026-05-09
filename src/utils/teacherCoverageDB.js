@@ -194,6 +194,30 @@ export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, lane
   return { lane, teacher };
 }
 
+/**
+ * Spec 2 cluster 13b — viewed-lane membership predicate.
+ * Returns true if the lesson belongs to the day's currently viewed lane (or if
+ * the day is single-lane / zero-lane — both pass through to preserve the
+ * pre-cluster-13 behaviour at every call site).
+ *
+ * Multi-lane resolution: viewedLanes[schoolId][day] selects the active lane;
+ * falls back to the first-added active lane when the stored id is missing or
+ * has been archived. Legacy cards without bucket_id bind to the first-added
+ * lane (post-cluster-12 effectively unreachable).
+ *
+ * Caller passes schoolId explicitly — most sites use selectedSchool, but the
+ * MTT cross-school day-header aggregation (TimetableView) passes l.schoolId
+ * per-lesson because MTT spans schools when no school is selected.
+ */
+export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId) {
+  const dayLanes = (teacherCoverage || []).filter(c => c.schoolId === schoolId && c.day === lesson.day && c.status === "active");
+  if (dayLanes.length < 2) return true;
+  const storedLaneId = viewedLanes?.[schoolId]?.[lesson.day];
+  const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
+  if (lesson.bucket_id) return lesson.bucket_id === targetLaneId;
+  return targetLaneId === dayLanes[0].id;
+}
+
 // ── Write helpers (cluster 9 — Add/Remove Staff UI) ─────────
 
 /**
