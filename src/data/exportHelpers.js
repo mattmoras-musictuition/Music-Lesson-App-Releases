@@ -8,10 +8,18 @@
 // and a new list-style export for single-day phone exports.
 // ============================================================
 
-import { timeToMin, getBreaksForSchool, getSchoolAcronym, downloadFile } from "../utils/helpers";
+import { timeToMin, getBreaksForSchool, getSchoolAcronym, downloadFile, getLiveTeacherName } from "../utils/helpers";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { DAYS, instruments_colors } from "../constants";
 import { getXLSX } from "../utils/api";
+
+// Cluster 12a: opts-cascade resolver for stamped-teacherName-free exports.
+// Reads enrolments/laneOverrides/weekKey from opts (MTT exports pass null/null
+// for the override args; WTT exports pass the live values). Returns "" when
+// the lane misses — matches helpers.js getLiveTeacherName's post-12a contract.
+function _liveTeacherName(lesson, students, teachers, opts) {
+  return getLiveTeacherName(lesson, students, teachers, opts && opts.enrolments, opts && opts.teacherCoverage, opts && opts.laneOverrides, opts && opts.weekKey) || "";
+}
 
 // ── Shared visual system ──────────────────────────────────────────────────────
 // Palette values match InvoicingManager._genHTML (which Matt approved on the
@@ -144,7 +152,8 @@ export function buildGridRows(lessons, students, school, teachers, opts) {
         var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
         var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
         var cls = st ? st.className || "" : "";
-        var ti = firstNameOf(l.teacherName);
+        // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
+        var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
         var color = ic[l.instrument] || ic.default;
         var spec = getSpecTag(l);
         return { name: name, cls: cls, ti: ti, instrument: l.instrument, color: color, adjusted: l.adjusted, adjustReason: l.adjustReason, spec: spec };
@@ -158,11 +167,14 @@ export function buildGridRows(lessons, students, school, teachers, opts) {
   return result;
 }
 
-export function prepareLessonRows(lessons, students) {
+// Cluster 12a: opts arg added so Teacher resolves via lane (override-aware).
+// Callers pass { teachers, enrolments, teacherCoverage, laneOverrides, weekKey }.
+export function prepareLessonRows(lessons, students, opts) {
+  var teachers = opts && opts.teachers;
   var DAY_ORDER = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4 };
   return [...lessons].sort(function(a, b) { return (DAY_ORDER[a.day] || 5) - (DAY_ORDER[b.day] || 5) || timeToMin(a.start) - timeToMin(b.start); }).map(function(l) {
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-    var row = { Day: l.day, Time: l.start + "-" + l.end, Student: l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName, Class: st ? st.className || "" : "", Teacher: l.teacherName, School: l.schoolName, Instrument: l.instrument, Slot: l.slotName || "" };
+    var row = { Day: l.day, Time: l.start + "-" + l.end, Student: l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName, Class: st ? st.className || "" : "", Teacher: _liveTeacherName(l, students, teachers, opts), School: l.schoolName, Instrument: l.instrument, Slot: l.slotName || "" };
     if (l.adjusted) row.Adjusted = l.adjustReason || "Yes";
     return row;
   });
@@ -229,16 +241,18 @@ export function buildStyledTable(gridRows, tableTitle) {
 // Replaces the cramped narrow-portrait timetable grid. Groups lessons by
 // time ascending, shows day name + filter label at the top, instrument
 // dot + teacher initials on each row. Portrait phone-sized CSS.
-function buildSingleDayListHtml(lessons, students, day, title, meta) {
+function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   if (!lessons || lessons.length === 0) return null;
   var ic = instruments_colors;
+  var teachers = opts && opts.teachers;
   var sorted = [...lessons].sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
   var rows = sorted.map(function(l) {
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
     var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
     var cls = st ? st.className || "" : "";
     var color = ic[l.instrument] || ic.default;
-    var ti = firstNameOf(l.teacherName);
+    // Cluster 12a: lane-resolved teacher name.
+    var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
     return '<tr>'
       + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + l.start + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + l.end + '</div></td>'
       + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
@@ -264,9 +278,10 @@ function buildSingleDayListHtml(lessons, students, day, title, meta) {
 // single-day list). Empty days are hidden entirely per Matt's request.
 // Columns divide page width evenly so 2 days get half-width each, 5 days
 // get fifth-width, etc.
-function buildDaysListHtml(lessons, students, title, meta) {
+function buildDaysListHtml(lessons, students, title, meta, opts) {
   if (!lessons || lessons.length === 0) return null;
   var ic = instruments_colors;
+  var teachers = opts && opts.teachers;
   // Group by day, preserving DAYS order; skip empties.
   var byDay = {};
   for (var i = 0; i < DAYS.length; i++) {
@@ -283,7 +298,8 @@ function buildDaysListHtml(lessons, students, title, meta) {
     var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
     var cls = st ? st.className || "" : "";
     var color = ic[l.instrument] || ic.default;
-    var ti = firstNameOf(l.teacherName);
+    // Cluster 12a: lane-resolved teacher name.
+    var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
     return '<tr>'
       + '<td style="padding:7px 8px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:12px">' + l.start + '<div style="font-size:9.5px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + l.end + '</div></td>'
       + '<td style="padding:7px 8px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
@@ -322,7 +338,8 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   var schoolId = opts.schoolId, teacherName = opts.teacherName, className = opts.className, day = opts.day;
   var filtered = [...lessons];
   if (schoolId) filtered = filtered.filter(function(l) { return l.schoolId === schoolId; });
-  if (teacherName) filtered = filtered.filter(function(l) { return l.teacherName === teacherName; });
+  // Cluster 12a: filter by lane-resolved name rather than stamped lesson.teacherName.
+  if (teacherName) filtered = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === teacherName; });
   if (className) { var sids = new Set(students.filter(function(s) { return s.className === className; }).map(function(s) { return s.id; })); filtered = filtered.filter(function(l) { return sids.has(l.studentId); }); }
   if (day) filtered = filtered.filter(function(l) { return l.day === day; });
   if (filtered.length === 0) return null;
@@ -334,9 +351,14 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   metaParts.push(filtered.length + " lesson" + (filtered.length !== 1 ? "s" : ""));
   var meta = metaParts.join(" \u00b7 ");
 
+  // Cluster 12a: leafOpts adds teachers to the cascade so leaf renderers can
+  // call _liveTeacherName. opts already carries enrolments / laneOverrides /
+  // weekKey from the entry-point caller (ExportDialog).
+  var leafOpts = Object.assign({}, opts, { teachers: teachers });
+
   // Session 96: for single-day exports, use the list-style renderer.
   if (day) {
-    return buildSingleDayListHtml(filtered, students, day, title, meta);
+    return buildSingleDayListHtml(filtered, students, day, title, meta, leafOpts);
   }
 
   // Session 96 v2: class-filtered exports get the per-day list layout —
@@ -344,7 +366,7 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   // for classroom-teacher exports, where they want to scan "what's
   // happening each day this week" rather than read a full time grid.
   if (className) {
-    return buildDaysListHtml(filtered, students, title, meta);
+    return buildDaysListHtml(filtered, students, title, meta, leafOpts);
   }
 
   // Session 96 v2: when filtering to a specific teacher, hide days the
@@ -352,7 +374,8 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   // days that have lessons). Useful for a part-time staff member's
   // schedule — Monday-Wednesday-only teacher gets a 3-day grid rather
   // than a 5-day grid with blanks on Thu/Fri.
-  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
+  // Cluster 12a: gridOpts extended with enrolments / laneOverrides / weekKey for buildGridRows leaf-resolver.
+  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
   var showSeparate = !schoolId && !teacherName && !className;
   var body = buildHeaderBand(title, null, meta);
   if (showSeparate) {
@@ -375,8 +398,9 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
   var teacherNameFilter = opts.teacherName || null;
   var sourceLabel = opts.sourceLabel || "Master";
   var filtered = schoolId ? lessons.filter(function(l) { return l.schoolId === schoolId; }) : lessons;
-  if (teacherNameFilter) filtered = filtered.filter(function(l) { return l.teacherName === teacherNameFilter; });
-  var tNames = [...new Set(filtered.map(function(l) { return l.teacherName; }))].sort();
+  // Cluster 12a: filter and group by lane-resolved name rather than stamped lesson.teacherName.
+  if (teacherNameFilter) filtered = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === teacherNameFilter; });
+  var tNames = [...new Set(filtered.map(function(l) { return _liveTeacherName(l, students, teachers, opts); }).filter(function(n) { return n; }))].sort();
   if (tNames.length === 0) return null;
   var schoolName = schoolId ? (schools.find(function(s) { return s.id === schoolId; })?.name || "") : "All Schools";
   var DAYS_ORD = {Monday:0,Tuesday:1,Wednesday:2,Thursday:3,Friday:4};
@@ -384,7 +408,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
   for (var ti = 0; ti < tNames.length; ti++) {
     if (ti > 0) body += '<div style="page-break-before:always"></div>';
     var tName = tNames[ti];
-    var tLessons = filtered.filter(function(l) { return l.teacherName === tName; });
+    var tLessons = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === tName; });
     var teacherSchoolGroups = groupLessonsBySchool(tLessons, schools);
     teacherSchoolGroups.sort(function(a, b) {
       var aMin = Math.min.apply(null, a.lessons.map(function(l){ return DAYS_ORD[l.day] != null ? DAYS_ORD[l.day] : 99; }));
@@ -397,7 +421,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
       if (nm.length > maxNameLen) maxNameLen = nm.length;
     });
     var dayColWidth = Math.min(170, Math.max(105, maxNameLen * 6.5 + 16));
-    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage }); });
+    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey }); });
     // Session 96: single header band per teacher instead of separate h1 + meta.
     var metaLine = schoolName + " \u00b7 " + sourceLabel + " \u00b7 " + tLessons.length + " lesson" + (tLessons.length !== 1 ? "s" : "");
     body += buildHeaderBand(tName, "Teacher schedule", metaLine);
@@ -420,7 +444,8 @@ export function getTeacherBreaksForSchedule(school, teachers, lessons, teacherCo
     breaks.push({ start: b.start, end: b.end, day: b.day || "All", label: "Break" });
   }
   if (breaks.length === 0) {
-    var tids = [...new Set(lessons.filter(function(l) { return school && l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage) || l.teacherId; }))];
+    // Cluster 12a: stamped lesson.teacherId fallback removed — lane only.
+    var tids = [...new Set(lessons.filter(function(l) { return school && l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage); }).filter(function(t) { return t; }))];
     var seen = {};
     for (var i2 = 0; i2 < tids.length; i2++) {
       var t = teachers.find(function(t2) { return t2.id === tids[i2]; });
@@ -539,13 +564,15 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
   var format = opts.format, filenameBase = opts.filenameBase, schoolId = opts.schoolId, teacherName = opts.teacherName, className = opts.className, day = opts.day;
   var filtered = [...lessons];
   if (schoolId) filtered = filtered.filter(function(l) { return l.schoolId === schoolId; });
-  if (teacherName) filtered = filtered.filter(function(l) { return l.teacherName === teacherName; });
+  // Cluster 12a: filter by lane-resolved name.
+  if (teacherName) filtered = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === teacherName; });
   if (className) { var sids = new Set(students.filter(function(s) { return s.className === className; }).map(function(s) { return s.id; })); filtered = filtered.filter(function(l) { return sids.has(l.studentId); }); }
   if (day) filtered = filtered.filter(function(l) { return l.day === day; });
   if (filtered.length === 0) throw new Error("No lessons match the selected filters");
   var filename = filenameBase + (day ? "-" + day : "");
   var showSeparate = !schoolId && !teacherName && !className;
-  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
+  // Cluster 12a: gridOpts extended for lane-resolved teacher resolution.
+  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
 
   if (format === "csv") {
     const Papa = window.Papa;
@@ -613,7 +640,8 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
       var gRows2 = buildGridRows(filtered, students, school2, teachers, gridOpts);
       XLSX.utils.book_append_sheet(wb, gridToSheet(gRows2), "Timetable");
     }
-    var listRows = prepareLessonRows(filtered, students);
+    // Cluster 12a: prepareLessonRows now takes opts so Teacher resolves lane-aware.
+    var listRows = prepareLessonRows(filtered, students, { teachers: teachers, enrolments: opts && opts.enrolments, teacherCoverage: opts && opts.teacherCoverage, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
     var listWs = XLSX.utils.json_to_sheet(listRows);
     var listCols = Object.keys(listRows[0] || {});
     listWs["!cols"] = listCols.map(function(k) { return { wch: Math.max(k.length, Math.max.apply(null, listRows.map(function(r) { return String(r[k] || "").length; }))) + 2 }; });
@@ -630,10 +658,12 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
     var pdfMeta = pdfMetaParts.join(" \u00b7 ");
     var html;
     if (className) {
-      html = buildDaysListHtml(filtered, students, pdfTitle, pdfMeta);
+      // Cluster 12a: leafOpts adds teachers for lane-resolver.
+      html = buildDaysListHtml(filtered, students, pdfTitle, pdfMeta, Object.assign({}, opts, { teachers: teachers }));
     } else {
       var body = buildHeaderBand(pdfTitle, null, pdfMeta);
-      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage };
+      // Cluster 12a: pdfGridOpts extended for lane-resolved teacher resolution.
+      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
       if (showSeparate) {
         var groups3 = groupLessonsBySchool(filtered, schools);
         for (var g3 = 0; g3 < groups3.length; g3++) {
@@ -657,8 +687,9 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
   var schoolId = opts.schoolId;
   var teacherNameFilter = opts.teacherName || null;
   var filtered = schoolId ? lessons.filter(function(l) { return l.schoolId === schoolId; }) : lessons;
-  if (teacherNameFilter) filtered = filtered.filter(function(l) { return l.teacherName === teacherNameFilter; });
-  var teacherNames = [...new Set(filtered.map(function(l) { return l.teacherName; }))].sort();
+  // Cluster 12a: filter and group by lane-resolved name.
+  if (teacherNameFilter) filtered = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === teacherNameFilter; });
+  var teacherNames = [...new Set(filtered.map(function(l) { return _liveTeacherName(l, students, teachers, opts); }).filter(function(n) { return n; }))].sort();
   if (teacherNames.length === 0) throw new Error("No teacher schedules to export");
   var sourceLabel = opts.sourceLabel || "Master";
   var schoolName = schoolId ? (schools.find(function(s) { return s.id === schoolId; })?.name || "") : "All Schools";
@@ -669,7 +700,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
     var wb = XLSX.utils.book_new();
     for (var ti = 0; ti < teacherNames.length; ti++) {
       var tName = teacherNames[ti];
-      var tLessons = filtered.filter(function(l) { return l.teacherName === tName; });
+      var tLessons = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === tName; });
       var teacherSchoolGroups = groupLessonsBySchool(tLessons, schools);
       var aoa = [];
       aoa.push([tName + " — Schedule", schoolName]);
@@ -677,7 +708,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
       for (var sg = 0; sg < teacherSchoolGroups.length; sg++) {
         var sgSchool = teacherSchoolGroups[sg].school;
         var sgLessons = teacherSchoolGroups[sg].lessons;
-        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers, { teacherCoverage: opts && opts.teacherCoverage });
+        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
         var sgDays = sgGrid.days;
         aoa.push([getSchoolAcronym(sgSchool) + " — " + sgSchool.name]);
         aoa.push(["Time"].concat(sgDays));
@@ -704,7 +735,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
     for (var ti2 = 0; ti2 < teacherNames.length; ti2++) {
       if (ti2 > 0) body += '<div style="page-break-before:always"></div>';
       var tName2 = teacherNames[ti2];
-      var tLessons2 = filtered.filter(function(l) { return l.teacherName === tName2; });
+      var tLessons2 = filtered.filter(function(l) { return _liveTeacherName(l, students, teachers, opts) === tName2; });
       var teacherSchoolGroups2 = groupLessonsBySchool(tLessons2, schools);
       teacherSchoolGroups2.sort(function(a, b) {
         var aMin = Math.min.apply(null, a.lessons.map(function(l){ return DAYS_ORD[l.day] != null ? DAYS_ORD[l.day] : 99; }));
@@ -712,7 +743,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
         return aMin - bMin;
       });
       var sg2Grids = teacherSchoolGroups2.map(function(sg) {
-        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage });
+        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
       });
       var maxNameLen = 0;
       tLessons2.forEach(function(l) {

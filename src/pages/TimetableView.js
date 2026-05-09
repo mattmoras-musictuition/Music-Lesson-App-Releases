@@ -264,7 +264,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     const info = {
       title: "",
       instrument: lesson.instrument || "",
-      teacher: lesson.teacherName || "",
+      // Cluster 12a: lane-resolved teacher name only.
+      teacher: getLiveTeacherName(lesson, stu, teachers, enrolments, teacherCoverage),
       time: `${toTimeLabel(lesson.start)}${lesson.end ? " – " + toTimeLabel(lesson.end) : ""}`,
       parentName: null,
       className: null,
@@ -568,7 +569,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       // Check teacher double-booking (another lesson at the same time)
       {
         const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === _liveTeacherId && l.day === newDay && l.start === slot.start);
-        if (conflict) warnings.push(`${teacher?.name || lesson.teacherName} already has ${conflict.studentName} at this time`);
+        if (conflict) warnings.push(`${teacher?.name || ""} already has ${conflict.studentName} at this time`);
       }
     }
 
@@ -1167,7 +1168,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const _mttLesson = timetable && timetable.lessons.find(l => l.id === contextMenu.lessonId);
                   const _mttSt = !contextMenu.isGroup && allStu2.find(s => s.id === contextMenu.studentId);
                   const _mttSchoolSender = schools.find(s => s.id === (_mttLesson?.schoolId || _mttSt?.schoolId))?.senderEmail || "";
-                  const _mttResolvedTid = _mttLesson ? getLiveTeacherId(_mttLesson, allStu2 || students, enrolments, teacherCoverage) : null;
+                  // Cluster 12a: helper handles null lesson — drop the redundant ternary.
+                  const _mttResolvedTid = getLiveTeacherId(_mttLesson, allStu2 || students, enrolments, teacherCoverage);
                   const lessonTeacher = _mttResolvedTid ? teachers.find(t => t.id === _mttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;

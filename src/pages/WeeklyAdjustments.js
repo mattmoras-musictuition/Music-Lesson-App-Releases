@@ -337,7 +337,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const info = {
       title: "",
       instrument: lesson.instrument || "",
-      teacher: lesson.teacherName || "",
+      // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
+      teacher: getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey),
       time: `${toTimeLabel(lesson.start)}${lesson.end ? " – " + toTimeLabel(lesson.end) : ""}`,
       parentName: null,
       className: null,
@@ -560,7 +561,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       const school = schools.find(s => s.id === lesson.schoolId);
       const liveBand = bands?.find(b => b.id === lesson.bandId);
-      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId || lesson.teacherId;
+      // Cluster 12a: stamped lesson.teacherId fallback removed.
+      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId;
       const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -607,9 +609,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
       // Teacher availability and double-booking for groups
       const school = schools.find(s => s.id === lesson.schoolId);
-      // Look up current teacher from live groups state rather than stored lesson.teacherId
+      // Cluster 12a: stamped lesson.teacherId fallback removed; lane / live-group only.
       const liveGroup = groups?.find(g => g.id === lesson.groupId);
-      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId || lesson.teacherId;
+      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId;
       const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
       if (teacher && school) {
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
@@ -1189,9 +1191,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               aiHints = parsed.map(h => ({
                 ...h,
                 lessonMatch: (lesson) => {
-                  // Teacher match
+                  // Teacher match — cluster 12a: lane-resolved name (override-aware).
                   if (h.targetTeacherName) {
-                    const tName = (lesson.teacherName || "").toLowerCase();
+                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey) || "").toLowerCase();
                     const hTeacher = h.targetTeacherName.toLowerCase();
                     if (!tName.includes(hTeacher) && !hTeacher.includes(tName.split(" ")[0])) return false;
                   }
@@ -1485,9 +1487,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               aiHints = dayHints.map(h => ({
                 ...h,
                 lessonMatch: (lesson) => {
-                  // Teacher match
+                  // Teacher match — cluster 12a: lane-resolved name (override-aware).
                   if (h.targetTeacherName) {
-                    const tName = (lesson.teacherName || "").toLowerCase();
+                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey) || "").toLowerCase();
                     const hTeacher = h.targetTeacherName.toLowerCase();
                     if (!tName.includes(hTeacher) && !hTeacher.includes(tName.split(" ")[0])) return false;
                   }
@@ -1759,7 +1761,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return;
     }
     const destBucketId = destLane.lane.id;
-    const destTeacherName = destLane.teacher?.name || lesson.teacherName || "";
+    // Cluster 12a: stamped lesson.teacherName fallback removed.
+    const destTeacherName = destLane.teacher?.name || "";
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
@@ -2518,7 +2521,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const staffEmailSet = new Set();
             const staffRows = [];
             dayLessons.forEach(l => {
-              const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+              const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
               const t = teachers.find(x => x.id === tid);
               if (t?.email && !staffEmailSet.has(t.email)) {
                 staffEmailSet.add(t.email);
@@ -3824,7 +3827,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const _wttLesson = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
                   const _wttSt = !contextMenu.isGroup && students.find(s => s.id === contextMenu.studentId);
                   const _wttSchoolSender = schools.find(s => s.id === (selectedSchool || _wttLesson?.schoolId || _wttSt?.schoolId))?.senderEmail || "";
-                  const _wttResolvedTid = _wttLesson ? getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey) : null;
+                  // Cluster 12a: helper handles null lesson — drop the redundant ternary.
+                  const _wttResolvedTid = getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
                   const lessonTeacher = _wttResolvedTid ? teachers.find(t => t.id === _wttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
@@ -4027,47 +4031,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   );
                 })()}
                 {/* 5: Swap Teacher */}
-                {!contextMenu.isMulti && (() => {
-                  const _cm_lesson = (weeklyData?.lessons || []).find(l => l.id === contextMenu.lessonId);
-                  const menuRect = contextMenuRef.current?.getBoundingClientRect();
-                  const subX = menuRect ? (menuRect.right + 190 > window.innerWidth ? menuRect.left - 190 : menuRect.right) : contextMenu.x + 220;
-                  const availTeachers = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool));
-                  return (
-                    <div style={{ position: "relative" }}>
-                      {swapTeacherSubmenu?.type === "single" && (
-                        <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
-                          {_cm_lesson?._swapTeacherId && (
-                            <button onClick={() => {
-                              setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => x.id === contextMenu.lessonId ? { ...x, _swapTeacherId: undefined, _swapTeacherName: undefined } : x) } }; });
-                              setContextMenu(null); setSwapTeacherSubmenu(null);
-                            }} style={{ display: "flex", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                              onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Restore original</span>
-                            </button>
-                          )}
-                          {availTeachers.map(t => (
-                            <button key={t.id} onClick={() => {
-                              setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => x.id === contextMenu.lessonId ? { ...x, _swapTeacherId: t.id, _swapTeacherName: t.name } : x) } }; });
-                              setConstraintWarnings(prev => { const next = { ...prev }; delete next[contextMenu.lessonId]; return next; });
-                              setContextMenu(null); setSwapTeacherSubmenu(null);
-                            }} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                              onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
-                              {t.name.split(" ")[0]}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <button
-                        onMouseEnter={e => { e.currentTarget.style.background = colors.bg; setSwapTeacherSubmenu({ type: "single", y: e.currentTarget.getBoundingClientRect().top }); keepSwap(); }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "none"; schedSwapClose(); }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, borderRadius: 6, fontFamily: "inherit" }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> Swap Teacher</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                      </button>
-                    </div>
-                  );
-                })()}
+                {/* Cluster 12a: single-card "Swap Teacher" submenu deleted alongside the
+                    _swapTeacherId mechanism strip. Lane-level substitution is handled by
+                    cluster 6c's Substitute Teacher flow on the day header instead. */}
                 {/* 6: Bulk actions when multiple selected */}
                 {contextMenu.isMulti && (() => {
                   const selLessons = (weeklyData?.lessons || []).filter(l => contextMenu.selectedIds.includes(l.id));
@@ -4097,11 +4063,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Aggregate music staff (teachers on selected lessons)
                   const staffMap = {}; // email -> { name, color }
                   selLessons.forEach(l => {
-                    const tid = l._swapTeacherId || getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
-                    const tname = l._swapTeacherName || l.teacherName;
+                    // Cluster 12a: lane-resolved teacher only; stamped fallbacks gone.
+                    const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
                     const t = teachers.find(x => x.id === tid);
                     const email = t?.email;
-                    if (email && !staffMap[email]) staffMap[email] = { name: tname || t?.name || email, color: t?.color || null };
+                    if (email && !staffMap[email]) staffMap[email] = { name: t?.name || email, color: t?.color || null };
                   });
                   const allStaffEmails = Object.keys(staffMap);
                   const staffRows = Object.entries(staffMap).map(([email, { name, color }]) => ({ email, name, color }));
@@ -4216,29 +4182,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       </button>
                     </div>
 
-                    {/* Swap Teacher (all) ▶ */}
-                    <div style={{ position: "relative" }}>
-                      {swapTeacherSubmenu?.type === "swap" && (
-                        <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                          style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160, padding: "4px 0" }}>
-                          {teachers.map(t => (
-                            <button key={t.id} onClick={() => {
-                              setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => contextMenu.selectedIds.includes(x.id) ? { ...x, _swapTeacherId: t.id, _swapTeacherName: t.name } : x) } }; });
-                              setContextMenu(null); setSwapTeacherSubmenu(null); setSelectedCards(new Set());
-                            }} style={btn(colors.text)} onMouseEnter={hov} onMouseLeave={unhov}>
-                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
-                              {t.name.split(" ")[0]}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <button
-                        onMouseEnter={e => { hov(e); setSwapTeacherSubmenu({ type: "swap", y: e.currentTarget.getBoundingClientRect().top }); setWttEmailLevel2(null); keepSwap(); }}
-                        onMouseLeave={e => { unhov(e); schedSwapClose(); }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> Swap Teacher (all)</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                      </button>
-                    </div>
+                    {/* Cluster 12a: bulk "Swap Teacher (all)" submenu deleted alongside the
+                        _swapTeacherId mechanism strip. */}
 
                     {/* Mark all missed */}
                     <button onClick={() => { setMissedModal({ type: "bulk", lessonIds: contextMenu.selectedIds, weekKey, category: null, reasonDetail: "", catchup: null, details: "" }); setContextMenu(null); }}
@@ -5524,7 +5469,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     onDragStart={e => {
                                       e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move";
                                       setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
-                                      if (l._swapTeacherId) setWeeklyTimetables(prev => { const d = prev[storageKey]; if (!d) return prev; return { ...prev, [storageKey]: { ...d, lessons: d.lessons.map(x => x.id === l.id ? { ...x, _swapTeacherId: undefined, _swapTeacherName: undefined } : x) } }; });
+                                      // Cluster 12a: drag auto-clear of _swapTeacherId removed (mechanism gone).
                                     }}
                                     onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
                                     onMouseEnter={e => {
@@ -5576,7 +5521,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
-                                    {(() => { const _tn = l._swapTeacherId ? (l._swapTeacherName || teachers.find(t => t.id === l._swapTeacherId)?.name || "") : getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = !l._swapTeacherId && isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); const _overrideActive = !l._swapTeacherId && l.bucket_id && laneOverrides.some(o => o.weekKey === weekKey && o.bucketId === l.bucket_id); return <div style={{ color: _unassigned ? colors.danger : (l._swapTeacherId || _overrideActive) ? "#7C3AED" : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {/* Cluster 12a: _swapTeacherId branch + _overrideActive purple-text both removed.
+                                        Lane resolution carries the substitute-divergence signal at the column level
+                                        via clusters 6c/7/8 (cluster 11 was retired as over-engineering). */}
+                                    {(() => { const _tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
                                     {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                                     {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
                                     {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}

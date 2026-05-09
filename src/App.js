@@ -2131,98 +2131,56 @@ export default function MusicTimetableApp() {
 
       const normalize = (s) => (s || "").trim().toLowerCase();
 
-      // Returns:
-      //   { teacherId, teacherName, studentName } — lesson needs these applied
-      //   null                                    — lesson is already correct
-      //   { orphan: true, reason }                — lesson is orphaned, surface it
-      const diff = (lesson) => {
+      // Cluster 12a: surgical strip — was a two-job reconciler (orphan detection + live
+      // stamped-field sync). Live-sync arm removed because nothing reads stamped
+      // teacherId/teacherName post-cluster-12a (lane resolves at render time). Orphan
+      // detection retained — it's the Session 97.1 Settings → Data Health surface,
+      // independent of cluster 12.
+      const checkOrphan = (lesson) => {
         if (lesson.isGroup) return null; // groups carry their own teacherId; skip
 
         const stu = students.find(s => s.id === lesson.studentId);
-        if (!stu) return { orphan: true, reason: "student not found" };
+        if (!stu) return { reason: "student not found" };
 
         const inst = instrumentsFromEnrolments(stu.id, enrolments).find(
           i => normalize(i.name) === normalize(lesson.instrument)
         );
-        if (!inst) return { orphan: true, reason: "instrument not in student record" };
-        if (!inst.teacherId) return { orphan: true, reason: "instrument has no assigned teacher" };
+        if (!inst) return { reason: "instrument not in student record" };
+        if (!inst.teacherId) return { reason: "instrument has no assigned teacher" };
 
         const teacher = teachers.find(tc => tc.id === inst.teacherId);
-        if (!teacher) return { orphan: true, reason: "assigned teacher not found" };
+        if (!teacher) return { reason: "assigned teacher not found" };
 
-        const liveTeacherId   = inst.teacherId;
-        const liveTeacherName = teacher.name || "";
-        const liveStudentName = stu.name || "";
-
-        // Cluster 4c: skip cluster-4 cards (no teacherId stamp). Lane resolves teacher
-        // at render time; cluster 5 will reframe this useEffect's solo-card sync logic
-        // and cluster 12 will strip the teacherName/teacherId fields entirely.
-        if (!lesson.teacherId) return null;
-
-        if (
-          lesson.teacherId   === liveTeacherId   &&
-          lesson.teacherName === liveTeacherName &&
-          lesson.studentName === liveStudentName
-        ) return null;
-
-        return { teacherId: liveTeacherId, teacherName: liveTeacherName, studentName: liveStudentName };
+        return null;
       };
 
       const orphans = [];
-      let ttFixCount = 0;
-      let wtFixCount = 0;
 
-      // Master timetable
+      // Master timetable — orphan-only walk; setter callback used purely to access
+      // fresh state without adding timetable to deps. Always returns prev unchanged.
       setTimetableRaw(prev => {
-        if (!prev || !prev.lessons) return prev;
-        let changed = false;
-        const newLessons = prev.lessons.map(l => {
-          const r = diff(l);
-          if (!r) return l;
-          if (r.orphan) {
-            orphans.push({ where: "master", lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
-            return l;
-          }
-          changed = true;
-          ttFixCount++;
-          return { ...l, ...r };
-        });
-        if (!changed) return prev;
-        return { ...prev, lessons: newLessons };
-      });
-
-      // Weekly timetables
-      setWeeklyTimetablesRaw(prev => {
-        let anyChange = false;
-        const next = { ...prev };
-        for (const key of Object.keys(next)) {
-          const entry = next[key];
-          if (!entry || !entry.lessons) continue;
-          let entryChanged = false;
-          const fixed = entry.lessons.map(l => {
-            const r = diff(l);
-            if (!r) return l;
-            if (r.orphan) {
-              orphans.push({ where: key, lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
-              return l;
-            }
-            entryChanged = true;
-            wtFixCount++;
-            return { ...l, ...r };
-          });
-          if (entryChanged) {
-            next[key] = { ...entry, lessons: fixed };
-            anyChange = true;
+        if (prev?.lessons) {
+          for (const l of prev.lessons) {
+            const r = checkOrphan(l);
+            if (r) orphans.push({ where: "master", lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
           }
         }
-        return anyChange ? next : prev;
+        return prev;
       });
 
-      const totalFixes = ttFixCount + wtFixCount;
-      if (totalFixes > 0) {
-        console.log(`[reconcile] Synced ${totalFixes} lesson(s) to live student/teacher data (${ttFixCount} master, ${wtFixCount} weekly)`);
-        try { notify(`Synced ${totalFixes} lesson${totalFixes === 1 ? "" : "s"} to current student/teacher data`, "success", 4000); } catch (_) {}
-      }
+      // Weekly timetables — same orphan-only walk.
+      setWeeklyTimetablesRaw(prev => {
+        for (const key of Object.keys(prev || {})) {
+          const entry = prev[key];
+          if (!entry || !entry.lessons) continue;
+          for (const l of entry.lessons) {
+            const r = checkOrphan(l);
+            if (r) orphans.push({ where: key, lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
+          }
+        }
+        return prev;
+      });
+
       if (orphans.length > 0) {
         console.warn(`[reconcile] Found ${orphans.length} orphaned lesson(s) — needs review:`, orphans);
         // Session 97: only toast when the count grows (a NEW orphan), not on
@@ -4730,13 +4688,9 @@ export default function MusicTimetableApp() {
         const group = groups.find(g => g.id === l.groupId);
         if (!group) return l;
         const changes = {};
-        // Sync teacher — guarded for cluster-4 cards (cards with bucket_id and
-        // no teacherId stay lane-managed; legacy cards with teacherId still
-        // sync until cluster 12 strips them in Phase 3 cleanup).
-        if (group.teacherId && l.teacherId && l.teacherId !== group.teacherId) {
-          const newTeacher = teachers.find(t => t.id === group.teacherId);
-          if (newTeacher) { changes.teacherId = newTeacher.id; changes.teacherName = newTeacher.name; }
-        }
+        // Cluster 12a: teacher-sync arm removed. Stamped teacherId/teacherName no longer
+        // read post-cluster-12a; lane resolves at render time. Group name + student list
+        // syncs below stay — those fields are still read at render.
         // Sync group name
         if (group.name && l.groupName !== group.name) {
           changes.groupName = group.name; changes.studentName = group.name;
@@ -6438,6 +6392,8 @@ export default function MusicTimetableApp() {
             schools={schools}
             teachers={teachers}
             teacherCoverage={teacherCoverage}
+            enrolments={enrolments}
+            laneOverrides={laneOverrides}
             contacts={contacts}
             specialists={specialists}
             availableWeeks={showExportDialog.availableWeeks}
@@ -6586,7 +6542,8 @@ export default function MusicTimetableApp() {
             }
             // Path B fallback — legacy cards without resolvable currentTid skip
             // the cross-teacher modal but still get destination bucket_id stamped.
-            const currentTid = getCardTeacherId(lesson, teacherCoverage) || lesson.teacherId || "";
+            // Cluster 12a: stamped lesson.teacherId fallback removed; lane resolution only.
+            const currentTid = getCardTeacherId(lesson, teacherCoverage) || "";
             const destBucketId = destLane.lane.id;
             let pendingEnrolmentMutation = null;
             let pendingGroupsMutation = null;

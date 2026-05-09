@@ -158,8 +158,12 @@ export const bandDisplayName = (lesson, members) =>
 
 // Derive the current teacher name for a lesson from live student/teacher data.
 // Cluster 6b1: override-first via (weekKey, bucket_id) when WTT context provided.
-// Cluster 5a: lane-first via bucket_id. Falls back to stored teacherName if no
-// instrument match found.
+// Cluster 5a: lane-first via bucket_id.
+// Cluster 12a: stamped teacherName fallback removed. Group/band lane miss now
+// returns "" (post-12a all active cards have bucket_id, so this is unreachable in
+// practice — but explicit empty-string return keeps callers' string-concatenation
+// safe). Solo student-walk preserved for the "stored instrument has changed"
+// case which is live data resolution, not stamped fallback.
 export const getLiveTeacherName = (lesson, students, teachers, enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
   if (!lesson) return "";
   const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
@@ -167,7 +171,7 @@ export const getLiveTeacherName = (lesson, students, teachers, enrolments, teach
     const t = teachers.find(x => x.id === laneTid);
     if (t?.name) return t.name;
   }
-  if (lesson.isGroup || lesson.isBandSession) return lesson.teacherName || "";
+  if (lesson.isGroup || lesson.isBandSession) return "";
   const student = students.find(s => s.id === lesson.studentId);
   if (student) {
     // Try the stored instrument first; if the student's instrument has changed,
@@ -181,24 +185,26 @@ export const getLiveTeacherName = (lesson, students, teachers, enrolments, teach
       if (teacher) return teacher.name;
     }
   }
-  return lesson.teacherName || "";
+  return "";
 };
 
 // Returns the live teacher ID for a lesson, derived from current student data.
 // Cluster 6b1: override-first via (weekKey, bucket_id) when WTT context provided.
-// Cluster 5a: lane-first via bucket_id (Path B). Falls back to existing chain
-// for legacy cards without bucket_id and for lane-misses.
+// Cluster 5a: lane-first via bucket_id.
+// Cluster 12a: stamped teacherId fallback removed. Group/band lane miss returns
+// null. Solo student-walk preserved for instrument-changed case (live data, not
+// stamped fallback).
 export const getLiveTeacherId = (lesson, students, enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
   if (!lesson) return null;
   const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
   if (laneTid) return laneTid;
-  if (lesson.isGroup || lesson.isBandSession) return lesson.teacherId;
+  if (lesson.isGroup || lesson.isBandSession) return null;
   const student = students.find(s => s.id === lesson.studentId);
-  if (!student) return lesson.teacherId;
+  if (!student) return null;
   const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
   const inst = studentInsts.find(i => i.name === lesson.instrument)
     || studentInsts.find(i => !i.isGroup);
-  return inst?.teacherId || lesson.teacherId || null;
+  return inst?.teacherId || null;
 };
 
 // Returns true if the lesson's instrument has no assigned teacher in current student data.
@@ -414,7 +420,8 @@ export function getBreaksForSchool(school, teachers, lessons, teacherCoverage) {
   }
   // Teacher-level breaks if no school breaks found
   if (breaks.length === 0) {
-    var tids = [...new Set(lessons.filter(function(l) { return l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage) || l.teacherId; }))];
+    // Cluster 12a: stamped lesson.teacherId fallback removed — lane only.
+    var tids = [...new Set(lessons.filter(function(l) { return l.schoolId === school.id; }).map(function(l) { return getCardTeacherId(l, teacherCoverage); }).filter(function(t) { return t; }))];
     var seen = {};
     for (var i2 = 0; i2 < tids.length; i2++) {
       var t = teachers.find(function(t2) { return t2.id === tids[i2]; });

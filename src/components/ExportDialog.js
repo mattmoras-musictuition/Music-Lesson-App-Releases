@@ -8,7 +8,7 @@
 import React from "react";
 import { DAYS, STORAGE_KEYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId, getLiveTeacherName } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
@@ -30,7 +30,7 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
   // Source is derived from sourceTab + selectedPastWeek
@@ -78,20 +78,27 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   const sourceLessons = selectedWeek ? selectedWeek.lessons : lessons;
   const sourceLabel = selectedWeek ? selectedWeek.weekLabel : "Master";
 
+  // Cluster 12a: WTT exports pass real laneOverrides + weekKey for override-aware
+  // resolution; MTT exports pass null/null (lane-only).
+  const exportWeekKey = selectedWeek ? selectedWeek.weekKey : null;
+  const exportLaneOverrides = selectedWeek ? laneOverrides : null;
+  const resolveLessonTeacherName = (l) => getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, exportLaneOverrides, exportWeekKey) || "";
+
   const schoolIds = [...new Set(sourceLessons.map(l => l.schoolId))];
   const filteredSchools = schools.filter(s => schoolIds.includes(s.id));
   const scopedLessons = schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons;
-  const teacherNames = [...new Set(scopedLessons.map(l => l.teacherName))].sort();
+  // Cluster 12a: lane-resolved name list rather than stamped lesson.teacherName.
+  const teacherNames = [...new Set(scopedLessons.map(resolveLessonTeacherName).filter(n => n))].sort();
   const classNames = [...new Set(students.filter(s => scopedLessons.some(l => l.studentId === s.id) && s.className).map(s => s.className))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
   const previewLessons = scopedLessons.filter(l => {
-    if (teacherName && l.teacherName !== teacherName) return false;
+    if (teacherName && resolveLessonTeacherName(l) !== teacherName) return false;
     if (className) { const sids = new Set(students.filter(s => s.className === className).map(s => s.id)); if (!sids.has(l.studentId)) return false; }
     if (day.size > 0 && !day.has(l.day)) return false;
     return true;
   });
 
-  const scheduleTeachers = [...new Set((schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons).map(l => l.teacherName))].sort();
+  const scheduleTeachers = [...new Set((schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons).map(resolveLessonTeacherName).filter(n => n))].sort();
   const scheduleTeachersFiltered = teacherName ? scheduleTeachers.filter(t => t === teacherName) : scheduleTeachers;
 
   const getPreviewLabel = () => {
@@ -177,7 +184,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   const getExportHtml = React.useCallback((singleDay) => {
     const dayFilter = singleDay || (day.size === 1 ? [...day][0] : null);
     if (exportType === "teacher_schedules") {
-      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage });
+      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
     }
     const parts = [];
     if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
@@ -191,8 +198,12 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
       title: `${sourceLabel} Timetable — ${filterLabel}`,
       specialists: specialists || null,
       teacherCoverage,
+      // Cluster 12a: enrolments + (week-context) laneOverrides + weekKey for lane-resolved teacher names.
+      enrolments,
+      laneOverrides: exportLaneOverrides,
+      weekKey: exportWeekKey,
     });
-  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists]);
+  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, teacherCoverage]);
 
   // Session 96: helper — upload a base64 PDF to the private documents bucket
   // and register it as a Document so it appears in the Documents tab and
@@ -289,6 +300,10 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                 title: `${sourceLabel} Timetable — ${filterLabel}`,
                 specialists: specialists || null,
                 teacherCoverage,
+                // Cluster 12a: enrolments + (week-context) laneOverrides + weekKey.
+                enrolments,
+                laneOverrides: exportLaneOverrides,
+                weekKey: exportWeekKey,
               });
             }
           } else if (exportType === "teacher_schedules") {
@@ -308,11 +323,11 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                   // Session 96: also register teacher-schedule PDFs in Documents.
                   uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
-                  await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage });
+                  await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
                 }
               }
             } else {
-              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage });
+              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
             }
           }
         }
