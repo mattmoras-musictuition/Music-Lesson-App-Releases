@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
@@ -915,9 +915,20 @@ export default function MusicTimetableApp() {
     const latest = tops.reduce((a, b) => (b.seq > a.seq ? b : a));
     if (latest === pendTop) {
       const item = pendingPlaceUndoStack.current.pop();
-      pendingPlaceRedoStack.current.push({ seq: item.seq, timetable: JSON.parse(JSON.stringify(timetable)), students: JSON.parse(JSON.stringify(students)) });
+      // Spec 2 cluster 10b Commit 2 — snapshot extended with enrolments + groups
+      // so cross-teacher reassigns are reversible. Defensive guards: pre-cluster-10b
+      // snapshots have undefined fields, skip those setters.
+      pendingPlaceRedoStack.current.push({
+        seq: item.seq,
+        timetable: JSON.parse(JSON.stringify(timetable)),
+        students: JSON.parse(JSON.stringify(students)),
+        enrolments: JSON.parse(JSON.stringify(enrolments)),
+        groups: JSON.parse(JSON.stringify(groups)),
+      });
       setTimetableRaw(item.timetable);
       setStudents(item.students);
+      if (item.enrolments !== undefined) setEnrolments(item.enrolments);
+      if (item.groups !== undefined) setGroups(item.groups);
     } else if (latest === teachTop) {
       undoTeachers();
     } else {
@@ -933,9 +944,17 @@ export default function MusicTimetableApp() {
     const latest = tops.reduce((a, b) => (b.seq > a.seq ? b : a));
     if (latest === pendTop) {
       const item = pendingPlaceRedoStack.current.pop();
-      pendingPlaceUndoStack.current.push({ seq: item.seq, timetable: JSON.parse(JSON.stringify(timetable)), students: JSON.parse(JSON.stringify(students)) });
+      pendingPlaceUndoStack.current.push({
+        seq: item.seq,
+        timetable: JSON.parse(JSON.stringify(timetable)),
+        students: JSON.parse(JSON.stringify(students)),
+        enrolments: JSON.parse(JSON.stringify(enrolments)),
+        groups: JSON.parse(JSON.stringify(groups)),
+      });
       setTimetableRaw(item.timetable);
       setStudents(item.students);
+      if (item.enrolments !== undefined) setEnrolments(item.enrolments);
+      if (item.groups !== undefined) setGroups(item.groups);
     } else if (latest === teachTop) {
       redoTeachers();
     } else {
@@ -4914,23 +4933,38 @@ export default function MusicTimetableApp() {
         ? studentInsts.find(i => i.name === instrumentName) || studentInsts[0]
         : studentInsts[0];
       if (!inst) { notify("Student has no instruments", "warning"); return; }
-      let teacher = null;
-      if (inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
-      if (!teacher) teacher = teachers.find(t =>
+      // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
+      const destLane = getDayLaneTeacher(teacherCoverage, teachers, school.id, day, null, null, viewedLanes);
+      if (!destLane || !destLane.lane || !destLane.teacher) {
+        notify(`No covering lane for ${school.name} on ${day}.`, "warning");
+        return;
+      }
+      let currentTeacher = null;
+      if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
+      if (!currentTeacher) currentTeacher = teachers.find(t =>
         t.instruments.some(ti => ti.name === inst.name) &&
         t.availability.some(a => a.schoolId === school.id && a.day === day)
       );
-      if (!teacher) { notify("No compatible teacher available for " + inst.name, "warning"); return; }
-      // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-      const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
-      if (!bucketId) {
-        notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
-        return;
+      const currentTid = currentTeacher?.id || "";
+      let pendingEnrolmentMutation = null;
+      let isReassign = false;
+      if (currentTid && destLane.teacher.id !== currentTid) {
+        const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        if (!window.confirm(modalText)) return;
+        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+        isReassign = true;
+      } else if (!currentTid) {
+        const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        if (!window.confirm(modalText)) return;
+        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+        isReassign = true;
       }
       const lesson = {
         id: uid(),
         studentId: student.id, studentName: student.name,
-        bucket_id: bucketId, teacherName: teacher.name,
+        bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
         schoolId: school.id, schoolName: school.name,
         day, slotId: slot.id, slotName: slot.name,
         start: slot.start, end: slot.end,
@@ -4938,6 +4972,18 @@ export default function MusicTimetableApp() {
         duringSpecialist: false,
         enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
       };
+      if (isReassign) {
+        pendingPlaceUndoStack.current.push({
+          seq: ++ttPageActionSeq.current,
+          timetable: JSON.parse(JSON.stringify(timetable)),
+          students: JSON.parse(JSON.stringify(students)),
+          enrolments: JSON.parse(JSON.stringify(enrolments)),
+          groups: JSON.parse(JSON.stringify(groups)),
+        });
+        pendingPlaceRedoStack.current = [];
+        if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+        if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
+      }
       if (!timetable) {
         setTimetable({ lessons: [lesson], unscheduled: [] });
       } else {
@@ -5004,31 +5050,52 @@ export default function MusicTimetableApp() {
     const slot = school.slots.find(s => s.start === time);
     if (!slot) { notify("Invalid time slot", "warning"); return; }
 
-    // Find a compatible teacher
     const inst = instrumentsFromEnrolments(student.id, enrolments)[0];
     if (!inst) { notify("Student has no instruments", "warning"); return; }
-    let teacher = null;
-    if (inst && inst.teacherId) {
-      teacher = teachers.find(t => t.id === inst.teacherId);
+
+    // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination resolution.
+    // MTT branch (target === "master") gets the full Q1=α modal-or-stamp flow.
+    // WTT branch (target === "weekly") gets Q2=β lane-only stamp, no modal.
+    const monday = getCurrentWeekMonday();
+    const weekKey = toLocalDateStr(monday);
+    const destLane = target === "master"
+      ? getDayLaneTeacher(teacherCoverage, teachers, school.id, day, null, null, viewedLanes)
+      : getDayLaneTeacher(teacherCoverage, teachers, school.id, day, laneOverrides, weekKey, viewedLanes);
+    if (!destLane || !destLane.lane || !destLane.teacher) {
+      notify(`No covering lane for ${school.name} on ${day}.`, "warning");
+      return;
     }
-    if (!teacher) {
-      teacher = teachers.find(t =>
+
+    let pendingEnrolmentMutation = null;
+    let isReassign = false;
+    if (target === "master") {
+      let currentTeacher = null;
+      if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
+      if (!currentTeacher) currentTeacher = teachers.find(t =>
         t.instruments.some(ti => ti.name === inst.name) &&
         t.availability.some(a => a.schoolId === school.id && a.day === day)
       );
+      const currentTid = currentTeacher?.id || "";
+      if (currentTid && destLane.teacher.id !== currentTid) {
+        const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        if (!window.confirm(modalText)) return;
+        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+        isReassign = true;
+      } else if (!currentTid) {
+        const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        if (!window.confirm(modalText)) return;
+        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+        isReassign = true;
+      }
     }
-    if (!teacher) { notify("No compatible teacher available", "warning"); return; }
-    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-    const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
-    if (!bucketId) {
-      notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
-      return;
-    }
+    // (target === "weekly": no modal, no enrolment mutation — Q2=β.)
 
     const lesson = {
       id: uid(),
       studentId: student.id, studentName: student.name,
-      bucket_id: bucketId, teacherName: teacher.name,
+      bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
       schoolId: school.id, schoolName: school.name,
       day, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
@@ -5038,15 +5105,24 @@ export default function MusicTimetableApp() {
     };
 
     if (target === "master") {
+      if (isReassign) {
+        pendingPlaceUndoStack.current.push({
+          seq: ++ttPageActionSeq.current,
+          timetable: JSON.parse(JSON.stringify(timetable)),
+          students: JSON.parse(JSON.stringify(students)),
+          enrolments: JSON.parse(JSON.stringify(enrolments)),
+          groups: JSON.parse(JSON.stringify(groups)),
+        });
+        pendingPlaceRedoStack.current = [];
+        if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+        if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
+      }
       if (!timetable) {
         setTimetable({ lessons: [lesson], unscheduled: [] });
       } else {
         setTimetable(prev => ({ ...prev, lessons: [...prev.lessons, lesson] }));
       }
     } else if (target === "weekly") {
-      // Find current week key
-      const monday = getCurrentWeekMonday();
-      const weekKey = toLocalDateStr(monday);
       const storageKey = `${weekKey}|${student.schoolId}`;
       const dayDate = DAYS.map((d, di) => {
         const date = new Date(monday);
@@ -6493,31 +6569,57 @@ export default function MusicTimetableApp() {
             </div>
           )}
           {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
-            // Spec 2 cluster 10b Commit 1 — day-change bucket_id recompute.
-            // Pre-existing latent bug fix: bucket_id stayed stale on day-moves
-            // since cluster 4c, leaving cross-teacher moves with wrong lane
-            // resolution. Cross-teacher moves are REJECTED here as the
-            // transitional behaviour; Commit 2 replaces this branch with the
-            // reassign modal flow.
+            // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
+            // Q1=α MTT cross-teacher: modal confirms enrolment update; on confirm
+            // push undo + setEnrolments/setGroups + commit. Same-teacher moves
+            // stamp bucket_id with destination lane and skip the modal.
             const lesson = timetable?.lessons.find(l => l.id === lessonId);
             if (!lesson) return;
             const school = schools.find(s => s.id === lesson.schoolId);
             if (!school) return;
             const slot = school.slots.find(s => s.start === newTime);
             if (!slot) return;
-            // Path B fallback — legacy cards without bucket_id resolution skip
-            // the recompute (consistent with cluster 5's rendering pattern).
-            // currentTid empty means no teacherCoverage row to point at.
+            const destLane = getDayLaneTeacher(teacherCoverage, teachers, lesson.schoolId, newDay, null, null, viewedLanes);
+            if (!destLane || !destLane.lane || !destLane.teacher) {
+              notify(`No covering lane for ${school.name} on ${newDay}.`, "warning");
+              return;
+            }
+            // Path B fallback — legacy cards without resolvable currentTid skip
+            // the cross-teacher modal but still get destination bucket_id stamped.
             const currentTid = getCardTeacherId(lesson, teacherCoverage) || lesson.teacherId || "";
-            let destBucketId = lesson.bucket_id;
-            if (currentTid) {
-              const destLaneId = findLaneId(teacherCoverage, lesson.schoolId, newDay, currentTid);
-              if (!destLaneId) {
-                const teacherName = teachers.find(t => t.id === currentTid)?.name || "(unassigned)";
-                notify(`Cannot move to ${newDay} — ${teacherName} doesn't cover that day at ${school.name}. Cluster 10b Commit 2 will add a reassign-or-substitute prompt here.`, "warning");
-                return;
+            const destBucketId = destLane.lane.id;
+            let pendingEnrolmentMutation = null;
+            let pendingGroupsMutation = null;
+            let isReassign = false;
+            if (currentTid && destLane.teacher.id !== currentTid) {
+              const currentTeacherName = teachers.find(t => t.id === currentTid)?.name || "(unassigned)";
+              const destTeacherName = destLane.teacher.name;
+              let modalText;
+              if (lesson.isGroup) {
+                const groupName = lesson.groupName || lesson.studentName || "(group)";
+                modalText = `Reassign ${groupName} from ${currentTeacherName} to ${destTeacherName}?\n\nThis updates the group's teacher as well as placing this card.`;
+                pendingGroupsMutation = (prev) => prev.map(g => g.id === lesson.groupId ? { ...g, teacherId: destLane.teacher.id } : g);
+              } else {
+                const studentName = lesson.studentName || students.find(s => s.id === lesson.studentId)?.name || "(student)";
+                modalText = `Reassign ${studentName} from ${currentTeacherName} to ${destTeacherName}?\n\nThis updates ${studentName}'s enrolment to ${destTeacherName} as well as placing this card.`;
+                const enrolId = lesson.enrolmentId || enrolmentIdFor(lesson.studentId, lesson.instrument, enrolments, lesson.groupId);
+                pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
               }
-              destBucketId = destLaneId;
+              if (!window.confirm(modalText)) return;
+              isReassign = true;
+            }
+            if (isReassign) {
+              pendingPlaceUndoStack.current.push({
+                seq: ++ttPageActionSeq.current,
+                timetable: JSON.parse(JSON.stringify(timetable)),
+                students: JSON.parse(JSON.stringify(students)),
+                enrolments: JSON.parse(JSON.stringify(enrolments)),
+                groups: JSON.parse(JSON.stringify(groups)),
+              });
+              pendingPlaceRedoStack.current = [];
+              if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+              if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
+              if (pendingGroupsMutation) setGroups(pendingGroupsMutation);
             }
             setTimetable(prev => {
               if (!prev) return prev;
@@ -6534,7 +6636,7 @@ export default function MusicTimetableApp() {
                   }
                 }
               }
-              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, bucket_id: destBucketId, _pinned: false } : l) };
+              return { ...prev, lessons: prev.lessons.map(l => l.id === lessonId ? { ...l, day: newDay, start: slot.start, end: slot.end, slotId: slot.id, slotName: slot.name, duringSpecialist: newDuringSpec, bucket_id: destBucketId, teacherName: destLane.teacher.name, _pinned: false } : l) };
             });
           }} onDeleteLesson={(lessonId) => {
             setTimetable(prev => {
@@ -6577,6 +6679,8 @@ export default function MusicTimetableApp() {
             setGroupsBandsTab("groups");
             setPage("groups-bands");
           }} onPlaceUnsched={(data, day, time) => {
+            // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
+            // Push undo only on the reassign-confirmed branch (per spec rule).
             const parts = data.split(":");
             if (parts.length < 3) return;
             const studentId = parts[1];
@@ -6590,31 +6694,62 @@ export default function MusicTimetableApp() {
             const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
             const inst = studentInsts.find(i => i.name === instrumentName) || studentInsts[0];
             if (!inst) return;
-            let teacher = null;
-            if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
-            if (!teacher) teacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
-            if (!teacher) { notify("No compatible teacher available for " + student.name, "warning"); return; }
-            // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
-            if (!bucketId) {
-              notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+            const destLane = getDayLaneTeacher(teacherCoverage, teachers, school.id, day, null, null, viewedLanes);
+            if (!destLane || !destLane.lane || !destLane.teacher) {
+              notify(`No covering lane for ${school.name} on ${day}.`, "warning");
               return;
+            }
+            let currentTeacher = null;
+            if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
+            if (!currentTeacher) currentTeacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
+            const currentTid = currentTeacher?.id || "";
+            // Modal-or-stamp branch (MTT, Q1=α). Push + enrolment mutation only on reassign confirm.
+            let pendingEnrolmentMutation = null;
+            let isReassign = false;
+            if (currentTid && destLane.teacher.id !== currentTid) {
+              const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              if (!window.confirm(modalText)) return;
+              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+              isReassign = true;
+            } else if (!currentTid) {
+              const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              if (!window.confirm(modalText)) return;
+              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+              isReassign = true;
             }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              bucket_id: bucketId, teacherName: teacher.name,
+              bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
               instrument: inst.name, duringSpecialist: false,
               enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
             };
+            if (isReassign) {
+              pendingPlaceUndoStack.current.push({
+                seq: ++ttPageActionSeq.current,
+                timetable: JSON.parse(JSON.stringify(timetable)),
+                students: JSON.parse(JSON.stringify(students)),
+                enrolments: JSON.parse(JSON.stringify(enrolments)),
+                groups: JSON.parse(JSON.stringify(groups)),
+              });
+              pendingPlaceRedoStack.current = [];
+              if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+              if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
+            }
             setTimetable(prev => ({
               ...prev,
               lessons: [...prev.lessons, lesson],
               unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrumentName))
             }));
           }} onPlacePending={(data, day, time) => {
+            // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
+            // Pending placements still snapshot unconditionally (preserving pre-10b
+            // undoable behaviour); snapshot shape now includes enrolments + groups so
+            // cross-teacher reassigns from this path are reversible.
             const parts = data.split(":");
             if (parts.length < 3) return;
             const studentId = parts[1];
@@ -6628,33 +6763,49 @@ export default function MusicTimetableApp() {
             const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
             const inst = studentInsts.find(i => i.name === instrumentName) || studentInsts[0];
             if (!inst) return;
-            let teacher = null;
-            if (inst && inst.teacherId) teacher = teachers.find(t => t.id === inst.teacherId);
-            if (!teacher) teacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
-            if (!teacher) { notify("No compatible teacher available for " + student.name, "warning"); return; }
-            // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-            const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
-            if (!bucketId) {
-              notify(`No covering lane for ${teacher.name} at ${school.name} on ${day}. Add staff first.`, "warning");
+            const destLane = getDayLaneTeacher(teacherCoverage, teachers, school.id, day, null, null, viewedLanes);
+            if (!destLane || !destLane.lane || !destLane.teacher) {
+              notify(`No covering lane for ${school.name} on ${day}.`, "warning");
               return;
+            }
+            // Current teacher resolution mirrors the pre-10b chain.
+            let currentTeacher = null;
+            if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
+            if (!currentTeacher) currentTeacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
+            const currentTid = currentTeacher?.id || "";
+            // Modal-or-stamp branch (MTT, Q1=α — enrolment update on cross-teacher).
+            let pendingEnrolmentMutation = null;
+            if (currentTid && destLane.teacher.id !== currentTid) {
+              const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              if (!window.confirm(modalText)) return;
+              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+            } else if (!currentTid) {
+              const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              if (!window.confirm(modalText)) return;
+              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
+              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
             }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
-              bucket_id: bucketId, teacherName: teacher.name,
+              bucket_id: destLane.lane.id, teacherName: destLane.teacher.name,
               schoolId: school.id, schoolName: school.name,
               day, slotId: slot.id, slotName: slot.name,
               start: slot.start, end: slot.end,
               instrument: inst.name, duringSpecialist: false,
               enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
             };
-            // Snapshot both timetable and students before mutating — enables full undo
+            // Snapshot all relevant state before mutating — order: push, then mutate.
             pendingPlaceUndoStack.current.push({
               seq: ++ttPageActionSeq.current,
               timetable: JSON.parse(JSON.stringify(timetable)),
               students: JSON.parse(JSON.stringify(students)),
+              enrolments: JSON.parse(JSON.stringify(enrolments)),
+              groups: JSON.parse(JSON.stringify(groups)),
             });
             pendingPlaceRedoStack.current = [];
             if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+            if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
             setTimetableRaw(prev => ({
               ...(prev || { unscheduled: [] }),
               lessons: [...((prev || { lessons: [] }).lessons), lesson],

@@ -1747,25 +1747,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!slot) return;
     const lesson = weeklyData.lessons.find(l => l.id === lessonId);
     const oldDay = lesson?.day;
-    // Spec 2 cluster 10b Commit 1 — day-change bucket_id recompute.
-    // Mirrors the App.js MTT onMoveLesson change. Cross-teacher moves are
-    // REJECTED here as the transitional behaviour; Commit 2 replaces this
-    // with Q2=β lane-only stamp via getDayLaneTeacher (override-aware).
-    // Path B fallback for legacy cards: skip recompute when currentTid is
-    // empty (no teacherCoverage row to point at).
-    let destBucketId = lesson?.bucket_id;
-    if (lesson) {
-      const currentTid = getCardTeacherId(lesson, teacherCoverage) || lesson.teacherId || "";
-      if (currentTid) {
-        const destLaneId = findLaneId(teacherCoverage, lesson.schoolId, newDay, currentTid);
-        if (!destLaneId) {
-          const teacherName = teachers.find(t => t.id === currentTid)?.name || "(unassigned)";
-          if (notify) notify(`Cannot move to ${newDay} — ${teacherName} doesn't cover that day at ${currentSchool.name}. Cluster 10b Commit 2 will add a reassign-or-substitute prompt here.`, "warning");
-          return;
-        }
-        destBucketId = destLaneId;
-      }
+    if (!lesson) return;
+    // Spec 2 cluster 10b Commit 2 — Q2=β WTT lane-only stamp via
+    // getDayLaneTeacher (override-aware). No modal regardless of teacher
+    // match; the chip-active lane determines bucket_id and teacherName stamp.
+    // Effective teacher rendering picks up via cluster 6b1 override-aware
+    // resolution at render time.
+    const destLane = getDayLaneTeacher(teacherCoverage, teachers, lesson.schoolId, newDay, laneOverrides, weekKey, viewedLanes);
+    if (!destLane || !destLane.lane) {
+      if (notify) notify(`No covering lane for ${currentSchool.name} on ${newDay}.`, "warning");
+      return;
     }
+    const destBucketId = destLane.lane.id;
+    const destTeacherName = destLane.teacher?.name || lesson.teacherName || "";
     setWeeklyTimetables(prev => {
       const entry = prev[storageKey];
       if (!entry) return prev;
@@ -1779,6 +1773,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             weekDate: dayDate?.date || l.weekDate,
             adjusted: false, adjustReason: undefined,
             bucket_id: destBucketId,
+            teacherName: destTeacherName,
             duringSpecialist: l.isBandSession ? false : getSpecialistForSlot(l, newDay, slot)
           } : l)
         }
@@ -1836,11 +1831,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!slot) return;
     const missed = weeklyData.missed[missedIndex];
     if (!missed) return;
+    // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
+    // The missed entry's bucket_id was stale on day-change; use the chip-active
+    // lane instead. No modal regardless of teacher match (WTT week-scoped).
+    const destLane = getDayLaneTeacher(teacherCoverage, teachers, missed.schoolId, newDay, laneOverrides, weekKey, viewedLanes);
+    if (!destLane || !destLane.lane) {
+      if (notify) notify(`No covering lane for ${currentSchool.name} on ${newDay}.`, "warning");
+      return;
+    }
     const dayDate = weekDates.find(wd => wd.day === newDay);
     const rescuedLesson = {
       ...missed, day: newDay, slotId: slot.id, slotName: slot.name,
       start: slot.start, end: slot.end,
       weekDate: dayDate?.date, adjusted: false, adjustReason: undefined,
+      bucket_id: destLane.lane.id,
+      teacherName: destLane.teacher?.name || missed.teacherName || "",
       duringSpecialist: getSpecialistForSlot(missed, newDay, slot)
     };
     delete rescuedLesson.reason;
@@ -3466,30 +3471,24 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
                     return;
                   }
-                  const teacher = teachers.find(t => t.id === activeEnrolment.teacherId);
-                  // Spec 2 cluster 4c — internal bucket_id resolution. Caller's
-                  // opts.teacherId (if any) overrides activeEnrolment.teacherId
-                  // for the lookup; teacherId/teacherName are stripped from the
-                  // stamped card, bucket_id replaces them.
+                  // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
+                  // opts.teacherId/teacherName are vestigial here; the chip-active
+                  // lane determines bucket_id and teacherName stamp. Destination
+                  // resolution is override-aware (laneOverrides + weekKey) so a
+                  // sub-this-week lane lands in the right place.
                   const { teacherId: _optsTid, teacherName: _optsTname, ...restOpts } = opts || {};
-                  const stampTeacherId = _optsTid || activeEnrolment.teacherId || "";
-                  const stampTeacherName = _optsTname
-                    || (stampTeacherId && teachers.find(t => t.id === stampTeacherId)?.name)
-                    || teacher?.name || "";
-                  const bucketId = stampTeacherId
-                    ? findLaneId(teacherCoverage, sId, contextMenu.day, stampTeacherId)
-                    : null;
-                  if (!bucketId) {
+                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, sId, contextMenu.day, laneOverrides, contextMenu.weekKey, viewedLanes);
+                  if (!destLane || !destLane.lane) {
                     const sName = schools.find(sc => sc.id === sId)?.name || sId;
-                    if (notify) notify(`No covering lane for ${stampTeacherName || "(unassigned)"} at ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
+                    if (notify) notify(`No covering lane for ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
                     return;
                   }
                   const newLesson = {
                     id: uid(), studentId: s.id, studentName: s.name,
                     schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                     instrument: activeEnrolment.instrument,
-                    bucket_id: bucketId,
-                    teacherName: stampTeacherName,
+                    bucket_id: destLane.lane.id,
+                    teacherName: destLane.teacher?.name || "",
                     enrolmentId: activeEnrolment.id,
                     day: contextMenu.day, start: contextMenu.time, end: contextMenu.time,
                     ...restOpts
@@ -3524,17 +3523,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // Hoist data needed by submenu types
                 const schoolBands = (bands || []).filter(b => b.schoolId === sId && (b.members || []).length > 0);
                 const placeOne = (ml) => {
-                  // Spec 2 cluster 4c — internal bucket_id resolution.
-                  const stampTeacherId = ml.teacherId || "";
-                  const stampTeacherName = ml.teacherName
-                    || (stampTeacherId && teachers.find(t => t.id === stampTeacherId)?.name)
-                    || "";
-                  const bucketId = stampTeacherId
-                    ? findLaneId(teacherCoverage, ml.schoolId, wkDay, stampTeacherId)
-                    : null;
-                  if (!bucketId) {
+                  // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
+                  // ml.teacherId/teacherName are vestigial for lane lookup; the
+                  // chip-active lane decides where the missed-rescue card lands.
+                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, ml.schoolId, wkDay, laneOverrides, weekKey, viewedLanes);
+                  if (!destLane || !destLane.lane) {
                     const sName = schools.find(sc => sc.id === ml.schoolId)?.name || ml.schoolId;
-                    if (notify) notify(`No covering lane for ${stampTeacherName || "(unassigned)"} at ${sName} on ${wkDay}. Add staff first.`, "warning");
+                    if (notify) notify(`No covering lane for ${sName} on ${wkDay}. Add staff first.`, "warning");
                     return;
                   }
                   const newLesson = {
@@ -3543,7 +3538,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     groupName: ml.groupName || undefined, studentIds: ml.studentIds || undefined,
                     studentNames: ml.studentNames || undefined, members: ml.members || undefined,
                     schoolId: ml.schoolId, schoolName: ml.schoolName || "",
-                    instrument: ml.instrument, bucket_id: bucketId, teacherName: stampTeacherName,
+                    instrument: ml.instrument, bucket_id: destLane.lane.id, teacherName: destLane.teacher?.name || "",
                     enrolmentId: ml.enrolmentId || enrolmentIdFor(ml.studentId, ml.instrument, enrolments, ml.groupId),
                     day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false,
                   };
