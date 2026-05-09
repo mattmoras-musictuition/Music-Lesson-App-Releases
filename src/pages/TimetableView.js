@@ -869,7 +869,22 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           {contextMenu.isDayHeader && contextMenu.isMtt ? (() => {
             const day = contextMenu.day;
             const activeDays = mttSelectedDays.size > 0 ? [...mttSelectedDays] : [day];
-            const dayLessons = (timetable?.lessons || []).filter(l => activeDays.includes(l.day) && (!selectedSchool || l.schoolId === selectedSchool));
+            // Spec 2 cluster 10 — lane-filter the day-header email aggregation.
+            // Per-lesson because multi-day select means each lesson's day has its
+            // own viewed lane. Lane resolved from l.schoolId (not selectedSchool)
+            // since MTT spans schools when no school is selected. Mirrors the
+            // pattern at WeeklyAdjustments L856 (cluster 8a) and TimetableView
+            // L788 (cluster 8b). Cluster 13 dedupe candidate.
+            const dayLessons = (timetable?.lessons || []).filter(l => {
+              if (!activeDays.includes(l.day)) return false;
+              if (selectedSchool && l.schoolId !== selectedSchool) return false;
+              const dayLanes = teacherCoverage.filter(c => c.schoolId === l.schoolId && c.day === l.day && c.status === "active");
+              if (dayLanes.length < 2) return true;
+              const storedLaneId = viewedLanes?.[l.schoolId]?.[l.day];
+              const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
+              if (l.bucket_id) return l.bucket_id === targetLaneId;
+              return targetLaneId === dayLanes[0].id;
+            });
             const parentEmailSet = new Set();
             const parentRows = [];
             dayLessons.forEach(l => {
