@@ -19,6 +19,7 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
+import { loadCatchupsFromSupabase } from "./utils/catchupsDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -831,6 +832,7 @@ export default function MusicTimetableApp() {
   // Spec 2 cluster 6a — per-week substitution overrides on (week_key, bucket_id).
   // Empty until cluster 6c's substitution UI lands; resolution helper arrives in 6b.
   const [laneOverrides, setLaneOverrides] = useState([]);
+  const [catchups, setCatchups] = useState([]);
   // Spec 2 cluster 8a — view-switching state for multi-teacher days.
   // Shape { [schoolId]: { [day]: laneId } }. localStorage-only (Q1).
   const [viewedLanes, setViewedLanes] = useState({});
@@ -1842,6 +1844,14 @@ export default function MusicTimetableApp() {
         logError("Failed to load lane_overrides from Supabase", err.message);
         lo = [];
       }
+      // ── Catchups: Supabase only (no localStorage cache — week-keyed user data) ──
+      let cu;
+      try {
+        cu = await loadCatchupsFromSupabase();
+      } catch (err) {
+        logError("Failed to load catchups from Supabase", err.message);
+        cu = [];
+      }
       // ── Viewed lanes: localStorage only (cluster 8a — view-switching, no Supabase) ──
       let vl;
       try {
@@ -2037,6 +2047,7 @@ export default function MusicTimetableApp() {
       setTeachersRaw(t);
       setTeacherCoverage(tc);
       setLaneOverrides(lo);
+      setCatchups(cu);
       setViewedLanes(vl);
       setSpecialists(sp);
       setInterruptions(ir);
