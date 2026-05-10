@@ -157,3 +157,31 @@ export function getBankingCatchupForCell(catchups, enrolmentId, weekKey) {
   const idx = buildBankingIndex(catchups);
   return idx.get(`${enrolmentId}|${weekKey}`) || null;
 }
+
+/**
+ * Filter catchups to those scheduled in a specific week.
+ * @param {Catchup[]|null|undefined} catchups
+ * @param {string|null|undefined} weekKey
+ * @returns {Catchup[]} Filtered array; empty if inputs falsy.
+ */
+export function getCatchupsForWeek(catchups, weekKey) {
+  if (!catchups || !weekKey) return [];
+  return catchups.filter((c) => c.weekKey === weekKey);
+}
+
+/**
+ * Returns all catchups at a specific grid cell (week, day, time).
+ * Multiple catchups at the same cell are valid (stacked rendering);
+ * caller decides single-vs-stacked render.
+ * @param {Catchup[]|null|undefined} catchups
+ * @param {string|null|undefined} weekKey
+ * @param {string|null|undefined} day  e.g. "Monday"
+ * @param {string|null|undefined} time e.g. "10:30"
+ * @returns {Catchup[]} Filtered array; empty if any input falsy.
+ */
+export function getCatchupsForGridCell(catchups, weekKey, day, time) {
+  if (!catchups || !weekKey || !day || !time) return [];
+  return catchups.filter(
+    (c) => c.weekKey === weekKey && c.day === day && c.time === time
+  );
+}
