@@ -154,7 +154,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // catchupLessons: derived from weeklyTimetables using "weekKey|__catchup__" sentinel keys.
   // This makes catch-up data visible to React state (and Claude's system prompt) while
   // keeping it out of Supabase (filtered at sync time in App.js).
-  // confirmedCatchupDays remains in localStorage as before.
   const catchupLessons = useMemo(() => {
     const result = {};
     Object.entries(weeklyTimetables || {}).forEach(([k, v]) => {
@@ -180,9 +179,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       };
     });
   }, [setWeeklyTimetables]);
-  const [confirmedCatchupDays, setConfirmedCatchupDays] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("mt-catchup-confirmed") || "{}"); } catch { return {}; }
-  });
   const [dayTeacherChips, setDayTeacherChips] = useState({}); // { [day]: teacherId[] } chips added per day column
   // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
   // Default empty = all days hidden. Session-scoped (not persisted).
@@ -263,11 +259,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   }, [contextMenu]);
 
 
-
-  // Persist confirmed days to localStorage whenever they change
-  React.useEffect(() => {
-    try { localStorage.setItem("mt-catchup-confirmed", JSON.stringify(confirmedCatchupDays)); } catch {}
-  }, [confirmedCatchupDays]);
 
   const [hoverNotes, setHoverNotes] = useState(null) // null | { text, x, y };
   // Tally prompt — shown when a lesson is manually dragged to missed area
@@ -2175,33 +2166,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
 
   // Confirm a catch-up day — marks tally entries and locks the day
-  const confirmCatchupDay = (day) => {
-    const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
-    const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
-    if (tallyIds.length > 0) {
-      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-      setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: true } : e));
-    }
-    setConfirmedCatchupDays(prev => ({
-      ...prev, [weekKey]: [...new Set([...(prev[weekKey] || []), day])]
-    }));
-    if (notify) notify(`${day} confirmed — ${dayLessons.length} catch-up${dayLessons.length !== 1 ? "s" : ""} marked`);
-  };
-
-  // Un-confirm a catch-up day — reverses tally marks and unlocks
-  const unconfirmCatchupDay = (day) => {
-    const dayLessons = (catchupLessons[weekKey] || []).filter(l => l.day === day);
-    const tallyIds = dayLessons.map(l => l.makeupForTallyId).filter(Boolean);
-    if (tallyIds.length > 0) {
-      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-      setTallyEntries(prev => prev.map(e => tallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
-    }
-    setConfirmedCatchupDays(prev => ({
-      ...prev, [weekKey]: (prev[weekKey] || []).filter(d => d !== day)
-    }));
-    if (notify) notify(`${day} unlocked`);
-  };
-
   // Missed tally grouped by student+instrument — derived from WTT.missed across all weeks.
   // WTT.missed entries don't carry a `status` field (status is implicit from the
   // missed array itself), so no status filter is needed. weekLabel is also absent
