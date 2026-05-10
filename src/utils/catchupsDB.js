@@ -14,14 +14,13 @@
 // follows teacherCoverageDB / laneOverridesDB rather than the
 // bulk-sync shape of tallyEntriesDB.
 //
-// Cluster 2 (this): loader + shape converter.
-// Cluster 3:        insertCatchup (one-shot migration of
-//                   existing JSONB catchups under
-//                   __catchup__ pseudo-school weekly_adjustments
-//                   rows + tally-entry catchup fields).
-// Cluster 5+:       remaining write helpers (UI clusters),
-//                   mirroring the cluster 4a → 9 precedent on
-//                   teacherCoverageDB.
+// Cluster 2:        loader + shape converter (loadCatchupsFromSupabase + fromRow).
+// Cluster 3:        one-shot migration of legacy JSONB catchups —
+//                   self-contained script at
+//                   scripts/diag/migrate-spec-3-catchups.mjs (not a helper here).
+// Cluster 5a:       write helpers (insertCatchup, updateCatchup,
+//                   deleteCatchup) + private toRow allow-list mapper.
+// Cluster 5b+:      grid UI consumes these helpers.
 //
 // Schema: applied via Supabase dashboard during cluster 1
 // (10 May 2026). Project convention places schema on the
@@ -62,7 +61,7 @@ function fromRow(row) {
 // payload for insert/update. Skips fields whose value is `undefined`
 // (caller did not intend to set); passes `null` through (caller
 // intends to clear a nullable field). user_id is omitted —
-// insertCatchup attaches it separately from supabase.auth.getUser();
+// insertCatchup attaches it from the caller-supplied userId arg;
 // update/delete rely on RLS ownership. created_at / updated_at are
 // server-managed.
 function toRow(catchup) {
@@ -165,50 +164,32 @@ export async function loadCatchupsFromSupabase() {
 // ── Write helpers (cluster 5a — UI plumbing) ─────────────────
 
 /**
- * Insert a single catchup row. Resolves the authenticated user via
- * supabase.auth.getUser() and attaches user_id. Mints a fresh id via
- * the canonical uid() helper if the caller did not supply one.
- *
- * Throws with enriched supabase error detail (.message + .code +
- * .details + .hint) per the cluster 3 banked pattern.
- *
- * @param {Catchup} catchup  Partial Catchup; missing fields default
- *                           per the schema (e.g. madeUp → false,
- *                           created_at/updated_at server-managed).
- * @returns {Promise<Catchup>}  The inserted row in fromRow shape.
+ * Insert a new catchup row.
+ * @param {Object} args - Catchup fields plus userId. id optional (minted via uid() if absent).
+ * @param {string} args.userId - Owning user (required).
+ * @param {string} [args.id] - Optional id; minted if absent.
+ * @returns {Promise<Catchup>} The inserted catchup, mapped via fromRow.
  */
-export async function insertCatchup(catchup) {
-  const { data: { user }, error: authErr } = await supabase.auth.getUser();
-  if (authErr || !user?.id) throw new Error("insertCatchup: not authenticated");
-  const id = catchup.id || uid();
-  const row = { ...toRow(catchup), id, user_id: user.id };
+export async function insertCatchup({ userId, id, ...catchupFields }) {
+  if (!userId) throw new Error("insertCatchup: userId required");
+  const finalId = id || uid();
+  const row = { ...toRow(catchupFields), id: finalId, user_id: userId };
   const { data, error } = await supabase
     .from("catchups")
     .insert(row)
     .select()
     .single();
-  if (error) {
-    throw new Error(`insertCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
-  }
+  if (error) throw error;
   return fromRow(data);
 }
 
 /**
- * Update a single catchup row by id. Caller passes only the fields
- * to change; toRow's allow-list filters undefined values out so an
- * UPDATE never sends spurious columns. RLS scopes the UPDATE by
- * auth.uid() = user_id (cluster 1's policy), so no client-side
- * user_id filter is needed.
- *
- * Throws "updateCatchup: no fields to update" if the toRow payload
- * is empty (defensive — catches caller mistakes). Throws with
- * enriched supabase error detail per the cluster 3 banked pattern.
- *
- * @param {string} id
- * @param {Partial<Catchup>} fields
- * @returns {Promise<Catchup>}  The updated row in fromRow shape.
+ * Update an existing catchup row.
+ * @param {Object} args - id of the row to update plus any updatable Catchup fields.
+ * @param {string} args.id - Catchup id (required, used as WHERE clause).
+ * @returns {Promise<Catchup>} The updated catchup, mapped via fromRow.
  */
-export async function updateCatchup(id, fields) {
+export async function updateCatchup({ id, ...fields }) {
   const row = toRow(fields);
   if (Object.keys(row).length === 0) {
     throw new Error("updateCatchup: no fields to update");
@@ -219,29 +200,20 @@ export async function updateCatchup(id, fields) {
     .eq("id", id)
     .select()
     .single();
-  if (error) {
-    throw new Error(`updateCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
-  }
+  if (error) throw error;
   return fromRow(data);
 }
 
 /**
- * Delete a single catchup row by id. RLS scopes the DELETE by
- * auth.uid() = user_id (cluster 1's policy), so no client-side
- * user_id filter is needed.
- *
- * Throws with enriched supabase error detail per the cluster 3
- * banked pattern.
- *
- * @param {string} id
+ * Delete a catchup row by id. Hard delete; no soft-delete column.
+ * @param {Object} args
+ * @param {string} args.id - Catchup id.
  * @returns {Promise<void>}
  */
-export async function deleteCatchup(id) {
+export async function deleteCatchup({ id }) {
   const { error } = await supabase
     .from("catchups")
     .delete()
     .eq("id", id);
-  if (error) {
-    throw new Error(`deleteCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
-  }
+  if (error) throw error;
 }
