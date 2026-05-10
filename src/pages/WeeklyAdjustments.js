@@ -912,28 +912,35 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     for (const wk of currentTermWeekKeys) {
       const entries = getMissedEntries({ weeklyTimetables, weekKey: wk });
       for (const m of entries) {
-        // Spec 3 cluster 5b-3a-patch-3: trust the source enrolmentId.
-        // Earlier patches re-derived via enrolmentIdFor which could overwrite
-        // a valid id with null when the matching enrolment had been deleted.
-        // Bare-group legacy entries (null enrolmentId in source, no id field,
-        // comma-separated studentNames) are filtered out here; cluster 11
-        // retires that data shape.
-        if (m.enrolmentId == null) {
+        // Spec 3 cluster 5b-3a-patch-4: candidate gate FIRST, then resolve
+        // enrolmentId with fallback. Source data shape varies by week —
+        // older weeks (e.g. 2026-03-*) carry m.enrolmentId in source; some
+        // newer weeks omit it. Resolution: prefer source, fall back to
+        // enrolmentIdFor (studentId+instrument+groupId), else drop. The
+        // dev warn fires only for actual picker candidates (post-gate)
+        // that fail to link — keeps the console quiet under normal load.
+        if (m.makeupEligible !== true) continue;
+        if (m.madeUp === true) continue;
+        const resolvedId = m.enrolmentId ?? enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId);
+        if (resolvedId == null) {
           if (process.env.NODE_ENV !== "production") {
-            console.warn("[catchup picker] dropping missed entry — null enrolmentId in source", {
-              studentId: m.studentId, groupId: m.groupId, instrument: m.instrument, weekKey: wk, day: m.day,
+            console.warn("[catchup picker] dropping candidate — could not resolve enrolment", {
+              studentId: m.studentId,
+              studentName: m.studentName,
+              instrument: m.instrument,
+              weekKey: m.weekKey,
+              day: m.day,
             });
           }
           continue;
         }
-        if (m.makeupEligible !== true) continue;
-        if (m.madeUp === true) continue;
         const resolved = (catchups || []).some(c =>
-          c.resolvesEnrolmentId === m.enrolmentId && c.resolvesWeekKey === wk
+          c.resolvesEnrolmentId === resolvedId && c.resolvesWeekKey === wk
         );
         if (resolved) continue;
-        if (!byEnrolment.has(m.enrolmentId)) byEnrolment.set(m.enrolmentId, []);
-        byEnrolment.get(m.enrolmentId).push(m);
+        const enriched = { ...m, enrolmentId: resolvedId };
+        if (!byEnrolment.has(resolvedId)) byEnrolment.set(resolvedId, []);
+        byEnrolment.get(resolvedId).push(enriched);
       }
     }
     const groups = [];
