@@ -912,24 +912,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     for (const wk of currentTermWeekKeys) {
       const entries = getMissedEntries({ weeklyTimetables, weekKey: wk });
       for (const m of entries) {
-        if (m.makeupEligible !== true) continue;
-        if (m.madeUp === true) continue;
-        const enrolmentId = enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId);
-        if (!enrolmentId) {
+        // Spec 3 cluster 5b-3a-patch-3: trust the source enrolmentId.
+        // Earlier patches re-derived via enrolmentIdFor which could overwrite
+        // a valid id with null when the matching enrolment had been deleted.
+        // Bare-group legacy entries (null enrolmentId in source, no id field,
+        // comma-separated studentNames) are filtered out here; cluster 11
+        // retires that data shape.
+        if (m.enrolmentId == null) {
           if (process.env.NODE_ENV !== "production") {
-            console.warn("[catchup picker] dropping missed entry — enrolment lookup failed", {
+            console.warn("[catchup picker] dropping missed entry — null enrolmentId in source", {
               studentId: m.studentId, groupId: m.groupId, instrument: m.instrument, weekKey: wk, day: m.day,
             });
           }
           continue;
         }
+        if (m.makeupEligible !== true) continue;
+        if (m.madeUp === true) continue;
         const resolved = (catchups || []).some(c =>
-          c.resolvesEnrolmentId === enrolmentId && c.resolvesWeekKey === wk
+          c.resolvesEnrolmentId === m.enrolmentId && c.resolvesWeekKey === wk
         );
         if (resolved) continue;
-        const enriched = { ...m, enrolmentId };
-        if (!byEnrolment.has(enrolmentId)) byEnrolment.set(enrolmentId, []);
-        byEnrolment.get(enrolmentId).push(enriched);
+        if (!byEnrolment.has(m.enrolmentId)) byEnrolment.set(m.enrolmentId, []);
+        byEnrolment.get(m.enrolmentId).push(m);
       }
     }
     const groups = [];
