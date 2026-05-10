@@ -30,6 +30,13 @@
 import { supabase } from "../supabaseClient";
 import { uid } from "./helpers";
 
+// Dev-mode signature: src/supabaseClient.js wraps the client in
+// development and intercepts every insert / update / upsert / delete,
+// returning a no-op chainable that resolves to { data: null, error: null }.
+// insertCatchup detects this signature and synthesizes a row so the
+// UI's optimistic local-state update can succeed without a real persist.
+const IS_DEV_MODE_WRAPPER = process.env.NODE_ENV === 'development';
+
 // ── Shape converter ──────────────────────────────────────────
 
 // user_id is omitted from the returned shape — RLS implementation
@@ -165,6 +172,14 @@ export async function loadCatchupsFromSupabase() {
 
 /**
  * Insert a new catchup row.
+ *
+ * In development, supabaseClient.js's Proxy wraps the client and
+ * returns { data: null, error: null } for every write. When that
+ * happens, this helper synthesizes a row from the input fields so
+ * the UI's optimistic state update lands. Nothing persists; a page
+ * refresh clears the local row. Production (NODE_ENV !== 'development')
+ * never reaches the synthesis branch — wrapper isn't applied at all.
+ *
  * @param {Object} args - Catchup fields plus userId. id optional (minted via uid() if absent).
  * @param {string} args.userId - Owning user (required).
  * @param {string} [args.id] - Optional id; minted if absent.
@@ -180,6 +195,33 @@ export async function insertCatchup({ userId, id, ...catchupFields }) {
     .select()
     .single();
   if (error) throw error;
+  if (data === null && IS_DEV_MODE_WRAPPER) {
+    if (typeof console !== 'undefined' && console.info) {
+      console.info(
+        '[dev-mode] insertCatchup: wrapper blocked write — returning synthesized local row (id=%s)',
+        row.id
+      );
+    }
+    const now = new Date().toISOString();
+    return {
+      id: row.id,
+      schoolId: row.school_id,
+      weekKey: row.week_key,
+      day: row.day,
+      time: row.time,
+      durationMinutes: row.duration_minutes ?? null,
+      instrument: row.instrument,
+      enrolmentId: row.enrolment_id,
+      resolvesEnrolmentId: row.resolves_enrolment_id ?? null,
+      resolvesWeekKey: row.resolves_week_key ?? null,
+      resolvesOriginalDay: row.resolves_original_day ?? null,
+      resolvesOriginalTime: row.resolves_original_time ?? null,
+      madeUp: row.made_up ?? false,
+      notes: row.notes ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
   return fromRow(data);
 }
 
