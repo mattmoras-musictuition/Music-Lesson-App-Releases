@@ -29,6 +29,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
+import { uid } from "./helpers";
 
 // ── Shape converter ──────────────────────────────────────────
 
@@ -53,6 +54,34 @@ function fromRow(row) {
     createdAt:            row.created_at             || "",
     updatedAt:            row.updated_at             || "",
   };
+}
+
+// ── Allow-list mapper (camelCase → snake_case) ───────────────
+
+// Opposite of fromRow. Maps a partial Catchup object to a row
+// payload for insert/update. Skips fields whose value is `undefined`
+// (caller did not intend to set); passes `null` through (caller
+// intends to clear a nullable field). user_id is omitted —
+// insertCatchup attaches it separately from supabase.auth.getUser();
+// update/delete rely on RLS ownership. created_at / updated_at are
+// server-managed.
+function toRow(catchup) {
+  const out = {};
+  if (catchup.id                   !== undefined) out.id                     = catchup.id;
+  if (catchup.schoolId             !== undefined) out.school_id              = catchup.schoolId;
+  if (catchup.weekKey              !== undefined) out.week_key               = catchup.weekKey;
+  if (catchup.day                  !== undefined) out.day                    = catchup.day;
+  if (catchup.time                 !== undefined) out.time                   = catchup.time;
+  if (catchup.durationMinutes      !== undefined) out.duration_minutes       = catchup.durationMinutes;
+  if (catchup.instrument           !== undefined) out.instrument             = catchup.instrument;
+  if (catchup.enrolmentId          !== undefined) out.enrolment_id           = catchup.enrolmentId;
+  if (catchup.resolvesEnrolmentId  !== undefined) out.resolves_enrolment_id  = catchup.resolvesEnrolmentId;
+  if (catchup.resolvesWeekKey      !== undefined) out.resolves_week_key      = catchup.resolvesWeekKey;
+  if (catchup.resolvesOriginalDay  !== undefined) out.resolves_original_day  = catchup.resolvesOriginalDay;
+  if (catchup.resolvesOriginalTime !== undefined) out.resolves_original_time = catchup.resolvesOriginalTime;
+  if (catchup.madeUp               !== undefined) out.made_up                = catchup.madeUp;
+  if (catchup.notes                !== undefined) out.notes                  = catchup.notes;
+  return out;
 }
 
 // ── Load ─────────────────────────────────────────────────────
@@ -132,3 +161,87 @@ export async function loadCatchupsFromSupabase() {
  *                                 set_catchups_updated_at
  *                                 BEFORE-UPDATE trigger.
  */
+
+// ── Write helpers (cluster 5a — UI plumbing) ─────────────────
+
+/**
+ * Insert a single catchup row. Resolves the authenticated user via
+ * supabase.auth.getUser() and attaches user_id. Mints a fresh id via
+ * the canonical uid() helper if the caller did not supply one.
+ *
+ * Throws with enriched supabase error detail (.message + .code +
+ * .details + .hint) per the cluster 3 banked pattern.
+ *
+ * @param {Catchup} catchup  Partial Catchup; missing fields default
+ *                           per the schema (e.g. madeUp → false,
+ *                           created_at/updated_at server-managed).
+ * @returns {Promise<Catchup>}  The inserted row in fromRow shape.
+ */
+export async function insertCatchup(catchup) {
+  const { data: { user }, error: authErr } = await supabase.auth.getUser();
+  if (authErr || !user?.id) throw new Error("insertCatchup: not authenticated");
+  const id = catchup.id || uid();
+  const row = { ...toRow(catchup), id, user_id: user.id };
+  const { data, error } = await supabase
+    .from("catchups")
+    .insert(row)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(`insertCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
+  }
+  return fromRow(data);
+}
+
+/**
+ * Update a single catchup row by id. Caller passes only the fields
+ * to change; toRow's allow-list filters undefined values out so an
+ * UPDATE never sends spurious columns. RLS scopes the UPDATE by
+ * auth.uid() = user_id (cluster 1's policy), so no client-side
+ * user_id filter is needed.
+ *
+ * Throws "updateCatchup: no fields to update" if the toRow payload
+ * is empty (defensive — catches caller mistakes). Throws with
+ * enriched supabase error detail per the cluster 3 banked pattern.
+ *
+ * @param {string} id
+ * @param {Partial<Catchup>} fields
+ * @returns {Promise<Catchup>}  The updated row in fromRow shape.
+ */
+export async function updateCatchup(id, fields) {
+  const row = toRow(fields);
+  if (Object.keys(row).length === 0) {
+    throw new Error("updateCatchup: no fields to update");
+  }
+  const { data, error } = await supabase
+    .from("catchups")
+    .update(row)
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) {
+    throw new Error(`updateCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
+  }
+  return fromRow(data);
+}
+
+/**
+ * Delete a single catchup row by id. RLS scopes the DELETE by
+ * auth.uid() = user_id (cluster 1's policy), so no client-side
+ * user_id filter is needed.
+ *
+ * Throws with enriched supabase error detail per the cluster 3
+ * banked pattern.
+ *
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+export async function deleteCatchup(id) {
+  const { error } = await supabase
+    .from("catchups")
+    .delete()
+    .eq("id", id);
+  if (error) {
+    throw new Error(`deleteCatchup failed: ${error.message} (code=${error.code}, details=${error.details}, hint=${error.hint})`);
+  }
+}
