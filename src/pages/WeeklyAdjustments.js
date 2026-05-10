@@ -900,6 +900,40 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return [...seen];
   }, [weekKey, weeklyTimetables, termBreaks]);
 
+  // Spec 3 cluster 5b-3c-a — score helper for the catchup picker
+  // annotation badges. Mirrors the OLD "Add catch-up" cascade's
+  // scoreStudent logic verbatim (now retired): interruption hits at the
+  // candidate slot weigh 4 each, outsideClass hint adds 2, specialist
+  // clash adds 1. The label thresholds match the OLD: ≥4 ⚠ interruption,
+  // ≥2 constraint, ≥1 specialist, else null. Pure function — no closures.
+  const computeStudentSlotScore = ({ student, day, time, weekDate, interruptions, specialists }) => {
+    let score = 0;
+    if (weekDate && student) {
+      const slotInterruptions = (interruptions || []).filter(i => {
+        if (i.type === "term_break") return false;
+        if (i.schoolId !== student.schoolId && i.schoolId !== "all") return false;
+        const start = i.date, end = i.endDate || i.date;
+        if (weekDate < start || weekDate > end) return false;
+        if (i.affectsClasses !== "all" && !classMatchesInterruption(student.className || "", i.affectsClasses)) return false;
+        if (i.startTime) { const iS = timeToMin(i.startTime), iE = timeToMin(i.endTime || i.startTime), tS = timeToMin(time); if (tS < iS || tS >= iE) return false; }
+        return true;
+      });
+      score += slotInterruptions.length * 4;
+    }
+    if (student?.outsideClassOnly || student?.outsideClassPreferred) score += 2;
+    if (student) {
+      const specClash = (specialists || []).some(sp =>
+        sp.schoolId === student.schoolId &&
+        sp.className === student.className &&
+        sp.day === day &&
+        timeToMin(time) >= timeToMin(sp.start) && timeToMin(time) < timeToMin(sp.end)
+      );
+      if (specClash) score += 1;
+    }
+    const label = score >= 4 ? "⚠ interruption" : score >= 2 ? "constraint" : score >= 1 ? "specialist" : null;
+    return { score, label };
+  };
+
   // Unresolved missed lessons across the current term, grouped by
   // enrolment. Drives the "Schedule catchup for…" menu. Filters to
   // makeupEligible + !madeUp + unresolved (no catchup already resolves
@@ -1017,24 +1051,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
 
   // Action handlers — call catchupsDB write helpers + bubble local state.
-  // Spec 3 cluster 5b-3a-patch: receives an enrolment-grouped record (not
-  // a single missed entry). Picks group.missedEntries[0] (oldest first
-  // per the memo's sort) as the entry to resolve.
-  const handleScheduleCatchup = async (group) => {
+  // Spec 3 cluster 5b-3c-a: takes an explicit target { day, time, weekKey,
+  // schoolId? } so both surfaces can call it without coordinating contextMenu
+  // shape. Period-grid path (cascade from isEmpty) builds target from
+  // contextMenu.day/time/schoolId + parent weekKey. Mon-Sun grid path
+  // (isCatchupCreate root menu) builds target from contextMenu.targetDay/Time/WeekKey.
+  // Picks group.missedEntries[0] (oldest first per the memo's sort).
+  const handleScheduleCatchup = async (group, target) => {
     try {
       const targetMissed = group.missedEntries[0];
       if (!targetMissed) throw new Error("Group has no missed entries");
       const enrolment = enrolments.find(en => en.id === group.enrolmentId);
       const instrument = group.instrument || enrolment?.instrument || "";
-      const schoolId = group.schoolId || enrolment?.schoolId || "__private__";
+      const schoolId = target.schoolId || group.schoolId || enrolment?.schoolId || "__private__";
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) throw new Error("Not authenticated");
       const inserted = await insertCatchup({
         userId: user.id,
         schoolId,
-        weekKey: contextMenu.targetWeekKey,
-        day: contextMenu.targetDay,
-        time: contextMenu.targetTime,
+        weekKey: target.weekKey,
+        day: target.day,
+        time: target.time,
         durationMinutes: null, // codebase doesn't track per-enrolment duration; matches existing 18 rows
         instrument,
         enrolmentId: group.enrolmentId,
@@ -1047,6 +1084,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       });
       setCatchups(prev => [...prev, inserted]);
       setContextMenu(null);
+      setAddLessonSubmenu(null);
+      addLessonSubmenuType.current = null;
       if (notify) notify("Catchup scheduled");
     } catch (err) {
       logError && logError("Failed to schedule catchup", err?.message || String(err));
@@ -3539,19 +3578,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {contextMenu.day} {to12h(contextMenu.time)}
               </div>
-              {/* Spec 3 cluster 5b-3a: schedule catchup — flips to isCatchupCreate */}
-              <button onClick={() => {
-                setContextMenu({
-                  x: contextMenu.x, y: contextMenu.y,
-                  isCatchupCreate: true,
-                  targetDay: contextMenu.day,
-                  targetTime: contextMenu.time,
-                  targetWeekKey: weekKey,
-                });
-              }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, borderRadius: 6, fontFamily: "inherit" }}
-                onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Schedule catchup…</span>
-              </button>
               {/* Break */}
               <button onClick={() => {
                 const weeklyData2 = weeklyTimetables[contextMenu.weekKey];
@@ -3565,16 +3591,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               {/* Add Lesson — cascading upward menu */}
               {(() => {
                 const sId = contextMenu.schoolId;
-                const idsWithCatchups = new Set(
-                  findOpenCatchups({ weeklyTimetables, schoolId: sId }).map(r => r.missed.studentId)
-                );
-                const schoolStudentsWithMakeup = students.filter(s => s.schoolId === sId && idsWithCatchups.has(s.id));
-                // Exclude students already scheduled in any week
+                // Spec 3 cluster 5b-3c-a: catchup is always shown via the
+                // unified "Schedule catchup…" trigger; the OLD school-scoped
+                // hasCatchup precheck is retired. trialStu still gates the
+                // Add trial trigger; missing/pending similar.
                 const scheduledStudentIds = new Set(
                   Object.values(weeklyTimetables || {}).flatMap(data => (data.lessons || []).map(l => l.studentId))
                 );
                 const trialStu = students.filter(s => s.schoolId === sId && s.status === "trial" && !scheduledStudentIds.has(s.id));
-                const hasCatchup = schoolStudentsWithMakeup.length > 0;
                 const hasTrial = trialStu.length > 0;
             const wkDay = contextMenu.day;
             const wkTime = contextMenu.time;
@@ -3586,29 +3610,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 ? !wttLessons.some(wl => wl.groupId === ml.groupId)
                 : !wttLessons.some(wl => wl.studentId === ml.studentId && wl.instrument === ml.instrument)
             );
-            const hasPending = students.some(s => s.schoolId === sId && s.status === "pending");
-                if (!hasCatchup && !hasTrial && missing.length === 0 && !hasPending) return null;
-                const makeupCount = (s) => findOpenCatchups({ weeklyTimetables, studentId: s.id }).length;
-                const scoreStudent = (s) => {
-                  let score = 0;
-                  const weekDayDate = (weekDates || []).find(wd => wd.day === contextMenu.day)?.date;
-                  if (weekDayDate) {
-                    const slotInterruptions = interruptions.filter(i => {
-                      if (i.type === "term_break") return false;
-                      if (i.schoolId !== sId && i.schoolId !== "all") return false;
-                      const start = i.date, end = i.endDate || i.date;
-                      if (weekDayDate < start || weekDayDate > end) return false;
-                      if (i.affectsClasses !== "all" && !classMatchesInterruption(s.className || "", i.affectsClasses)) return false;
-                      if (i.startTime) { const iS = timeToMin(i.startTime), iE = timeToMin(i.endTime || i.startTime), tS = timeToMin(contextMenu.time); if (tS < iS || tS >= iE) return false; }
-                      return true;
-                    });
-                    score += slotInterruptions.length * 4;
-                  }
-                  if (s.outsideClassOnly || s.outsideClassPreferred) score += 2;
-                  const specClash = specialists.some(sp => sp.schoolId === sId && sp.className === s.className && sp.day === contextMenu.day && timeToMin(contextMenu.time) >= timeToMin(sp.start) && timeToMin(contextMenu.time) < timeToMin(sp.end));
-                  if (specClash) score += 1;
-                  return score;
-                };
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -3706,41 +3707,41 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         style={{ position: "fixed", ...clampMenuPos(subX, addLessonSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}
                         onScroll={e => { subPanelScrollRef.current[addLessonSubmenu.type] = e.currentTarget.scrollTop; }}>
                         {addLessonSubmenu.type === "catchup" && <>
-                          <div style={subHdr(colors.accentDark)}>Add catch-up</div>
+                          <div style={subHdr(colors.accentDark)}>Schedule catchup</div>
                           {(() => {
-                            // Build one row per (student, instrument) pair
-                            const eligiblePairMap = {};
-                            for (const r of findOpenCatchups({ weeklyTimetables })) {
-                              const e = r.missed;
-                              const s = students.find(st => st.id === e.studentId && st.schoolId === sId);
-                              if (!s) continue;
-                              const key = e.studentId + "|" + e.instrument;
-                              if (!eligiblePairMap[key]) eligiblePairMap[key] = { student: s, instrument: e.instrument, entries: [] };
-                              eligiblePairMap[key].entries.push({ ...e, weekKey: r.weekKey });
-                            }
-                            const eligiblePairs = Object.values(eligiblePairMap).sort((a, b) => {
-                              const cDiff = b.entries.length - a.entries.length;
-                              if (cDiff !== 0) return cDiff;
-                              return scoreStudent(a.student) - scoreStudent(b.student);
+                            // Spec 3 cluster 5b-3c-a: replaces the OLD JSONB-lesson
+                            // catchup creation. Aggregation comes from the
+                            // unresolvedMissedGroups useMemo (per-enrolment, current-
+                            // term scope), school-filtered to the period grid's
+                            // school context, scored via computeStudentSlotScore.
+                            // Click → handleScheduleCatchup with target cell from
+                            // contextMenu (period-grid path uses contextMenu.day/
+                            // time/schoolId + parent weekKey).
+                            const target = { day: contextMenu.day, time: contextMenu.time, weekKey, schoolId: sId };
+                            const targetWeekDate = (weekDates || []).find(wd => wd.day === target.day)?.date || null;
+                            const filtered = unresolvedMissedGroups.filter(g => g.schoolId === sId);
+                            const annotated = filtered.map(g => {
+                              const en = enrolments.find(e => e.id === g.enrolmentId);
+                              const st = en && !en.isGroup ? students.find(s => s.id === en.studentId) : null;
+                              let score = 0, scoreLabel = null;
+                              if (st) ({ score, label: scoreLabel } = computeStudentSlotScore({ student: st, day: target.day, time: target.time, weekDate: targetWeekDate, interruptions, specialists }));
+                              return { ...g, score, scoreLabel };
+                            }).sort((a, b) => {
+                              if (a.owedCount !== b.owedCount) return b.owedCount - a.owedCount;
+                              if (a.score !== b.score) return a.score - b.score;
+                              return (a.studentName || "").localeCompare(b.studentName || "");
                             });
-                            return eligiblePairs.map(pair => {
-                              const { student: s, instrument, entries } = pair;
-                              const count = entries.length;
-                              const score = scoreStudent(s);
-                              const scoreLabel = score >= 4 ? "⚠ interruption" : score >= 2 ? "constraint" : score >= 1 ? "specialist" : null;
-                              const oldest = [...entries].sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""))[0];
-                              // Show instrument label only if student has multiple instruments with owed make-ups
-                              const studentPairs = eligiblePairs.filter(p => p.student.id === s.id);
-                              const showInstrument = studentPairs.length > 1;
-                              const pairKey = s.id + "|" + instrument;
+                            if (annotated.length === 0) {
+                              return <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No missed lessons in current term</div>;
+                            }
+                            return annotated.map(group => {
+                              const showInstrument = collidingStudentNames.has(group.studentName);
                               return (
-                                <button key={pairKey} onClick={() => {
-                                  placeLesson(s, { instrument: oldest.instrument, teacherId: oldest.teacherId || "", teacherName: oldest.teacherName || "", isMakeup: true, makeupForTallyId: oldest.id });
-                                }} style={subBtnStyle}
+                                <button key={group.enrolmentId} onClick={() => handleScheduleCatchup(group, target)} style={subBtnStyle}
                                   onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
                                   onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                                  <span>{s.name}{showInstrument ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>· {instrument}</span> : null}</span>
-                                  <span style={{ fontSize: 11, color: score > 0 ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>{count}{scoreLabel ? " · " + scoreLabel : ""}</span>
+                                  <span>{group.studentName}{showInstrument && group.instrument ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>· {group.instrument}</span> : null}</span>
+                                  <span style={{ fontSize: 11, color: group.score > 0 ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>{group.owedCount}{group.scoreLabel ? " · " + group.scoreLabel : ""}</span>
                                 </button>
                               );
                             });
@@ -3844,13 +3845,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         </>}
                       </div>
                     )}
-                    {hasCatchup && (
-                      <button style={mkItemStyle(colors.accentDark)}
-                        onMouseEnter={e => { e.currentTarget.style.background = colors.accentLight; if (addLessonSubmenuType.current !== "catchup") { addLessonSubmenuType.current = "catchup"; setAddLessonSubmenu({ type: "catchup", y: e.currentTarget.getBoundingClientRect().top }); } }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Add catch-up</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                      </button>
-                    )}
+                    {/* Spec 3 cluster 5b-3c-a: Schedule catchup — always shown
+                        (cascade panel handles empty case). Replaces the OLD
+                        "Add catch-up" trigger that was gated on hasCatchup. */}
+                    <button style={mkItemStyle(colors.accentDark)}
+                      onMouseEnter={e => { e.currentTarget.style.background = colors.accentLight; if (addLessonSubmenuType.current !== "catchup") { addLessonSubmenuType.current = "catchup"; setAddLessonSubmenu({ type: "catchup", y: e.currentTarget.getBoundingClientRect().top }); } }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Schedule catchup…</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                    </button>
                     {hasMissed && (
                       <button style={mkItemStyle("#DC2626")}
                         onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; if (addLessonSubmenuType.current !== "missed") { addLessonSubmenuType.current = "missed"; setAddLessonSubmenu({ type: "missed", y: e.currentTarget.getBoundingClientRect().top }); } }}
@@ -3894,37 +3896,51 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 );
               })()}
             </div>
-          ) : contextMenu.isCatchupCreate ? (
-            <div style={{ padding: "6px 4px", maxHeight: 360, overflowY: "auto" }}>
-              <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                Schedule catchup for…
-              </div>
-              <div style={{ padding: "0 10px 4px", fontSize: 11, color: colors.textLight }}>
-                {contextMenu.targetDay} {to12h(contextMenu.targetTime)}
-              </div>
-              {unresolvedMissedGroups.length === 0 ? (
-                <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>
-                  No missed lessons in current term
+          ) : contextMenu.isCatchupCreate ? (() => {
+            // Spec 3 cluster 5b-3c-a — Mon-Sun holiday grid path. Opens the
+            // student-aggregated picker directly (no parent menu wrapper). No
+            // school filter applied (Mon-Sun is school-agnostic per Event 12).
+            // Same aggregation/score/sort logic as the period-grid cascade
+            // above; differs only in the school-filter pass-through.
+            const target = { day: contextMenu.targetDay, time: contextMenu.targetTime, weekKey: contextMenu.targetWeekKey };
+            const targetWeekDate = (weekDates || []).find(wd => wd.day === target.day)?.date || null;
+            const annotated = unresolvedMissedGroups.map(g => {
+              const en = enrolments.find(e => e.id === g.enrolmentId);
+              const st = en && !en.isGroup ? students.find(s => s.id === en.studentId) : null;
+              let score = 0, scoreLabel = null;
+              if (st) ({ score, label: scoreLabel } = computeStudentSlotScore({ student: st, day: target.day, time: target.time, weekDate: targetWeekDate, interruptions, specialists }));
+              return { ...g, score, scoreLabel };
+            }).sort((a, b) => {
+              if (a.owedCount !== b.owedCount) return b.owedCount - a.owedCount;
+              if (a.score !== b.score) return a.score - b.score;
+              return (a.studentName || "").localeCompare(b.studentName || "");
+            });
+            const subBtnStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", textAlign: "left" };
+            return (
+              <div style={{ padding: "6px 4px", maxHeight: 360, overflowY: "auto" }}>
+                <div style={{ padding: "6px 12px", fontSize: 11, color: colors.accentDark, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  Schedule catchup
                 </div>
-              ) : (
-                unresolvedMissedGroups.map((group) => {
-                  const showInstrument = collidingStudentNames.has(group.studentName);
-                  const instrumentSuffix = showInstrument && group.instrument ? ` (${group.instrument})` : "";
-                  const owedSuffix = group.owedCount > 1 ? ` (${group.owedCount} owed)` : "";
-                  return (
-                    <button
-                      key={group.enrolmentId}
-                      onClick={() => handleScheduleCatchup(group)}
-                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit", textAlign: "left" }}
-                      onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      {`${group.studentName}${instrumentSuffix}${owedSuffix}`}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          ) : contextMenu.isCatchupAction ? (() => {
+                {annotated.length === 0 ? (
+                  <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>
+                    No missed lessons in current term
+                  </div>
+                ) : (
+                  annotated.map(group => {
+                    const showInstrument = collidingStudentNames.has(group.studentName);
+                    return (
+                      <button key={group.enrolmentId} onClick={() => handleScheduleCatchup(group, target)} style={subBtnStyle}
+                        onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
+                        onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                        <span>{group.studentName}{showInstrument && group.instrument ? <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 6 }}>· {group.instrument}</span> : null}</span>
+                        <span style={{ fontSize: 11, color: group.score > 0 ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>{group.owedCount}{group.scoreLabel ? " · " + group.scoreLabel : ""}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            );
+          })() : contextMenu.isCatchupAction ? (() => {
             // Spec 3 cluster 5b-3b — email rows mirror the day-header email
             // pattern (isDayHeader branch above). Reuses the component-level
             // dayHeaderSubmenu / dayHeaderSubRef / dayHeaderHideTimer state —
