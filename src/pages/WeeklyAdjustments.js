@@ -154,7 +154,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [catchupDayTeacher, setCatchupDayTeacher] = useState({}); // { [dayName]: teacherId } for holiday catch-up grid
   const [catchupSelectedCards, setCatchupSelectedCards] = useState(new Set()); // selected card IDs in holiday grid
   const [selectedCatchupDays, setSelectedCatchupDays] = useState(new Set()); // Set of day names selected via holiday header click
-  const [dragOverCatchupMissed, setDragOverCatchupMissed] = useState(false);
   const [swapCatchupTeacherSub, setSwapCatchupTeacherSub] = useState(null); // { y } for swap teacher submenu on catch-up cards
   const swapCatchupSubRef = React.useRef(null);
   const swapCatchupSubTimer = React.useRef(null);
@@ -861,27 +860,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   });
 
   const catchupData = { lessons: catchupLessons[weekKey] || [] };
-  const catchupTimeSlots = (() => {
-    const slots = [];
-    for (let h = 9; h < 17; h++) {
-      slots.push(`${String(h).padStart(2, "0")}:00`);
-      slots.push(`${String(h).padStart(2, "0")}:30`);
-    }
-    return slots; // 9:00 to 16:30
-  })();
-
-  // Holiday grid includes Sat + Sun in addition to Mon–Fri
-  const catchupGridDays = isHolidayWeek ? (() => {
-    const friday = weekDates[4];
-    const friDate = new Date(friday.date + "T00:00:00");
-    const satDate = new Date(friDate); satDate.setDate(friDate.getDate() + 1);
-    const sunDate = new Date(friDate); sunDate.setDate(friDate.getDate() + 2);
-    return [
-      ...weekDates,
-      { day: "Saturday", date: toLocalDateStr(satDate) },
-      { day: "Sunday",   date: toLocalDateStr(sunDate) },
-    ];
-  })() : weekDates;
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
   // Term-scoped enumeration of weekKeys: collects from weeklyTimetables keys
@@ -940,7 +918,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // it). Each group carries its missedEntries[] sorted oldest-first so
   // the click handler can pick missedEntries[0] as the target.
   // Sort: alphabetical by studentName, tie-break by instrument.
-  const DAY_ORDER_53A = { Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6, Sunday: 7 };
   const unresolvedMissedGroups = useMemo(() => {
     const byEnrolment = new Map();
     for (const wk of currentTermWeekKeys) {
