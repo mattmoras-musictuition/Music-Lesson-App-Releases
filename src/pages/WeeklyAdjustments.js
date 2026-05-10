@@ -5794,7 +5794,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       onDragStart={e => { e.dataTransfer.setData("text/plain", `missed:${i}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`missed:${i}`); dragCache.current = {}; }}
                       onDragEnd={() => { setDraggingId(null); setDragOver(null); setDragOverMissed(false); setDragOverStaging(false); }}
                       onClick={e => { e.stopPropagation(); setSelectedMissed(prev => { const next = new Set(prev); next.has(i) ? next.delete(i) : next.add(i); return next; }); }}
-                      onContextMenu={e => { e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null);
+                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null);
                         const isMultiMissed = selectedMissed.size > 1 && selectedMissed.has(i);
                         setContextMenu({ x: e.clientX, y: e.clientY, fromMissed: true, lessonId: m.id, studentId: m.studentId, isGroup: m.isGroup,
                           isMultiMissed, selectedMissedIndices: isMultiMissed ? [...selectedMissed] : null,
