@@ -19,8 +19,9 @@ import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -4311,280 +4312,81 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             </div>
           )}
 
-          {/* ── Holiday Catch-Up Grid ── */}
+          {/* ── New Mon-Sun Catchup Grid (Spec 3 cluster 5b-2) ── */}
           {isHolidayWeek && (() => {
-            const owedTotal = findOpenCatchups({ weeklyTimetables }).length;
-            const scheduledTotal = (catchupData.lessons || []).length;
-            const allTeachers = teachers.filter(t => t.id);
+            const TIME_SLOTS = ["09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30"];
+            const DAY_COLS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+            const weekCatchups = getCatchupsForWeek(catchups, weekKey);
+            // Off-grid catchup detection (dev-only — Matt-visible data anomaly signal).
+            if (process.env.NODE_ENV !== "production") {
+              weekCatchups.forEach((c) => {
+                if (!TIME_SLOTS.includes(c.time)) {
+                  console.warn("[catchup grid] off-grid catchup time", { id: c.id, time: c.time, day: c.day });
+                }
+              });
+            }
+            // Snap an off-grid time to the nearest 30-min boundary at-or-before.
+            // 09:15 → 09:00, 09:45 → 09:30. Off-grid catchups render in the
+            // nearest visible cell rather than being silently dropped.
+            const snapToSlot = (time) => {
+              if (!time) return null;
+              const [h, m] = time.split(":").map(Number);
+              if (Number.isNaN(h) || Number.isNaN(m)) return null;
+              const snappedM = m < 30 ? "00" : "30";
+              return `${String(h).padStart(2, "0")}:${snappedM}`;
+            };
+            // Inline sub-component — closure access to enrolments, students,
+            // colors. Read-only; cluster 5b-3 wires interactions.
+            function CatchupCard({ catchup }) {
+              const enrolment = (enrolments || []).find(e => e.id === catchup.enrolmentId);
+              const student = enrolment ? (students || []).find(s => s.id === enrolment.studentId) : null;
+              const displayName = student?.name || enrolment?.studentName || "—";
+              const inst = catchup.instrument || "";
+              return (
+                <div style={{
+                  padding: "4px 6px", borderRadius: 4, fontSize: 11, lineHeight: 1.3,
+                  background: getInstColor(inst) + "18",
+                  borderLeft: `3px solid ${getInstColor(inst)}`,
+                  position: "relative",
+                }}>
+                  <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson"><RotateCcw size={9} /></span>
+                  <div style={{ fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 14 }}>
+                    {displayName}
+                  </div>
+                  <div style={{ color: colors.textLight, fontSize: 10 }}>
+                    {inst}
+                  </div>
+                </div>
+              );
+            }
             return (
-              // pointerEvents:none + dim when locked — keeps the grid visible
-              // (Matt can still read it) but blocks every drag/click edit.
-              // Mirrors the same pattern used by the non-holiday grid.
-              <div style={{ marginTop: 0, opacity: isLocked ? 0.7 : 1 }}>
-                {/* Stats row */}
-                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                  <Card style={{ flex: 1, padding: "8px 14px" }}>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: colors.danger }}>{owedTotal}</span>
-                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Catch-ups owed</span>
-                  </Card>
-                  <Card style={{ flex: 1, padding: "8px 14px" }}>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: colors.accentDark }}>{scheduledTotal}</span>
-                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Scheduled</span>
-                  </Card>
-                  <Card style={{ flex: 1, padding: "8px 14px" }}>
-                    <span style={{ fontSize: 16, fontWeight: 700, color: "#16A34A" }}>{Math.max(0, owedTotal - scheduledTotal)}</span>
-                    <span style={{ fontSize: 12, color: colors.textMuted, marginLeft: 6 }}>Still to schedule</span>
-                  </Card>
-                </div>
-
-                {/* Catch-up timetable grid */}
-                <div ref={gridRefCb} onScroll={handleGridScroll} onClick={() => { setCatchupSelectedCards(new Set()); setSelectedCatchupDays(new Set()); }} style={{ overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 210px)", border: `1px solid ${colors.border}`, borderRadius: 12 }}>
-                  <div style={{ pointerEvents: isLocked ? "none" : "auto" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: `60px repeat(7, minmax(140px, 1fr))`, gap: 1, background: colors.border, minWidth: "calc(60px + 7 * 140px + 6 * 140px)" }}>
-
-                    {/* Corner header */}
-                    <div style={{ background: colors.sidebarHover, color: "#fff", padding: "12px 8px", fontSize: 11, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, left: 0, zIndex: 20 }}>Time</div>
-
-                    {/* Day column headers with teacher chips */}
-                    {catchupGridDays.map(({ day, date: catchupDayDate }) => {
-                      const dateLabel = catchupDayDate ? new Date(catchupDayDate + "T00:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : "";
-                      const chips = dayTeacherChips[day] || [];
-                      const activeTid = chips.length >= 2 ? (catchupDayTeacher[day] || chips[0]) : null;
-                      const isDayCatchupConfirmed = (confirmedCatchupDays[weekKey] || []).includes(day);
-                      const dayHasCatchups = (catchupLessons[weekKey] || []).some(l => l.day === day);
-                      const dayCatchupSelected = selectedCatchupDays.has(day);
-                      return (
-                        <div key={day}
-                          onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupDayHeader: true, day, isDayCatchupConfirmed }); }}
-                          onClick={e => {
-                            e.stopPropagation();
-                            const dayLessonIds = (catchupLessons[weekKey] || []).filter(l => l.day === day).map(l => l.id);
-                            setSelectedCatchupDays(prev => {
-                              const next = new Set(prev);
-                              if (next.has(day)) {
-                                next.delete(day);
-                                setCatchupSelectedCards(cards => { const nc = new Set(cards); dayLessonIds.forEach(id => nc.delete(id)); return nc; });
-                              } else {
-                                next.add(day);
-                                setCatchupSelectedCards(cards => { const nc = new Set(cards); dayLessonIds.forEach(id => nc.add(id)); return nc; });
-                              }
-                              return next;
-                            });
-                          }}
-                          style={{ background: dayCatchupSelected ? colors.accent : colors.sidebarHover, padding: chips.length > 0 ? "6px 6px" : "10px 6px", textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>
-                          {/* Confirm / un-confirm button — top-left */}
-                          {dayHasCatchups && (
-                            <div style={{ position: "absolute", top: 5, left: 6, lineHeight: 1 }}>
-                              {isDayCatchupConfirmed ? (
-                                <button onClick={e => { e.stopPropagation(); unconfirmCatchupDay(day); }} title="Un-confirm day"
-                                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.85 }}
-                                  onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                  onMouseLeave={e => e.currentTarget.style.opacity = "0.85"}>
-                                  <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
-                                </button>
-                              ) : (
-                                <button onClick={e => { e.stopPropagation(); confirmCatchupDay(day); }} title="Confirm day"
-                                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
-                                  onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                  onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}>
-                                  <Check size={12} color="rgba(34,197,94,0.9)" />
-                                </button>
-                              )}
-                            </div>
-                          )}
-                          <div style={{ fontWeight: 700, fontSize: 13, color: "#fff" }}>
-                            {day.slice(0, 3)}<span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12, marginLeft: 4 }}>{dateLabel}</span>
-                          </div>
-                          {isDayCatchupConfirmed && (
-                            <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
-                          )}
-                          {/* Dynamic teacher chips — only shown when 2+ teachers added via right-click */}
-                          {chips.length >= 2 && (
-                            <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 5, flexWrap: "wrap" }}>
-                              {chips.map(tid => {
-                                const t = teachers.find(x => x.id === tid);
-                                if (!t) return null;
-                                const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                                const isActive = activeTid === tid;
-                                return (
-                                  <button key={tid}
-                                    onClick={e => { e.stopPropagation(); setCatchupDayTeacher(prev => ({ ...prev, [day]: tid })); }}
-                                    title={t.name}
-                                    style={{ height: 22, minWidth: 28, padding: "0 5px", borderRadius: 5, fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
-                                      background: isActive ? (t.color || colors.sidebarActive) : (darkMode ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.25)"),
-                                      color: isActive ? "#fff" : "rgba(255,255,255,0.6)",
-                                    }}>
-                                    {initials}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* Time slot rows */}
-                    {catchupTimeSlots.map(time => {
-                      const isHour = time.endsWith(":00");
-                      const timeLabel = (() => { const [h, m] = time.split(":"); const hour = parseInt(h) % 12 || 12; return `${hour}:${m}`; })();
-                      return (
-                        <React.Fragment key={`hcrow-${time}`}>
-                          {/* Time label — blue column */}
-                          <div style={{
-                            background: colors.sidebarHover, padding: "8px 6px 8px 4px", fontSize: 11,
-                            color: "#fff", textAlign: "right",
-                            minHeight: 32, display: "flex", alignItems: "center", justifyContent: "flex-end",
-                            fontWeight: 600, position: "sticky", left: 0, zIndex: 5,
-                          }}>
-                            {timeLabel}
-                          </div>
-
-                          {/* Day cells */}
-                          {catchupGridDays.map(({ day }) => {
-                            const chips = dayTeacherChips[day] || [];
-                            const activeTid = chips.length >= 2 ? (catchupDayTeacher[day] || chips[0]) : null;
-                            const cellKey = `${day}|${time}`;
-                            const isDropTarget = dragOver === cellKey;
-                            const activeLesson = activeTid
-                              ? (catchupData.lessons || []).find(l => l.day === day && l.start === time && l.teacherId === activeTid)
-                              : (catchupData.lessons || []).find(l => l.day === day && l.start === time);
-                            const otherLessons = activeTid
-                              ? (catchupData.lessons || []).filter(l => l.day === day && l.start === time && l.teacherId !== activeTid)
-                              : [];
-                            const otherColor = otherLessons.length > 0 ? (teachers.find(t => t.id === otherLessons[0].teacherId)?.color || colors.accent) : null;
-                            return (
-                              <div key={day}
-                                onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupSlot: true, day, time }); }}
-                                onDragOver={e => { e.preventDefault(); setDragOver(cellKey); }}
-                                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
-                                onDrop={e => {
-                                  e.preventDefault();
-                                  const lid = e.dataTransfer.getData("text/plain");
-                                  if (!lid || !lid.startsWith("hcatchup:")) { setDragOver(null); return; }
-                                  const lessonId = lid.replace("hcatchup:", "");
-                                  const dragged = (catchupData.lessons || []).find(l => l.id === lessonId);
-                                  setCatchupLessons(prev => ({
-                                    ...prev, [weekKey]: (prev[weekKey] || []).map(l => l.id === lessonId ? { ...l, day, start: time } : l)
-                                  }));
-                                  if (dragged?.teacherId) setCatchupDayTeacher(prev => ({ ...prev, [day]: dragged.teacherId }));
-                                  setDragOver(null); setDraggingId(null);
-                                  if (onSoundPlay) onSoundPlay();
-                                }}
-                                style={{
-                                  minHeight: 32, padding: 2, position: "relative",
-                                  cursor: (confirmedCatchupDays[weekKey] || []).includes(day) ? "default" : "context-menu",
-                                  background: isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : colors.cardBg,
-                                  boxShadow: (() => {
-                                    if (isDropTarget) return "none";
-                                    if (chips.length < 2 || !activeTid || !activeLesson) return "none";
-                                    const activeT = teachers.find(t => t.id === activeTid);
-                                    return `inset 0 0 0 1.5px ${activeT?.color || colors.accent}`;
-                                  })(),
-                                  outline: "none",
-                                  transition: "background 0.12s, box-shadow 0.12s",
-                                  pointerEvents: (confirmedCatchupDays[weekKey] || []).includes(day) ? "none" : "auto",
-                                }}>
-                                {activeLesson && (() => {
-                                  const isSelected = catchupSelectedCards.has(activeLesson.id);
-                                  const isConfirmed = (confirmedCatchupDays[weekKey] || []).includes(day);
-                                  return (
-                                    <div
-                                      draggable={!isConfirmed}
-                                      onDragStart={e => { e.dataTransfer.setData("text/plain", "hcatchup:" + activeLesson.id); e.dataTransfer.effectAllowed = "move"; setDraggingId("hcatchup:" + activeLesson.id); setHoverPopover(null); }}
-                                      onDragEnd={() => { setDraggingId(null); setDragOver(null); setDragOverCatchupMissed(false); }}
-                                      onMouseEnter={e => {
-                                        if (draggingId) return;
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        const info = buildPopoverInfo(activeLesson);
-                                        setHoverPopover({ type: "student", info, rect, color: getInstColor(activeLesson.instrument) });
-                                      }}
-                                      onMouseLeave={() => setHoverPopover(null)}
-                                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isCatchupCard: true, lessonId: activeLesson.id }); }}
-                                      onClick={e => { e.stopPropagation(); if (isConfirmed) return; setCatchupSelectedCards(prev => { const next = new Set(prev); if (next.has(activeLesson.id)) next.delete(activeLesson.id); else next.add(activeLesson.id); return next; }); }}
-                                      style={{
-                                        padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4,
-                                        cursor: draggingId === "hcatchup:" + activeLesson.id ? "grabbing" : isConfirmed ? "default" : "grab",
-                                        background: isSelected ? `${colors.sidebarActive}18` : getInstColor(activeLesson.instrument) + "18",
-                                        borderLeft: `3px solid ${isSelected ? colors.sidebarActive : getInstColor(activeLesson.instrument)}`,
-                                        outline: isSelected ? `1.5px solid ${colors.sidebarActive}` : "none",
-                                        opacity: draggingId === "hcatchup:" + activeLesson.id ? 0.4 : isConfirmed ? 0.5 : 1,
-                                        transition: "opacity 0.12s", position: "relative",
-                                      }}>
-                                      <div style={{ fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                        {(() => { const st = students.find(s => s.id === activeLesson.studentId); return getPrefDisplayName(st?.name || activeLesson.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}
-                                      </div>
-                                      <div style={{ color: colors.textLight, fontSize: 12 }}>
-                                        {activeLesson.instrument ? `${activeLesson.instrument} · ` : ""}{(activeLesson.teacherName || "").split(" ")[0]}
-                                      </div>
-                                    </div>
-                                  );
-                                })()}
-                              </div>
-                            );
-                          })}
-                        </React.Fragment>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Missed Catch-Ups zone — WTT-style, full width */}
-                <div
-                  onDragOver={e => { e.preventDefault(); setDragOverCatchupMissed(true); }}
-                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCatchupMissed(false); }}
-                  onDrop={e => {
-                    e.preventDefault();
-                    const lid = e.dataTransfer.getData("text/plain");
-                    if (lid?.startsWith("hcatchup:")) handleCatchupMissedDrop(lid.replace("hcatchup:", ""));
-                    setDragOverCatchupMissed(false); setDraggingId(null);
-                  }}
-                  style={{ marginTop: 16, borderRadius: 12, border: `1px solid ${dragOverCatchupMissed ? colors.danger : colors.border}`, background: dragOverCatchupMissed ? (darkMode ? "rgba(196,84,84,0.08)" : "#FEF2F2") : colors.cardBg, transition: "all 0.15s", overflow: "hidden" }}>
-                  {/* Header */}
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "12px 16px 10px", borderBottom: `1px solid ${colors.borderLight}` }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: colors.danger, display: "flex", alignItems: "center", gap: 6 }}>
-                      <X size={13} /> Missed Catch-Ups{(catchupMissed[weekKey] || []).length > 0 ? ` (${(catchupMissed[weekKey] || []).length})` : ""}
+              <div style={{ marginTop: 12, marginBottom: 16, opacity: isLocked ? 0.7 : 1 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "60px repeat(7, 1fr)", gap: 1, background: colors.border, borderRadius: 8, overflow: "hidden", border: `1px solid ${colors.border}` }}>
+                  {/* Header row */}
+                  <div style={{ background: colors.sidebarHover, color: "#fff", padding: "8px 6px", fontSize: 11, fontWeight: 600, textAlign: "center" }}>Time</div>
+                  {DAY_COLS.map(day => (
+                    <div key={day} style={{ background: colors.sidebarHover, color: "#fff", padding: "8px 6px", fontSize: 12, fontWeight: 700, textAlign: "center" }}>
+                      {day.slice(0, 3)}
                     </div>
-                    <div style={{ fontSize: 12, color: colors.textMuted }}>
-                      · drag lesson cards here to record a missed catch-up
-                    </div>
-                  </div>
-                  {/* Cards */}
-                  {(catchupMissed[weekKey] || []).length === 0 ? (
-                    <div style={{ padding: "16px", fontSize: 13, color: colors.textMuted, fontStyle: "italic", textAlign: "center" }}>No missed catch-ups this week</div>
-                  ) : (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 16px" }}>
-                      {(catchupMissed[weekKey] || []).map((m, i) => {
-                        const mSt = students.find(s => s.id === m.studentId);
-                        const timeLabel = (() => { const [h, min] = (m.start || "").split(":"); const hr = parseInt(h) % 12 || 12; return `${hr}:${min}`; })();
+                  ))}
+                  {/* Body rows */}
+                  {TIME_SLOTS.map(time => (
+                    <React.Fragment key={`row-${time}`}>
+                      <div style={{ background: colors.sidebarHover, color: "#fff", padding: "6px 6px", fontSize: 11, fontWeight: 600, textAlign: "right", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+                        {(() => { const [h, m] = time.split(":"); const hour = parseInt(h) % 12 || 12; return `${hour}:${m}`; })()}
+                      </div>
+                      {DAY_COLS.map(day => {
+                        const onGrid = getCatchupsForGridCell(catchups, weekKey, day, time);
+                        const offGrid = weekCatchups.filter(c => c.day === day && !TIME_SLOTS.includes(c.time) && snapToSlot(c.time) === time);
+                        const cell = [...onGrid, ...offGrid];
                         return (
-                          <div key={m.id || i} style={{ padding: "8px 12px", borderRadius: 8, minWidth: 180, maxWidth: 260, background: darkMode ? "rgba(196,84,84,0.10)" : "#FEF2F2", border: `1px solid ${colors.danger}30`, borderLeft: `3px solid ${colors.danger}`, position: "relative" }}>
-                            <button title="Return to available catch-ups" onClick={() => {
-                              setCatchupMissed(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter((_, idx) => idx !== i) }));
-                              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-                              if (m.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === m.makeupForTallyId ? { ...e, makeupEligible: true, madeUp: false } : e));
-                              if (notify) notify(`${m.studentName} — returned to available catch-ups`);
-                            }} style={{ position: "absolute", top: 4, right: 5, background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", borderRadius: 4 }}
-                              onMouseEnter={e => e.currentTarget.style.color = colors.text} onMouseLeave={e => e.currentTarget.style.color = colors.textMuted}>
-                              <RotateCcw size={11} />
-                            </button>
-                            <div style={{ fontWeight: 600, fontSize: 13, color: colors.text, paddingRight: 18, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                              {getPrefDisplayName(mSt?.name || m.studentName)}{mSt?.className ? ` · ${mSt.className}` : ""}
-                            </div>
-                            <div style={{ fontSize: 12, color: colors.textLight, marginTop: 2 }}>
-                              {m.instrument} · {(m.teacherName || "").split(" ")[0]}
-                            </div>
-                            <div style={{ marginTop: 5 }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: colors.danger, background: darkMode ? "rgba(196,84,84,0.2)" : "#FECACA", borderRadius: 4, padding: "2px 6px" }}>
-                                Missed · {m.day} {timeLabel}
-                              </span>
-                            </div>
+                          <div key={`${day}-${time}`} style={{ background: colors.cardBg, minHeight: 36, padding: 2, display: "flex", flexDirection: "column", gap: 2 }}>
+                            {cell.map(c => <CatchupCard key={c.id} catchup={c} />)}
                           </div>
                         );
                       })}
-                    </div>
-                  )}
-                  </div>
+                    </React.Fragment>
+                  ))}
                 </div>
               </div>
             );
@@ -4905,7 +4707,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
               {(() => {
                 const schoolDays = (currentSchool?.days || DAYS).slice().sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
-                const wLessons = displayLessons;
+                // Spec 3 cluster 5b-2: enrich each catchup with `studentId`
+                // (derived from enrolment) so the period-grid card render
+                // resolves the student name correctly. mergeCatchupsIntoLessons
+                // adds `start: c.time` so the existing `l.start === time`
+                // cell filter at the per-cell map below sees the catchup
+                // at the right slot.
+                const enrichedCatchups = (catchups || []).map(c => {
+                  const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+                  return en ? { ...c, studentId: en.studentId } : c;
+                });
+                const wLessons = mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey);
 
                 // Weekly break cards: stored in weeklyData.breaks; fall back to masterBreaks for this school
                 const weeklyBreaks = weeklyData.breaks || (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
@@ -5431,7 +5243,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     }} title={l.isGroup ? l.groupName || l.studentName : l.adjustReason || undefined}>
                                     {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
                                     {hasAckedWarning && !showRed && <span onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}><AlertTriangle size={11} /></span>}
-                                    {l.isMakeup && <span onClick={e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); }} style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson — click to remove"><RotateCcw size={11} /></span>}
+                                    {(l.isMakeup || l.__isCatchup) && <span onClick={l.__isCatchup ? undefined : (e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); })} style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: l.__isCatchup ? "default" : "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title={l.__isCatchup ? "Catch-up lesson" : "Catch-up lesson — click to remove"}><RotateCcw size={11} /></span>}
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
                                       {l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}

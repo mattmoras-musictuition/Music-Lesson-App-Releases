@@ -185,3 +185,33 @@ export function getCatchupsForGridCell(catchups, weekKey, day, time) {
     (c) => c.weekKey === weekKey && c.day === day && c.time === time
   );
 }
+
+/**
+ * Merge catchups into the lessons array for a single week's render.
+ *
+ * lessons pass through untouched. Catchups for `weekKey` are appended,
+ * each annotated with `__isCatchup: true` so renderers can branch on
+ * the marker to apply the catch-up badge. Off-week catchups are
+ * excluded.
+ *
+ * Shape bridge: the catchups DB column is `time`; the period-grid
+ * lesson record uses `start`. Each merged catchup gets `start: c.time`
+ * aliased into the spread so existing per-cell filters
+ * (`l.start === time`) and downstream renderers that read `l.start`
+ * see the catchup at the correct grid cell. The original `time` field
+ * is preserved — both keys carry the same value.
+ *
+ * @param {Array} lessons     Existing weekly lessons (period-grid shape).
+ * @param {Catchup[]|null|undefined} catchups
+ * @param {string|null|undefined} weekKey
+ * @returns {Array} `[...lessons, ...weekCatchups]`. lessons untouched
+ *                  if catchups/weekKey falsy.
+ */
+export function mergeCatchupsIntoLessons(lessons, catchups, weekKey) {
+  const safeLessons = Array.isArray(lessons) ? lessons : [];
+  if (!catchups || !weekKey) return safeLessons;
+  const weekCatchups = catchups
+    .filter((c) => c.weekKey === weekKey)
+    .map((c) => ({ ...c, start: c.time, __isCatchup: true }));
+  return [...safeLessons, ...weekCatchups];
+}
