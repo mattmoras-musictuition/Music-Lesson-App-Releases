@@ -4821,15 +4821,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         return (
                           <div key={`${day}-${time}`}
                             onContextMenu={cell.length === 0 ? (e => handleEmptyCellRightClick(e, day, time, weekKey)) : undefined}
-                            onDragOver={cell.length === 0 ? (e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }) : undefined}
-                            onDrop={cell.length === 0 ? (e => {
+                            onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                            onDrop={e => {
+                              // Spec 3 cluster 5b-3c-b-patch-1: empty-cell gate
+                              // removed — catchup cards stack on non-empty cells
+                              // the same way regular lesson cards already do
+                              // (e.g. handleWeeklyMoveLesson at the period-grid
+                              // drop handler has no equivalent gate).
                               e.preventDefault();
                               const lid = e.dataTransfer.getData("text/plain");
                               if (!lid || !lid.startsWith("catchup:")) return;
                               const id = lid.slice("catchup:".length);
                               handleCatchupRelocate(id, day, time);
                               setDraggingId(null);
-                            }) : undefined}
+                            }}
                             style={{ background: colors.cardBg, minHeight: 36, padding: 2, display: "flex", flexDirection: "column", gap: 2 }}>
                             {cell.map(c => <CatchupCard key={c.id} catchup={c} />)}
                           </div>
@@ -5461,12 +5466,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   } else if (lid.startsWith("staged:")) {
                                     handlePlaceStagedCatchup(lid.split(":")[1], day, time);
                                   } else if (lid.startsWith("catchup:")) {
-                                    // Cluster 5b-3c-b: drop only on truly empty cells (no lessons,
-                                    // no merged catchups). cellLessons.length === 0 is the local
-                                    // gate; same-cell no-op is handled inside handleCatchupRelocate.
-                                    if (cellLessons.length === 0) {
-                                      handleCatchupRelocate(lid.slice("catchup:".length), day, time);
-                                    }
+                                    // Cluster 5b-3c-b-patch-1: empty-cell gate removed.
+                                    // Catchup cards stack on non-empty cells the same way
+                                    // regular lesson cards do via handleWeeklyMoveLesson
+                                    // below. Same-cell no-op handled inside
+                                    // handleCatchupRelocate.
+                                    handleCatchupRelocate(lid.slice("catchup:".length), day, time);
                                   } else {
                                     handleWeeklyMoveLesson(lid, day, time);
                                   }
