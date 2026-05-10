@@ -3924,17 +3924,159 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 })
               )}
             </div>
-          ) : contextMenu.isCatchupAction ? (
-            <div style={{ padding: "6px 4px" }}>
-              <button
-                onClick={() => handleDeleteCatchup(contextMenu.targetCatchup)}
-                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
-                onMouseEnter={e => e.currentTarget.style.background = colors.redLight}
-                onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Delete catchup</span>
-              </button>
-            </div>
-          ) : contextMenu.isBandSession ? (
+          ) : contextMenu.isCatchupAction ? (() => {
+            // Spec 3 cluster 5b-3b — email rows mirror the day-header email
+            // pattern (isDayHeader branch above). Reuses the component-level
+            // dayHeaderSubmenu / dayHeaderSubRef / dayHeaderHideTimer state —
+            // only one context menu renders at a time, so no collision with
+            // the isDayHeader branch. Mark complete / Edit / Unlink were
+            // intentionally dropped per planner+Matt review (placement IS
+            // the completion signal per anchor Event 12; drag-drop in 5b-3c
+            // covers day/time edits; enrolment fields are fixed).
+            const cu = contextMenu.targetCatchup;
+            const enrolment = enrolments.find(e => e.id === cu.enrolmentId) || null;
+            const isGroup = enrolment?.isGroup === true;
+            const group = isGroup ? (groups || []).find(g => g.id === enrolment.groupId) : null;
+            const studentIds = isGroup
+              ? (group?.members || []).map(m => m.studentId).filter(Boolean)
+              : (enrolment?.studentId ? [enrolment.studentId] : []);
+
+            // Parents — aggregated across all students in the catchup
+            const parentEmailSet = new Set();
+            const parentRows = [];
+            studentIds.forEach(sid => {
+              const st = students.find(s => s.id === sid);
+              if (!st) return;
+              (st.parents || []).forEach(p => {
+                if (p.email && !parentEmailSet.has(p.email)) {
+                  parentEmailSet.add(p.email);
+                  parentRows.push({ name: p.name || p.email, email: p.email });
+                }
+              });
+            });
+            const allParentEmails = [...parentEmailSet];
+
+            // Class teachers — via getClassTeacher per student
+            const teacherEmailSet = new Set();
+            const teacherRows = [];
+            studentIds.forEach(sid => {
+              const st = students.find(s => s.id === sid);
+              if (!st) return;
+              const ct = getClassTeacher(st, contacts || []);
+              if (ct?.email && !teacherEmailSet.has(ct.email)) {
+                teacherEmailSet.add(ct.email);
+                teacherRows.push({ name: ct.name || ct.email, email: ct.email });
+              }
+            });
+            const allTeacherEmails = [...teacherEmailSet];
+
+            // Staff — the music teacher assigned to the catchup's enrolment
+            const staffEmailSet = new Set();
+            const staffRows = [];
+            if (enrolment?.teacherId) {
+              const t = teachers.find(x => x.id === enrolment.teacherId);
+              if (t?.email && !staffEmailSet.has(t.email)) {
+                staffEmailSet.add(t.email);
+                staffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null });
+              }
+            }
+            const allStaffEmails = [...staffEmailSet];
+
+            const noEmails = !allParentEmails.length && !allTeacherEmails.length && !allStaffEmails.length;
+            if (noEmails && process.env.NODE_ENV !== 'production' && (!enrolment || studentIds.length === 0)) {
+              console.info('[catchup card menu] no contacts resolved for bare group catchup', {
+                catchupId: cu.id, enrolmentId: cu.enrolmentId,
+              });
+            }
+
+            const subMenuW = 210;
+            const menuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
+            const menuRight = menuRect ? menuRect.right : contextMenu.x + 220;
+            const menuLeft = menuRect ? menuRect.left : contextMenu.x;
+            const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
+
+            const keepOpen = () => { if (dayHeaderHideTimer.current) clearTimeout(dayHeaderHideTimer.current); };
+            const scheduleClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
+            const schoolSender = schools.find(s => s.id === cu.schoolId)?.senderEmail || "";
+
+            const SubPanel = ({ type, rows, allEmails, color, multi }) => {
+              if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
+              const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
+              const hov = (e) => e.currentTarget.style.background = colors.bg;
+              const unhov = (e) => e.currentTarget.style.background = "none";
+              return (
+                <div ref={dayHeaderSubRef}
+                  onMouseEnter={keepOpen}
+                  onMouseLeave={scheduleClose}
+                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                  {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+                  {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+                  {rows.map((r, i) => (
+                    <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      style={r.color ? btn(colors.text) : btn(color || colors.accent)}
+                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
+                      {r.name ? r.name.split(" ")[0] : r.email}
+                    </button>
+                  ))}
+                </div>
+              );
+            };
+
+            const mkEmailRow = (label, allEmails, rows, type, color) => {
+              if (!allEmails.length) return null;
+              const isOpen = dayHeaderSubmenu?.type === type;
+              const multi = allEmails.length > 1;
+              return (
+                <div style={{ position: "relative" }}>
+                  <SubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
+                  {multi ? (
+                    <button
+                      onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onMouseEnter={e => {
+                        keepOpen();
+                        e.currentTarget.style.background = colors.bg;
+                        if (!isOpen) setDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
+                      }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleClose(); }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      <span>{label} ({allEmails.length})</span>
+                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onMouseEnter={e => { keepOpen(); e.currentTarget.style.background = colors.bg; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleClose(); }}
+                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
+                    </button>
+                  )}
+                </div>
+              );
+            };
+
+            return (
+              <div style={{ padding: "4px 0" }}>
+                {noEmails && (
+                  <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No email addresses found</div>
+                )}
+                {mkEmailRow("Parents", allParentEmails, parentRows, "parents", colors.accent)}
+                {mkEmailRow("Class Teachers", allTeacherEmails, teacherRows, "teachers", colors.sidebarActive)}
+                {mkEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
+                <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                <button
+                  onClick={() => handleDeleteCatchup(cu)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
+                  onMouseEnter={e => e.currentTarget.style.background = colors.redLight}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Delete catchup</span>
+                </button>
+              </div>
+            );
+          })() : contextMenu.isBandSession ? (
             <>
               <div style={{ padding: "8px 12px", fontSize: 12, color: instruments_colors.Band, borderBottom: `1px solid ${colors.borderLight}`, fontWeight: 700 }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Guitar size={13} /> {contextMenu.bandName || "Band Session"}</span>
