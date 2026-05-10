@@ -227,11 +227,29 @@ export async function insertCatchup({ userId, id, ...catchupFields }) {
 
 /**
  * Update an existing catchup row.
- * @param {Object} args - id of the row to update plus any updatable Catchup fields.
+ *
+ * In development, supabaseClient.js's Proxy wraps the client and
+ * returns { data: null, error: null } for every write. When that
+ * happens, this helper synthesizes the updated row by merging the
+ * patch fields onto the caller-supplied currentRow so the UI's
+ * optimistic state update lands. Nothing persists; a page refresh
+ * clears the local change. Production (NODE_ENV !== 'development')
+ * never reaches the synthesis branch — wrapper isn't applied at all.
+ *
+ * Mirrors insertCatchup's post-patch-5 dev-mode synthesis pattern
+ * (see operating directive 6 / 5b-3a final addendum).
+ *
+ * @param {Object} args
  * @param {string} args.id - Catchup id (required, used as WHERE clause).
- * @returns {Promise<Catchup>} The updated catchup, mapped via fromRow.
+ * @param {Catchup} [args.currentRow] - Existing row in fromRow shape;
+ *   used to base the synthesized return in dev. Optional in production
+ *   (a real Supabase response replaces it). Strongly recommended for
+ *   dev-mode callers — without it, the synthesized row contains only
+ *   the patched fields plus id and updatedAt.
+ * @returns {Promise<Catchup>} The updated catchup, mapped via fromRow
+ *   (production) or synthesized from currentRow + patch (dev).
  */
-export async function updateCatchup({ id, ...fields }) {
+export async function updateCatchup({ id, currentRow, ...fields }) {
   const row = toRow(fields);
   if (Object.keys(row).length === 0) {
     throw new Error("updateCatchup: no fields to update");
@@ -243,6 +261,22 @@ export async function updateCatchup({ id, ...fields }) {
     .select()
     .single();
   if (error) throw error;
+  if (data === null && IS_DEV_MODE_WRAPPER) {
+    if (typeof console !== 'undefined' && console.info) {
+      console.info(
+        '[dev-mode] updateCatchup: wrapper blocked write — returning synthesized local row (id=%s)',
+        id
+      );
+    }
+    const now = new Date().toISOString();
+    const base = currentRow || { id };
+    return {
+      ...base,
+      ...fields,
+      id,
+      updatedAt: now,
+    };
+  }
   return fromRow(data);
 }
 

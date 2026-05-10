@@ -20,7 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
-import { insertCatchup, deleteCatchup } from "../utils/catchupsDB";
+import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -1093,6 +1093,31 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       alert("Failed to schedule catchup. See console.");
     }
   };
+  // Spec 3 cluster 5b-3c-b — drag-drop relocate handler. Same-cell no-op
+  // and missing-id no-op are handled here; the drop-side wiring also
+  // checks cellLessons.length === 0 / cell.length === 0 before calling.
+  // updateCatchup gets currentRow so its dev-mode synthesis can return a
+  // properly merged row (see catchupsDB.js post-patch-5 pattern).
+  const handleCatchupRelocate = async (catchupId, targetDay, targetTime) => {
+    const current = (catchups || []).find(c => c.id === catchupId);
+    if (!current) return;
+    if (current.day === targetDay && current.time === targetTime) return;
+    try {
+      const updated = await updateCatchup({
+        id: catchupId,
+        currentRow: current,
+        day: targetDay,
+        time: targetTime,
+      });
+      setCatchups(prev => prev.map(c => c.id === catchupId ? updated : c));
+      if (notify) notify("Catchup moved");
+    } catch (err) {
+      logError && logError("Failed to move catchup", err?.message || String(err));
+      console.error("[catchup move] failed:", err);
+      alert("Failed to move catchup. See console.");
+    }
+  };
+
   const handleDeleteCatchup = async (catchup) => {
     if (!window.confirm(`Delete catchup for ${formatCatchupDisplay(catchup)}?`)) {
       setContextMenu(null);
@@ -4736,19 +4761,33 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               return `${String(h).padStart(2, "0")}:${snappedM}`;
             };
             // Inline sub-component — closure access to enrolments, students,
-            // colors. Read-only; cluster 5b-3 wires interactions.
+            // colors. Cluster 5b-3c-b: draggable; bare-group artefacts
+            // (null enrolmentId) are non-draggable since their relocation
+            // semantics are undefined in the new model.
             function CatchupCard({ catchup }) {
               const enrolment = (enrolments || []).find(e => e.id === catchup.enrolmentId);
               const student = enrolment ? (students || []).find(s => s.id === enrolment.studentId) : null;
               const displayName = student?.name || enrolment?.studentName || "—";
               const inst = catchup.instrument || "";
+              const isBareGroup = !catchup.enrolmentId;
               return (
-                <div onContextMenu={(e) => handleCatchupCardRightClick(e, catchup)} style={{
-                  padding: "4px 6px", borderRadius: 4, fontSize: 11, lineHeight: 1.3,
-                  background: getInstColor(inst) + "18",
-                  borderLeft: `3px solid ${getInstColor(inst)}`,
-                  position: "relative",
-                }}>
+                <div
+                  draggable={!isBareGroup}
+                  onDragStart={isBareGroup ? undefined : (e => {
+                    e.dataTransfer.setData("text/plain", "catchup:" + catchup.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    setDraggingId("catchup:" + catchup.id);
+                  })}
+                  onDragEnd={isBareGroup ? undefined : (() => { setDraggingId(null); setDragOver(null); })}
+                  onContextMenu={(e) => handleCatchupCardRightClick(e, catchup)}
+                  style={{
+                    padding: "4px 6px", borderRadius: 4, fontSize: 11, lineHeight: 1.3,
+                    background: getInstColor(inst) + "18",
+                    borderLeft: `3px solid ${getInstColor(inst)}`,
+                    position: "relative",
+                    cursor: isBareGroup ? "default" : "grab",
+                    opacity: draggingId === "catchup:" + catchup.id ? 0.4 : 1,
+                  }}>
                   <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson"><RotateCcw size={9} /></span>
                   <div style={{ fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 14 }}>
                     {displayName}
@@ -4782,6 +4821,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         return (
                           <div key={`${day}-${time}`}
                             onContextMenu={cell.length === 0 ? (e => handleEmptyCellRightClick(e, day, time, weekKey)) : undefined}
+                            onDragOver={cell.length === 0 ? (e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }) : undefined}
+                            onDrop={cell.length === 0 ? (e => {
+                              e.preventDefault();
+                              const lid = e.dataTransfer.getData("text/plain");
+                              if (!lid || !lid.startsWith("catchup:")) return;
+                              const id = lid.slice("catchup:".length);
+                              handleCatchupRelocate(id, day, time);
+                              setDraggingId(null);
+                            }) : undefined}
                             style={{ background: colors.cardBg, minHeight: 36, padding: 2, display: "flex", flexDirection: "column", gap: 2 }}>
                             {cell.map(c => <CatchupCard key={c.id} catchup={c} />)}
                           </div>
@@ -5412,6 +5460,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     updateWeeklyBreaks(weeklyBreaks.map(b => b.id !== breakId ? b : { ...b, day, time }));
                                   } else if (lid.startsWith("staged:")) {
                                     handlePlaceStagedCatchup(lid.split(":")[1], day, time);
+                                  } else if (lid.startsWith("catchup:")) {
+                                    // Cluster 5b-3c-b: drop only on truly empty cells (no lessons,
+                                    // no merged catchups). cellLessons.length === 0 is the local
+                                    // gate; same-cell no-op is handled inside handleCatchupRelocate.
+                                    if (cellLessons.length === 0) {
+                                      handleCatchupRelocate(lid.slice("catchup:".length), day, time);
+                                    }
                                   } else {
                                     handleWeeklyMoveLesson(lid, day, time);
                                   }
@@ -5599,8 +5654,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   return (
                                   <div key={li} draggable
                                     onDragStart={e => {
-                                      e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move";
-                                      setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
+                                      // Cluster 5b-3c-b: catchup cards drag with a "catchup:" prefix
+                                      // so the cell drop handler can route to handleCatchupRelocate
+                                      // (writes to catchups table) instead of handleWeeklyMoveLesson
+                                      // (writes to weekly_adjustments JSONB).
+                                      const payload = l.__isCatchup ? "catchup:" + l.id : l.id;
+                                      e.dataTransfer.setData("text/plain", payload); e.dataTransfer.effectAllowed = "move";
+                                      setDraggingId(l.__isCatchup ? "catchup:" + l.id : l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
                                       // Cluster 12a: drag auto-clear of _swapTeacherId removed (mechanism gone).
                                     }}
                                     onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
