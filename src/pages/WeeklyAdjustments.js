@@ -150,17 +150,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
   const [contextMenu, setContextMenu] = useState(null);
-  const [catchupSubmenu, setCatchupSubmenu] = useState(null);
   const [catchupDayTeacher, setCatchupDayTeacher] = useState({}); // { [dayName]: teacherId } for holiday catch-up grid
-  const [catchupSelectedCards, setCatchupSelectedCards] = useState(new Set()); // selected card IDs in holiday grid
-  const [selectedCatchupDays, setSelectedCatchupDays] = useState(new Set()); // Set of day names selected via holiday header click
-  const [swapCatchupTeacherSub, setSwapCatchupTeacherSub] = useState(null); // { y } for swap teacher submenu on catch-up cards
-  const swapCatchupSubRef = React.useRef(null);
-  const swapCatchupSubTimer = React.useRef(null);
   // catchupLessons: derived from weeklyTimetables using "weekKey|__catchup__" sentinel keys.
   // This makes catch-up data visible to React state (and Claude's system prompt) while
   // keeping it out of Supabase (filtered at sync time in App.js).
-  // confirmedCatchupDays and catchupMissed remain in localStorage as before.
+  // confirmedCatchupDays remains in localStorage as before.
   const catchupLessons = useMemo(() => {
     const result = {};
     Object.entries(weeklyTimetables || {}).forEach(([k, v]) => {
@@ -186,15 +180,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       };
     });
   }, [setWeeklyTimetables]);
-  const [catchupMissed, setCatchupMissed] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("mt-catchup-missed") || "{}"); } catch { return {}; }
-  });
   const [confirmedCatchupDays, setConfirmedCatchupDays] = useState(() => {
     try { return JSON.parse(localStorage.getItem("mt-catchup-confirmed") || "{}"); } catch { return {}; }
   });
-  const [catchupSlotSubTeacher, setCatchupSlotSubTeacher] = useState(null); // { teacherId, y } for cascading slot menu
-  const catchupSlotSubRef = React.useRef(null);
-  const catchupSlotHideTimer = React.useRef(null);
   const [dayTeacherChips, setDayTeacherChips] = useState({}); // { [day]: teacherId[] } chips added per day column
   // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
   // Default empty = all days hidden. Session-scoped (not persisted).
@@ -262,9 +250,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const inLevel3 = level3MenuRef.current && (() => { const r = level3MenuRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
       const inDayHeader = dayHeaderSubRef.current && (() => { const r = dayHeaderSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
       const inMissedZone = missedZoneSubRef.current && (() => { const r = missedZoneSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
-      const inCatchupSlotSub = catchupSlotSubRef.current && (() => { const r = catchupSlotSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
-      const inSwapCatchup = swapCatchupSubRef.current && (() => { const r = swapCatchupSubRef.current.getBoundingClientRect(); return mx >= r.left && mx <= r.right && my >= r.top && my <= r.bottom; })();
-      if (inMain || inSub || inSwap || inLevel3 || inDayHeader || inMissedZone || inCatchupSlotSub || inSwapCatchup) {
+      if (inMain || inSub || inSwap || inLevel3 || inDayHeader || inMissedZone) {
         if (menuCloseTimer.current) { clearTimeout(menuCloseTimer.current); menuCloseTimer.current = null; }
       } else {
         if (!menuCloseTimer.current) {
@@ -278,13 +264,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
 
 
-  // Persist confirmed days and missed records to localStorage whenever they change
+  // Persist confirmed days to localStorage whenever they change
   React.useEffect(() => {
     try { localStorage.setItem("mt-catchup-confirmed", JSON.stringify(confirmedCatchupDays)); } catch {}
   }, [confirmedCatchupDays]);
-  React.useEffect(() => {
-    try { localStorage.setItem("mt-catchup-missed", JSON.stringify(catchupMissed)); } catch {}
-  }, [catchupMissed]);
 
   const [hoverNotes, setHoverNotes] = useState(null) // null | { text, x, y };
   // Tally prompt — shown when a lesson is manually dragged to missed area
@@ -2219,27 +2202,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (notify) notify(`${day} unlocked`);
   };
 
-  // Record a missed catch-up — remove from schedule, forfeit tally entry (makeupEligible: false)
-  const handleCatchupMissedDrop = (lessonId) => {
-    const lesson = (catchupLessons[weekKey] || []).find(l => l.id === lessonId);
-    if (!lesson) return;
-    // Add to missed records for this week
-    setCatchupMissed(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), { ...lesson, missedAt: new Date().toISOString() }] }));
-    // Remove from scheduled lessons
-    setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(l => l.id !== lessonId) }));
-    // Forfeit the tally entry: makeupEligible: false, madeUp: false
-    if (lesson.makeupForTallyId) {
-      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-      setTallyEntries(prev => prev.map(e => e.id === lesson.makeupForTallyId ? { ...e, makeupEligible: false, madeUp: false } : e));
-    } else {
-      const toForfeit = tallyEntries.filter(e => e.studentId === lesson.studentId && e.instrument === lesson.instrument && e.status === "missed" && e.makeupEligible).sort((a, b) => a.weekKey.localeCompare(b.weekKey));
-      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-      if (toForfeit.length > 0) setTallyEntries(prev => prev.map(e => e.id === toForfeit[0].id ? { ...e, makeupEligible: false, madeUp: false } : e));
-    }
-    setCatchupSelectedCards(new Set());
-    if (notify) notify(`${lesson.studentName} — catch-up forfeited`);
-  };
-
   // Missed tally grouped by student+instrument — derived from WTT.missed across all weeks.
   // WTT.missed entries don't carry a `status` field (status is implicit from the
   // missed array itself), so no status filter is needed. weekLabel is also absent
@@ -3028,7 +2990,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const entry = prev[storageKey] || { lessons: [], missed: [] };
                         return { ...prev, [storageKey]: { ...entry, catchupStaged: [...(entry.catchupStaged || []), stagedCard] } };
                       });
-                      setContextMenu(null); setCatchupSubmenu(null);
+                      setContextMenu(null);
                     }}
                       disabled={alreadyStaged}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: alreadyStaged ? "default" : "pointer", color: alreadyStaged ? colors.textMuted : colors.text, fontFamily: "inherit", textAlign: "left", opacity: alreadyStaged ? 0.5 : 1 }}
@@ -3083,499 +3045,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               })()}
               </div>
             </div>
-          ) : contextMenu.isCatchupSlot ? (() => {
-            // Build set of student+instrument pairs already scheduled across ALL weeks of this holiday break
-            const holidayBreakWeekKeys = holidayBreak
-              ? Object.keys(catchupLessons).filter(wk => wk >= holidayBreak.date && wk <= (holidayBreak.endDate || holidayBreak.date))
-              : [weekKey];
-            // Count scheduled lessons per student+instrument pair across this holiday break
-            const scheduledCountMap = {};
-            holidayBreakWeekKeys.flatMap(wk => (catchupLessons[wk] || [])).forEach(l => {
-              const k = l.studentId + "|" + l.instrument;
-              scheduledCountMap[k] = (scheduledCountMap[k] || 0) + 1;
-            });
-            // Count total owed per student+instrument pair
-            const allOpen = findOpenCatchups({ weeklyTimetables });
-            const owedCountMap = {};
-            for (const r of allOpen) {
-              const k = r.missed.studentId + "|" + r.missed.instrument;
-              owedCountMap[k] = (owedCountMap[k] || 0) + 1;
-            }
-            const owedByTeacher = {};
-            for (const r of allOpen) {
-              const m = r.missed;
-              const k = m.studentId + "|" + m.instrument;
-              // Skip only when all catch-ups for this student+instrument are already scheduled
-              if ((scheduledCountMap[k] || 0) >= (owedCountMap[k] || 0)) continue;
-              const tid = getCardTeacherId(m, teacherCoverage) || "__none__";
-              if (!owedByTeacher[tid]) owedByTeacher[tid] = [];
-              owedByTeacher[tid].push({ ...m, weekKey: r.weekKey });
-            }
-            for (const tid of Object.keys(owedByTeacher)) {
-              owedByTeacher[tid].sort((a, b) => a.weekKey.localeCompare(b.weekKey));
-            }
-            const teacherGroups = Object.entries(owedByTeacher)
-              .map(([tid, entries]) => { const t = teachers.find(x => x.id === tid); return { tid, teacherName: t?.name || "Unknown", color: t?.color || colors.accent, entries }; })
-              .sort((a, b) => a.teacherName.localeCompare(b.teacherName));
-            const menuRect = contextMenuRef.current?.getBoundingClientRect();
-            const menuRight = menuRect ? menuRect.right : contextMenu.x + 200;
-            const menuLeft = menuRect ? menuRect.left : contextMenu.x;
-            const subW = 210;
-            const subX = menuRight + subW > window.innerWidth ? menuLeft - subW : menuRight;
-            const keepCatchupSub = () => { if (catchupSlotHideTimer.current) clearTimeout(catchupSlotHideTimer.current); };
-            const scheduleCatchupSubClose = () => { catchupSlotHideTimer.current = setTimeout(() => setCatchupSlotSubTeacher(null), 220); };
-            return (
-              <div style={{ padding: "4px 0", minWidth: 200 }}>
-                <div style={{ padding: "6px 12px", fontSize: 11, color: colors.accentDark, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><RotateCcw size={11} /> Catch Ups — {contextMenu.day} {contextMenu.time}</span>
-                </div>
-                {teacherGroups.length === 0 ? (
-                  <div style={{ padding: "12px 16px", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No outstanding catch-ups</div>
-                ) : (
-                  teacherGroups.map(({ tid, teacherName, color, entries }) => {
-                    const seen = new Set();
-                    const deduped = entries.filter(e => { const k = e.studentId + "|" + e.instrument; if (seen.has(k)) return false; seen.add(k); return true; });
-                    const totalOwed = deduped.length;
-                    const initials = teacherName.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                    const isOpen = catchupSlotSubTeacher?.teacherId === tid;
-                    return (
-                      <div key={tid} style={{ position: "relative" }}>
-                        {isOpen && (
-                          <div ref={catchupSlotSubRef}
-                            onMouseEnter={keepCatchupSub} onMouseLeave={scheduleCatchupSubClose}
-                            style={{ position: "fixed", ...clampMenuPos(subX, catchupSlotSubTeacher.y, subW, Math.min(deduped.length * 40 + 30, 300)), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.18)", minWidth: subW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                            <div style={{ padding: "5px 12px 4px", fontSize: 11, color, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4, borderBottom: `1px solid ${colors.borderLight}` }}>
-                              {initials} — {teacherName.split(" ")[0]}
-                            </div>
-                            {deduped.map(e => {
-                              const owedCount = (owedCountMap[e.studentId + "|" + e.instrument] || 0) - (scheduledCountMap[e.studentId + "|" + e.instrument] || 0);
-                              const alreadyPlaced = (catchupData.lessons || []).some(l => l.studentId === e.studentId && l.instrument === e.instrument && l.day === contextMenu.day && l.start === contextMenu.time);
-                              const multiInstrument = entries.filter(en => en.studentId === e.studentId).length > 1;
-                              return (
-                                <button key={e.studentId + "|" + e.instrument} disabled={alreadyPlaced}
-                                  onClick={() => {
-                                    if (alreadyPlaced) return;
-                                    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-                                    const cuBucketId = e.teacherId
-                                      ? findLaneId(teacherCoverage, contextMenu.schoolId, contextMenu.day, e.teacherId)
-                                      : null;
-                                    if (!cuBucketId) {
-                                      const sName = schools.find(sc => sc.id === contextMenu.schoolId)?.name || contextMenu.schoolId;
-                                      if (notify) notify(`No covering lane for ${e.teacherName || "(unassigned)"} at ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
-                                      return;
-                                    }
-                                    const newLesson = { id: uid(), studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, bucket_id: cuBucketId, teacherName: e.teacherName || "", enrolmentId: enrolmentIdFor(e.studentId, e.instrument, enrolments), day: contextMenu.day, start: contextMenu.time, isMakeup: true, makeupForTallyId: e.id };
-                                    setCatchupLessons(prev => ({ ...prev, [weekKey]: [...(prev[weekKey] || []), newLesson] }));
-                                    if (notify) notify(`${e.studentName} — catch-up scheduled`);
-                                    setContextMenu(null); setCatchupSlotSubTeacher(null);
-                                  }}
-                                  onMouseEnter={e2 => { keepCatchupSub(); if (!alreadyPlaced) e2.currentTarget.style.background = colors.bg; }}
-                                  onMouseLeave={e2 => { scheduleCatchupSubClose(); e2.currentTarget.style.background = "none"; }}
-                                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: alreadyPlaced ? "default" : "pointer", color: alreadyPlaced ? colors.textMuted : colors.text, fontFamily: "inherit", opacity: alreadyPlaced ? 0.5 : 1 }}>
-                                  <span>{e.studentName}{multiInstrument && <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 5 }}>· {e.instrument}</span>}</span>
-                                  <span style={{ fontSize: 11, color: colors.textMuted, whiteSpace: "nowrap" }}>{owedCount} owed{alreadyPlaced ? " · placed" : ""}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                        <button
-                          onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCatchupSub(); setCatchupSlotSubTeacher({ teacherId: tid, y: e.currentTarget.getBoundingClientRect().top }); }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCatchupSubClose(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0, display: "inline-block" }} />
-                            {initials} — {teacherName.split(" ")[0]}
-                          </span>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: colors.textMuted }}>
-                            {totalOwed} owed <ChevronRight size={10} style={{ opacity: 0.5 }} />
-                          </span>
-                        </button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            );
-          })() : contextMenu.isCatchupDayHeader ? (() => {
-            const day = contextMenu.day;
-            const isDayCatchupConfirmed = contextMenu.isDayCatchupConfirmed || (confirmedCatchupDays[weekKey] || []).includes(day);
-            const currentChips = dayTeacherChips[day] || [];
-            const notAdded = teachers.filter(t => !currentChips.includes(t.id));
-            // Aggregate lessons across all selected catch-up days, or just the right-clicked day
-            const activeCatchupDays = selectedCatchupDays.size > 0 ? [...selectedCatchupDays] : [day];
-            const dayCatchupLessons = (catchupLessons[weekKey] || []).filter(l => activeCatchupDays.includes(l.day));
-            // Collect parent emails
-            const cuParentEmailSet = new Set();
-            const cuParentRows = [];
-            dayCatchupLessons.forEach(l => {
-              const st = students.find(s => s.id === l.studentId);
-              if (!st) return;
-              (st.parents || []).forEach(p => {
-                if (p.email && !cuParentEmailSet.has(p.email)) {
-                  cuParentEmailSet.add(p.email);
-                  cuParentRows.push({ name: p.name || p.email, email: p.email });
-                }
-              });
-            });
-            const cuAllParentEmails = [...cuParentEmailSet];
-            // Collect class teacher emails
-            const cuTeacherEmailSet = new Set();
-            const cuTeacherRows = [];
-            dayCatchupLessons.forEach(l => {
-              const st = students.find(s => s.id === l.studentId);
-              if (!st) return;
-              const ct = getClassTeacher(st, contacts || []);
-              if (ct && ct.email && !cuTeacherEmailSet.has(ct.email)) {
-                cuTeacherEmailSet.add(ct.email);
-                cuTeacherRows.push({ name: ct.name || ct.email, email: ct.email });
-              }
-            });
-            const cuAllTeacherEmails = [...cuTeacherEmailSet];
-            // Collect music staff emails
-            const cuStaffEmailSet = new Set();
-            const cuStaffRows = [];
-            dayCatchupLessons.forEach(l => {
-              const t = teachers.find(x => x.id === l.teacherId);
-              if (t?.email && !cuStaffEmailSet.has(t.email)) {
-                cuStaffEmailSet.add(t.email);
-                cuStaffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null });
-              }
-            });
-            const cuAllStaffEmails = [...cuStaffEmailSet];
-            // Remove a teacher: wipe their chip, delete their lessons for this day, un-mark tally
-            const removeTeacherFromDay = (tid) => {
-              // Find lessons for this teacher on this day
-              const removedLessons = (catchupData.lessons || []).filter(l => l.day === day && l.teacherId === tid);
-              // Un-mark tally entries for those lessons
-              const removedLessonTallyIds = removedLessons.map(l => l.makeupForTallyId).filter(Boolean);
-              if (removedLessonTallyIds.length > 0) {
-                // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-                setTallyEntries(prev => prev.map(e => removedLessonTallyIds.includes(e.id) ? { ...e, madeUp: false } : e));
-              }
-              // Also un-mark by studentId+instrument for any that don't have makeupForTallyId
-              removedLessons.forEach(l => {
-                if (!l.makeupForTallyId) {
-                  const markedUp = tallyEntries
-                    .filter(e => e.studentId === l.studentId && e.instrument === l.instrument && e.status === "missed" && e.makeupEligible && e.madeUp)
-                    .sort((a, b) => b.weekKey.localeCompare(a.weekKey));
-                  // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-                  if (markedUp.length > 0) setTallyEntries(prev => prev.map(e => e.id === markedUp[0].id ? { ...e, madeUp: false } : e));
-                }
-              });
-              // Remove lessons
-              setCatchupLessons(prev => ({
-                ...prev, [weekKey]: (prev[weekKey] || []).filter(l => !(l.day === day && l.teacherId === tid))
-              }));
-              // Remove chip; update active teacher if needed
-              setDayTeacherChips(prev => {
-                const next = { ...prev, [day]: (prev[day] || []).filter(id => id !== tid) };
-                if (!next[day] || next[day].length === 0) delete next[day];
-                return next;
-              });
-              setCatchupDayTeacher(prev => {
-                if (prev[day] !== tid) return prev;
-                const remaining = (currentChips || []).filter(id => id !== tid);
-                const n = { ...prev };
-                if (remaining.length > 0) n[day] = remaining[0]; else delete n[day];
-                return n;
-              });
-            };
-
-            const cuSubMenuW = 210;
-            const cuMenuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
-            const cuMenuRight = cuMenuRect ? cuMenuRect.right : contextMenu.x + 220;
-            const cuMenuLeft = cuMenuRect ? cuMenuRect.left : contextMenu.x;
-            const cuSubX = cuMenuRight + cuSubMenuW > window.innerWidth ? cuMenuLeft - cuSubMenuW : cuMenuRight;
-
-            const keepCuDayHeaderOpen = () => { if (dayHeaderHideTimer.current) clearTimeout(dayHeaderHideTimer.current); };
-            const scheduleCuDayHeaderClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
-
-            const CuDaySubPanel = ({ type, rows, allEmails, color, multi }) => {
-              if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
-              const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-              const hov = (e) => e.currentTarget.style.background = colors.bg;
-              const unhov = (e) => e.currentTarget.style.background = "none";
-              return (
-                <div ref={dayHeaderSubRef}
-                  onMouseEnter={keepCuDayHeaderOpen}
-                  onMouseLeave={scheduleCuDayHeaderClose}
-                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: cuSubX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                  {multi && <button onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                  {multi && <button onClick={() => { openGmailSequential(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
-                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
-                  {rows.map((r, i) => (
-                    <button key={i} onClick={() => { openCompose([r.email]); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                      style={r.color ? btn(colors.text) : btn(color || colors.accent)}
-                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
-                      {r.name ? r.name.split(" ")[0] : r.email}
-                    </button>
-                  ))}
-                </div>
-              );
-            };
-
-            const mkCuEmailRow = (label, allEmails, rows, type, color) => {
-              if (!allEmails.length) return null;
-              const isOpen = dayHeaderSubmenu?.type === type;
-              const multi = allEmails.length > 1;
-              return (
-                <div style={{ position: "relative" }}>
-                  <CuDaySubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
-                  {multi ? (
-                    <button
-                      onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => {
-                        keepCuDayHeaderOpen();
-                        e.currentTarget.style.background = colors.bg;
-                        if (!isOpen) setDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
-                      }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCuDayHeaderClose(); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
-                      <span>{label} ({allEmails.length})</span>
-                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => { openCompose(allEmails); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => { keepCuDayHeaderOpen(); e.currentTarget.style.background = colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleCuDayHeaderClose(); }}
-                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
-                      {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
-                    </button>
-                  )}
-                </div>
-              );
-            };
-
-            return (
-              <div style={{ padding: "4px 0", minWidth: 190 }}>
-                <div style={{ padding: "6px 12px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
-                  {activeCatchupDays.length > 1 ? `${activeCatchupDays.map(d => d.slice(0, 3)).join(", ")} — Catch-Ups` : `${day} — Catch-Ups`}
-                </div>
-                {/* Email section */}
-                {dayCatchupLessons.length > 0 && (cuAllParentEmails.length > 0 || cuAllTeacherEmails.length > 0 || cuAllStaffEmails.length > 0) && (
-                  <>
-                    {mkCuEmailRow("Parents", cuAllParentEmails, cuParentRows, "parents", colors.accent)}
-                    {mkCuEmailRow("Class Teachers", cuAllTeacherEmails, cuTeacherRows, "teachers", colors.sidebarActive)}
-                    {mkCuEmailRow("Staff", cuAllStaffEmails, cuStaffRows, "staff", colors.textLight)}
-                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
-                  </>
-                )}
-                {/* If confirmed — show un-confirm option only */}
-                {isDayCatchupConfirmed ? (
-                  <>
-                    <div style={{ padding: "8px 12px", fontSize: 12, color: "rgba(34,197,94,0.9)", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-                      <Check size={12} /> Day confirmed
-                    </div>
-                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
-                    <button onClick={() => { unconfirmCatchupDay(day); setContextMenu(null); }}
-                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: "#D97706", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                      <RotateCcw size={13} /> Un-confirm day
-                    </button>
-                  </>
-                ) : (
-                <>
-                {/* Added teachers with × remove */}
-                {currentChips.length > 0 && (
-                  <>
-                    <div style={{ padding: "5px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Teachers on this day</div>
-                    {currentChips.map(tid => {
-                      const t = teachers.find(x => x.id === tid);
-                      if (!t) return null;
-                      const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                      return (
-                        <div key={tid} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 12px" }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: colors.text }}>
-                            <span style={{ width: 24, height: 18, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
-                            {t.name.split(" ")[0]}
-                          </span>
-                          <button onClick={() => { removeTeacherFromDay(tid); setContextMenu(null); }}
-                            title={`Remove ${t.name.split(" ")[0]}`}
-                            style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, padding: "2px 4px", display: "inline-flex", alignItems: "center", borderRadius: 4 }}
-                            onMouseEnter={e => { e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; }}
-                            onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = "none"; }}>
-                            <X size={13} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
-                  </>
-                )}
-                {/* Add teacher */}
-                {notAdded.length > 0 ? (
-                  <>
-                    <div style={{ padding: "5px 12px 2px", fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>Add Teacher</div>
-                    {notAdded.map(t => {
-                      const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                      return (
-                        <button key={t.id} onClick={() => {
-                          // Auto-add any teacher who already has lessons on this day as first chip
-                          const existingTids = [...new Set((catchupLessons[weekKey] || []).filter(l => l.day === day && l.teacherId).map(l => l.teacherId))];
-                          const newChips = [...new Set([...(currentChips || []), ...existingTids, t.id])];
-                          setDayTeacherChips(prev => ({ ...prev, [day]: newChips }));
-                          // Default active to whoever already has lessons, falling back to new teacher
-                          if (!catchupDayTeacher[day]) setCatchupDayTeacher(prev => ({ ...prev, [day]: existingTids[0] || t.id }));
-                          setContextMenu(null);
-                        }}
-                          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                          <span style={{ width: 24, height: 18, borderRadius: 4, background: t.color || colors.sidebarActive, color: "#fff", fontSize: 10, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials}</span>
-                          {t.name}
-                        </button>
-                      );
-                    })}
-                  </>
-                ) : (
-                  <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>All teachers added</div>
-                )}
-                </>
-                )}
-              </div>
-            );
-          })() : contextMenu.isCatchupCard ? (() => {
-            const lesson = (catchupData.lessons || []).find(x => x.id === contextMenu.lessonId);
-            const isMulti = catchupSelectedCards.size > 1 && catchupSelectedCards.has(contextMenu.lessonId);
-            const menuBtn = (color) => ({ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", borderRadius: 6 });
-            const hov = (bg) => (e => e.currentTarget.style.background = bg);
-            const unhov = (e => e.currentTarget.style.background = "none");
-            const removeSingleCatchup = (l) => {
-              if (!l) return;
-              // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-              if (l.makeupForTallyId) setTallyEntries(prev => prev.map(e => e.id === l.makeupForTallyId ? { ...e, madeUp: false } : e));
-              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).filter(x => x.id !== l.id) }));
-            };
-            if (isMulti) {
-              const selLessons = (catchupData.lessons || []).filter(l => catchupSelectedCards.has(l.id));
-              const allParentEmails = [...new Set(selLessons.flatMap(l => { const st = students.find(s => s.id === l.studentId); return st ? getParentEmails(st) : []; }))];
-              const menuRect2 = contextMenuRef.current?.getBoundingClientRect();
-              const cuSubW2 = 160;
-              const cuSubX2 = menuRect2 ? (menuRect2.right + cuSubW2 > window.innerWidth ? menuRect2.left - cuSubW2 : menuRect2.right) : contextMenu.x + 200;
-              const keepCuSwap2 = () => { if (swapCatchupSubTimer.current) clearTimeout(swapCatchupSubTimer.current); };
-              const schedCuSwapClose2 = () => { swapCatchupSubTimer.current = setTimeout(() => setSwapCatchupTeacherSub(null), 200); };
-              return (
-                <div style={{ padding: "6px 4px", minWidth: 200 }}>
-                  <div style={{ padding: "6px 12px 4px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
-                    {catchupSelectedCards.size} catch-ups selected
-                  </div>
-                  <div style={{ padding: "6px 4px" }}>
-                    {allParentEmails.length > 0 && (
-                      <button onClick={() => { openCompose(allParentEmails); setContextMenu(null); setCatchupSelectedCards(new Set()); }} style={menuBtn(colors.textLight)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                        <Mail size={13} /> Email
-                      </button>
-                    )}
-                    <div style={{ position: "relative" }}>
-                      {swapCatchupTeacherSub && (
-                        <div ref={swapCatchupSubRef} onMouseEnter={keepCuSwap2} onMouseLeave={schedCuSwapClose2}
-                          style={{ position: "fixed", top: swapCatchupTeacherSub.y, left: cuSubX2, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubW2, padding: "4px 0" }}>
-                          {teachers.map(t => (
-                            <button key={t.id} onClick={() => {
-                              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).map(l => catchupSelectedCards.has(l.id) ? { ...l, teacherId: t.id, teacherName: t.name } : l) }));
-                              setCatchupSelectedCards(new Set()); setContextMenu(null); setSwapCatchupTeacherSub(null);
-                            }}
-                              style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                              onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
-                              {t.name.split(" ")[0]}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <button
-                        onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCuSwap2(); setSwapCatchupTeacherSub({ y: e.currentTarget.getBoundingClientRect().top }); }}
-                        onMouseLeave={e => { e.currentTarget.style.background = "none"; schedCuSwapClose2(); }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", borderRadius: 6 }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><RefreshCw size={13} /> Swap Teacher</span>
-                        <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                      </button>
-                    </div>
-                    <button onClick={() => {
-                      selLessons.forEach(l => { handleCatchupMissedDrop(l.id); });
-                      setCatchupSelectedCards(new Set()); setContextMenu(null);
-                    }} style={menuBtn(colors.danger)} onMouseEnter={e => { hov(darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2")(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                      <X size={13} /> Missed ({catchupSelectedCards.size})
-                    </button>
-                    <div style={{ height: 1, background: colors.borderLight, margin: "3px 0" }} />
-                    <button onClick={() => {
-                      selLessons.forEach(l => removeSingleCatchup(l));
-                      setCatchupSelectedCards(new Set()); setContextMenu(null);
-                      if (notify) notify(`${selLessons.length} catch-ups removed`);
-                    }} style={menuBtn(colors.textMuted)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                      <Trash2 size={13} /> Remove ({catchupSelectedCards.size})
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-            const st = lesson ? students.find(s => s.id === lesson.studentId) : null;
-            const parentEmails = st ? getParentEmails(st) : [];
-            const menuRect = contextMenuRef.current?.getBoundingClientRect();
-            const cuSubW = 160;
-            const cuSubX = menuRect ? (menuRect.right + cuSubW > window.innerWidth ? menuRect.left - cuSubW : menuRect.right) : contextMenu.x + 200;
-            const keepCuSwap = () => { if (swapCatchupSubTimer.current) clearTimeout(swapCatchupSubTimer.current); };
-            const schedCuSwapClose = () => { swapCatchupSubTimer.current = setTimeout(() => setSwapCatchupTeacherSub(null), 200); };
-            return (
-              <div style={{ padding: "6px 4px", minWidth: 200 }}>
-                <div style={{ padding: "6px 12px 4px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
-                  {lesson ? `${lesson.studentName} · ${lesson.instrument}` : "Catch-up"}
-                </div>
-                <div style={{ padding: "6px 4px" }}>
-                  {parentEmails.length > 0 && (
-                    <button onClick={() => { openCompose(parentEmails); setContextMenu(null); }} style={menuBtn(colors.textLight)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                      <Mail size={13} /> Email
-                    </button>
-                  )}
-                  {/* Swap Teacher */}
-                  <div style={{ position: "relative" }}>
-                    {swapCatchupTeacherSub && (
-                      <div ref={swapCatchupSubRef}
-                        onMouseEnter={keepCuSwap} onMouseLeave={schedCuSwapClose}
-                        style={{ position: "fixed", top: swapCatchupTeacherSub.y, left: cuSubX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: cuSubW, padding: "4px 0" }}>
-                        {teachers.map(t => {
-                          const isCurrent = t.id === (lesson?.teacherId);
-                          return (
-                            <button key={t.id} onClick={() => {
-                              setCatchupLessons(prev => ({ ...prev, [weekKey]: (prev[weekKey] || []).map(l => l.id === contextMenu.lessonId ? { ...l, teacherId: t.id, teacherName: t.name } : l) }));
-                              setContextMenu(null); setSwapCatchupTeacherSub(null);
-                            }}
-                              style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: isCurrent ? "default" : "pointer", color: isCurrent ? colors.textMuted : colors.text, fontFamily: "inherit", opacity: isCurrent ? 0.5 : 1 }}
-                              onMouseEnter={e => { if (!isCurrent) e.currentTarget.style.background = colors.bg; }}
-                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                              {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
-                              {t.name.split(" ")[0]}{isCurrent ? " (current)" : ""}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <button
-                      onMouseEnter={e => { e.currentTarget.style.background = colors.bg; keepCuSwap(); setSwapCatchupTeacherSub({ y: e.currentTarget.getBoundingClientRect().top }); }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; schedCuSwapClose(); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", borderRadius: 6 }}>
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><RefreshCw size={13} /> Swap Teacher</span>
-                      <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                    </button>
-                  </div>
-                  <button onClick={() => { if (lesson) { handleCatchupMissedDrop(lesson.id); } setContextMenu(null); }}
-                    style={menuBtn(colors.danger)} onMouseEnter={e => { hov(darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2")(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                    <X size={13} /> Missed
-                  </button>
-                  <div style={{ height: 1, background: colors.borderLight, margin: "3px 0" }} />
-                  <button onClick={() => { removeSingleCatchup(lesson); if (notify) notify("Catch-up removed"); setContextMenu(null); }}
-                    style={menuBtn(colors.textMuted)} onMouseEnter={e => { hov(colors.bg)(e); setSwapCatchupTeacherSub(null); }} onMouseLeave={unhov}>
-                    <Trash2 size={13} /> Remove
-                  </button>
-                </div>
-              </div>
-            );
-          })() : contextMenu.isEmpty ? (
+          ) : contextMenu.isEmpty ? (
             <div style={{ padding: "6px 4px" }}>
               <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {contextMenu.day} {to12h(contextMenu.time)}
