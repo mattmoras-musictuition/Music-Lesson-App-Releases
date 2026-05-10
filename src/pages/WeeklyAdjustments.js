@@ -20,8 +20,9 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
+import { insertCatchup, deleteCatchup } from "../utils/catchupsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -881,6 +882,154 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       { day: "Sunday",   date: toLocalDateStr(sunDate) },
     ];
   })() : weekDates;
+
+  // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
+  // Term-scoped enumeration of weekKeys: collects from weeklyTimetables keys
+  // and filters by computeTermKey match. No dedicated helper exists, so we
+  // build the set inline.
+  const currentTermWeekKeys = useMemo(() => {
+    const targetTermKey = computeTermKey(weekKey, termBreaks);
+    if (!targetTermKey) return [weekKey];
+    const seen = new Set();
+    for (const sk of Object.keys(weeklyTimetables || {})) {
+      const wk = sk.split("|")[0];
+      if (!wk) continue;
+      if (computeTermKey(wk, termBreaks) === targetTermKey) seen.add(wk);
+    }
+    seen.add(weekKey);
+    return [...seen];
+  }, [weekKey, weeklyTimetables, termBreaks]);
+
+  // Unresolved missed lessons across the current term — drives the
+  // "Schedule catchup for…" menu. Filters to makeupEligible + !madeUp +
+  // not-already-resolved-by-an-existing-catchup. Sort: most recent week
+  // first, then Monday→Sunday within week, then time within day.
+  const DAY_ORDER_53A = { Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6, Sunday: 7 };
+  const unresolvedMissed = useMemo(() => {
+    const out = [];
+    for (const wk of currentTermWeekKeys) {
+      const entries = getMissedEntries({ weeklyTimetables, weekKey: wk });
+      for (const m of entries) {
+        if (m.makeupEligible !== true) continue;
+        if (m.madeUp === true) continue;
+        const enrolmentId = enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId);
+        const resolved = (catchups || []).some(c =>
+          c.resolvesEnrolmentId === enrolmentId && c.resolvesWeekKey === wk
+        );
+        if (resolved) continue;
+        out.push({ ...m, enrolmentId });
+      }
+    }
+    out.sort((a, b) => {
+      if (a.weekKey !== b.weekKey) return b.weekKey.localeCompare(a.weekKey); // recent first
+      const da = DAY_ORDER_53A[a.day] || 9;
+      const db = DAY_ORDER_53A[b.day] || 9;
+      if (da !== db) return da - db;
+      return (a.start || "").localeCompare(b.start || "");
+    });
+    return out;
+  }, [currentTermWeekKeys, weeklyTimetables, catchups, enrolments]);
+
+  // Display formatters — name lookup via enrolmentId → enrolment.studentId
+  // → students.name (the chain established in cluster 5b-2).
+  const formatMissedDisplay = (m) => {
+    const en = enrolments.find(e => e.id === m.enrolmentId);
+    const st = en ? students.find(s => s.id === en.studentId) : null;
+    const name = st?.name || m.studentName || "—";
+    const dayShort = (m.day || "").slice(0, 3);
+    let datePart = "";
+    if (m.weekKey) {
+      const monday = new Date(m.weekKey + "T00:00:00");
+      const targetIdx = (DAY_ORDER_53A[m.day] || 1) - 1;
+      const target = new Date(monday); target.setDate(monday.getDate() + targetIdx);
+      datePart = target.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+    }
+    const timeLabel = m.start
+      ? (() => { const [h, mm] = m.start.split(":"); const hr = parseInt(h) % 12 || 12; return `${hr}:${mm}`; })()
+      : "";
+    return `${name} — ${dayShort}${datePart ? " " + datePart : ""}${timeLabel ? ", " + timeLabel : ""}`;
+  };
+  const formatCatchupDisplay = (c) => {
+    const en = enrolments.find(e => e.id === c.enrolmentId);
+    const st = en ? students.find(s => s.id === en.studentId) : null;
+    const name = st?.name || "this student";
+    const dayShort = (c.day || "").slice(0, 3);
+    const timeLabel = c.time
+      ? (() => { const [h, mm] = c.time.split(":"); const hr = parseInt(h) % 12 || 12; return `${hr}:${mm}`; })()
+      : "";
+    return `${name} — ${dayShort}${timeLabel ? " " + timeLabel : ""}`;
+  };
+
+  // Right-click handlers — open the new catchup menu branches.
+  const handleEmptyCellRightClick = (e, day, time, targetWeekKey) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX, y: e.clientY,
+      isCatchupCreate: true,
+      targetDay: day,
+      targetTime: time,
+      targetWeekKey: targetWeekKey || weekKey,
+    });
+  };
+  const handleCatchupCardRightClick = (e, catchup) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({
+      x: e.clientX, y: e.clientY,
+      isCatchupAction: true,
+      targetCatchup: catchup,
+    });
+  };
+
+  // Action handlers — call catchupsDB write helpers + bubble local state.
+  const handleScheduleCatchup = async (missedEntry) => {
+    try {
+      const enrolment = enrolments.find(en => en.id === missedEntry.enrolmentId);
+      const instrument = enrolment?.instrument ?? missedEntry.instrument ?? "";
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) throw new Error("Not authenticated");
+      const inserted = await insertCatchup({
+        userId: user.id,
+        schoolId: missedEntry.schoolId || enrolment?.schoolId || "__private__",
+        weekKey: contextMenu.targetWeekKey,
+        day: contextMenu.targetDay,
+        time: contextMenu.targetTime,
+        durationMinutes: null, // codebase doesn't track per-enrolment duration; matches existing 18 rows
+        instrument,
+        enrolmentId: missedEntry.enrolmentId,
+        resolvesEnrolmentId: missedEntry.enrolmentId,
+        resolvesWeekKey: missedEntry.weekKey,
+        resolvesOriginalDay: missedEntry.day,
+        resolvesOriginalTime: missedEntry.start ?? null,
+        madeUp: false,
+        notes: null,
+      });
+      setCatchups(prev => [...prev, inserted]);
+      setContextMenu(null);
+      if (notify) notify("Catchup scheduled");
+    } catch (err) {
+      logError && logError("Failed to schedule catchup", err?.message || String(err));
+      console.error("[catchup create] failed:", err);
+      alert("Failed to schedule catchup. See console.");
+    }
+  };
+  const handleDeleteCatchup = async (catchup) => {
+    if (!window.confirm(`Delete catchup for ${formatCatchupDisplay(catchup)}?`)) {
+      setContextMenu(null);
+      return;
+    }
+    try {
+      await deleteCatchup({ id: catchup.id });
+      setCatchups(prev => prev.filter(c => c.id !== catchup.id));
+      setContextMenu(null);
+      if (notify) notify("Catchup deleted");
+    } catch (err) {
+      logError && logError("Failed to delete catchup", err?.message || String(err));
+      console.error("[catchup delete] failed:", err);
+      alert("Failed to delete catchup. See console.");
+    }
+  };
 
   // ── Revalidate warnings whenever lessons or student data changes ─────────
   // Runs on weeklyTimetables change (drag/poll) AND on students change (teacher/instrument edit).
@@ -3350,6 +3499,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                 {contextMenu.day} {to12h(contextMenu.time)}
               </div>
+              {/* Spec 3 cluster 5b-3a: schedule catchup — flips to isCatchupCreate */}
+              <button onClick={() => {
+                setContextMenu({
+                  x: contextMenu.x, y: contextMenu.y,
+                  isCatchupCreate: true,
+                  targetDay: contextMenu.day,
+                  targetTime: contextMenu.time,
+                  targetWeekKey: weekKey,
+                });
+              }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, borderRadius: 6, fontFamily: "inherit" }}
+                onMouseEnter={e => e.currentTarget.style.background = colors.bg} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Schedule catchup…</span>
+              </button>
               {/* Break */}
               <button onClick={() => {
                 const weeklyData2 = weeklyTimetables[contextMenu.weekKey];
@@ -3691,6 +3853,41 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   </div>
                 );
               })()}
+            </div>
+          ) : contextMenu.isCatchupCreate ? (
+            <div style={{ padding: "6px 4px", maxHeight: 360, overflowY: "auto" }}>
+              <div style={{ padding: "6px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Schedule catchup for…
+              </div>
+              <div style={{ padding: "0 10px 4px", fontSize: 11, color: colors.textLight }}>
+                {contextMenu.targetDay} {to12h(contextMenu.targetTime)}
+              </div>
+              {unresolvedMissed.length === 0 ? (
+                <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>
+                  No unresolved missed lessons in current term
+                </div>
+              ) : (
+                unresolvedMissed.map((m) => (
+                  <button
+                    key={`${m.enrolmentId}|${m.weekKey}|${m.day}|${m.start}`}
+                    onClick={() => handleScheduleCatchup(m)}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit", textAlign: "left" }}
+                    onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                    {formatMissedDisplay(m)}
+                  </button>
+                ))
+              )}
+            </div>
+          ) : contextMenu.isCatchupAction ? (
+            <div style={{ padding: "6px 4px" }}>
+              <button
+                onClick={() => handleDeleteCatchup(contextMenu.targetCatchup)}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
+                onMouseEnter={e => e.currentTarget.style.background = colors.redLight}
+                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Delete catchup</span>
+              </button>
             </div>
           ) : contextMenu.isBandSession ? (
             <>
@@ -4343,7 +4540,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const displayName = student?.name || enrolment?.studentName || "—";
               const inst = catchup.instrument || "";
               return (
-                <div style={{
+                <div onContextMenu={(e) => handleCatchupCardRightClick(e, catchup)} style={{
                   padding: "4px 6px", borderRadius: 4, fontSize: 11, lineHeight: 1.3,
                   background: getInstColor(inst) + "18",
                   borderLeft: `3px solid ${getInstColor(inst)}`,
@@ -4380,7 +4577,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const offGrid = weekCatchups.filter(c => c.day === day && !TIME_SLOTS.includes(c.time) && snapToSlot(c.time) === time);
                         const cell = [...onGrid, ...offGrid];
                         return (
-                          <div key={`${day}-${time}`} style={{ background: colors.cardBg, minHeight: 36, padding: 2, display: "flex", flexDirection: "column", gap: 2 }}>
+                          <div key={`${day}-${time}`}
+                            onContextMenu={cell.length === 0 ? (e => handleEmptyCellRightClick(e, day, time, weekKey)) : undefined}
+                            style={{ background: colors.cardBg, minHeight: 36, padding: 2, display: "flex", flexDirection: "column", gap: 2 }}>
                             {cell.map(c => <CatchupCard key={c.id} catchup={c} />)}
                           </div>
                         );
@@ -5210,7 +5409,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       setHoverPopover({ type: "student", info, rect, color: _popColor });
                                     }}
                                     onMouseLeave={() => setHoverPopover(null)}
-                                    onContextMenu={e => { e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
+                                    onContextMenu={e => { if (l.__isCatchup) { handleCatchupCardRightClick(e, l); return; } e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
                                     onClick={e => {
                                       e.stopPropagation();
                                       // If a double-click timer is already running, this is the 2nd click → open details
