@@ -900,55 +900,78 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return [...seen];
   }, [weekKey, weeklyTimetables, termBreaks]);
 
-  // Unresolved missed lessons across the current term — drives the
-  // "Schedule catchup for…" menu. Filters to makeupEligible + !madeUp +
-  // not-already-resolved-by-an-existing-catchup. Sort: most recent week
-  // first, then Monday→Sunday within week, then time within day.
+  // Unresolved missed lessons across the current term, grouped by
+  // enrolment. Drives the "Schedule catchup for…" menu. Filters to
+  // makeupEligible + !madeUp + unresolved (no catchup already resolves
+  // it). Each group carries its missedEntries[] sorted oldest-first so
+  // the click handler can pick missedEntries[0] as the target.
+  // Sort: alphabetical by studentName, tie-break by instrument.
   const DAY_ORDER_53A = { Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6, Sunday: 7 };
-  const unresolvedMissed = useMemo(() => {
-    const out = [];
+  const unresolvedMissedGroups = useMemo(() => {
+    const byEnrolment = new Map();
     for (const wk of currentTermWeekKeys) {
       const entries = getMissedEntries({ weeklyTimetables, weekKey: wk });
       for (const m of entries) {
         if (m.makeupEligible !== true) continue;
         if (m.madeUp === true) continue;
         const enrolmentId = enrolmentIdFor(m.studentId, m.instrument, enrolments, m.groupId);
+        if (!enrolmentId) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[catchup picker] dropping missed entry — enrolment lookup failed", {
+              studentId: m.studentId, groupId: m.groupId, instrument: m.instrument, weekKey: wk, day: m.day,
+            });
+          }
+          continue;
+        }
         const resolved = (catchups || []).some(c =>
           c.resolvesEnrolmentId === enrolmentId && c.resolvesWeekKey === wk
         );
         if (resolved) continue;
-        out.push({ ...m, enrolmentId });
+        const enriched = { ...m, enrolmentId };
+        if (!byEnrolment.has(enrolmentId)) byEnrolment.set(enrolmentId, []);
+        byEnrolment.get(enrolmentId).push(enriched);
       }
     }
-    out.sort((a, b) => {
-      if (a.weekKey !== b.weekKey) return b.weekKey.localeCompare(a.weekKey); // recent first
-      const da = DAY_ORDER_53A[a.day] || 9;
-      const db = DAY_ORDER_53A[b.day] || 9;
-      if (da !== db) return da - db;
-      return (a.start || "").localeCompare(b.start || "");
-    });
-    return out;
-  }, [currentTermWeekKeys, weeklyTimetables, catchups, enrolments]);
-
-  // Display formatters — name lookup via enrolmentId → enrolment.studentId
-  // → students.name (the chain established in cluster 5b-2).
-  const formatMissedDisplay = (m) => {
-    const en = enrolments.find(e => e.id === m.enrolmentId);
-    const st = en ? students.find(s => s.id === en.studentId) : null;
-    const name = st?.name || m.studentName || "—";
-    const dayShort = (m.day || "").slice(0, 3);
-    let datePart = "";
-    if (m.weekKey) {
-      const monday = new Date(m.weekKey + "T00:00:00");
-      const targetIdx = (DAY_ORDER_53A[m.day] || 1) - 1;
-      const target = new Date(monday); target.setDate(monday.getDate() + targetIdx);
-      datePart = target.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+    const groups = [];
+    for (const [enrolmentId, entries] of byEnrolment) {
+      if (entries.length === 0) continue;
+      entries.sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || "")); // oldest first
+      const first = entries[0];
+      const en = enrolments.find(e => e.id === enrolmentId);
+      const st = en && !en.isGroup ? students.find(s => s.id === en.studentId) : null;
+      const studentName = en?.isGroup
+        ? (first.groupName || "Group")
+        : (st?.name || first.studentName || "—");
+      groups.push({
+        enrolmentId,
+        studentName,
+        instrument: first.instrument || en?.instrument || "",
+        schoolId: first.schoolId || "",
+        owedCount: entries.length,
+        missedEntries: entries,
+      });
     }
-    const timeLabel = m.start
-      ? (() => { const [h, mm] = m.start.split(":"); const hr = parseInt(h) % 12 || 12; return `${hr}:${mm}`; })()
-      : "";
-    return `${name} — ${dayShort}${datePart ? " " + datePart : ""}${timeLabel ? ", " + timeLabel : ""}`;
-  };
+    groups.sort((a, b) => {
+      const na = a.studentName.toLowerCase();
+      const nb = b.studentName.toLowerCase();
+      if (na !== nb) return na.localeCompare(nb);
+      return (a.instrument || "").localeCompare(b.instrument || "");
+    });
+    return groups;
+  }, [currentTermWeekKeys, weeklyTimetables, catchups, enrolments, students]);
+
+  // Set of studentNames that appear more than once in the grouped list —
+  // drives the instrument-disambiguator decision in display.
+  const collidingStudentNames = useMemo(() => {
+    const counts = new Map();
+    for (const g of unresolvedMissedGroups) {
+      counts.set(g.studentName, (counts.get(g.studentName) || 0) + 1);
+    }
+    const out = new Set();
+    for (const [name, n] of counts) if (n > 1) out.add(name);
+    return out;
+  }, [unresolvedMissedGroups]);
+
   const formatCatchupDisplay = (c) => {
     const en = enrolments.find(e => e.id === c.enrolmentId);
     const st = en ? students.find(s => s.id === en.studentId) : null;
@@ -983,25 +1006,31 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
 
   // Action handlers — call catchupsDB write helpers + bubble local state.
-  const handleScheduleCatchup = async (missedEntry) => {
+  // Spec 3 cluster 5b-3a-patch: receives an enrolment-grouped record (not
+  // a single missed entry). Picks group.missedEntries[0] (oldest first
+  // per the memo's sort) as the entry to resolve.
+  const handleScheduleCatchup = async (group) => {
     try {
-      const enrolment = enrolments.find(en => en.id === missedEntry.enrolmentId);
-      const instrument = enrolment?.instrument ?? missedEntry.instrument ?? "";
+      const targetMissed = group.missedEntries[0];
+      if (!targetMissed) throw new Error("Group has no missed entries");
+      const enrolment = enrolments.find(en => en.id === group.enrolmentId);
+      const instrument = group.instrument || enrolment?.instrument || "";
+      const schoolId = group.schoolId || enrolment?.schoolId || "__private__";
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) throw new Error("Not authenticated");
       const inserted = await insertCatchup({
         userId: user.id,
-        schoolId: missedEntry.schoolId || enrolment?.schoolId || "__private__",
+        schoolId,
         weekKey: contextMenu.targetWeekKey,
         day: contextMenu.targetDay,
         time: contextMenu.targetTime,
         durationMinutes: null, // codebase doesn't track per-enrolment duration; matches existing 18 rows
         instrument,
-        enrolmentId: missedEntry.enrolmentId,
-        resolvesEnrolmentId: missedEntry.enrolmentId,
-        resolvesWeekKey: missedEntry.weekKey,
-        resolvesOriginalDay: missedEntry.day,
-        resolvesOriginalTime: missedEntry.start ?? null,
+        enrolmentId: group.enrolmentId,
+        resolvesEnrolmentId: group.enrolmentId,
+        resolvesWeekKey: targetMissed.weekKey,
+        resolvesOriginalDay: targetMissed.day,
+        resolvesOriginalTime: targetMissed.start ?? targetMissed.time ?? null,
         madeUp: false,
         notes: null,
       });
@@ -3862,21 +3891,26 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <div style={{ padding: "0 10px 4px", fontSize: 11, color: colors.textLight }}>
                 {contextMenu.targetDay} {to12h(contextMenu.targetTime)}
               </div>
-              {unresolvedMissed.length === 0 ? (
+              {unresolvedMissedGroups.length === 0 ? (
                 <div style={{ padding: "10px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>
-                  No unresolved missed lessons in current term
+                  No missed lessons in current term
                 </div>
               ) : (
-                unresolvedMissed.map((m) => (
-                  <button
-                    key={`${m.enrolmentId}|${m.weekKey}|${m.day}|${m.start}`}
-                    onClick={() => handleScheduleCatchup(m)}
-                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit", textAlign: "left" }}
-                    onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
-                    {formatMissedDisplay(m)}
-                  </button>
-                ))
+                unresolvedMissedGroups.map((group) => {
+                  const showInstrument = collidingStudentNames.has(group.studentName);
+                  const instrumentSuffix = showInstrument && group.instrument ? ` (${group.instrument})` : "";
+                  const owedSuffix = group.owedCount > 1 ? ` (${group.owedCount} owed)` : "";
+                  return (
+                    <button
+                      key={group.enrolmentId}
+                      onClick={() => handleScheduleCatchup(group)}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit", textAlign: "left" }}
+                      onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      {`${group.studentName}${instrumentSuffix}${owedSuffix}`}
+                    </button>
+                  );
+                })
               )}
             </div>
           ) : contextMenu.isCatchupAction ? (

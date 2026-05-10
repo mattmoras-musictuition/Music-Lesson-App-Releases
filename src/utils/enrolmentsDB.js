@@ -12,11 +12,29 @@ import { supabase } from "../supabaseClient";
 // Returns the matching enrolment.id or null. Matching rule per
 // SPEC 1 §5.2 Step C: studentId + instrument, plus groupId if
 // the card is a group card.
+//
+// Spec 3 cluster 5b-3a-patch: group cards lookup is by (groupId,
+// instrument, isGroup) only. Group enrolments come back from
+// rowToEnrolment with `studentId: null` (DB column is null), while
+// group missed entries can have `studentId` undefined or "" — strict
+// equality between null/undefined/"" was failing the lookup. The
+// dedicated group branch sidesteps the studentId comparison entirely.
+// Individual lookup unchanged in spirit but now also requires
+// !e.isGroup, which prevents accidental cross-matching against any
+// group enrolment that happens to share the studentId field shape.
 export function enrolmentIdFor(studentId, instrument, enrolments, groupId) {
+  if (groupId) {
+    const groupMatch = (enrolments || []).find(e =>
+      e.isGroup === true &&
+      e.groupId === groupId &&
+      e.instrument === instrument
+    );
+    return groupMatch ? groupMatch.id : null;
+  }
   const match = (enrolments || []).find(e =>
+    !e.isGroup &&
     e.studentId === studentId &&
-    e.instrument === instrument &&
-    (!groupId || e.groupId === groupId)
+    e.instrument === instrument
   );
   return match ? match.id : null;
 }
