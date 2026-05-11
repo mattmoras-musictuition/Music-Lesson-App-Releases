@@ -19,6 +19,7 @@ import { supabase } from "../supabaseClient";
 // else returns first word. Used in _invoiceMergeCtx so parent/student names in
 // invoice emails show the short/familiar form instead of full legal name.
 import { preferredFirstName } from "../utils/emailTemplates";
+import { isHolidayLesson } from "../data/catchupsDerive";
 
 // ─────────────────────────────────────────────────────────────
 // DEFAULTS
@@ -271,7 +272,7 @@ function _allParents(students) {
 // ─────────────────────────────────────────────────────────────
 // INVOICE GENERATION
 // ─────────────────────────────────────────────────────────────
-function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
+function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey, catchups }) {
   // Filter students by scope
   let active = students.filter(s => s.status !== "archived");
   if (scopeType === "school" && scopeSchoolId)
@@ -280,6 +281,12 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
     active = active.filter(s => _parentKey(s) === scopeParentKey);
 
   const prevTerm = _findPrevTerm(interruptions, termInfo.start);
+  // Holiday-week block immediately preceding this invoice's term — drives
+  // the per-student "Holiday Lessons" line emitted further down. Null when
+  // no prior term_break exists (e.g. first term of the system).
+  const prevBreak = termInfo
+    ? _sortedBreaks(interruptions).slice().reverse().find(b => b.end < termInfo.start)
+    : null;
   const abbr = name => (name || "").split(/\s+/).map(w => w[0] || "").join("").toUpperCase().slice(0, 5) || "?";
 
   // Group by parent key
@@ -431,6 +438,46 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
           if (groupMath.extras > 0 && grpRate > 0)
             lines.push({ id: uid(), type: "adjustment", studentName: student.name,
               description: `${grp.name || "Group"} – Extra Lessons`, qty: groupMath.extras, rate: grpRate, subtotal: groupMath.extras * grpRate, schoolName });
+        }
+      }
+
+      // ── Holiday Lessons ───────────────────────────────────────
+      // Unlinked catchups (all four resolves_* null) that landed in
+      // the holiday-week block immediately preceding this invoice's
+      // term bill at the student's individual rate, one line per
+      // instrument. See Spec 3 cluster 9.
+      if (prevBreak && indRate > 0) {
+        const studentEnrolmentIds = new Set(
+          (enrolments || []).filter(e => e.studentId === student.id).map(e => e.id)
+        );
+        const holidayByInstr = {};
+        for (const c of (catchups || [])) {
+          if (!isHolidayLesson(c)) continue;
+          if (!studentEnrolmentIds.has(c.enrolmentId)) continue;
+          // catchup.weekKey is the Monday's YYYY-MM-DD per actual usage
+          // across the codebase (stale ISO-week JSDoc in catchupsDB.js).
+          // Strict Mon-Fri-in-break test, matching App.js:2459 / tallyHelpers.js:121.
+          const mon = c.weekKey;
+          if (!mon) continue;
+          const friD = new Date(mon + "T00:00:00");
+          friD.setDate(friD.getDate() + 4);
+          const fri = _toDS(friD);
+          if (!(mon >= prevBreak.start && fri <= prevBreak.end)) continue;
+          const instr = c.instrument || "";
+          if (!instr) continue;
+          holidayByInstr[instr] = (holidayByInstr[instr] || 0) + 1;
+        }
+        for (const [instr, n] of Object.entries(holidayByInstr)) {
+          lines.push({
+            id: uid(),
+            type: "lesson",
+            studentName: student.name,
+            description: `${instr} – Holiday Lessons`,
+            qty: n,
+            rate: indRate,
+            subtotal: n * indRate,
+            schoolName,
+          });
         }
       }
     }
@@ -669,7 +716,7 @@ function _plainText(invoice, settings) {
 // ─────────────────────────────────────────────────────────────
 export function InvoicingManager({
   students, enrolments, schools, groups, timetable,
-  weeklyTimetables, interruptions,
+  weeklyTimetables, interruptions, catchups = [],
   notify, goBack, goForward, historyCursor, pageHistory,
 }) {
   const { colors } = useTheme();
@@ -840,7 +887,7 @@ export function InvoicingManager({
       students, enrolments, groups, timetable, weeklyTimetables,
       schools, rates, interruptions, termInfo: selTerm,
       invoiceDate, dueDate, startNum: settings.nextInvoiceNumber,
-      scopeType, scopeSchoolId, scopeParentKey,
+      scopeType, scopeSchoolId, scopeParentKey, catchups,
     });
 
     // Feedback if 0 generated
