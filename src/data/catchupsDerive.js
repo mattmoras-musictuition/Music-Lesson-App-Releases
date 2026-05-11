@@ -215,3 +215,59 @@ export function mergeCatchupsIntoLessons(lessons, catchups, weekKey) {
     .map((c) => ({ ...c, start: c.time, __isCatchup: true }));
   return [...safeLessons, ...weekCatchups];
 }
+
+// ── Cluster 8: completion derive ─────────────────────────────────────────
+
+const DAY_INDEX = {
+  Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3,
+  Friday: 4, Saturday: 5, Sunday: 6,
+};
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * Spec 3 cluster 8 — render-time completion check. A catchup is
+ * considered "completed" once its scheduled day has passed 18:00
+ * relative to `now`. Per planner: catchups.made_up column stays
+ * unused; deletion is the cancellation mechanism, so derive
+ * correctness follows row existence.
+ *
+ * @param {Catchup} catchup
+ * @param {Date} [now] defaults to new Date()
+ * @returns {boolean} true if (weekKey + day + 18:00) has passed
+ */
+export function isCatchupCompleted(catchup, now) {
+  if (!catchup || !catchup.weekKey || !catchup.day) return false;
+  const cmpNow = now instanceof Date ? now : new Date();
+  const dayIndex = DAY_INDEX[catchup.day];
+  if (dayIndex == null) return false;
+  const monday = new Date(catchup.weekKey + "T00:00:00");
+  if (isNaN(monday.getTime())) return false;
+  const catchupDate = new Date(monday);
+  catchupDate.setDate(monday.getDate() + dayIndex);
+  catchupDate.setHours(18, 0, 0, 0);
+  return cmpNow >= catchupDate;
+}
+
+/**
+ * Spec 3 cluster 8 — human-readable completion label for tooltips.
+ * Returns e.g. "Thursday 23 April, 10:00" given a catchup row;
+ * "" when catchup data is malformed.
+ *
+ * @param {Catchup} catchup
+ * @returns {string}
+ */
+export function formatCatchupCompletionLabel(catchup) {
+  if (!catchup || !catchup.weekKey || !catchup.day) return "";
+  const dayIndex = DAY_INDEX[catchup.day];
+  if (dayIndex == null) return "";
+  const monday = new Date(catchup.weekKey + "T00:00:00");
+  if (isNaN(monday.getTime())) return "";
+  const d = new Date(monday);
+  d.setDate(monday.getDate() + dayIndex);
+  const month = MONTH_NAMES[d.getMonth()];
+  return `${catchup.day} ${d.getDate()} ${month}, ${catchup.time || ""}`.trim();
+}

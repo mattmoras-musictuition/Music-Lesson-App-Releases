@@ -21,7 +21,6 @@ function emptyStats() {
     wttLessonsStamped: 0,
     wttMissedStamped: 0,
     tallyEntriesReconciled: 0,
-    tallyEntriesDropped: 0,
     warningCount: 0,
   };
 }
@@ -227,19 +226,11 @@ export function runSpec1Migration({
     newWeeklyTimetables[key] = { ...wd, lessons: newLessonsWTT, missed: newMissedWTT };
   }
 
-  // §4.7 Step E — reconcile tallyEntries + purge extended_absence
-  // "drop" extended_absence rows means remove from the array entirely
-  // (decision locked 21 April 2026 — feature is being eliminated in Commit 7).
+  // §4.7 Step E — reconcile tallyEntries
   let tallyEntriesReconciled = 0;
-  let tallyEntriesDropped = 0;
   const newTallyEntries = [];
 
   for (const t of (tallyEntries || [])) {
-    if (t.reason === "extended_absence") {
-      tallyEntriesDropped++;
-      continue;
-    }
-
     newTallyEntries.push(t);
 
     const wttKey = `${t.weekKey}|${t.schoolId}`;
@@ -312,7 +303,6 @@ export function runSpec1Migration({
       wttLessonsStamped,
       wttMissedStamped,
       tallyEntriesReconciled,
-      tallyEntriesDropped,
       warningCount: warnings.length,
     },
   };

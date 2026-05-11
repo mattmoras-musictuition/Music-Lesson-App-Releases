@@ -36,7 +36,6 @@ export const TALLY_REASONS = [
   { value: "teacher_absent",      label: "Teacher Absent",           makeupEligible: true },
   { value: "other",               label: "Other",                    makeupEligible: null }, // null = user chooses
   { value: "removed_not_charged", label: "Removed – Not Charged",    makeupEligible: false, invisible: true },
-  { value: "extended_absence",    label: "Extended Absence",         makeupEligible: false, halfFee: true },
 ];
 
 export const STORAGE_KEYS = {

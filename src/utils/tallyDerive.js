@@ -468,9 +468,7 @@ export function getMissedSince({ weeklyTimetables, sinceWeekKey }) {
 /**
  * Return raw WTT.missed entries at the given weekKey whose reason is
  * "informed_absence". Caller groups, formats labels, and constructs
- * any Set / count it needs. Predicate mirrors Dashboard:1385 / 2671
- * (informed_absence only — extended_absence is not part of these
- * consumer filters today).
+ * any Set / count it needs. Predicate mirrors Dashboard:1385 / 2671.
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables

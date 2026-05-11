@@ -7,6 +7,7 @@ import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "luci
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose } from "../utils/helpers";
 import { deriveTallyRows } from "../utils/tallyDerive";
+import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -21,7 +22,7 @@ function buildPreferredDisplayName(name) {
   return surname ? `${prefFirst} ${surname}` : prefFirst;
 }
 
-export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
@@ -299,8 +300,11 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     return m;
   }, [flatRows]);
 
+  // Spec 3 cluster 8 — banking index for blue-tick "caught up" render.
+  const bankingIndex = useMemo(() => buildBankingIndex(catchups || []), [catchups]);
+
   // ── Cell render ─────────────────────────────────────────────
-  const CellIcon = ({ entry, isFuture }) => {
+  const CellIcon = ({ entry, isFuture, caughtUp }) => {
     if (!entry) {
       return <span style={{ color: isFuture ? "#9CA3AF" : "#C4C9D4", display: "inline-flex", alignItems: "center" }}><span style={{ width: 12, height: 12, borderRadius: "50%", border: `1.5px solid currentColor`, display: "inline-block" }} /></span>;
     }
@@ -308,6 +312,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     if (entry.status === "completed") return <span style={{ color: colors.success, display: "inline-flex", alignItems: "center" }}><Check size={14} /></span>;
     if (entry.status === "missed") {
       if (entry.madeUp) return <span style={{ color: colors.sidebarActive, display: "inline-flex", alignItems: "center" }}><RotateCcw size={13} /></span>;
+      if (caughtUp) return <span style={{ color: colors.blue600, display: "inline-flex", alignItems: "center" }}><Check size={14} /></span>;
       if (entry.makeupEligible) return <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: colors.accent }} />;
       return <span style={{ color: colors.danger, display: "inline-flex", alignItems: "center" }}><X size={13} /></span>;
     }
@@ -509,6 +514,18 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                           const holidayBlank = isHoliday && !holidayHasLesson;
                           const displayEntry = isHoliday ? holidayEntry : entry;
 
+                          // Spec 3 cluster 8 — banking-eligible catchup whose
+                          // (weekKey + day + 18:00) has passed flips the cell
+                          // from "catch-up owed" (orange dot) to "caught up"
+                          // (blue tick). Render-time derive only.
+                          const bankingCatchup = (
+                            displayEntry?.status === "missed"
+                            && displayEntry.makeupEligible
+                            && !displayEntry.madeUp
+                            && lesson.enrolmentId
+                          ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
+                          const caughtUp = !!(bankingCatchup && isCatchupCompleted(bankingCatchup));
+
                           return (
                             <td key={w.weekKey}
                               style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center",
@@ -530,6 +547,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                   : displayEntry?.status === "removed" ? "Inactive"
                                   : displayEntry?.status === "completed" ? (displayEntry.bandSession ? (displayEntry.notes || "Band Session") : "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : ""))
                                   : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
+                                  : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
                                   : displayEntry?.status === "missed" && displayEntry?.makeupEligible ? "Missed — catch-up owed"
                                   : displayEntry?.status === "missed" ? "Missed — no catch-up"
                                   : future ? "Future week" : "Unmarked";
@@ -537,8 +555,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                               }}
                               onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
                               {!holidayBlank && (
-                                <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: displayEntry ? (displayEntry.status === "completed" ? `${colors.success}18` : displayEntry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : displayEntry.madeUp ? "rgba(52,69,101,0.07)" : displayEntry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
-                                  <CellIcon entry={displayEntry} isFuture={future} />
+                                <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: displayEntry ? (displayEntry.status === "completed" ? `${colors.success}18` : displayEntry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : displayEntry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : displayEntry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                                  <CellIcon entry={displayEntry} isFuture={future} caughtUp={caughtUp} />
                                 </div>
                               )}
                             </td>
@@ -708,6 +726,15 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                         const future = isFutureWeek(w.weekKey);
                         const isHoliday = !!w.isHoliday;
 
+                        // Spec 3 cluster 8 — banking-eligible catchup completion (private section).
+                        const bankingCatchup = (
+                          entry?.status === "missed"
+                          && entry.makeupEligible
+                          && !entry.madeUp
+                          && lesson.enrolmentId
+                        ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
+                        const caughtUp = !!(bankingCatchup && isCatchupCompleted(bankingCatchup));
+
                         return (
                           <td key={w.weekKey}
                             style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", cursor: "default", position: "relative",
@@ -726,6 +753,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                 : entry?.status === "removed" ? "Inactive"
                                 : entry?.status === "completed" ? "Completed" + (entry.notes ? " — " + entry.notes : "")
                                 : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
+                                : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
                                 : entry?.status === "missed" && entry?.makeupEligible ? "Missed — catch-up owed"
                                 : entry?.status === "missed" ? "Missed — no catch-up"
                                 : future ? "Future" : "Unmarked";
@@ -733,8 +761,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                             }}
                             onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
                             <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
-                              <CellIcon entry={entry} isFuture={future} />
+                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                              <CellIcon entry={entry} isFuture={future} caughtUp={caughtUp} />
                             </div>
                           </td>
                         );

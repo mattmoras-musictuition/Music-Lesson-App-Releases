@@ -150,7 +150,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
   const [contextMenu, setContextMenu] = useState(null);
-  const [catchupDayTeacher, setCatchupDayTeacher] = useState({}); // { [dayName]: teacherId } for holiday catch-up grid
   // catchupLessons: derived from weeklyTimetables using "weekKey|__catchup__" sentinel keys.
   // This makes catch-up data visible to React state (and Claude's system prompt) while
   // keeping it out of Supabase (filtered at sync time in App.js).
@@ -1466,13 +1465,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage
     );
 
-    // Skip students with a pre-marked informed_absence or extended_absence for this week — remove from
+    // Skip students with a pre-marked informed_absence for this week — remove from
     // scheduled lessons and push into missed so they don't appear on the grid.
     const _preAbsentEntries = getMissedEntries({
       weeklyTimetables,
       weekKey,
       schoolId: selectedSchool,
-      reasons: ["informed_absence", "extended_absence"],
+      reasons: ["informed_absence"],
     });
     const _preAbsentIds = new Set(
       _preAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
@@ -1536,7 +1535,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         weeklyTimetables,
         weekKey,
         schoolId: school.id,
-        reasons: ["informed_absence", "extended_absence"],
+        reasons: ["informed_absence"],
       });
       const _allPreAbsentIds = new Set(
         _allPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
@@ -1757,12 +1756,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage
     );
 
-    // Skip students with a pre-marked informed_absence or extended_absence for this week
+    // Skip students with a pre-marked informed_absence for this week
     const _dayPreAbsentEntries = getMissedEntries({
       weeklyTimetables,
       weekKey,
       schoolId: selectedSchool,
-      reasons: ["informed_absence", "extended_absence"],
+      reasons: ["informed_absence"],
     });
     const _dayPreAbsentIds = new Set(
       _dayPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
@@ -5224,7 +5223,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}
                       </div>
-                      {m.reason ? <div style={{ color: m.reason === "extended_absence" ? colors.warning : colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "extended_absence" ? "Extended Absence — half fees" : m.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(m.reason, m.reasonDetail)}</div> : null}
+                      {m.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(m.reason, m.reasonDetail)}</div> : null}
                     </div>
                     );
                   })}

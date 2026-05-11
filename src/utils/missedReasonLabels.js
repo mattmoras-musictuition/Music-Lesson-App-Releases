@@ -24,7 +24,6 @@ export function getMissedReasonLabel(reason, reasonDetail) {
  * Examples:
  *   "informed_absence", "had a cold" → "Informed absence (had a cold)"
  *   "uninformed_absence", "" → "Uninformed absence"
- *   "extended_absence", "" → "Extended absence"
  *   "other", "Camp" → "Other (Camp)"
  *   null, "" → null
  *
@@ -36,7 +35,6 @@ export function getMissedReasonProse(reason, reasonDetail) {
       reason === "informed_absence"   ? "Informed absence"
     : reason === "uninformed_absence" ? "Uninformed absence"
     : reason === "teacher_absent"     ? "Teacher absent"
-    : reason === "extended_absence"   ? "Extended absence"
     : reason === "school_interruption" ? "School interruption"
     : reason === "other"              ? "Other"
     : "Missed";

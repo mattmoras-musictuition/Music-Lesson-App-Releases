@@ -34,3 +34,7 @@ dist/
 # Build artifacts
 *.asar
 release/
+
+# Production data dumps and diagnostic scratch — never commit
+audits/
+scripts/diag/
