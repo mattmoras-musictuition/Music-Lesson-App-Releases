@@ -174,8 +174,16 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     // Track whether any WTT entry matches this enrolment in any term week,
     // and stage shim entries locally so we don't pollute entryMap if we later
     // skip pushing this row.
+    //
+    // Spec 4 cluster 3: also capture the latest WTT entry's day field so we
+    // can fall back to it for the baseLesson when mttCard is null. Without
+    // this, enrolments with WTT activity but no current MTT card (archived
+    // mid-term, newly enrolled before MTT regen, group cards whose
+    // enrolmentId lookup misses) rendered under an "UNKNOWN" day header in
+    // TallyView's section grouping.
     const cells = {};
     let hasWttData = false;
+    let latestWttDay = "";
     const pendingShimEntries = [];
     for (const week of termWeeks) {
       const sk = `${week.weekKey}|${schoolId}`;
@@ -197,6 +205,8 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
         : null;
 
       if (lessonMatch || missedMatch) hasWttData = true;
+      if (lessonMatch?.day) latestWttDay = lessonMatch.day;
+      else if (missedMatch?.day) latestWttDay = missedMatch.day;
 
       let wttWithKind = null;
       if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
@@ -230,6 +240,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 
     // Row shape: spread MTT card if present (carries teacherName, groupName,
     // studentNames, id), else synthesize a minimal base from enrolment + student.
+    // Day resolution order: mttCard.day → latestWttDay → "" (Spec 4 cluster 3).
     const baseLesson = mttCard ? { ...mttCard } : {
       id: lessonKey,
       studentId: e.studentId,
@@ -241,7 +252,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       schoolId,
       teacherId: e.teacherId,
       teacherName: "",
-      day: "",
+      day: latestWttDay || "",
     };
 
     tallyRows.push({
