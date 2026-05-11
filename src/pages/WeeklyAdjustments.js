@@ -4181,6 +4181,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const displayName = student?.name || enrolment?.studentName || "—";
               const inst = catchup.instrument || "";
               const isBareGroup = !catchup.enrolmentId;
+              const regularDay = catchup.resolvesOriginalDay;
+              const laneTeacher = regularDay
+                ? getDayLaneTeacher(teacherCoverage, teachers, catchup.schoolId, regularDay)?.teacher || null
+                : null;
+              const fallbackTeacher = enrolment ? (teachers || []).find(t => t.id === enrolment.teacherId) : null;
+              const teacherName = (laneTeacher || fallbackTeacher)?.name || "";
               return (
                 <div
                   draggable={!isBareGroup}
@@ -4204,7 +4210,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     {displayName}
                   </div>
                   <div style={{ color: colors.textLight, fontSize: 10 }}>
-                    {inst}
+                    {teacherName ? `${inst} · ${teacherName}` : inst}
                   </div>
                 </div>
               );
@@ -4581,7 +4587,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // at the right slot.
                 const enrichedCatchups = (catchups || []).map(c => {
                   const en = (enrolments || []).find(e => e.id === c.enrolmentId);
-                  return en ? { ...c, studentId: en.studentId } : c;
+                  const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
+                  const base = en ? { ...c, studentId: en.studentId } : c;
+                  return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
                 });
                 const wLessons = mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey);
 
