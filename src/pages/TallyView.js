@@ -22,6 +22,17 @@ function buildPreferredDisplayName(name) {
   return surname ? `${prefFirst} ${surname}` : prefFirst;
 }
 
+// Spec 4 cluster 1 patch — tooltip-only unwrap of the "Other (X)" form.
+// "Other" category with a free-text detail reads better in the cell hover
+// without the redundant category prefix; other reason categories stay as
+// `getMissedReasonProse` returns them (those category labels are informative).
+// The email-body consumers of `getMissedReasonProse` still get the full form.
+const formatReasonForTooltip = (prose) => {
+  if (!prose) return "";
+  const m = prose.match(/^Other \((.+)\)$/);
+  return m ? m[1] : prose;
+};
+
 export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
@@ -540,15 +551,14 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                 const madeUpWeekLabel = displayEntry?.madeUp && displayEntry?.madeUpWeekKey
                                   ? (termWeeks.find(tw => tw.weekKey === (displayEntry.madeUpWeekKey || "").split("|")[0])?.label || null)
                                   : null;
-                                const missedReason = getMissedReasonProse(displayEntry?.reason, displayEntry?.reasonDetail) || "";
+                                const missedReason = formatReasonForTooltip(getMissedReasonProse(displayEntry?.reason, displayEntry?.reasonDetail));
                                 const text = isHoliday
                                   ? (displayEntry?.status === "completed" ? "Holiday — Completed" : displayEntry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
                                   : displayEntry?.status === "removed" ? "Inactive"
                                   : displayEntry?.status === "completed" ? (displayEntry.bandSession ? (displayEntry.notes || "Band Session") : "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : ""))
                                   : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
                                   : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
-                                  : displayEntry?.status === "missed" && displayEntry?.makeupEligible ? ("Missed — catch-up owed" + (missedReason ? " — " + missedReason : ""))
-                                  : displayEntry?.status === "missed" ? ("Missed — no catch-up" + (missedReason ? " — " + missedReason : ""))
+                                  : displayEntry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
                                   : future ? "Future week" : "Unmarked";
                                 setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: displayEntry?.status === "missed" });
                               }}
@@ -747,15 +757,14 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                               const madeUpWeekLabel = entry?.madeUp && entry?.madeUpWeekKey
                                 ? (termWeeks.find(tw => tw.weekKey === (entry.madeUpWeekKey || "").split("|")[0])?.label || null)
                                 : null;
-                              const missedReason = getMissedReasonProse(entry?.reason, entry?.reasonDetail) || "";
+                              const missedReason = formatReasonForTooltip(getMissedReasonProse(entry?.reason, entry?.reasonDetail));
                               const text = isHoliday
                                 ? (entry?.status === "completed" ? "Holiday — Completed" : entry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
                                 : entry?.status === "removed" ? "Inactive"
                                 : entry?.status === "completed" ? "Completed" + (entry.notes ? " — " + entry.notes : "")
                                 : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
                                 : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
-                                : entry?.status === "missed" && entry?.makeupEligible ? ("Missed — catch-up owed" + (missedReason ? " — " + missedReason : ""))
-                                : entry?.status === "missed" ? ("Missed — no catch-up" + (missedReason ? " — " + missedReason : ""))
+                                : entry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
                                 : future ? "Future" : "Unmarked";
                               setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: entry?.status === "missed" });
                             }}
