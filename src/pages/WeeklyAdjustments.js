@@ -1541,14 +1541,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (targetDay) {
       const existing = weeklyTimetables[storageKey];
       const otherDays = existing ? existing.lessons.filter(l => l.day !== targetDay) : [];
-      // Session 97.1: preserve catch-ups (isMakeup) and band sessions on the
-      // target day. Previously the filter above only kept lessons on OTHER
-      // days, so any catch-up scheduled for targetDay got wiped alongside
-      // the master-derived lessons. Same rationale as the whole-week import:
-      // these lessons aren't in the master, so "import from master" should
-      // never remove them.
+      // Session 97.1 (Spec 3 cluster 12c update): preserve band sessions on
+      // the target day. Band sessions aren't in the master timetable (they're
+      // scheduled ad-hoc per week), so "import from master" should never
+      // remove them. Catch-ups now live in the catchups table, not in
+      // weeklyData.lessons, so they're naturally untouched by this filter.
       const preservedDayExtras = existing
-        ? (existing.lessons || []).filter(l => l.day === targetDay && (l.isMakeup || l.isBandSession))
+        ? (existing.lessons || []).filter(l => l.day === targetDay && l.isBandSession)
         : [];
       setWeeklyTimetables(prev => ({
         ...prev,
@@ -1560,26 +1559,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }));
       notify(`Imported ${importedLessons.length} lessons for ${targetDay}`);
     } else {
-      // Session 97.1 FIX — the old version unconditionally replaced the
-      // weekly timetable's `lessons` array with just the master-derived
-      // lessons, wiping any isMakeup catch-ups or isBandSession entries
-      // that had been added to this week. Those aren't in the master by
-      // definition (catch-ups are per-week, band sessions are scheduled
-      // ad-hoc), so "import from master" should never be removing them.
-      // Missed-zone entries ARE still wiped — a whole-week re-import is an
-      // explicit reset of the week's state, and any tally entries with
-      // real user input (reasons/notes/makeup flags) are now preserved
-      // separately by doAutoTallyForDate's strip predicate.
+      // Session 97.1 (Spec 3 cluster 12c update): preserve band sessions
+      // through whole-week MTT re-import. Band sessions aren't in the master
+      // (scheduled ad-hoc per week), so "import from master" should never
+      // remove them. Missed-zone entries ARE still wiped — a whole-week
+      // re-import is an explicit reset of the week's state. Catch-ups now
+      // live in the catchups table, not in weeklyData.lessons.
       const existing = weeklyTimetables[storageKey];
       const preservedExtras = existing
-        ? (existing.lessons || []).filter(l => l.isMakeup || l.isBandSession)
+        ? (existing.lessons || []).filter(l => l.isBandSession)
         : [];
       setWeeklyTimetables(prev => ({
         ...prev,
         [storageKey]: { lessons: [...preservedExtras, ...importedLessons], missed: [], generatedAt: new Date().toISOString() }
       }));
       const extraNote = preservedExtras.length > 0
-        ? ` (${preservedExtras.length} catch-up/band ${preservedExtras.length === 1 ? "lesson" : "lessons"} preserved)`
+        ? ` (${preservedExtras.length} band ${preservedExtras.length === 1 ? "session" : "sessions"} preserved)`
         : "";
       notify(`Imported ${importedLessons.length} lessons for the week${extraNote}`);
     }
@@ -2057,15 +2052,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
       }
       notify(`Band session placed: ${band.name} — ${newDay} ${slot.start}`);
-      return;
-    }
-
-    // Spec 3 cluster 12a — guard against pre-rewire staged cards; retire in
-    // 12b once stale staged cards have aged out. A card staged before the
-    // Stage 2 edits landed lacks the forward-carried resolves_* fields, so
-    // the insertCatchup write below would produce an "undefined" catchup row.
-    if (!staged.resolvesEnrolmentId || !staged.enrolmentId || !staged.resolvesWeekKey) {
-      if (notify) notify("This catch-up was staged before the app updated. Please remove it with the × button and re-stage.");
       return;
     }
 
@@ -5026,7 +5012,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       setHoverPopover({ type: "student", info, rect, color: _popColor });
                                     }}
                                     onMouseLeave={() => setHoverPopover(null)}
-                                    onContextMenu={e => { if (l.__isCatchup) { handleCatchupCardRightClick(e, l); return; } e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMakeup: l.isMakeup, makeupForTallyId: l.makeupForTallyId, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
+                                    onContextMenu={e => { if (l.__isCatchup) { handleCatchupCardRightClick(e, l); return; } e.preventDefault(); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, isMulti: selectedCards.size > 1 && selectedCards.has(l.id), selectedIds: selectedCards.size > 1 && selectedCards.has(l.id) ? [...selectedCards] : null, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${l.studentName} — ${liveInst}` }); }}
                                     onClick={e => {
                                       e.stopPropagation();
                                       // If a double-click timer is already running, this is the 2nd click → open details
@@ -5059,7 +5045,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     }} title={l.isGroup ? l.groupName || l.studentName : l.adjustReason || undefined}>
                                     {showRed && <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
                                     {hasAckedWarning && !showRed && <span onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}><AlertTriangle size={11} /></span>}
-                                    {(l.isMakeup || l.__isCatchup) && <span onClick={l.__isCatchup ? undefined : (e => { e.stopPropagation(); const wkData = weeklyTimetables[storageKey] || { lessons: [], missed: [] }; setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...wkData, lessons: (wkData.lessons || []).filter(x => x.id !== l.id) } })); })} style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: l.__isCatchup ? "default" : "pointer", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title={l.__isCatchup ? "Catch-up lesson" : "Catch-up lesson — click to remove"}><RotateCcw size={11} /></span>}
+                                    {l.__isCatchup && <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, cursor: "default", lineHeight: 1, fontWeight: 700, zIndex: 2, display: "inline-flex", alignItems: "center" }} title="Catch-up lesson"><RotateCcw size={11} /></span>}
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
                                       {l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}
@@ -5172,7 +5158,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         boxShadow: isSelectedMissed ? `0 0 0 2px ${getInstColor(m.instrument)}40` : "none",
                         position: "relative",
                       }}>
-                      {m.isMakeup && <span style={{ position: "absolute", top: 2, right: 4, color: colors.sidebarActive, lineHeight: 1, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Missed catch-up lesson"><RotateCcw size={11} /></span>}
                       <div style={{ fontWeight: 600 }}>{m.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{m.isGroup ? (() => { const grp = (groups || []).find(g => g.id === m.groupId); const memberStudents = (grp?.studentIds || []).map(sid => students.find(s => s.id === sid)).filter(Boolean); const names = memberStudents.length > 0 ? memberStudents.map(s => (s.name || "").split(" ")[0]).join(", ") : (m.groupName || "Group"); const classes = memberStudents.map(s => s.className || "").filter(Boolean); const uniqueClasses = [...new Set(classes)]; const classSuffix = uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", ")) : ""; return names + classSuffix; })() : getPrefDisplayName(missedStudent?.name || m.studentName)}{missedClassName ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{missedClassName}</span> : null}</div>
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}

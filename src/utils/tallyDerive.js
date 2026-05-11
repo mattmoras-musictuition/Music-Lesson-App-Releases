@@ -722,11 +722,8 @@ export function getGroupMissedWeeksInRange({ weeklyTimetables, groupId, rangeSta
  * groups operate as units; if individuals are absent the group
  * lesson still goes ahead and they're billed.
  *
- * Spec 3 cluster 12b — catchup counting switched from
- * _countGroupCatchupsInRange (WTT isMakeup walk) to the canonical
- * catchups collection, mirroring cluster 11a's solo-side rewire.
- * groupId is resolved on each catchup via the enrolments lookup
- * (catchup.enrolmentId → enrolment.groupId).
+ * Catchup counting walks the catchups collection, joining
+ * catchup.enrolmentId → enrolment.groupId.
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables - WTT map for the missed-weeks walk.

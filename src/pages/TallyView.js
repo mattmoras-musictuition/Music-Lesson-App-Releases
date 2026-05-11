@@ -195,11 +195,9 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   const privateStats = { totalCells: 0, completed: 0, missed: 0, makeupOwed: 0, madeUp: 0 };
 
   // ── Holiday catchup map: which holiday-week cells have a catchup row ──
-  // Spec 3 cluster 12b — sourced from the catchups[] collection (not the
-  // legacy WTT isMakeup walk). Value is a minimal entry-shape so the
-  // downstream tooltip read at L546 ("Holiday — Completed") still hits the
-  // entry.status === "completed" branch. enrolments provides the join from
-  // catchup.enrolmentId → studentId/groupId for the lessonKey.
+  // Value is a minimal entry-shape so the downstream tooltip read
+  // ("Holiday — Completed") hits the entry.status === "completed" branch.
+  // enrolments provides the join from catchup.enrolmentId → studentId/groupId.
   const holidayCatchupsMap = useMemo(() => {
     const map = {};
     const holidayWeekKeys = new Set(termWeeks.filter(w => w.isHoliday).map(w => w.weekKey));
