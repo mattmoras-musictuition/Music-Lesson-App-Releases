@@ -283,6 +283,18 @@ export async function updateCatchup({ id, currentRow, ...fields }) {
 
 /**
  * Delete a catchup row by id. Hard delete; no soft-delete column.
+ *
+ * In development, supabaseClient.js's Proxy wraps the client and
+ * returns { data: null, error: null } for every write. deleteCatchup's
+ * natural return is void, so there's nothing to synthesize — only
+ * the interception to log via a console.info trace so dev-mode
+ * deletes leave a visible audit record. Production
+ * (NODE_ENV !== 'development') never reaches the dev-mode branch —
+ * wrapper isn't applied at all.
+ *
+ * Mirrors insertCatchup / updateCatchup dev-mode handling per
+ * operating directive 6 / cluster 5b-3a final addendum.
+ *
  * @param {Object} args
  * @param {string} args.id - Catchup id.
  * @returns {Promise<void>}
@@ -293,4 +305,12 @@ export async function deleteCatchup({ id }) {
     .delete()
     .eq("id", id);
   if (error) throw error;
+  if (IS_DEV_MODE_WRAPPER) {
+    if (typeof console !== 'undefined' && console.info) {
+      console.info(
+        '[dev-mode] deleteCatchup: wrapper blocked delete (id=%s)',
+        id
+      );
+    }
+  }
 }
