@@ -467,7 +467,6 @@ export function printWeeklyTimetable(weeklyTimetables, schools, students, weekDa
   td.time-cell { font-size: 10px; color: #9ca3af; padding: 4px 6px; white-space: nowrap; background: #fafafa; }
   .lesson-card { border-radius: 4px; padding: 4px 6px; margin-bottom: 2px; border-left: 3px solid #ccc; }
   .lesson-card.adjusted { border-bottom: 2px solid #F59E0B; }
-  .lesson-card.makeup { border-left-style: dashed; }
   .lesson-name { font-weight: 700; font-size: 11px; }
   .lesson-detail { font-size: 10px; color: #374151; margin-top: 1px; }
   .lesson-teacher { font-size: 9px; color: #9ca3af; }
@@ -485,15 +484,13 @@ export function printWeeklyTimetable(weeklyTimetables, schools, students, weekDa
 
   for (const { school, lessons, missed } of allSchoolData) {
     const totalLessons = lessons.length;
-    const adjustedCount = lessons.filter(l => l.adjusted && !l.isMakeup).length;
-    const makeupCount = lessons.filter(l => l.isMakeup).length;
+    const adjustedCount = lessons.filter(l => l.adjusted).length;
     const missedCount = missed.length;
 
     html += `<h2>${school.name}</h2>
 <div class="stats">
   <div class="stat"><strong>${totalLessons}</strong>Lessons</div>
   <div class="stat"><strong style="color:#D97706">${adjustedCount}</strong>Adjusted</div>
-  <div class="stat"><strong style="color:#344565">${makeupCount}</strong>Makeups</div>
   <div class="stat"><strong style="color:#DC2626">${missedCount}</strong>Cancelled</div>
 </div>`;
 
@@ -523,12 +520,12 @@ export function printWeeklyTimetable(weeklyTimetables, schools, students, weekDa
         html += `<td>`;
         for (const l of cellLessons) {
           const col = getColor(l.instrument, l.isGroup);
-          const cls = l.isMakeup ? "lesson-card makeup" : l.adjusted ? "lesson-card adjusted" : "lesson-card";
+          const cls = l.adjusted ? "lesson-card adjusted" : "lesson-card";
           const student = l.isGroup ? groupDisplayName(l) : l.studentName;
           const stObj = students.find(s => s.id === l.studentId);
           const classLabel = stObj?.className ? ` · ${stObj.className}` : "";
           html += `<div class="${cls}" style="background:${col}18;border-left-color:${col}">
-            <div class="lesson-name">${l.isMakeup ? "↺ " : ""}${student}${classLabel}</div>
+            <div class="lesson-name">${student}${classLabel}</div>
             <div class="lesson-detail">${l.instrument || ""}${l.adjustReason && l.adjusted ? ` <span style="color:#D97706">· ${l.adjustReason}</span>` : ""}</div>
             <div class="lesson-teacher">${l.teacherName ? l.teacherName.split(" ")[0] : ""}</div>
           </div>`;
