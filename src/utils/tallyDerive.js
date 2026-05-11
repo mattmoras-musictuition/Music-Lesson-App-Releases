@@ -274,6 +274,122 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 }
 
 // ============================================================
+// Spec 4 cluster 5 — sibling deriver for private students.
+//
+// Private students don't have MTT cards (they live outside any school's
+// master timetable). Their tally state is stored in WTT under the
+// `<weekKey>|__private__` sentinel storage key. This deriver mirrors the
+// main one but diverges in three ways:
+//   1. No MTT card lookup — private students never have one.
+//   2. No "must have MTT or WTT data" inclusion check — rows always
+//      appear when the enrolment exists, even with all-blank cells.
+//   3. Includes pending/trial students unconditionally (matches the
+//      `privateStudents` filter in TallyView).
+//
+// Returns the same `{ tallyRows, entryMap }` contract as deriveTallyRows
+// so the panel scaffold reads it identically. Reuses the module-local
+// `deriveTallyCell` and `buildShimEntry` helpers — no shared helper
+// extraction (the two derivers will likely drift once C6 lands).
+// ============================================================
+export function derivePrivateTallyRows({ enrolments, students, termWeeks, weeklyTimetables, teachers }) {
+  const tallyRows = [];
+  const entryMap = {};
+  const seen = new Set();
+
+  if (!termWeeks || termWeeks.length === 0) return { tallyRows, entryMap };
+
+  const termStart = termWeeks[0].weekKey;
+  const termEnd = termWeeks[termWeeks.length - 1].weekKey;
+
+  for (const e of (enrolments || [])) {
+    if (e.isGroup) continue; // private students are solo by design
+    const lessonKey = `${e.studentId}|${e.instrument}`;
+    if (seen.has(lessonKey)) continue;
+
+    const student = students.find(s => s.id === e.studentId);
+    if (!student) continue;
+    if (student.schoolId !== "__private__") continue;
+
+    if (student.status === "archived") {
+      const enrolStart = e.startDate || "0000-00-00";
+      const enrolEnd = e.endDate || "9999-99-99";
+      if (enrolEnd < termStart) continue;
+      if (enrolStart > termEnd) continue;
+    }
+    // active/pending/trial: include unconditionally.
+
+    const cells = {};
+    let latestWttDay = "";
+    for (const week of termWeeks) {
+      const sk = `${week.weekKey}|__private__`;
+      const weekData = weeklyTimetables?.[sk] || { lessons: [], missed: [] };
+
+      const matchByEnrolment = (item) => item.enrolmentId === e.id;
+      const matchByLessonKey = (item) => `${item.studentId}|${item.instrument}` === lessonKey;
+
+      const lessonMatch = (weekData.lessons || []).find(matchByEnrolment)
+        || (weekData.lessons || []).find(matchByLessonKey);
+      const missedMatch = !lessonMatch
+        ? ((weekData.missed || []).find(matchByEnrolment)
+            || (weekData.missed || []).find(matchByLessonKey))
+        : null;
+
+      if (lessonMatch?.day) latestWttDay = lessonMatch.day;
+      else if (missedMatch?.day) latestWttDay = missedMatch.day;
+
+      let wttWithKind = null;
+      if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
+      else if (missedMatch) wttWithKind = { ...missedMatch, kind: "missed" };
+
+      const state = deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind });
+      cells[week.weekKey] = { state, wttEntry: wttWithKind };
+
+      const shimEntry = buildShimEntry({
+        wttEntry: wttWithKind,
+        state,
+        weekKey: week.weekKey,
+        weekLabel: week.label,
+        weekNum: week.weekNum,
+        lessonKey,
+      });
+      if (shimEntry) entryMap[`${lessonKey}|${week.weekKey}`] = shimEntry;
+    }
+
+    seen.add(lessonKey);
+
+    const teacherName = e.teacherId
+      ? ((teachers || []).find(t => t.id === e.teacherId)?.name || "")
+      : "";
+
+    tallyRows.push({
+      id: lessonKey,
+      lessonKey,
+      studentId: e.studentId,
+      studentName: student.name,
+      studentNames: [],
+      instrument: e.instrument,
+      schoolId: "__private__",
+      teacherId: e.teacherId,
+      teacherName,
+      isGroup: false,
+      groupId: undefined,
+      day: latestWttDay || "",
+      enrolmentId: e.id,
+      cells,
+      _archived: student.status === "archived",
+    });
+  }
+
+  tallyRows.sort((a, b) => {
+    const nameCmp = (a.studentName || "").toLowerCase().localeCompare((b.studentName || "").toLowerCase());
+    if (nameCmp !== 0) return nameCmp;
+    return (a.instrument || "").toLowerCase().localeCompare((b.instrument || "").toLowerCase());
+  });
+
+  return { tallyRows, entryMap };
+}
+
+// ============================================================
 // 6c.1 helpers — pure read-side derives over weeklyTimetables.
 // Consumers migrate in 6c.2 (WA), 6c.3 (Dashboard), 6c.4 (App.js).
 // ============================================================
