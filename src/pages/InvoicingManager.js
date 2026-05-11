@@ -422,6 +422,8 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         if (prevTerm) {
           const groupMath = getGroupTermDeductionMath({
             weeklyTimetables,
+            catchups,
+            enrolments,
             groupId: grp.id,
             prevTerm,
             interruptions,

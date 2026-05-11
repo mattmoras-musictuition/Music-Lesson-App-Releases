@@ -62,7 +62,6 @@ export const STORAGE_KEYS = {
   weeklyVersions:         "mt-wtt-versions",
   contacts:               "mt-contacts",
   bands:                  "mt-bands",
-  autoProcessedDays:      "mt-auto-processed-days",
   resources:              "mt-resources",
   documents:              "mt-documents",
   emailTemplates:         "mt-email-templates",

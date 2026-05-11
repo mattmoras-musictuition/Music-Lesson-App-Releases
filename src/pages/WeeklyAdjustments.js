@@ -8,7 +8,7 @@ import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR } fro
 import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
-import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks, isDayPast6pm } from "../utils/tallyHelpers";
+import { computeTermWeekNum, computeTermKey, isDayPast6pm } from "../utils/tallyHelpers";
 import { hasMissedEntry, getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
 import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
@@ -22,7 +22,7 @@ import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedL
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, rerunAutoTallyForDate, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -1559,11 +1559,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         }
       }));
       notify(`Imported ${importedLessons.length} lessons for ${targetDay}`);
-      // Rerun tally if this day is already past 6pm
-      if (isDayPast6pm(targetDay, weekKey) && rerunAutoTallyForDate) {
-        const dateStr = weekDateMap[targetDay];
-        if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
-      }
     } else {
       // Session 97.1 FIX — the old version unconditionally replaced the
       // weekly timetable's `lessons` array with just the master-derived
@@ -1587,14 +1582,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ? ` (${preservedExtras.length} catch-up/band ${preservedExtras.length === 1 ? "lesson" : "lessons"} preserved)`
         : "";
       notify(`Imported ${importedLessons.length} lessons for the week${extraNote}`);
-      // Rerun tally for any days already past 6pm
-      if (rerunAutoTallyForDate) {
-        for (const wd of weekDates) {
-          if (isDayPast6pm(wd.day, weekKey)) {
-            setTimeout(() => rerunAutoTallyForDate(wd.date), 150);
-          }
-        }
-      }
     }
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
@@ -1789,11 +1776,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
     const adj = newDayLessons.filter(l => l.adjusted).length;
     notify(`${targetDay}: ${newDayLessons.length} lessons${adj > 0 ? `, ${adj} adjusted` : ""}${newDayMissed.length > 0 ? `, ${newDayMissed.length} missed` : ""}`);
-    // If this day is already past 6pm, re-run the auto-tally so completed lessons are recorded
-    const targetDateStr = weekDateMap[targetDay];
-    if (targetDateStr && isDayPast6pm(targetDay, weekKey) && rerunAutoTallyForDate) {
-      setTimeout(() => rerunAutoTallyForDate(targetDateStr), 150);
-    }
   };
 
   React.useEffect(() => {
@@ -1966,16 +1948,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(lessonId); return next; });
       } else {
         setExpandedWarnings(prev => { const next = new Set(prev); next.delete(lessonId); return next; });
-      }
-    }
-    // Rerun tally for affected days if past 6pm
-    if (rerunAutoTallyForDate) {
-      const daysToRerun = new Set();
-      if (oldDay && oldDay !== newDay && isDayPast6pm(oldDay, weekKey)) daysToRerun.add(oldDay);
-      if (isDayPast6pm(newDay, weekKey)) daysToRerun.add(newDay);
-      for (const d of daysToRerun) {
-        const dateStr = weekDateMap[d];
-        if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
       }
     }
   };
@@ -2929,7 +2901,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         id: uid(), studentId: s.id, studentName: s.name,
                         schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                         instrument: oldest.instrument, teacherId: oldest.teacherId || "", teacherName: oldest.teacherName || "",
-                        isMakeup: true, makeupForTallyId: oldest.id,
                         enrolmentId: stagedEnrolmentId,
                         resolvesEnrolmentId: stagedEnrolmentId,
                         resolvesWeekKey: oldest.weekKey,
@@ -3068,11 +3039,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot);
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
-                  // Rerun tally if this day is already past 6pm
-                  if (rerunAutoTallyForDate && isDayPast6pm(contextMenu.day, weekKey)) {
-                    const dateStr = weekDateMap[contextMenu.day];
-                    if (dateStr) setTimeout(() => rerunAutoTallyForDate(dateStr), 150);
-                  }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                 };
                 // Cascading submenus — open to the right at same Y as hovered item
@@ -5258,7 +5224,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         id: draggedLesson.id, studentId: draggedLesson.studentId, studentName: draggedLesson.studentName,
                         schoolId: draggedLesson.schoolId, schoolName: draggedLesson.schoolName,
                         instrument: draggedLesson.instrument, teacherId: stagedTeacherId, teacherName: draggedLesson.teacherName,
-                        isMakeup: true, makeupForTallyId: draggedLesson.makeupForTallyId,
                       };
                     }
                     setWeeklyTimetables(prev => {

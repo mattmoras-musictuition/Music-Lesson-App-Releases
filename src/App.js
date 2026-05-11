@@ -39,8 +39,8 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase } from "./utils/helpers";
-import { countMissedForDate, getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
-import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "./utils/tallyHelpers";
+import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
+import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
 import { parseSpecialistNotes, parseStudentNotes } from "./utils/claudeNotes";
@@ -996,7 +996,6 @@ export default function MusicTimetableApp() {
   // storageReady is set to true only after initial load confirms data came from storage.
   // Save effects are gated on this ref so an empty load fallback can never overwrite real saved data.
   const storageReady = useRef(false);
-  const autoProcessedDaysRef = useRef(new Set());
   const wttSyncDebounceRef = useRef(null); // debounce timer for weekly timetable Supabase sync
   const wttOwnWrittenAtRef = useRef({}); // { "weekKey|schoolId": updated_at } — timestamps we wrote ourselves
   const wttPollLastSeenRef = useRef({}); // { "weekKey|schoolId": updated_at } — last polled state
@@ -2423,205 +2422,11 @@ export default function MusicTimetableApp() {
   useEffect(() => { tallyEntriesRef.current = tallyEntries; }, [tallyEntries]);
   useEffect(() => { schoolsRef.current = schools; }, [schools]);
 
-  // ── Auto-tally: process a single past school day ────────────────────────
-  const doAutoTallyRef = useRef(null);
-  // Session 97.1 FIX — force-mode used to strip EVERY tally entry for the day
-  // and rebuild from the weekly timetable. That's fine for auto-generated
-  // entries but catastrophic for anything Matt clicked in TallyView directly:
-  // manual missed marks, catch-up resolutions, absence reasons — all gone if
-  // the rebuild didn't happen to reproduce them. The worst case was losing
-  // break-week catch-ups when someone used "Import from MTT" on the whole
-  // week (which resets the weekly timetable to the master and wipes the
-  // catch-up lessons; then force-mode rebuild produces nothing for those
-  // cells). This predicate identifies entries safe to strip — only truly
-  // auto-generated, untouched completed/missed-zone entries. Anything a user
-  // has set a reason/note/makeup flag on, anything with a non-standard
-  // status, and anything with `autoRecorded:false` (hand-clicked in
-  // TallyView) is preserved through the rebuild.
-  const _isAutoUntouched = (e) => {
-    if (!e.autoRecorded) return false;              // manual click in TallyView → preserve
-    if (e.reason) return false;                      // user set a reason → preserve
-    if (e.madeUp || e.makeupEligible) return false;  // makeup/catchup state → preserve
-    if (e.notes) {
-      const isAutoNote =
-        e.notes.startsWith("Band Session") ||
-        e.notes.startsWith("Holiday catch-up") ||
-        e.notes.startsWith("Extra Lesson");
-      if (!isAutoNote) return false;                 // user-typed note → preserve
-    }
-    // Only plain auto-generated completed/missed entries are strippable.
-    // "removed", "informed_absence" etc. are user-set.
-    return e.status === "completed" || e.status === "missed";
-  };
-  const doAutoTallyForDate = (dateStr, force = false) => {
-    if (!dateStr) return;
-    const dateObj = new Date(dateStr + "T00:00:00");
-    const dow = dateObj.getDay();
+  // Spec 3 cluster 12b — auto-tally batch retired. Cluster 8's render-time
+  // isCatchupCompleted in catchupsDerive.js subsumes the catchup-resolution
+  // semantic via derived display; the persisted WTT.missed madeUp / makeupEligible
+  // patches the batch produced are no longer the source of truth.
 
-    const monday = _getMondayOf(dateObj);
-    const weekKey = toLocalDateStr(monday);
-
-    // Detect holiday weeks (term breaks) — catch-ups can land on Sat/Sun during them
-    const tBreaks = interruptionsRef.current.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date));
-    const fri = new Date(monday); fri.setDate(fri.getDate() + 4);
-    const isHolidayWeek = tBreaks.some(tb => {
-      const bs = tb.date; const be = tb.endDate || tb.date;
-      return weekKey >= bs && toLocalDateStr(fri) <= be;
-    });
-
-    // Skip weekends UNLESS it's a holiday week (catch-ups can be on Sat/Sun)
-    if ((dow === 0 || dow === 6) && !isHolidayWeek) {
-      autoProcessedDaysRef.current.add(dateStr);
-      return;
-    }
-
-    const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
-
-    // Catch-up card resolution: for each isMakeup card on today's date,
-    // find the original WTT missed entry and stamp madeUp / makeupEligible.
-    // (Entry-writing for completed/missed cells removed in Commit 5 — those
-    //  states now derive from WTT directly. Catch-up resolution kept here
-    //  until Spec 3 ships its catch-up cards rewrite.)
-    const wt = weeklyTimetablesRef.current;
-    const missedUpdates = []; // {storageKey, missedId, patch}
-
-    // Collect all missed entries across all weeks (catch-ups can resolve from any prior week)
-    const allMissedAcrossWeeks = [];
-    for (const [sk, weeklyData] of Object.entries(wt)) {
-      for (const m of (weeklyData.missed || [])) {
-        allMissedAcrossWeeks.push({ storageKey: sk, missed: m });
-      }
-    }
-
-    for (const [sk, weeklyData] of Object.entries(wt)) {
-      const parts = sk.split("|");
-      if (parts[0] !== weekKey || !parts[1]) continue;
-
-      // Attended catch-ups: isMakeup cards still on the timetable for today
-      for (const lesson of (weeklyData.lessons || [])) {
-        if (!lesson.isMakeup || lesson.day !== dayName) continue;
-        if (!lesson.studentId) continue;
-        const candidates = allMissedAcrossWeeks
-          .filter(({ missed }) => missed.studentId === lesson.studentId && missed.makeupEligible && !missed.madeUp)
-          .sort((a, b) => (a.storageKey || "").localeCompare(b.storageKey || ""));
-        const target = candidates[0];
-        if (target && !missedUpdates.find(u => u.missedId === target.missed.id)) {
-          missedUpdates.push({
-            storageKey: target.storageKey,
-            missedId: target.missed.id,
-            patch: { madeUp: true }
-          });
-        }
-      }
-
-      // Missed catch-ups: isMakeup cards in the missed zone for today
-      for (const lesson of (weeklyData.missed || [])) {
-        if (!lesson.isMakeup || lesson.day !== dayName) continue;
-        if (!lesson.studentId) continue;
-        const candidates = allMissedAcrossWeeks
-          .filter(({ missed }) => missed.studentId === lesson.studentId && missed.makeupEligible && !missed.madeUp)
-          .sort((a, b) => (a.storageKey || "").localeCompare(b.storageKey || ""));
-        const target = candidates[0];
-        if (target && !missedUpdates.find(u => u.missedId === target.missed.id)) {
-          missedUpdates.push({
-            storageKey: target.storageKey,
-            missedId: target.missed.id,
-            patch: { makeupEligible: false }  // uninformed absence — no further catch-up
-          });
-        }
-      }
-    }
-
-    if (missedUpdates.length > 0) {
-      setWeeklyTimetables(prev => {
-        const out = { ...prev };
-        for (const { storageKey, missedId, patch } of missedUpdates) {
-          const data = out[storageKey];
-          if (!data) continue;
-          out[storageKey] = {
-            ...data,
-            missed: (data.missed || []).map(m => m.id !== missedId ? m : { ...m, ...patch })
-          };
-        }
-        return out;
-      });
-    }
-
-    autoProcessedDaysRef.current.add(dateStr);
-    try { localStorage.setItem(STORAGE_KEYS.autoProcessedDays, JSON.stringify([...autoProcessedDaysRef.current])); } catch(e) {}
-  };
-  doAutoTallyRef.current = doAutoTallyForDate;
-
-  // ── Re-run tally for a specific date (called after manual timetable edits) ──
-  // Preserves manual entries (those with a reason or notes set by the user).
-  // Auto-recorded entries for that day are replaced with fresh data.
-  const rerunAutoTallyForDate = (dateStr) => {
-    if (!dateStr) return;
-    const dateObj = new Date(dateStr + "T00:00:00");
-    const dow = dateObj.getDay();
-    if (dow === 0 || dow === 6) return;
-    const monday = _getMondayOf(dateObj);
-    const weekKey = toLocalDateStr(monday);
-    const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dow];
-    // WTT.missed entries are all user-initiated by writer-construction (no autoRecorded
-    // field exists on WTT.missed; the legacy !autoRecorded && (reason || notes) filter
-    // degenerates to "every WTT.missed entry on this weekKey+day").
-    // Using weeklyTimetablesRef.current to preserve closure-stale-state defense.
-    const manualCount = countMissedForDate({
-      weeklyTimetables: weeklyTimetablesRef.current,
-      weekKey,
-      day: dayName,
-    });
-    // Clear from cache so force-mode re-runs cleanly
-    autoProcessedDaysRef.current.delete(dateStr);
-    doAutoTallyRef.current?.(dateStr, true);
-    if (manualCount > 0) {
-      notify(`Tally updated for ${dayName} — ${manualCount} manual entr${manualCount === 1 ? "y" : "ies"} preserved`, "warning", 5000);
-    }
-  };
-
-
-  // ── Auto-tally: backfill last 2 weeks on startup ────────────────────────
-  useEffect(() => {
-    if (loading) return;
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.autoProcessedDays) || "[]");
-    autoProcessedDaysRef.current = new Set(stored);
-    const t = setTimeout(() => {
-      const now = melbourneNow();
-      const nowStr = toLocalDateStr(now);
-      const hour = now.getHours();
-      // If it's past 6pm, always clear today from the cache and re-attempt —
-      // this self-heals if a previous run used a wrong timezone and skipped entries.
-      // Duplicate entries are safely blocked by the existingKeys check in computeAutoTallyDay.
-      if (hour >= 18) autoProcessedDaysRef.current.delete(nowStr);
-      for (let i = 1; i <= 14; i++) {
-        const d = new Date(now); d.setDate(d.getDate() - i);
-        const dateStr = toLocalDateStr(d);
-        if (!autoProcessedDaysRef.current.has(dateStr)) doAutoTallyRef.current?.(dateStr);
-      }
-      if (hour >= 18) doAutoTallyRef.current?.(nowStr);
-    }, 1200); // wait 1.2s for state to fully hydrate
-    return () => clearTimeout(t);
-  }, [loading]);
-
-  // ── Auto-tally: fire at 6pm Melbourne each day ──────────────────────────
-  useEffect(() => {
-    if (loading) return;
-    const schedule = () => {
-      const now = melbourneNow();
-      const next6pm = new Date(now); next6pm.setHours(18, 0, 0, 0);
-      if (next6pm <= now) next6pm.setDate(next6pm.getDate() + 1);
-      const msUntil = next6pm.getTime() - now.getTime();
-      return setTimeout(() => {
-        const todayStr = toLocalDateStr(melbourneNow());
-        doAutoTallyRef.current?.(todayStr);
-        playUISound("tally");
-        timerRef.current = schedule(); // reschedule for tomorrow
-      }, msUntil);
-    };
-    const timerRef = { current: schedule() };
-    return () => clearTimeout(timerRef.current);
-  }, [loading]);
   useEffect(() => { if (storageReady.current) saveData(STORAGE_KEYS.contacts, contacts); if (storageReady.current && sessionUserId && !isDev) { syncContactsToSupabase(contacts, sessionUserId).catch(err => logError("Contacts Supabase sync failed", err.message)); } else if (storageReady.current && contacts.length > 0 && !isDev) { console.warn("[sync] Contacts — no Supabase session"); } }, [contacts, sessionUserId]);
 
   // Auto-backup to localStorage whenever important data changes (silent, always available)
@@ -6758,7 +6563,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} rerunAutoTallyForDate={rerunAutoTallyForDate} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} catchups={catchups} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

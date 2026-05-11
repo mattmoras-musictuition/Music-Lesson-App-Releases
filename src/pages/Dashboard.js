@@ -8,7 +8,7 @@ import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, A
 import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText } from "../utils/helpers";
-import { computeTermWeekNum, computeTermKey, computeAutoTallyDay, computeExtraTicks } from "../utils/tallyHelpers";
+import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, findOpenCatchups } from "../utils/tallyDerive";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";

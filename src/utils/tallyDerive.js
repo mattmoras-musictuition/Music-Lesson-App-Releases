@@ -56,7 +56,7 @@ export function deriveTallyCell({ enrolment, week, wttEntry }) {
 // Synthesize a tally-entry-shaped object from a WTT entry + cell state,
 // to feed today's TallyView render code unmodified (the entryMap shim).
 // Returns null when the cell should render as blank (no shim entry needed).
-function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHoliday, lessonKey }) {
+function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKey }) {
   // Inactive stub for cells outside enrolment range.
   // Renders as the grey "—" dash via CellIcon's status === "removed" branch.
   if (state === "inactive") {
@@ -69,7 +69,6 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHo
       notes: "",
       makeupEligible: false,
       madeUp: false,
-      isHolidayCatchup: false,
       bandSession: false,
       autoRecorded: false,
     };
@@ -114,8 +113,6 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, weekIsHo
     makeupEligible: isMissed ? !!wttEntry.makeupEligible : false,
     madeUp: isMissed ? !!wttEntry.madeUp : false,
 
-    // Holiday compat (preserves legacy isHolidayCatchup filter)
-    isHolidayCatchup: isLesson && !!wttEntry.isMakeup && weekIsHoliday,
     bandSession: !!wttEntry.isBandSession,
 
     // Legacy / not stored in WTT
@@ -214,7 +211,6 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
         weekKey: week.weekKey,
         weekLabel: week.label,
         weekNum: week.weekNum,
-        weekIsHoliday: !!week.isHoliday,
         lessonKey,
       });
       if (shimEntry) {
@@ -393,30 +389,8 @@ export function findOpenCatchups({ weeklyTimetables, studentId, schoolId } = {})
   return out;
 }
 
-/**
- * Count missed entries for a specific weekKey + day across all schools.
- * Used by App.js's rerunAutoTallyForDate manual-count notification.
- * WTT.missed entries are all user-initiated (no autoRecorded field
- * exists on WTT.missed), so this is a straight count.
- *
- * @param {Object} params
- * @param {Object} params.weeklyTimetables
- * @param {string} params.weekKey
- * @param {string} params.day
- * @returns {number}
- */
-export function countMissedForDate({ weeklyTimetables, weekKey, day }) {
-  if (!weeklyTimetables) return 0;
-  let count = 0;
-  for (const sk of Object.keys(weeklyTimetables)) {
-    if (!sk.startsWith(weekKey + "|")) continue;
-    const data = weeklyTimetables[sk];
-    for (const m of (data?.missed || [])) {
-      if (m.day === day) count++;
-    }
-  }
-  return count;
-}
+// Spec 3 cluster 12b — countMissedForDate retired alongside the App.js
+// rerunAutoTallyForDate stub (its sole consumer).
 
 /**
  * Group missed entries by studentId+instrument and return rows where
@@ -582,8 +556,7 @@ function _findPrevBreak(interruptions, nextTermStart) {
  * Count WTT.lessons surviving for the given enrolment+instrument whose
  * weekKey falls in [rangeStart, rangeEnd] inclusive. Each entry counts
  * as 1 — group lessons count once per slot, matching WTT storage.
- * Includes lessons with isMakeup: true. Defensively skips lessons with
- * isCancelled === true.
+ * Defensively skips lessons with isCancelled === true.
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables
@@ -644,32 +617,6 @@ export function getEnrolmentMissedInRange({ weeklyTimetables, enrolmentId, instr
 }
 
 /**
- * Count of catchups for the given enrolment+instrument whose
- * weekKey falls inside the term_break immediately preceding
- * nextTermStart. Holiday weeks belong to the previous term's
- * reckoning by convention.
- *
- * Spec 3 cluster 11a — source switched to the catchups collection
- * (see countCatchupsInRange).
- *
- * @param {Object} params
- * @param {Array} params.catchups - Full catchups collection from App state.
- * @param {string} params.enrolmentId
- * @param {string} params.instrument
- * @param {Array} params.interruptions
- * @param {string} params.nextTermStart - First day of the term whose deductions are being computed.
- * @returns {number}
- */
-export function getEnrolmentHolidayCatchupsForTerm({ catchups, enrolmentId, instrument, interruptions, nextTermStart }) {
-  const prevBreak = _findPrevBreak(interruptions, nextTermStart);
-  if (!prevBreak) return 0;
-  return countCatchupsInRange({
-    catchups, enrolmentId, instrument,
-    rangeStart: prevBreak.start, rangeEnd: prevBreak.end,
-  });
-}
-
-/**
  * Count-based replacement for InvoicingManager's legacy
  * mkpEligPending / holidayStamped / remainingCatchups / covered /
  * deductions / extras block (sites at lines 381-393 and 465-477).
@@ -683,10 +630,13 @@ export function getEnrolmentHolidayCatchupsForTerm({ catchups, enrolmentId, inst
  * Pairing happens implicitly through the counts — no per-entry
  * matching required.
  *
- * Spec 3 cluster 11a — catchup counts now derive from the
- * canonical catchups collection. weeklyTimetables remains in the
- * signature because getEnrolmentMissedInRange (the missed-lessons
- * walker) still reads WTT.missed entries.
+ * Spec 3 cluster 11a — catchup counts derive from the canonical
+ * catchups collection. weeklyTimetables remains in the signature
+ * because getEnrolmentMissedInRange (the missed-lessons walker)
+ * still reads WTT.missed entries.
+ *
+ * Spec 3 cluster 12b — countCatchupsInRange + getEnrolmentHoliday-
+ * CatchupsForTerm wrappers inlined here (single sole-consumer).
  *
  * @param {Object} params
  * @param {Object} params.weeklyTimetables - WTT map for the missed-lessons walk.
@@ -704,50 +654,19 @@ export function getEnrolmentTermDeductionMath({ weeklyTimetables, catchups, enro
     rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
     makeupEligibleOnly: true,
   }).length;
-  const inTermCatchups = countCatchupsInRange({
-    catchups, enrolmentId, instrument,
-    rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
-  });
-  const holidayCatchups = getEnrolmentHolidayCatchupsForTerm({
-    catchups, enrolmentId, instrument, interruptions, nextTermStart,
-  });
-  const totalCatchups = inTermCatchups + holidayCatchups;
+  const prevBreak = _findPrevBreak(interruptions, nextTermStart);
+  let totalCatchups = 0;
+  for (const c of (Array.isArray(catchups) ? catchups : [])) {
+    if (c.enrolmentId !== enrolmentId) continue;
+    if (c.instrument !== instrument) continue;
+    const inTerm = c.weekKey >= prevTerm.start && c.weekKey <= prevTerm.end;
+    const inHoliday = prevBreak && c.weekKey >= prevBreak.start && c.weekKey <= prevBreak.end;
+    if (inTerm || inHoliday) totalCatchups++;
+  }
   const covered = Math.min(totalCatchups, mkpEligPending);
   const deductions = mkpEligPending - covered;
   const extras = totalCatchups - covered;
   return { mkpEligPending, catchups: totalCatchups, deductions, extras };
-}
-
-/**
- * Count catchups for the given enrolment+instrument whose weekKey
- * is in [rangeStart, rangeEnd] inclusive. Used by
- * getEnrolmentTermDeductionMath for in-term catchups and as the
- * inner walker for getEnrolmentHolidayCatchupsForTerm.
- *
- * Spec 3 cluster 11a — source switched from weeklyTimetables
- * (WTT isMakeup walk) to the canonical catchups collection.
- * Every row in the catchups collection is by definition a
- * catchup, so no isMakeup filter is applied; deletion is
- * hard-delete (no isCancelled flag).
- *
- * @param {Object} params
- * @param {Array} params.catchups - Full catchups collection from App state.
- * @param {string} params.enrolmentId
- * @param {string} params.instrument
- * @param {string} params.rangeStart
- * @param {string} params.rangeEnd
- * @returns {number}
- */
-export function countCatchupsInRange({ catchups, enrolmentId, instrument, rangeStart, rangeEnd }) {
-  if (!Array.isArray(catchups)) return 0;
-  let count = 0;
-  for (const c of catchups) {
-    if (c.enrolmentId !== enrolmentId) continue;
-    if (c.instrument !== instrument) continue;
-    if (c.weekKey < rangeStart || c.weekKey > rangeEnd) continue;
-    count++;
-  }
-  return count;
 }
 
 /**
@@ -789,28 +708,6 @@ export function getGroupMissedWeeksInRange({ weeklyTimetables, groupId, rangeSta
   return out;
 }
 
-// Internal — count of isMakeup === true group lessons for the given
-// groupId whose weekKey is in [rangeStart, rangeEnd] inclusive.
-// Defensively skips isCancelled === true. Sole consumer is
-// getGroupTermDeductionMath; group-side analog of countCatchupsInRange.
-function _countGroupCatchupsInRange(weeklyTimetables, groupId, rangeStart, rangeEnd) {
-  if (!weeklyTimetables) return 0;
-  let count = 0;
-  for (const sk of Object.keys(weeklyTimetables)) {
-    const weekKey = sk.split("|")[0];
-    if (weekKey < rangeStart || weekKey > rangeEnd) continue;
-    const data = weeklyTimetables[sk];
-    for (const l of (data?.lessons || [])) {
-      if (l.isGroup !== true) continue;
-      if (l.groupId !== groupId) continue;
-      if (l.isMakeup !== true) continue;
-      if (l.isCancelled === true) continue;
-      count++;
-    }
-  }
-  return count;
-}
-
 /**
  * Group-path analog of getEnrolmentTermDeductionMath. Same return
  * shape (numbers, not Sets — the Set in getGroupMissedWeeksInRange
@@ -825,28 +722,37 @@ function _countGroupCatchupsInRange(weeklyTimetables, groupId, rangeStart, range
  * groups operate as units; if individuals are absent the group
  * lesson still goes ahead and they're billed.
  *
+ * Spec 3 cluster 12b — catchup counting switched from
+ * _countGroupCatchupsInRange (WTT isMakeup walk) to the canonical
+ * catchups collection, mirroring cluster 11a's solo-side rewire.
+ * groupId is resolved on each catchup via the enrolments lookup
+ * (catchup.enrolmentId → enrolment.groupId).
+ *
  * @param {Object} params
- * @param {Object} params.weeklyTimetables
+ * @param {Object} params.weeklyTimetables - WTT map for the missed-weeks walk.
+ * @param {Array} params.catchups - Full catchups collection from App state.
+ * @param {Array} params.enrolments - Enrolments for groupId resolution.
  * @param {string} params.groupId
  * @param {{start: string, end: string}} params.prevTerm
  * @param {Array} params.interruptions
  * @param {string} params.nextTermStart
  * @returns {{missedCount: number, catchupCount: number, deductions: number, extras: number}}
  */
-export function getGroupTermDeductionMath({ weeklyTimetables, groupId, prevTerm, interruptions, nextTermStart }) {
+export function getGroupTermDeductionMath({ weeklyTimetables, catchups, enrolments, groupId, prevTerm, interruptions, nextTermStart }) {
   const missedCount = getGroupMissedWeeksInRange({
     weeklyTimetables, groupId,
     rangeStart: prevTerm.start, rangeEnd: prevTerm.end,
     makeupEligibleOnly: true,
   }).size;
-  const inTermCatchups = _countGroupCatchupsInRange(
-    weeklyTimetables, groupId, prevTerm.start, prevTerm.end,
-  );
   const prevBreak = _findPrevBreak(interruptions, nextTermStart);
-  const holidayCatchups = prevBreak
-    ? _countGroupCatchupsInRange(weeklyTimetables, groupId, prevBreak.start, prevBreak.end)
-    : 0;
-  const catchupCount = inTermCatchups + holidayCatchups;
+  let catchupCount = 0;
+  for (const c of (Array.isArray(catchups) ? catchups : [])) {
+    const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+    if (!en || en.groupId !== groupId) continue;
+    const inTerm = c.weekKey >= prevTerm.start && c.weekKey <= prevTerm.end;
+    const inHoliday = prevBreak && c.weekKey >= prevBreak.start && c.weekKey <= prevBreak.end;
+    if (inTerm || inHoliday) catchupCount++;
+  }
   const covered = Math.min(catchupCount, missedCount);
   const deductions = missedCount - covered;
   const extras = catchupCount - covered;

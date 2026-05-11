@@ -194,25 +194,25 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   const privateEntryMap = {};
   const privateStats = { totalCells: 0, completed: 0, missed: 0, makeupOwed: 0, madeUp: 0 };
 
-  // ── Holiday lesson map: which cells have a catch-up card on the timetable ──
-  const holidayLessonMap = useMemo(() => {
+  // ── Holiday catchup map: which holiday-week cells have a catchup row ──
+  // Spec 3 cluster 12b — sourced from the catchups[] collection (not the
+  // legacy WTT isMakeup walk). Value is a minimal entry-shape so the
+  // downstream tooltip read at L546 ("Holiday — Completed") still hits the
+  // entry.status === "completed" branch. enrolments provides the join from
+  // catchup.enrolmentId → studentId/groupId for the lessonKey.
+  const holidayCatchupsMap = useMemo(() => {
     const map = {};
-    if (!weeklyTimetables) return map;
     const holidayWeekKeys = new Set(termWeeks.filter(w => w.isHoliday).map(w => w.weekKey));
     if (holidayWeekKeys.size === 0) return map;
-    for (const [sk, weeklyData] of Object.entries(weeklyTimetables)) {
-      const parts = sk.split("|");
-      const wk = parts[0];
-      if (!holidayWeekKeys.has(wk)) continue;
-      for (const lesson of (weeklyData.lessons || [])) {
-        if (!lesson.studentId) continue;
-        if (!lesson.isMakeup) continue; // only catch-up cards make a holiday cell non-blank
-        const lessonKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
-        map[`${lessonKey}|${wk}`] = true;
-      }
+    for (const c of (catchups || [])) {
+      if (!holidayWeekKeys.has(c.weekKey)) continue;
+      const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+      if (!en) continue;
+      const lessonKey = en.isGroup ? `group|${en.groupId}` : `${en.studentId}|${c.instrument}`;
+      map[`${lessonKey}|${c.weekKey}`] = { status: "completed", isHolidayCatchup: true };
     }
     return map;
-  }, [weeklyTimetables, termWeeks]);
+  }, [catchups, enrolments, termWeeks]);
 
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────
   const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
@@ -508,11 +508,11 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                           const future = isFutureWeek(w.weekKey);
                           const cellKey = `${lesson.lessonKey}|${w.weekKey}`;
                           const isHoliday = !!w.isHoliday;
-                          // For holiday cells: only show entries explicitly created as holiday catch-ups
-                          const holidayEntry = isHoliday ? (entry?.isHolidayCatchup ? entry : null) : entry;
-                          const holidayHasLesson = isHoliday && (!!holidayEntry || !!holidayLessonMap[cellKey]);
+                          // For holiday cells: source from the catchups-backed map (cluster 12b).
+                          const holidayCatchupEntry = isHoliday ? (holidayCatchupsMap[cellKey] || null) : null;
+                          const holidayHasLesson = isHoliday && !!holidayCatchupEntry;
                           const holidayBlank = isHoliday && !holidayHasLesson;
-                          const displayEntry = isHoliday ? holidayEntry : entry;
+                          const displayEntry = isHoliday ? holidayCatchupEntry : entry;
 
                           // Spec 3 cluster 8 — banking-eligible catchup whose
                           // (weekKey + day + 18:00) has passed flips the cell
