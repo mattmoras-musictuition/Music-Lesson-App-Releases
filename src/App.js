@@ -6809,7 +6809,7 @@ export default function MusicTimetableApp() {
           />}
           {page === "invoicing" && <InvoicingManager
             students={students} enrolments={enrolments} schools={schools} groups={groups} timetable={timetable}
-            weeklyTimetables={weeklyTimetables} interruptions={interruptions}
+            weeklyTimetables={weeklyTimetables} catchups={catchups} interruptions={interruptions}
             notify={notify}
             goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory}
           />}

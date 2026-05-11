@@ -271,7 +271,7 @@ function _allParents(students) {
 // ─────────────────────────────────────────────────────────────
 // INVOICE GENERATION
 // ─────────────────────────────────────────────────────────────
-function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetables, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
+function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetables, catchups, schools, rates, interruptions, termInfo, invoiceDate, dueDate, startNum, scopeType, scopeSchoolId, scopeParentKey }) {
   // Filter students by scope
   let active = students.filter(s => s.status !== "archived");
   if (scopeType === "school" && scopeSchoolId)
@@ -327,6 +327,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
           const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
           const { deductions, extras } = getEnrolmentTermDeductionMath({
             weeklyTimetables,
+            catchups,
             enrolmentId,
             instrument: instr,
             prevTerm,
@@ -390,6 +391,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
             const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
             const { deductions, extras } = getEnrolmentTermDeductionMath({
               weeklyTimetables,
+              catchups,
               enrolmentId,
               instrument: instr,
               prevTerm,
@@ -669,7 +671,7 @@ function _plainText(invoice, settings) {
 // ─────────────────────────────────────────────────────────────
 export function InvoicingManager({
   students, enrolments, schools, groups, timetable,
-  weeklyTimetables, interruptions,
+  weeklyTimetables, catchups = [], interruptions,
   notify, goBack, goForward, historyCursor, pageHistory,
 }) {
   const { colors } = useTheme();
@@ -837,7 +839,7 @@ export function InvoicingManager({
     }
 
     const { invoices: newInvs, nextNum, skippedNoLessons, totalParents } = buildInvoices({
-      students, enrolments, groups, timetable, weeklyTimetables,
+      students, enrolments, groups, timetable, weeklyTimetables, catchups,
       schools, rates, interruptions, termInfo: selTerm,
       invoiceDate, dueDate, startNum: settings.nextInvoiceNumber,
       scopeType, scopeSchoolId, scopeParentKey,
