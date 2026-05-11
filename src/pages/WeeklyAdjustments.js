@@ -2029,8 +2029,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     notify(`${missed.isGroup ? missed.groupName : missed.studentName} rescheduled to ${newDay} ${slot.start}`);
   };
 
-  // Place a staged catch-up card onto the grid at a specific slot
-  const handlePlaceStagedCatchup = (stagedId, newDay, newTime) => {
+  // Place a staged catch-up card onto the grid at a specific slot.
+  // Spec 3 cluster 12a — async because solo placement awaits insertCatchup.
+  // The drop call site (cell onDrop, "staged:" branch) doesn't await; errors
+  // surface via the inner try/catch with notify + alert.
+  const handlePlaceStagedCatchup = async (stagedId, newDay, newTime) => {
     if (!weeklyData || !currentSchool) return;
     const slot = currentSchool.slots.find(s => s.start === newTime);
     if (!slot) return;
@@ -2085,40 +2088,57 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return;
     }
 
-    const placedLesson = {
-      ...staged,
-      day: newDay, slotId: slot.id, slotName: slot.name,
-      start: slot.start, end: slot.end,
-      weekDate: dayDate?.date || "",
-      adjusted: false,
-      fromStaged: true,
-      duringSpecialist: getSpecialistForSlot(staged, newDay, slot),
-    };
-    setWeeklyTimetables(prev => {
-      const entry = prev[storageKey];
-      if (!entry) return prev;
-      return {
-        ...prev,
-        [storageKey]: {
-          ...entry,
-          lessons: [...entry.lessons, placedLesson],
-          catchupStaged: (entry.catchupStaged || []).filter(c => c.id !== stagedId),
-        }
-      };
-    });
-    // Run constraint checks
-    const warnings = checkConstraints(placedLesson, newDay, slot);
-    setConstraintWarnings(prev => {
-      const next = { ...prev };
-      if (warnings.length > 0) next[placedLesson.id] = warnings;
-      else delete next[placedLesson.id];
-      return next;
-    });
-    setAckedConstraints(prev => { const next = new Set(prev); next.delete(placedLesson.id); return next; });
-    if (warnings.length > 0) {
-      setExpandedWarnings(prev => { const next = new Set(prev); next.add(placedLesson.id); return next; });
+    // Spec 3 cluster 12a — guard against pre-rewire staged cards; retire in
+    // 12b once stale staged cards have aged out. A card staged before the
+    // Stage 2 edits landed lacks the forward-carried resolves_* fields, so
+    // the insertCatchup write below would produce an "undefined" catchup row.
+    if (!staged.resolvesEnrolmentId || !staged.enrolmentId || !staged.resolvesWeekKey) {
+      if (notify) notify("This catch-up was staged before the app updated. Please remove it with the × button and re-stage.");
+      return;
     }
-    notify("Catch-up lesson placed: " + (staged.studentName || "") + " " + newDay + " " + slot.start);
+
+    // Spec 3 cluster 12a — solo catchup placement persists to the catchups
+    // table via insertCatchup, not the weekly_adjustments.lessons JSONB. The
+    // enrichedCatchups site (L4544) stamps bucket_id at render time from the
+    // destination lane, so first-drop teacher attribution resolves correctly
+    // without re-drop. Mirrors handleScheduleCatchup at L979-1014. Dev-mode
+    // wrapper handling lives in insertCatchup per cluster 5b-3a final addendum.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) throw new Error("Not authenticated");
+      const weekKey = storageKey.split("|")[0];
+      const inserted = await insertCatchup({
+        userId: user.id,
+        schoolId: staged.schoolId,
+        weekKey,
+        day: newDay,
+        time: newTime,
+        durationMinutes: null,
+        instrument: staged.instrument,
+        enrolmentId: staged.resolvesEnrolmentId,
+        resolvesEnrolmentId: staged.resolvesEnrolmentId,
+        resolvesWeekKey: staged.resolvesWeekKey,
+        resolvesOriginalDay: staged.resolvesOriginalDay,
+        resolvesOriginalTime: staged.resolvesOriginalTime,
+      });
+      setCatchups(prev => [...prev, inserted]);
+      setWeeklyTimetables(prev => {
+        const entry = prev[storageKey];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [storageKey]: {
+            ...entry,
+            catchupStaged: (entry.catchupStaged || []).filter(c => c.id !== stagedId),
+          },
+        };
+      });
+      if (notify) notify("Catch-up lesson placed: " + (staged.studentName || "") + " " + newDay + " " + newTime);
+    } catch (err) {
+      logError && logError("Failed to place catchup", err?.message || String(err));
+      console.error("[catchup place] failed:", err);
+      alert("Failed to place catchup. See console.");
+    }
   };
 
   // Confirm a catch-up day — marks tally entries and locks the day
@@ -2900,11 +2920,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       if (alreadyStaged) return;
                       // Spec 2 cluster 4c — staged entry: no day/slot yet, so
                       // bucket_id is deferred until drag-into-slot stamps it.
+                      // Spec 3 cluster 12a — forward-carry resolves_* fields +
+                      // catchup's own enrolmentId so the drop handler can call
+                      // insertCatchup. Catchup's enrolmentId equals its
+                      // resolvesEnrolmentId (a make-up resolves the same enrolment).
+                      const stagedEnrolmentId = enrolmentIdFor(oldest.studentId, oldest.instrument, enrolments, oldest.groupId);
                       const stagedCard = {
                         id: uid(), studentId: s.id, studentName: s.name,
                         schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
                         instrument: oldest.instrument, teacherId: oldest.teacherId || "", teacherName: oldest.teacherName || "",
                         isMakeup: true, makeupForTallyId: oldest.id,
+                        enrolmentId: stagedEnrolmentId,
+                        resolvesEnrolmentId: stagedEnrolmentId,
+                        resolvesWeekKey: oldest.weekKey,
+                        resolvesOriginalDay: oldest.day,
+                        resolvesOriginalTime: oldest.start ?? oldest.time ?? null,
                       };
                       setWeeklyTimetables(prev => {
                         const entry = prev[storageKey] || { lessons: [], missed: [] };
@@ -5282,9 +5312,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           </>
                         ) : (
                           <>
-                            <div style={{ fontWeight: 600, color: getInstColor(c.instrument), display: "flex", alignItems: "center", gap: 5 }}><RotateCcw size={11} /> {c.studentName}</div>
+                            <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 5 }}><RotateCcw size={11} /> {c.studentName}</div>
                             <div style={{ color: colors.textMuted, fontSize: 11 }}>{c.instrument}{c.teacherName ? " · " + c.teacherName : ""}</div>
-                            <div style={{ color: getInstColor(c.instrument), fontSize: 10, marginTop: 2 }}>catch-up — drag to place</div>
+                            <div style={{ color: colors.textLight, fontSize: 10, marginTop: 2 }}>catch-up — drag to place</div>
                           </>
                         )}
                       </div>
