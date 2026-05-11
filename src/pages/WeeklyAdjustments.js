@@ -179,7 +179,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       };
     });
   }, [setWeeklyTimetables]);
-  const [dayTeacherChips, setDayTeacherChips] = useState({}); // { [day]: teacherId[] } chips added per day column
   // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
   // Default empty = all days hidden. Session-scoped (not persisted).
   const [dayGhostsVisible, setDayGhostsVisible] = useState({});
@@ -4773,28 +4772,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 );
                               })()}
                             </div>
-                            {/* Teacher chips — added via right-click */}
-                            {(dayTeacherChips[d] || []).length > 0 && (
-                              <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 4, flexWrap: "wrap" }}>
-                                {(dayTeacherChips[d] || []).map(tid => {
-                                  const t = teachers.find(x => x.id === tid);
-                                  if (!t) return null;
-                                  const initials = t.name.split(" ").filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("");
-                                  const isChipActive = catchupDayTeacher[d] === tid;
-                                  return (
-                                    <button key={tid}
-                                      onClick={e => { e.stopPropagation(); setCatchupDayTeacher(prev => ({ ...prev, [d]: isChipActive ? null : tid })); }}
-                                      title={t.name}
-                                      style={{ height: 20, minWidth: 26, padding: "0 4px", borderRadius: 4, fontSize: 10, fontWeight: 700, border: "none", cursor: "pointer", fontFamily: "inherit",
-                                        background: isChipActive ? (t.color || colors.sidebarActive) : "rgba(255,255,255,0.25)",
-                                        color: isChipActive ? "#fff" : "rgba(255,255,255,0.7)",
-                                      }}>
-                                      {initials}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
                           </div>
                         );
                       })}
