@@ -13,11 +13,6 @@
 // cleanup post-Commit-5 should migrate render consumers to read
 // tallyRows[].cells[].wttEntry directly and drop the entryMap shim.
 //
-// Implicit __catchup__ skip: schoolId for storage-key construction
-// comes from the MTT card or student record; never resolves to
-// "__catchup__" (a synthetic key for the catch-up subsystem
-// deferred to Spec 3).
-//
 // Commit 6c.1 added 8 read-side helpers consumed by App.js,
 // WeeklyAdjustments.js, and Dashboard.js (migrated in 6c.2–6c.4).
 // All helpers are pure functions of weeklyTimetables (the WTT map
@@ -730,10 +725,10 @@ export function getEnrolmentTermDeductionMath({ weeklyTimetables, catchups, enro
  * inner walker for getEnrolmentHolidayCatchupsForTerm.
  *
  * Spec 3 cluster 11a — source switched from weeklyTimetables
- * (WTT isMakeup walk, incl. __catchup__ pseudo-school keys) to
- * the canonical catchups collection. Every row in the catchups
- * collection is by definition a catchup, so no isMakeup filter
- * is applied; deletion is hard-delete (no isCancelled flag).
+ * (WTT isMakeup walk) to the canonical catchups collection.
+ * Every row in the catchups collection is by definition a
+ * catchup, so no isMakeup filter is applied; deletion is
+ * hard-delete (no isCancelled flag).
  *
  * @param {Object} params
  * @param {Array} params.catchups - Full catchups collection from App state.

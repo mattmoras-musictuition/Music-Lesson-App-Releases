@@ -1766,10 +1766,9 @@ export default function MusicTimetableApp() {
     });
 
     // Spec 3 cluster 11b-A — catchups for this lane are deleted from the
-    // canonical catchups Supabase table (not __catchup__-keyed WTT rows).
-    // Each delete is individually try/catch'd so one failure doesn't
-    // abort the rest; setCatchups runs once after the loop for atomic
-    // local state update.
+    // canonical catchups Supabase table. Each delete is individually
+    // try/catch'd so one failure doesn't abort the rest; setCatchups
+    // runs once after the loop for atomic local state update.
     const catchupsToRemove = (catchups || []).filter(catchupBelongsToLane);
     if (catchupsToRemove.length > 0) {
       for (const c of catchupsToRemove) {
@@ -2010,17 +2009,6 @@ export default function MusicTimetableApp() {
         logError("Failed to load weekly timetables from Supabase", err.message);
         wt = await loadData(STORAGE_KEYS.weeklyTimetables, {});
       }
-      // Merge catch-up lessons from localStorage into weeklyTimetables state —
-      // only for weeks where Supabase didn't already provide a __catchup__ entry.
-      // (Supabase is now the primary store; localStorage is an offline fallback.)
-      try {
-        const catchupRaw = JSON.parse(localStorage.getItem("mt-catchup-timetable") || "{}");
-        Object.entries(catchupRaw).forEach(([wk, lessons]) => {
-          if (Array.isArray(lessons) && lessons.length > 0 && !wt[`${wk}|__catchup__`]) {
-            wt[`${wk}|__catchup__`] = { lessons };
-          }
-        });
-      } catch {}
       // ── Tally entries: try Supabase first, fall back to localStorage ──
       let tally;
       try {
@@ -2305,19 +2293,9 @@ export default function MusicTimetableApp() {
   }, [timetable, sessionUserId]);
   useEffect(() => {
     if (!storageReady.current) return;
-    // Save regular WTT entries (non-catchup) to the localStorage cache
-    const wttForLocalStorage = Object.fromEntries(Object.entries(weeklyTimetables).filter(([k]) => !k.endsWith("|__catchup__")));
-    saveData(STORAGE_KEYS.weeklyTimetables, wttForLocalStorage);
-    // Also persist catch-up lessons to their own localStorage key (offline fallback)
-    try {
-      const catchupByWeek = {};
-      Object.entries(weeklyTimetables).forEach(([k, v]) => {
-        if (k.endsWith("|__catchup__")) catchupByWeek[k.split("|")[0]] = v.lessons || [];
-      });
-      localStorage.setItem("mt-catchup-timetable", JSON.stringify(catchupByWeek));
-    } catch {}
-    // Debounce Supabase sync by 2s — sync ALL entries including __catchup__ so
-    // holiday catch-up lessons survive restarts and are visible across devices.
+    // Save WTT entries to the localStorage cache
+    saveData(STORAGE_KEYS.weeklyTimetables, weeklyTimetables);
+    // Debounce Supabase sync by 2s to avoid hammering on rapid local state changes.
     if (sessionUserId && !isDev) {
       if (wttSyncDebounceRef.current) clearTimeout(wttSyncDebounceRef.current);
       // Mark a pending write immediately — poll will skip all updates until this clears
@@ -2875,7 +2853,7 @@ export default function MusicTimetableApp() {
         let foundLesson = null;
         for (const [sk, data] of Object.entries(weeklyTimetables || {})) {
           const [sk_week, sk_school] = sk.split("|");
-          if (sk_week !== weekKey || sk_school === "__catchup__") continue;
+          if (sk_week !== weekKey) continue;
           const lesson = (data.lessons || []).find(l =>
             l.studentId === studentId &&
             l.day === dayName &&
@@ -2942,7 +2920,7 @@ export default function MusicTimetableApp() {
         const toMoveBySk = {}; // sk → [lesson, ...]
         for (const [sk, weeklyData] of Object.entries(weeklyTimetables)) {
           const parts = sk.split("|");
-          if (parts[0] !== weekKey || parts[1] === "__catchup__") continue;
+          if (parts[0] !== weekKey) continue;
           const lessonSchoolId = parts[1];
           if (schoolId && lessonSchoolId !== schoolId) continue;
           for (const lesson of (weeklyData.lessons || [])) {
@@ -3088,7 +3066,7 @@ export default function MusicTimetableApp() {
         let foundIdx = -1;
         for (const [sk, data] of Object.entries(weeklyTimetables || {})) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          if (sk_weekKey !== weekKey) continue;
           if (schoolId && sk_schoolId !== schoolId) continue;
           const idx = (data.lessons || []).findIndex(l =>
             l.studentId === studentId &&
@@ -3134,7 +3112,7 @@ export default function MusicTimetableApp() {
         const toMoveBySk = {};
         for (const [sk, data] of Object.entries(weeklyTimetables || {})) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          if (sk_weekKey !== weekKey) continue;
           for (const lesson of (data.lessons || [])) {
             if (lesson.studentId !== studentId || lesson.isCancelled) continue;
             const lessonKey = `${lesson.studentId}|${lesson.instrument}`;
@@ -3318,7 +3296,7 @@ export default function MusicTimetableApp() {
         let foundKey = null, foundMissed = null;
         for (const [sk, data] of Object.entries(weeklyTimetables)) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          if (sk_weekKey !== weekKey) continue;
           const m = (data.missed || []).find(mm =>
             mm.studentId === studentId &&
             mm.day === day &&
@@ -3361,7 +3339,7 @@ export default function MusicTimetableApp() {
         let foundKey = null, foundMissed = null;
         for (const [sk, data] of Object.entries(weeklyTimetables)) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          if (sk_weekKey !== weekKey) continue;
           const m = (data.missed || []).find(mm =>
             mm.studentId === studentId &&
             mm.day === day &&
@@ -3406,7 +3384,7 @@ export default function MusicTimetableApp() {
         let foundKey = null, foundMissed = null;
         for (const [sk, data] of Object.entries(weeklyTimetables)) {
           const [sk_weekKey, sk_schoolId] = sk.split("|");
-          if (sk_weekKey !== weekKey || sk_schoolId === "__catchup__") continue;
+          if (sk_weekKey !== weekKey) continue;
           const m = (data.missed || []).find(mm =>
             mm.studentId === studentId &&
             mm.day === day &&
@@ -3863,7 +3841,7 @@ export default function MusicTimetableApp() {
     // Show full detail on timetable page, when ctx.masterFull triggered, or when no WTT exists.
     // Otherwise show a compact summary — WTT below is already the live source of truth.
     const wttHasAnyCurrentData = Object.entries(weeklyTimetables || {}).some(([k, data]) =>
-      !k.endsWith("|__catchup__") && (data.lessons || []).some(l => !l.isCancelled)
+      (data.lessons || []).some(l => !l.isCancelled)
     );
     if (ctx.masterFull || currentPage === "timetable" || !wttHasAnyCurrentData) {
       lines.push("## Master Timetable");
@@ -3923,20 +3901,19 @@ export default function MusicTimetableApp() {
     // All regular WTT week keys, sorted ascending
     const allWttWeekKeys = [...new Set(
       Object.keys(weeklyTimetables || {})
-        .filter(k => !k.endsWith("|__catchup__"))
         .map(k => k.split("|")[0])
     )].sort();
     // Find the last 2 past weeks with active lessons (only included when ctx.pastWeeks)
     const pastWttWeeks = ctx.pastWeeks ? [...allWttWeekKeys].reverse().filter(wk =>
       wk !== currentWeekKey &&
       Object.entries(weeklyTimetables || {}).some(([k, data]) =>
-        k.startsWith(wk + "|") && !k.endsWith("|__catchup__") &&
+        k.startsWith(wk + "|") &&
         (data.lessons || []).some(l => !l.isCancelled)
       )
     ).slice(0, 2).reverse() : [];
     // Also include the current week if it has lessons
     const currentWttEntries = Object.entries(weeklyTimetables || {})
-      .filter(([k]) => k.startsWith(currentWeekKey + "|") && !k.endsWith("|__catchup__"));
+      .filter(([k]) => k.startsWith(currentWeekKey + "|"));
     const currentWttHasLessons = currentWttEntries.some(([, data]) =>
       (data.lessons || []).some(l => !l.isCancelled)
     );
@@ -3981,7 +3958,7 @@ export default function MusicTimetableApp() {
       lines.push("(Actual timetables as they ran each week — use these as source of truth for time-specific questions. Most recent week last.)");
       weeksToShow.forEach(wk => {
         const isCurrentWk = wk === currentWeekKey;
-        const entries = Object.entries(weeklyTimetables || {}).filter(([k]) => k.startsWith(wk + "|") && !k.endsWith("|__catchup__"));
+        const entries = Object.entries(weeklyTimetables || {}).filter(([k]) => k.startsWith(wk + "|"));
         const termWk = computeTermWeekNum(wk, termBreaks);
         const label = isCurrentWk ? `Week of ${wk} (THIS WEEK)` : `Week of ${wk}${termWk ? ` — Term Week ${termWk}` : ""}`;
         lines.push(`### ${label}`);

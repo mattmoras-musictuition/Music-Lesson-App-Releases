@@ -12,10 +12,6 @@
 // cardNote}) and convert display-label `reason` values to
 // machine values per TALLY_REASONS.
 //
-// __catchup__ storage keys are skipped — catch-up subsystem
-// entries are owned by Spec 3 and do not follow the regular
-// missed-entry shape.
-//
 // See SPEC_1_COMMIT_5_tally_derive_and_shape_extension.md §5.0b.
 // ============================================================
 
@@ -58,13 +54,6 @@ export function runSpec1Commit5Transform({ weeklyTimetables }) {
 
   for (const sk of Object.keys(src)) {
     const weekData = src[sk];
-    const parts = sk.split("|");
-    const schoolId = parts[1];
-
-    if (schoolId === "__catchup__") {
-      out[sk] = weekData;
-      continue;
-    }
 
     if (!weekData || !Array.isArray(weekData.missed) || weekData.missed.length === 0) {
       out[sk] = weekData;

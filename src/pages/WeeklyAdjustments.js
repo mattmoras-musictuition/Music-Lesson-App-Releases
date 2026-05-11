@@ -150,34 +150,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
   useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
   const [contextMenu, setContextMenu] = useState(null);
-  // catchupLessons: derived from weeklyTimetables using "weekKey|__catchup__" sentinel keys.
-  // This makes catch-up data visible to React state (and Claude's system prompt) while
-  // keeping it out of Supabase (filtered at sync time in App.js).
-  const catchupLessons = useMemo(() => {
-    const result = {};
-    Object.entries(weeklyTimetables || {}).forEach(([k, v]) => {
-      if (k.endsWith("|__catchup__")) result[k.split("|")[0]] = v.lessons || [];
-    });
-    return result;
-  }, [weeklyTimetables]);
-  const setCatchupLessons = useCallback((updater) => {
-    setWeeklyTimetables(prev => {
-      const current = {};
-      Object.entries(prev).forEach(([k, v]) => {
-        if (k.endsWith("|__catchup__")) current[k.split("|")[0]] = v.lessons || [];
-      });
-      const next = typeof updater === "function" ? updater(current) : updater;
-      const catchupUpdates = {};
-      Object.entries(next).forEach(([wk, lessons]) => {
-        const key = `${wk}|__catchup__`;
-        catchupUpdates[key] = { ...(prev[key] || {}), lessons };
-      });
-      return {
-        ...Object.fromEntries(Object.entries(prev).filter(([k]) => !k.endsWith("|__catchup__"))),
-        ...catchupUpdates,
-      };
-    });
-  }, [setWeeklyTimetables]);
   // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
   // Default empty = all days hidden. Session-scoped (not persisted).
   const [dayGhostsVisible, setDayGhostsVisible] = useState({});
@@ -830,8 +802,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     }
     return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
   });
-
-  const catchupData = { lessons: catchupLessons[weekKey] || [] };
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
   // Term-scoped enumeration of weekKeys: collects from weeklyTimetables keys
