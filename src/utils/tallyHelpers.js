@@ -186,7 +186,6 @@ export function computeAutoTallyDay(dateStr, weeklyTimetables, timetable, studen
           teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
           weekKey, weekLabel, weekNum: termWeekNum, termKey, day: dayName,
           status: "completed", reason: null, notes: lesson.isMakeup ? "Holiday catch-up" : "",
-          isHolidayCatchup: !!lesson.isMakeup,
           makeupEligible: false, madeUp: false,
           recordedAt: new Date().toISOString(), autoRecorded: true,
         });

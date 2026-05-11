@@ -2151,18 +2151,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     notify("Catch-up lesson placed: " + (staged.studentName || "") + " " + newDay + " " + slot.start);
   };
 
-  // Mark the oldest outstanding tally entry as madeUp for a student+instrument
-  const markOldestOwedAsMadeUp = (studentId, instrument) => {
-    const owed = tallyEntries
-      .filter(e => e.studentId === studentId && e.instrument === instrument && e.status === "missed" && e.makeupEligible && !e.madeUp)
-      .sort((a, b) => a.weekKey.localeCompare(b.weekKey));
-    if (owed.length > 0) {
-      const oldest = owed[0];
-      // TODO Spec 3 — catch-up subsystem rewrite replaces makeupForTallyId reference. Owes madeUp tracking to tallyEntries until then.
-      setTallyEntries(prev => prev.map(e => e.id === oldest.id ? { ...e, madeUp: true } : e));
-    }
-  };
-
   // Confirm a catch-up day — marks tally entries and locks the day
   // Missed tally grouped by student+instrument — derived from WTT.missed across all weeks.
   // WTT.missed entries don't carry a `status` field (status is implicit from the

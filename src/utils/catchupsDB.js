@@ -124,8 +124,9 @@ export async function loadCatchupsFromSupabase() {
  *                                 matching the project pattern.
  * @property {string} schoolId     schools.id (text — 8-char
  *                                 base36 from uid()).
- * @property {string} weekKey      Week the catchup is scheduled
- *                                 IN (e.g. "2026-W19"), not the
+ * @property {string} weekKey      Monday of the week the catchup
+ *                                 is scheduled in, as YYYY-MM-DD
+ *                                 (e.g. "2026-05-11"), not the
  *                                 week being resolved.
  * @property {string} day          Day name, Monday–Friday.
  * @property {string} time         Slot time as HH:MM (24-hour).

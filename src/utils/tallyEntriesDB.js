@@ -55,7 +55,6 @@ export async function loadTallyEntriesFromSupabase(userId) {
     madeUp:         row.made_up,
     autoRecorded:   row.auto_recorded,
     recordedAt:     row.recorded_at,
-    invoiced:       row.invoiced        || false,
   }));
 }
 
@@ -93,7 +92,6 @@ export async function syncTallyEntriesToSupabase(tallyEntries, userId) {
       made_up:         e.madeUp         || false,
       auto_recorded:   e.autoRecorded   || false,
       recorded_at:     e.recordedAt     || "",
-      invoiced:        e.invoiced       || false,
     }));
 
     // Batch upserts in chunks of 500
