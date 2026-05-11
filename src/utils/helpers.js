@@ -153,6 +153,24 @@ export function getTermWeekLabel(dateStr, termBreaks) {
 export const groupDisplayName = (l) =>
   l.groupName || l.studentNames?.map(n => n.split(" ")[0]).join(", ") || l.studentName || "Group";
 
+// Spec 4 cluster 2 — live-resolution variant of groupDisplayName.
+// Looks up the group's current member students by id and joins their
+// first names ("Ivy, Libby"). Matches the WTT card convention.
+// Falls back to the snapshot groupName, then "Group", if live data
+// is unavailable. Returns null for non-group lessons so the caller
+// can keep a clean ternary against the solo-student branch.
+export const groupDisplayNameLive = (lesson, groups, students) => {
+  if (!lesson?.isGroup) return null;
+  const grp = (groups || []).find(g => g.id === lesson.groupId);
+  const memberStudents = (grp?.studentIds || [])
+    .map(sid => (students || []).find(s => s.id === sid))
+    .filter(Boolean);
+  if (memberStudents.length > 0) {
+    return memberStudents.map(s => (s.name || "").split(" ")[0]).join(", ");
+  }
+  return lesson.groupName || "Group";
+};
+
 export const bandDisplayName = (lesson, members) =>
   lesson.bandName || lesson.groupName || (members && members.length > 0 ? members.map(m => m.name.split(" ")[0]).join(", ") : null) || "Band";
 

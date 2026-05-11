@@ -5,7 +5,7 @@
 import React, { useState, useMemo } from "react";
 import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
-import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose } from "../utils/helpers";
+import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive } from "../utils/helpers";
 import { deriveTallyRows } from "../utils/tallyDerive";
 import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
@@ -33,7 +33,7 @@ const formatReasonForTooltip = (prose) => {
   return m ? m[1] : prose;
 };
 
-export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], groups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
@@ -460,7 +460,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                   ? rows.filter(r => {
                       const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
                       const name = r.isGroup
-                        ? (r.groupName || "")
+                        ? (groupDisplayNameLive(r, groups, students) || "")
                         : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
                       return name.toLowerCase().includes(tallySearch.trim().toLowerCase());
                     })
@@ -486,7 +486,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                     // Resolve live name from students prop so renames immediately reflect in the tally
                     const liveStudent = lesson.isGroup ? null : students.find(s => s.id === lesson.studentId);
                     const displayName = lesson.isGroup
-                      ? (lesson.groupName || lesson.studentNames?.join(", ") || "Group")
+                      ? groupDisplayNameLive(lesson, groups, students)
                       : buildPreferredDisplayName(liveStudent?.name || lesson.studentName);
                     const student = liveStudent;
                     const className = student?.className || "";
@@ -610,7 +610,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                     });
                                   const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
                                   if (lesson.isGroup) {
-                                    const groupLabel = lesson.groupName || "Group";
+                                    const groupLabel = groupDisplayNameLive(lesson, groups, students) || "Group";
                                     const subject = `${groupLabel} — ${lesson.instrument} lessons — ${termLabel} summary`;
                                     const body = `Hi,\n\nI wanted to reach out with a summary of the ${groupLabel} ${lesson.instrument} group lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
                                     openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
