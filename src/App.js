@@ -19,7 +19,7 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
-import { loadCatchupsFromSupabase } from "./utils/catchupsDB";
+import { loadCatchupsFromSupabase, deleteCatchup } from "./utils/catchupsDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
@@ -1707,17 +1707,30 @@ export default function MusicTimetableApp() {
       return isFirstAddedLane;
     };
 
-    // Lesson count: MTT + WTT current+future (regular + catchup keys).
-    const mttCount = (timetable?.lessons || []).filter(lessonBelongsToLane).length;
+    // Spec 3 cluster 11b-A — catchup attribution to the lane uses the
+    // catchup's enrolment's teacherId, not the lessonBelongsToLane
+    // bucket_id/first-added heuristic. Future-safe for multi-teacher-
+    // per-day scenarios.
     const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
+    const catchupBelongsToLane = (c) => {
+      if (c.weekKey < currentMondayStr) return false;
+      if (c.day !== lane.day) return false;
+      if (c.schoolId !== lane.schoolId) return false;
+      const enrol = enrolments.find(e => e.id === c.enrolmentId);
+      return enrol?.teacherId === lane.teacherId;
+    };
+
+    // Lesson count: MTT + WTT current+future + catchups current+future.
+    const mttCount = (timetable?.lessons || []).filter(lessonBelongsToLane).length;
     let wttCount = 0;
     Object.entries(weeklyTimetables || {}).forEach(([key, data]) => {
       const [weekKey, suffix] = key.split("|");
-      if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
+      if (suffix !== lane.schoolId) return;
       if (weekKey < currentMondayStr) return;
       wttCount += (data.lessons || []).filter(lessonBelongsToLane).length;
     });
-    const total = mttCount + wttCount;
+    const catchupCount = (catchups || []).filter(catchupBelongsToLane).length;
+    const total = mttCount + wttCount + catchupCount;
 
     // Q9=b — count=0 fallback wording.
     const modalText = total === 0
@@ -1745,15 +1758,32 @@ export default function MusicTimetableApp() {
       const next = { ...prev };
       Object.entries(next).forEach(([key, data]) => {
         const [weekKey, suffix] = key.split("|");
-        if (suffix !== "__catchup__" && suffix !== lane.schoolId) return;
+        if (suffix !== lane.schoolId) return;
         if (weekKey < currentMondayStr) return;
         next[key] = { ...data, lessons: (data.lessons || []).filter(l => !lessonBelongsToLane(l)) };
       });
       return next;
     });
 
+    // Spec 3 cluster 11b-A — catchups for this lane are deleted from the
+    // canonical catchups Supabase table (not __catchup__-keyed WTT rows).
+    // Each delete is individually try/catch'd so one failure doesn't
+    // abort the rest; setCatchups runs once after the loop for atomic
+    // local state update.
+    const catchupsToRemove = (catchups || []).filter(catchupBelongsToLane);
+    if (catchupsToRemove.length > 0) {
+      for (const c of catchupsToRemove) {
+        try {
+          await deleteCatchup({ id: c.id });
+        } catch (e) {
+          logError(`Failed to delete catchup ${c.id} during lane removal`, e?.message || String(e));
+        }
+      }
+      setCatchups(prev => prev.filter(c => !catchupBelongsToLane(c)));
+    }
+
     try { notify(`Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
-  }, [sessionUserId, teachers, schools, teacherCoverage, timetable, weeklyTimetables, logError]);
+  }, [sessionUserId, teachers, schools, teacherCoverage, timetable, weeklyTimetables, catchups, setCatchups, enrolments, deleteCatchup, logError]);
 
   // Load data on mount — uses test data as fallback when storage is empty
   useEffect(() => {
@@ -3961,24 +3991,31 @@ export default function MusicTimetableApp() {
     }
 
     // ── Holiday catch-up schedule — only when relevant ──
-    const allCatchupEntries = Object.entries(weeklyTimetables || {})
-      .filter(([k]) => k.endsWith("|__catchup__"))
-      .sort(([a], [b]) => a.localeCompare(b));
-    if (allCatchupEntries.length > 0 && (ctx.catchup || currentPage === "weekly")) {
+    const catchupsByWeek = {};
+    for (const c of (catchups || [])) {
+      if (!catchupsByWeek[c.weekKey]) catchupsByWeek[c.weekKey] = [];
+      catchupsByWeek[c.weekKey].push(c);
+    }
+    const sortedCatchupWeekKeys = Object.keys(catchupsByWeek).sort();
+    if (sortedCatchupWeekKeys.length > 0 && (ctx.catchup || currentPage === "weekly")) {
       lines.push("## Holiday Catch-up Schedule");
       lines.push("(Make-up lessons scheduled during school holidays, at the home studio.)");
-      allCatchupEntries.forEach(([storageKey, data]) => {
-        const wk = storageKey.split("|")[0];
-        const catchupLessonsForWeek = (data.lessons || []).filter(l => !l.isCancelled);
-        if (catchupLessonsForWeek.length === 0) return;
+      sortedCatchupWeekKeys.forEach(wk => {
+        const ws = catchupsByWeek[wk];
         lines.push(`Week of ${wk}:`);
         const cpByDay = {};
-        catchupLessonsForWeek.forEach(l => { if (!cpByDay[l.day]) cpByDay[l.day] = []; cpByDay[l.day].push(l); });
+        ws.forEach(c => { if (!cpByDay[c.day]) cpByDay[c.day] = []; cpByDay[c.day].push(c); });
         ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].forEach(day => {
           if (cpByDay[day]) {
-            cpByDay[day].sort((a, b) => (a.start || "").localeCompare(b.start || ""));
-            cpByDay[day].forEach(l => {
-              lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${l.studentName || ""} (${l.instrument || "?"}) ${String.fromCharCode(8212)} ${l.teacherName || ""}`);
+            cpByDay[day].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
+            cpByDay[day].forEach(c => {
+              const enrol = enrolments.find(e => e.id === c.enrolmentId);
+              const studentName = students.find(s => s.id === enrol?.studentId)?.name || "";
+              const teacherName = teachers.find(t => t.id === enrol?.teacherId)?.name || "";
+              const startMin = timeToMin(c.time || "00:00");
+              const endMin = startMin + (c.durationMinutes ?? 30);
+              const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
+              lines.push(`  ${day} ${c.time}${String.fromCharCode(8211)}${endStr}: ${studentName} (${c.instrument || "?"}) ${String.fromCharCode(8212)} ${teacherName}`);
             });
           }
         });
@@ -6369,7 +6406,7 @@ export default function MusicTimetableApp() {
 
         <div style={{ padding: "28px 36px", maxWidth: 1200 }}>
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} enrolments={enrolments} teachers={teachers} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
+          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

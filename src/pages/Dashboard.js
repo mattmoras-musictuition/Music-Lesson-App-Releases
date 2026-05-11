@@ -109,7 +109,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -2204,27 +2204,30 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     const wdDate = new Date(wd.date + "T00:00:00");
                     const wdDow = wdDate.getDay();
                     const wdMon = new Date(wdDate); wdMon.setDate(wdDate.getDate() - (wdDow === 0 ? 6 : wdDow - 1));
-                    const lessons = (weeklyTimetables[toLocalDateStr(wdMon) + "|__catchup__"]?.lessons || []).filter(l => l.day === wd.day);
-                    if (lessons.length === 0) return null;
+                    const wdMonStr = toLocalDateStr(wdMon);
+                    const cs = (catchups || []).filter(c => c.weekKey === wdMonStr && c.day === wd.day);
+                    if (cs.length === 0) return null;
                     const byTeacher = {};
-                    for (const l of lessons) {
-                      if (!byTeacher[l.teacherId]) byTeacher[l.teacherId] = [];
-                      byTeacher[l.teacherId].push(l);
+                    for (const c of cs) {
+                      const enrol = enrolments.find(e => e.id === c.enrolmentId);
+                      const tid = enrol?.teacherId || "";
+                      if (!byTeacher[tid]) byTeacher[tid] = [];
+                      byTeacher[tid].push(c);
                     }
                     return (
                       <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
-                        {Object.entries(byTeacher).map(([tid, tLessons]) => {
-                          const sorted = tLessons.sort((a, b) => a.start.localeCompare(b.start));
+                        {Object.entries(byTeacher).map(([tid, tCatchups]) => {
+                          const sorted = tCatchups.sort((a, b) => (a.time || "").localeCompare(b.time || ""));
                           const first = sorted[0];
-                          const lastStart = sorted[sorted.length - 1].start;
-                          const [lh, lm] = lastStart.split(":").map(Number);
+                          const lastTime = sorted[sorted.length - 1].time || "";
+                          const [lh, lm] = lastTime.split(":").map(Number);
                           const endMin = lh * 60 + lm + 30;
                           const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
-                          const tName = teachers.find(tc => tc.id === tid)?.name || first.teacherName || "";
+                          const tName = teachers.find(tc => tc.id === tid)?.name || "";
                           return (
                             <span key={tid} style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 4px" }}>
                               {tName.split(" ").map(w => w[0]).join("")}
-                              <span style={{ fontWeight: 400, opacity: 0.9 }}>{toTimeLabel(first.start)}–{toTimeLabel(endStr)}</span>
+                              <span style={{ fontWeight: 400, opacity: 0.9 }}>{toTimeLabel(first.time)}–{toTimeLabel(endStr)}</span>
                             </span>
                           );
                         })}
@@ -2328,13 +2331,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const isHolidayWeek = termBreaksForStrip.some(tb => fullWeekDays[0].date >= tb.date && fullWeekDays[0].date <= (tb.endDate || tb.date));
         if (isHolidayWeek) {
           const friDate = new Date(fullWeekDays[4].date + "T00:00:00");
-          const catchupKey = calMondayStr + "|__catchup__";
-          const allCatchupLessons = weeklyTimetables[catchupKey]?.lessons || [];
+          const wkCatchups = (catchups || []).filter(c => c.weekKey === calMondayStr);
           ["Saturday", "Sunday"].forEach((dayName, i) => {
             const wkendDate = new Date(friDate); wkendDate.setDate(friDate.getDate() + 1 + i);
             const dateStr = toLocalDateStr(wkendDate);
-            const lessons = allCatchupLessons.filter(l => l.day === dayName);
-            if (lessons.length > 0) {
+            if (wkCatchups.some(c => c.day === dayName)) {
               expandedStripData.push({
                 day: dayName, date: dateStr, dayNum: wkendDate.getDate(), isNextWeek: false,
                 isTermBreak: true, isWeekendCatchup: true,
@@ -2400,38 +2401,42 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       const sdDate = new Date(sd.date + "T00:00:00");
                       const sdDow = sdDate.getDay();
                       const sdMon = new Date(sdDate); sdMon.setDate(sdDate.getDate() - (sdDow === 0 ? 6 : sdDow - 1));
-                      const lessons = (weeklyTimetables[toLocalDateStr(sdMon) + "|__catchup__"]?.lessons || []).filter(l => l.day === sd.day);
-                      if (lessons.length === 0) return null;
+                      const sdMonStr = toLocalDateStr(sdMon);
+                      const cs = (catchups || []).filter(c => c.weekKey === sdMonStr && c.day === sd.day);
+                      if (cs.length === 0) return null;
                       const byTeacher = {};
-                      for (const l of lessons) {
-                        if (!byTeacher[l.teacherId]) byTeacher[l.teacherId] = { lessons: [], name: l.teacherName };
-                        byTeacher[l.teacherId].lessons.push(l);
+                      for (const c of cs) {
+                        const enrol = enrolments.find(e => e.id === c.enrolmentId);
+                        const tid = enrol?.teacherId || "";
+                        const studentName = students.find(s => s.id === enrol?.studentId)?.name || "";
+                        if (!byTeacher[tid]) byTeacher[tid] = { lessons: [] };
+                        byTeacher[tid].lessons.push({ ...c, _studentName: studentName });
                       }
                       return (
                         <div>
                           <div style={sectionLabel}>Catch-up Lessons</div>
                           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                            {Object.entries(byTeacher).map(([tid, { lessons: tLessons, name: tName }]) => {
-                              const sorted = tLessons.sort((a, b) => a.start.localeCompare(b.start));
+                            {Object.entries(byTeacher).map(([tid, { lessons: tCatchups }]) => {
+                              const sorted = tCatchups.sort((a, b) => (a.time || "").localeCompare(b.time || ""));
                               const first = sorted[0];
-                              const lastStart = sorted[sorted.length - 1].start;
-                              const [lh, lm] = lastStart.split(":").map(Number);
+                              const lastTime = sorted[sorted.length - 1].time || "";
+                              const [lh, lm] = lastTime.split(":").map(Number);
                               const endMin = lh * 60 + lm + 30;
                               const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
                               const teacher = teachers.find(tc => tc.id === tid);
-                              const displayName = teacher?.name || tName || "Teacher";
+                              const displayName = teacher?.name || "Teacher";
                               return (
                                 <div key={tid} style={{ padding: "8px 14px", background: `${teacherColorMap[tid] || colors.accent}12`, borderRadius: 8, border: `1px solid ${teacherColorMap[tid] || colors.accent}30`, fontSize: 12, minWidth: 160 }}>
                                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                                     <span style={{ fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 5px", fontSize: 11 }}>{displayName.split(" ")[0]}</span>
-                                    <span style={{ fontSize: 11, color: colors.textMuted }}>{toTimeLabel(first.start)}–{toTimeLabel(endStr)}</span>
+                                    <span style={{ fontSize: 11, color: colors.textMuted }}>{toTimeLabel(first.time)}–{toTimeLabel(endStr)}</span>
                                     <span style={{ fontSize: 11, fontWeight: 600, color: colors.text }}>({sorted.length})</span>
                                   </div>
-                                  {sorted.map(l => (
-                                    <div key={l.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 11 }}>
-                                      <span style={{ color: colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{toTimeLabel(l.start)}</span>
-                                      <span style={{ color: colors.text }}>{l.studentName}</span>
-                                      {l.instrument && <span style={{ color: colors.textMuted }}>· {l.instrument}</span>}
+                                  {sorted.map(c => (
+                                    <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 11 }}>
+                                      <span style={{ color: colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{toTimeLabel(c.time)}</span>
+                                      <span style={{ color: colors.text }}>{c._studentName}</span>
+                                      {c.instrument && <span style={{ color: colors.textMuted }}>· {c.instrument}</span>}
                                     </div>
                                   ))}
                                 </div>
