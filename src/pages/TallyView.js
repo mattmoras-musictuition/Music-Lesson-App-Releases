@@ -5,7 +5,7 @@
 import React, { useState, useMemo } from "react";
 import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
-import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive } from "../utils/helpers";
+import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive, uid } from "../utils/helpers";
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
@@ -257,6 +257,68 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     const madeUp = visibleEntries.filter(e => e.madeUp).length;
     return { totalCells, completed, missed, makeupOwed, madeUp };
   }, [privateEntryMap, privateLessonRows, termWeeks, termWeekKeys]);
+
+  // ── Private cell click-cycle (Spec 4 cluster 6) ────────────────
+  // Left-click cycles through: blank → completed → missed-co → missed-nco → blank.
+  // All transitions are pure WTT writes under the `<weekKey>|__private__`
+  // storage key. No reason picker — missed entries get empty reason fields
+  // (the C1 tooltip falls through to "Missed" with no suffix). The catchup
+  // grid remains the place to schedule a make-up; the tally is purely
+  // a record-keeping surface.
+  const cyclePrivateCell = (weekKey, entry, lesson, future) => {
+    if (future) return;
+    const sk = `${weekKey}|__private__`;
+    const enrolmentId = lesson.enrolmentId;
+
+    let currentState;
+    if (!entry) currentState = "blank";
+    else if (entry.status === "completed") currentState = "completed";
+    else if (entry.status === "missed" && entry.makeupEligible === true && !entry.madeUp) currentState = "missed-co";
+    else if (entry.status === "missed" && entry.makeupEligible === false && !entry.madeUp) currentState = "missed-nco";
+    else {
+      console.warn("[private tally] unexpected starting state — no-op", { entry, weekKey, enrolmentId });
+      return;
+    }
+
+    const next = {
+      "blank": "completed",
+      "completed": "missed-co",
+      "missed-co": "missed-nco",
+      "missed-nco": "blank",
+    }[currentState];
+
+    setWeeklyTimetables(prev => {
+      const data = prev[sk] || { lessons: [], missed: [] };
+      const lessons = (data.lessons || []).filter(l => l.enrolmentId !== enrolmentId);
+      const missed = (data.missed || []).filter(m => m.enrolmentId !== enrolmentId);
+
+      if (next === "completed") {
+        lessons.push({
+          id: uid(), enrolmentId,
+          studentId: lesson.studentId, studentName: lesson.studentName,
+          instrument: lesson.instrument, schoolId: "__private__",
+          teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
+          day: "", isGroup: false,
+        });
+      } else if (next === "missed-co" || next === "missed-nco") {
+        missed.push({
+          id: uid(), enrolmentId,
+          studentId: lesson.studentId, studentName: lesson.studentName,
+          instrument: lesson.instrument, schoolId: "__private__",
+          teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
+          day: "", isGroup: false,
+          status: "missed",
+          reason: "", reasonDetail: "", notes: "",
+          makeupEligible: next === "missed-co",
+          madeUp: false,
+          cardNote: "",
+        });
+      }
+      // next === "blank" → both arrays already filtered, nothing to add.
+
+      return { ...prev, [sk]: { ...data, lessons, missed } };
+    });
+  };
 
   // ── Grouping ────────────────────────────────────────────────
   const groupedRows = useMemo(() => {
@@ -753,26 +815,21 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                       {termWeeks.map((w, wi) => {
                         const entry = rowEntries[wi];
                         const future = isFutureWeek(w.weekKey);
-                        const cellKey = `${lesson.lessonKey}|${w.weekKey}`;
                         const isHoliday = !!w.isHoliday;
-                        // Spec 4 cluster 5 — wire holiday-catchup map into the private
-                        // panel so private-student holiday catchups render. The map
-                        // already covers __private__ catchups (it's school-agnostic).
-                        const holidayCatchupEntry = isHoliday ? (holidayCatchupsMap[cellKey] || null) : null;
-                        const displayEntry = isHoliday ? holidayCatchupEntry : entry;
 
                         // Spec 3 cluster 8 — banking-eligible catchup completion (private section).
                         const bankingCatchup = (
-                          displayEntry?.status === "missed"
-                          && displayEntry.makeupEligible
-                          && !displayEntry.madeUp
+                          entry?.status === "missed"
+                          && entry.makeupEligible
+                          && !entry.madeUp
                           && lesson.enrolmentId
                         ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
                         const caughtUp = !!(bankingCatchup && isCatchupCompleted(bankingCatchup));
 
                         return (
                           <td key={w.weekKey}
-                            style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", cursor: "default", position: "relative",
+                            onClick={() => cyclePrivateCell(w.weekKey, entry, lesson, future)}
+                            style={{ padding: "6px 2px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", cursor: future ? "default" : "pointer", position: "relative",
                               background: isHoliday ? (darkMode ? "rgba(180,80,80,0.15)" : "rgba(248,113,113,0.13)")
                                 : hoveredWeekKey === w.weekKey ? (darkMode ? colors.sidebarHover : "#F3F4F6") : "transparent",
                               transition: "background 0.1s",
@@ -780,24 +837,22 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                             onMouseEnter={e => {
                               setHoveredWeekKey(w.weekKey);
                               const r = e.currentTarget.getBoundingClientRect();
-                              const madeUpWeekLabel = displayEntry?.madeUp && displayEntry?.madeUpWeekKey
-                                ? (termWeeks.find(tw => tw.weekKey === (displayEntry.madeUpWeekKey || "").split("|")[0])?.label || null)
+                              const madeUpWeekLabel = entry?.madeUp && entry?.madeUpWeekKey
+                                ? (termWeeks.find(tw => tw.weekKey === (entry.madeUpWeekKey || "").split("|")[0])?.label || null)
                                 : null;
-                              const missedReason = formatReasonForTooltip(getMissedReasonProse(displayEntry?.reason, displayEntry?.reasonDetail));
-                              const text = isHoliday
-                                ? (displayEntry?.status === "completed" ? "Holiday — Completed" : displayEntry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
-                                : displayEntry?.status === "removed" ? "Inactive"
-                                : displayEntry?.status === "completed" ? "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : "")
-                                : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
+                              const missedReason = formatReasonForTooltip(getMissedReasonProse(entry?.reason, entry?.reasonDetail));
+                              const text = entry?.status === "removed" ? "Inactive"
+                                : entry?.status === "completed" ? "Completed" + (entry.notes ? " — " + entry.notes : "")
+                                : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
                                 : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
-                                : displayEntry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
+                                : entry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
                                 : future ? "Future" : "Unmarked";
-                              setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: displayEntry?.status === "missed" });
+                              setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: entry?.status === "missed" });
                             }}
                             onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
                             <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                              background: displayEntry ? (displayEntry.status === "completed" ? `${colors.success}18` : displayEntry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : displayEntry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : displayEntry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
-                              <CellIcon entry={displayEntry} isFuture={future} caughtUp={caughtUp} />
+                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                              <CellIcon entry={entry} isFuture={future} caughtUp={caughtUp} />
                             </div>
                           </td>
                         );
