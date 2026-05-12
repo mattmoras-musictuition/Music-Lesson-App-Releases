@@ -367,7 +367,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
           if (termWeeksCount > 0) {
             lines.push({ id: uid(), type: "lesson", studentName: student.name,
               description: `${instr} Lessons`, qty: termWeeksCount, rate: indRate,
-              subtotal: termWeeksCount * indRate, schoolName: "(Private students)" });
+              subtotal: termWeeksCount * indRate, schoolName: "Private" });
           }
           if (prevTerm) {
             const { deductions, extras } = getEnrolmentTermDeductionMath({
@@ -382,12 +382,12 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
             if (deductions > 0) {
               lines.push({ id: uid(), type: "adjustment", studentName: student.name,
                 description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate,
-                subtotal: -deductions * indRate, schoolName: "(Private students)" });
+                subtotal: -deductions * indRate, schoolName: "Private" });
             }
             if (extras > 0) {
               lines.push({ id: uid(), type: "adjustment", studentName: student.name,
                 description: `${instr} – Extra Lessons`, qty: extras, rate: indRate,
-                subtotal: extras * indRate, schoolName: "(Private students)" });
+                subtotal: extras * indRate, schoolName: "Private" });
             }
           }
         }
@@ -1189,7 +1189,7 @@ export function InvoicingManager({
               __private__ sentinel row. Group rate is not applicable for
               private students; the column renders an em-dash placeholder. */}
           <div key="__private__" style={rowLast}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>(Private students)</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>Private</span>
             <div style={{ width: 140, display: "flex", justifyContent: "center", alignItems: "center", gap: 3 }}>
               <span style={{ fontSize: 13, color: colors.textMuted }}>$</span>
               <input type="number" step="0.5" min="0" value={rates["__private__"]?.individual ?? ""} placeholder="0.00"
