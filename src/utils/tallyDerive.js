@@ -44,6 +44,12 @@ export function deriveTallyCell({ enrolment, week, wttEntry }) {
   if (!wttEntry) return "blank";
 
   if (wttEntry.kind === "lesson") {
+    // Spec 4 cluster 6 — a lesson entry without a `day` is a manually-recorded
+    // entry (private-student click-cycle). It carries no scheduled time, so the
+    // per-day 6pm threshold doesn't apply — treat as completed unconditionally.
+    // Solo / school lessons always carry a `day` from MTT/WTT generation, so
+    // this branch never fires for them.
+    if (!wttEntry.day) return "completed";
     return isDayPast6pm(wttEntry.day, week.weekKey) ? "completed" : "blank";
   }
 
