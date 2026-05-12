@@ -3,10 +3,11 @@
 // ============================================================
 
 import React, { useState, useMemo } from "react";
-import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send } from "lucide-react";
+import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send, History } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive, uid } from "../utils/helpers";
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
+import { _genTallyHTML } from "../utils/tallyPdfHtml";
 import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
@@ -424,6 +425,192 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   const todayStr = melbourneToday();
   const isFutureWeek = (weekKey) => weekKey > todayStr;
 
+  // ── Previous-term preview (Spec 4 cluster 8) ───────────────
+  // Computes lazy on click. The button is disabled when no earlier
+  // term is reachable in getTerms.
+  const prevTermIdx = currentTerm
+    ? getTerms.findIndex(t => t.key === currentTerm.key) - 1
+    : -1;
+  const prevTermAvailable = prevTermIdx >= 0;
+
+  const handlePreviewPrevTerm = () => {
+    if (!prevTermAvailable) return;
+    const prevTerm = getTerms[prevTermIdx];
+    if (!prevTerm) return;
+
+    // Build prevTermWeeks — mirrors the existing termWeeks useMemo but
+    // bounds at prevTerm.end (no today-extension; prev term is past).
+    const prevTermWeeks = [];
+    const prevMonday = getMondayOf(prevTerm.start);
+    let w = new Date(prevMonday);
+    let weekNum = 1;
+    while (w <= prevTerm.end) {
+      const weekKey = toLocalDateStr(w);
+      const fri = new Date(w); fri.setDate(fri.getDate() + 4);
+      const inBreak = termBreaks.some(tb => {
+        const bs = tb.date; const be = tb.endDate || tb.date;
+        return weekKey >= bs && toLocalDateStr(fri) <= be;
+      });
+      if (!inBreak) prevTermWeeks.push({ weekKey, weekNum, label: `W${weekNum}` });
+      weekNum++;
+      w = new Date(w); w.setDate(w.getDate() + 7);
+    }
+    // Append holiday weeks from the break following prevTerm.
+    const nextBreak = termBreaks.find(tb => {
+      const bs = new Date(tb.date + "T00:00:00");
+      return bs > prevTerm.end;
+    });
+    if (nextBreak) {
+      const breakStart = nextBreak.date;
+      const breakEnd = nextBreak.endDate || nextBreak.date;
+      const breakStartMon = getMondayOf(new Date(breakStart + "T00:00:00"));
+      let hw = new Date(breakStartMon);
+      let hNum = 1;
+      while (toLocalDateStr(hw) <= breakEnd) {
+        const hwStr = toLocalDateStr(hw);
+        if (hwStr >= breakStart) {
+          prevTermWeeks.push({ weekKey: hwStr, weekNum: hNum, label: `H${hNum}`, isHoliday: true });
+          hNum++;
+        }
+        hw = new Date(hw); hw.setDate(hw.getDate() + 7);
+      }
+    }
+
+    // Re-derive rows + entries for the prev term. Derivers are pure
+    // functions of their inputs; reusing all other inputs as-is.
+    const { tallyRows: prevTallyRows, entryMap: prevEntryMap } = deriveTallyRows({
+      enrolments, students, termWeeks: prevTermWeeks,
+      weeklyTimetables, timetable, schoolFilter: "all",
+    });
+    const { tallyRows: prevPrivateLessonRows, entryMap: prevPrivateEntryMap } = derivePrivateTallyRows({
+      enrolments, students, termWeeks: prevTermWeeks,
+      weeklyTimetables, teachers,
+    });
+
+    // Prev stats — mirrors the on-screen stats useMemo shape.
+    const prevTermWeekKeys = new Set(prevTermWeeks.filter(wk => !wk.isHoliday).map(wk => wk.weekKey));
+    const prevTermWeekCount = prevTermWeeks.filter(wk => !wk.isHoliday).length;
+    const computeStats = (rows, entries) => {
+      const keySet = new Set(rows.map(r => r.lessonKey));
+      const visible = Object.values(entries).filter(e => keySet.has(e.lessonKey) && prevTermWeekKeys.has(e.weekKey));
+      const removed = visible.filter(e => e.status === "removed").length;
+      const totalCells = rows.length * prevTermWeekCount - removed;
+      const completed = visible.filter(e => e.status === "completed").length;
+      const missed = visible.filter(e => e.status === "missed").length;
+      const makeupOwed = visible.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
+      const madeUp = visible.filter(e => e.madeUp).length;
+      return { totalCells, completed, missed, makeupOwed, madeUp, unmarked: totalCells - completed - missed };
+    };
+    const prevStats = computeStats(prevTallyRows, prevEntryMap);
+    const prevPrivateStats = computeStats(prevPrivateLessonRows, prevPrivateEntryMap);
+
+    // Prev holiday catchups map — mirrors the on-screen holidayCatchupsMap useMemo.
+    const prevHolidayCatchupsMap = {};
+    const prevHolidayWeekKeys = new Set(prevTermWeeks.filter(wk => wk.isHoliday).map(wk => wk.weekKey));
+    if (prevHolidayWeekKeys.size > 0) {
+      for (const c of (catchups || [])) {
+        if (!prevHolidayWeekKeys.has(c.weekKey)) continue;
+        const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+        if (!en) continue;
+        const lessonKey = en.isGroup ? `group|${en.groupId}` : `${en.studentId}|${c.instrument}`;
+        prevHolidayCatchupsMap[`${lessonKey}|${c.weekKey}`] = { status: "completed", isHolidayCatchup: true };
+      }
+    }
+
+    // Prev grouped rows — mirrors the on-screen groupedRows useMemo
+    // using the current groupBy state value, so the preview matches the
+    // user's current grouping selection.
+    const DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    let prevGroupedRows;
+    if (groupBy === "day_school") {
+      const acc = {};
+      for (const r of prevTallyRows) {
+        const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
+        const dayIdx = DAY_ORDER.indexOf(r.day || "");
+        const k = `${String(dayIdx).padStart(2, "0")}|${r.day || "Unknown"} — ${schoolName}`;
+        if (!acc[k]) acc[k] = [];
+        acc[k].push(r);
+      }
+      prevGroupedRows = Object.entries(acc)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, rows]) => [k.split("|")[1], rows.sort((a, b) => (a.studentName || "").localeCompare(b.studentName || ""))]);
+    } else if (groupBy === "teacher") {
+      const acc = {};
+      for (const r of prevTallyRows) {
+        const k = r.teacherName || "Unknown";
+        if (!acc[k]) acc[k] = [];
+        acc[k].push(r);
+      }
+      prevGroupedRows = Object.entries(acc).sort(([a], [b]) => a.localeCompare(b));
+    } else if (groupBy === "day") {
+      const acc = {};
+      for (const r of prevTallyRows) {
+        const k = r.day || "Unknown";
+        if (!acc[k]) acc[k] = [];
+        acc[k].push(r);
+      }
+      prevGroupedRows = Object.entries(acc).sort(([a], [b]) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b));
+    } else if (groupBy === "school") {
+      const acc = {};
+      for (const r of prevTallyRows) {
+        const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
+        if (!acc[schoolName]) acc[schoolName] = [];
+        acc[schoolName].push(r);
+      }
+      prevGroupedRows = Object.entries(acc).sort(([a], [b]) => a.localeCompare(b));
+    } else if (groupBy === "makeups") {
+      const withCounts = prevTallyRows.map(r => {
+        const makeupCount = Object.values(prevEntryMap).filter(e =>
+          e.lessonKey === r.lessonKey && e.status === "missed" && e.makeupEligible && !e.madeUp
+        ).length;
+        return { ...r, _makeupCount: makeupCount };
+      }).filter(r => r._makeupCount > 0)
+        .sort((a, b) => b._makeupCount - a._makeupCount);
+      if (withCounts.length === 0) {
+        prevGroupedRows = [["No makeups owed", []]];
+      } else {
+        const acc = {};
+        for (const r of withCounts) {
+          const k = `${r._makeupCount} makeup${r._makeupCount !== 1 ? "s" : ""} owed`;
+          if (!acc[k]) acc[k] = [];
+          acc[k].push(r);
+        }
+        prevGroupedRows = Object.entries(acc);
+      }
+    } else {
+      prevGroupedRows = [["All Students", prevTallyRows]];
+    }
+
+    const html = _genTallyHTML({
+      tallyRows: prevTallyRows,
+      entryMap: prevEntryMap,
+      termWeeks: prevTermWeeks,
+      groupedRows: prevGroupedRows,
+      stats: prevStats,
+      holidayCatchupsMap: prevHolidayCatchupsMap,
+      schools, students, groups,
+      privateLessonRows: prevPrivateLessonRows,
+      privateEntryMap: prevPrivateEntryMap,
+      privateStats: prevPrivateStats,
+      term: prevTerm,
+      isFutureWeek: () => false,
+    });
+
+    const title = `Previous term tally — ${prevTerm.label || ""}`;
+    if (window.electronAPI?.openInvoicePreview) {
+      window.electronAPI.openInvoicePreview(html, title).catch(err => {
+        console.warn("[tally preview] IPC failed, falling back to window.open:", err);
+        const fb = window.open("", "_blank");
+        if (!fb) { alert("Pop-ups are blocked — please allow pop-ups and try again."); return; }
+        fb.document.write(html); fb.document.close();
+      });
+      return;
+    }
+    const fb = window.open("", "_blank");
+    if (!fb) { alert("Pop-ups are blocked — please allow pop-ups and try again."); return; }
+    fb.document.write(html); fb.document.close();
+  };
+
   // ── Render ──────────────────────────────────────────────────
   const pageColor = PAGE_COLORS.tally;
   const headerBg = colors.sidebarHover;
@@ -462,6 +649,11 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             <option value="school">By School</option>
             <option value="makeups">Makeups Owed</option>
           </select>
+          <Btn onClick={handlePreviewPrevTerm} disabled={!prevTermAvailable}
+            style={{ opacity: prevTermAvailable ? 1 : 0.4, cursor: prevTermAvailable ? "pointer" : "default" }}
+            title={prevTermAvailable ? "Open previous term tally in a separate window" : "No earlier term available"}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><History size={13} /> Preview previous term</span>
+          </Btn>
           {onExport && <Btn onClick={() => onExport(null, "", "tally")}><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Send size={13} /> Export</span></Btn>}
         </div>}>
         Master Tally
