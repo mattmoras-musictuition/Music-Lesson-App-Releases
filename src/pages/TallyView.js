@@ -270,14 +270,25 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     const sk = `${weekKey}|__private__`;
     const enrolmentId = lesson.enrolmentId;
 
+    // State detection treats anything that isn't a meaningful state-shape
+    // produced by C6's own write path as "blank" — including null entries,
+    // shim entries with status="removed" (pre-startDate cells), or any
+    // status value outside the C6 4-state vocabulary. The cycle writes a
+    // fresh entry; any pre-existing shim for this (enrolmentId, weekKey)
+    // gets stripped by the filters in the setWeeklyTimetables callback.
     let currentState;
-    if (!entry) currentState = "blank";
-    else if (entry.status === "completed") currentState = "completed";
-    else if (entry.status === "missed" && entry.makeupEligible === true && !entry.madeUp) currentState = "missed-co";
-    else if (entry.status === "missed" && entry.makeupEligible === false && !entry.madeUp) currentState = "missed-nco";
-    else {
-      console.warn("[private tally] unexpected starting state — no-op", { entry, weekKey, enrolmentId });
+    if (entry?.status === "completed") {
+      currentState = "completed";
+    } else if (entry?.status === "missed" && entry.makeupEligible === true && !entry.madeUp) {
+      currentState = "missed-co";
+    } else if (entry?.status === "missed" && entry.makeupEligible === false && !entry.madeUp) {
+      currentState = "missed-nco";
+    } else if (entry?.status === "missed" && entry.madeUp === true) {
+      // Genuinely unexpected — C6's write path never produces madeUp:true.
+      console.warn("[private tally] missed-with-madeUp state — no-op", { entry, weekKey, enrolmentId });
       return;
+    } else {
+      currentState = "blank";
     }
 
     const next = {
@@ -816,15 +827,9 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                         const entry = rowEntries[wi];
                         const future = isFutureWeek(w.weekKey);
                         const isHoliday = !!w.isHoliday;
-
-                        // Spec 3 cluster 8 — banking-eligible catchup completion (private section).
-                        const bankingCatchup = (
-                          entry?.status === "missed"
-                          && entry.makeupEligible
-                          && !entry.madeUp
-                          && lesson.enrolmentId
-                        ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
-                        const caughtUp = !!(bankingCatchup && isCatchupCompleted(bankingCatchup));
+                        // Spec 4 cluster 6 patch — private rows are manual-only.
+                        // No banking-catchup display derivation; the cell's
+                        // appearance reflects only the entry in privateEntryMap.
 
                         return (
                           <td key={w.weekKey}
@@ -844,15 +849,14 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                               const text = entry?.status === "removed" ? "Inactive"
                                 : entry?.status === "completed" ? "Completed" + (entry.notes ? " — " + entry.notes : "")
                                 : entry?.status === "missed" && entry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
-                                : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
                                 : entry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
                                 : future ? "Future" : "Unmarked";
                               setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: entry?.status === "missed" });
                             }}
                             onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
                             <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
-                              <CellIcon entry={entry} isFuture={future} caughtUp={caughtUp} />
+                              background: entry ? (entry.status === "completed" ? `${colors.success}18` : entry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : entry.madeUp ? "rgba(52,69,101,0.07)" : entry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
+                              <CellIcon entry={entry} isFuture={future} caughtUp={false} />
                             </div>
                           </td>
                         );
