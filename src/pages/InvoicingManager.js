@@ -343,13 +343,65 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         }
       }
 
+      // ── Private-student path (Spec 4 cluster 7) ───────────────────────
+      // Mirrors the main path's emit pattern but reads from enrolments (no
+      // MTT entries exist for private students). Base line bills the term's
+      // Monday-anchored week count at the private rate. Adjustment line
+      // routes through the shared math helper, which already enforces the
+      // "max one of deductions/extras per (enrolmentId, instrument)"
+      // semantics. The fallback below is gated on !isPrivate so private
+      // students never fall through to it.
+      const isPrivate = student.schoolId === "__private__";
+      if (isPrivate && indRate > 0) {
+        // Count Monday-anchored weeks overlapping [termInfo.start, termInfo.end].
+        // A week counts if it contains at least one term day — handles terms
+        // that start or end mid-week (e.g. Tuesday public-holiday delay).
+        const _toMon = (ds) => { const d = new Date(ds + "T00:00:00"); while (d.getDay() !== 1) d.setDate(d.getDate() - 1); return d; };
+        const startMon = _toMon(termInfo.start);
+        const endMon = _toMon(termInfo.end);
+        const termWeeksCount = Math.round((endMon.getTime() - startMon.getTime()) / (7 * 86400000)) + 1;
+
+        const privEnrolments = (enrolments || []).filter(en => en.studentId === student.id && !en.isGroup);
+        for (const en of privEnrolments) {
+          const instr = en.instrument;
+          if (termWeeksCount > 0) {
+            lines.push({ id: uid(), type: "lesson", studentName: student.name,
+              description: `${instr} Lessons`, qty: termWeeksCount, rate: indRate,
+              subtotal: termWeeksCount * indRate, schoolName: "(Private students)" });
+          }
+          if (prevTerm) {
+            const { deductions, extras } = getEnrolmentTermDeductionMath({
+              weeklyTimetables,
+              catchups,
+              enrolmentId: en.id,
+              instrument: instr,
+              prevTerm,
+              interruptions,
+              nextTermStart: termInfo.start,
+            });
+            if (deductions > 0) {
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+                description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate,
+                subtotal: -deductions * indRate, schoolName: "(Private students)" });
+            }
+            if (extras > 0) {
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+                description: `${instr} – Extra Lessons`, qty: extras, rate: indRate,
+                subtotal: extras * indRate, schoolName: "(Private students)" });
+            }
+          }
+        }
+      }
+
       // ── Enrolment-based fallback (private / non-timetabled students) ──
       // Runs only when the student has no individual MTT lessons AND is not in
       // any scheduled group. Forward-projects current-term billing using a
       // (instrument, day) frequency derived from the student's prev-term WTT
       // lessons. Per-enrolment deductions/extras come from HELPER 4.
+      // Spec 4 cluster 7 — gated on !isPrivate so private students take the
+      // dedicated branch above instead of falling through here.
       const isInAnyGroup = (groups || []).some(g => g.status === "scheduled" && (g.studentIds || []).includes(student.id));
-      if (Object.keys(byInstr).length === 0 && indRate > 0 && !isInAnyGroup) {
+      if (!isPrivate && Object.keys(byInstr).length === 0 && indRate > 0 && !isInAnyGroup) {
         // Walk prev-term WTT once: capture day-frequency per instrument (for
         // forward-projection) and the union of instruments touched by lessons
         // or missed entries (for deduction iteration).
@@ -1107,7 +1159,7 @@ export function InvoicingManager({
 
       {/* School Rates */}
       <button style={secHdr(sections.rates)} onClick={() => setSections(p => ({ ...p, rates: !p.rates }))}>
-        <span style={{ fontWeight: 700, fontSize: 14, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}><DollarSign size={14}/> School Rates</span>
+        <span style={{ fontWeight: 700, fontSize: 14, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}><DollarSign size={14}/> Rates</span>
         {sections.rates ? <ChevronUp size={15} style={{ color: "rgba(255,255,255,.6)" }}/> : <ChevronDown size={15} style={{ color: "rgba(255,255,255,.6)" }}/>}
       </button>
       {sections.rates && (
@@ -1118,8 +1170,8 @@ export function InvoicingManager({
             <span style={{ fontSize: 11, fontWeight: 700, color: colors.textMuted, width: 140, textAlign: "center", textTransform: "uppercase", letterSpacing: ".05em" }}>Group / lesson</span>
           </div>
           {schools.length === 0 && <div style={{ padding: "20px 18px", color: colors.textMuted, fontSize: 13 }}>No schools added yet.</div>}
-          {schools.map((sc, i) => (
-            <div key={sc.id} style={i === schools.length - 1 ? rowLast : row}>
+          {schools.filter(sc => sc.id !== "__private__").map(sc => (
+            <div key={sc.id} style={row}>
               <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>{sc.name}</span>
               {["individual","group"].map(field => (
                 <div key={field} style={{ width: 140, display: "flex", justifyContent: "center", alignItems: "center", gap: 3 }}>
@@ -1131,6 +1183,23 @@ export function InvoicingManager({
               ))}
             </div>
           ))}
+          {/* Spec 4 cluster 7 — explicit private-students rate row. Appended
+              independently of the schools array so the editor surfaces it even
+              when the upstream schools collection doesn't yet contain the
+              __private__ sentinel row. Group rate is not applicable for
+              private students; the column renders an em-dash placeholder. */}
+          <div key="__private__" style={rowLast}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>(Private students)</span>
+            <div style={{ width: 140, display: "flex", justifyContent: "center", alignItems: "center", gap: 3 }}>
+              <span style={{ fontSize: 13, color: colors.textMuted }}>$</span>
+              <input type="number" step="0.5" min="0" value={rates["__private__"]?.individual ?? ""} placeholder="0.00"
+                onChange={e => setRate("__private__", "individual", e.target.value)}
+                style={{ ...inp, width: 80, textAlign: "center" }}/>
+            </div>
+            <div style={{ width: 140, display: "flex", justifyContent: "center", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: colors.textMuted }}>—</span>
+            </div>
+          </div>
           <div style={{ padding: "10px 18px", borderTop: `1px solid ${colors.borderLight}`, background: colors.bg }}>
             <span style={{ fontSize: 12, color: colors.textMuted }}>Rates save automatically as you type.</span>
           </div>
