@@ -36,6 +36,36 @@ const QUICK_EMOJIS = [
   "🙏","🎉","✅","🫡","💪","👏","🤔","😍",
 ];
 
+// Allow only inline formatting tags from execCommand bold/italic/underline +
+// the <br> the contentEditable inserts on Shift+Enter. Anything else gets
+// unwrapped (text content preserved). Applied at write-time and again at
+// render-time (defence in depth).
+const ALLOWED_TAGS = new Set(["B", "I", "U", "BR"]);
+function sanitizeMessageHtml(rawHtml) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${rawHtml}</div>`, "text/html");
+  const root = doc.body.firstChild;
+  const escape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  function walk(node) {
+    let out = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += escape(child.nodeValue);
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = child.tagName;
+        if (ALLOWED_TAGS.has(tag)) {
+          if (tag === "BR") out += "<br>";
+          else out += `<${tag.toLowerCase()}>${walk(child)}</${tag.toLowerCase()}>`;
+        } else {
+          out += walk(child); // unwrap unknown tags, keep their text content
+        }
+      }
+    }
+    return out;
+  }
+  return walk(root);
+}
+
 // ── Component ─────────────────────────────────────────────────
 
 export function MessagesView({
@@ -71,7 +101,9 @@ export function MessagesView({
   // markAsRead. Sidebar badge sums this.
   const [unreadCounts,   setUnreadCounts]   = useState({}); // threadId → integer count
 
-  const [input,          setInput]          = useState("");
+  // Composer empty-state flag drives the send-button disabled check.
+  // Content itself lives in the contentEditable DOM (uncontrolled — see composerRef).
+  const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   const [sending,        setSending]        = useState(false);
   const [loading,        setLoading]        = useState(true);
   const [loadingMsgs,    setLoadingMsgs]    = useState(false);
@@ -115,7 +147,7 @@ export function MessagesView({
 
   const messagesEndRef       = useRef(null);
   const messagesContainerRef = useRef(null);
-  const inputRef             = useRef(null);
+  const composerRef             = useRef(null);
   const activeChannelRef     = useRef(null); // realtime subscription for active thread
   const globalChannelRef     = useRef(null); // realtime subscription for badge updates
   const activeThreadIdRef    = useRef(null); // mirror of activeThreadId readable in closures
@@ -634,7 +666,7 @@ export function MessagesView({
 
   // ── Focus input when thread changes ─────────────────────────
   useEffect(() => {
-    if (activeThreadId) setTimeout(() => inputRef.current?.focus(), 80);
+    if (activeThreadId) setTimeout(() => composerRef.current?.focus(), 80);
   }, [activeThreadId]);
 
   // ── Typing indicator broadcast ───────────────────────────────
@@ -650,13 +682,30 @@ export function MessagesView({
 
   // ── Send message ─────────────────────────────────────────────
   const sendMessage = async () => {
-    const body = input.trim();
-    if (!body && !pendingAttachment) return;
+    const el = composerRef.current;
+    const plainText = (el?.innerText || "").trim();
+    const rawHtml = el?.innerHTML || "";
+    if (!plainText && !pendingAttachment) return;
     if (!activeThreadId || sending) return;
     setSending(true);
     const att = pendingAttachment;
     const replyRef = replyingTo;
-    setInput("");
+    const capturedHtml = rawHtml; // for rollback on error
+
+    // Sanitise. If the sanitised HTML round-trips to the plain text (with
+    // \n → <br>), the message has no formatting — store body only and leave
+    // body_html null. This preserves the historical row shape for plain
+    // messages so old readers can't tell new code shipped.
+    const sanitisedHtml = sanitizeMessageHtml(rawHtml);
+    const plainAsHtml = plainText
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/\n/g, "<br>");
+    const isFormatted = sanitisedHtml.replace(/^(<br>)+|(<br>)+$/g, "") !==
+                        plainAsHtml.replace(/^(<br>)+|(<br>)+$/g, "");
+    const bodyHtmlToWrite = isFormatted ? sanitisedHtml : null;
+
+    if (el) el.innerHTML = "";
+    setIsComposerEmpty(true);
     setPendingAttachment(null);
     setReplyingTo(null);
 
@@ -665,7 +714,8 @@ export function MessagesView({
       thread_id: activeThreadId,
       sender_id: ADMIN_ID,
       sender_type: ADMIN_TYPE,
-      body,
+      body: plainText,
+      body_html: bodyHtmlToWrite,
       attachment_url: att?.url || null,
       attachment_type: att?.type || null,
       reply_to_id: replyingTo?.id || null,
@@ -676,9 +726,11 @@ export function MessagesView({
     setLastMessages(prev => ({ ...prev, [activeThreadId]: optimistic }));
 
     try {
+      const insertRow = { thread_id: activeThreadId, sender_id: ADMIN_ID, sender_type: ADMIN_TYPE, body: plainText, attachment_url: att?.url || null, attachment_type: att?.type || null, reply_to_id: replyingTo?.id || null };
+      if (bodyHtmlToWrite) insertRow.body_html = bodyHtmlToWrite;
       const { data, error } = await supabase
         .from("messages")
-        .insert({ thread_id: activeThreadId, sender_id: ADMIN_ID, sender_type: ADMIN_TYPE, body, attachment_url: att?.url || null, attachment_type: att?.type || null, reply_to_id: replyingTo?.id || null })
+        .insert(insertRow)
         .select()
         .single();
       if (error || !data) {
@@ -696,7 +748,10 @@ export function MessagesView({
     } catch (err) {
       console.error("sendMessage error:", err);
       setMessages(prev => prev.filter(m => m.id !== optimistic.id));
-      setInput(body);
+      if (composerRef.current) {
+        composerRef.current.innerHTML = capturedHtml;
+        setIsComposerEmpty(!(composerRef.current.innerText || "").trim());
+      }
       setPendingAttachment(att);
       setReplyingTo(replyRef);
       notify?.("Failed to send message", "danger");
@@ -1156,7 +1211,14 @@ export function MessagesView({
                                   </div>
                                 );
                               })()}
-                              {msg.body}
+                              {msg.body_html && msg.body_html.trim() ? (
+                                <span
+                                  style={{ whiteSpace: "pre-wrap" }}
+                                  dangerouslySetInnerHTML={{ __html: sanitizeMessageHtml(msg.body_html) }}
+                                />
+                              ) : (
+                                msg.body
+                              )}
                               {/* Reaction pills — outer bottom corner */}
                               {Object.keys(reactionGroups).length > 0 && (
                                 <div style={{ position: "absolute", bottom: -14, ...(isMe ? { right: 6 } : { left: 6 }), display: "flex", flexDirection: isMe ? "row-reverse" : "row", flexWrap: "wrap", gap: 3, zIndex: 10 }}>
@@ -1280,45 +1342,51 @@ export function MessagesView({
                   >
                     {uploadingFile ? <span style={{ fontSize: 11 }}>…</span> : <Paperclip size={14} />}
                   </button>
-                  <textarea
-                    ref={inputRef}
-                    value={input}
-                    onChange={e => {
-                      setInput(e.target.value);
-                      e.target.style.height = "auto";
-                      e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
-                      if (e.target.value.trim()) broadcastTyping();
+                  <style>{`.mv-composer:empty::before{content:attr(data-placeholder);color:${colors.textMuted};pointer-events:none;}`}</style>
+                  <div
+                    ref={composerRef}
+                    className="mv-composer"
+                    contentEditable
+                    suppressContentEditableWarning
+                    data-placeholder="Message… (Enter to send, Shift+Enter for new line)"
+                    onInput={e => {
+                      const text = (e.currentTarget.innerText || "").trim();
+                      setIsComposerEmpty(text === "");
+                      if (text) broadcastTyping();
                     }}
                     onKeyDown={e => {
-                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+                      const mod = e.metaKey || e.ctrlKey;
+                      if (mod && (e.key === "b" || e.key === "B")) { e.preventDefault(); document.execCommand("bold"); return; }
+                      if (mod && (e.key === "i" || e.key === "I")) { e.preventDefault(); document.execCommand("italic"); return; }
+                      if (mod && (e.key === "u" || e.key === "U")) { e.preventDefault(); document.execCommand("underline"); return; }
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); return; }
                       if (e.key === "Escape") { setReplyingTo(null); setEmojiPickerMsgId(null); }
                     }}
-                    placeholder="Message… (Enter to send, Shift+Enter for new line)"
-                    rows={1}
                     style={{
                       flex: 1, padding: "8px 12px",
                       border: `1px solid ${colors.inputBorder}`,
                       borderRadius: 10, fontSize: 13, fontFamily: "inherit",
-                      resize: "none", color: colors.text, background: colors.inputBg,
-                      outline: "none", lineHeight: 1.5, overflowY: "hidden",
-                      minHeight: 36, maxHeight: 120,
+                      color: colors.text, background: colors.inputBg,
+                      outline: "none", lineHeight: 1.5,
+                      minHeight: 36, maxHeight: 120, overflowY: "auto",
+                      whiteSpace: "pre-wrap", wordBreak: "break-word",
                     }}
-                    onFocus={e => e.target.style.borderColor = colors.accent}
-                    onBlur={e => e.target.style.borderColor = colors.inputBorder}
+                    onFocus={e => e.currentTarget.style.borderColor = colors.accent}
+                    onBlur={e => e.currentTarget.style.borderColor = colors.inputBorder}
                   />
                   <button
                     onClick={sendMessage}
-                    disabled={(!input.trim() && !pendingAttachment) || sending}
+                    disabled={(isComposerEmpty && !pendingAttachment) || sending}
                     title="Send (Enter)"
                     style={{
                       width: 36, height: 36, borderRadius: 9, border: "none",
-                      background: (input.trim() || pendingAttachment) ? colors.accent : colors.border,
-                      color: "#fff", cursor: (input.trim() || pendingAttachment) ? "pointer" : "default",
+                      background: (!isComposerEmpty || pendingAttachment) ? colors.accent : colors.border,
+                      color: "#fff", cursor: (!isComposerEmpty || pendingAttachment) ? "pointer" : "default",
                       display: "flex", alignItems: "center", justifyContent: "center",
                       flexShrink: 0, transition: "background 0.15s",
                     }}
-                    onMouseEnter={e => { if (input.trim() || pendingAttachment) e.currentTarget.style.background = colors.accentDark; }}
-                    onMouseLeave={e => { if (input.trim() || pendingAttachment) e.currentTarget.style.background = colors.accent; }}
+                    onMouseEnter={e => { if (!isComposerEmpty || pendingAttachment) e.currentTarget.style.background = colors.accentDark; }}
+                    onMouseLeave={e => { if (!isComposerEmpty || pendingAttachment) e.currentTarget.style.background = colors.accent; }}
                   >
                     <Send size={14} />
                   </button>
