@@ -9,7 +9,8 @@ import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors } from
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
-import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, findOpenCatchups } from "../utils/tallyDerive";
+import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
+import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
@@ -144,6 +145,23 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const today = melbourneNow();
   const monday = getCurrentWeekMonday();
   const todayStr = toLocalDateStr(today);
+
+  // ── Term weeks (shared with TallyView via src/utils/termWeeks.js) ──
+  // Hoisted here so both sidebarAlertCount (L1383 catch-ups badge) and
+  // the alerts-panel render block (L2676 catch-ups chip) can feed
+  // termWeeks into getOpenCatchupRows.
+  const termBreaks = useMemo(() =>
+    interruptions.filter(i => i.type === "term_break")
+      .reduce((acc, i) => { if (!acc.find(x => x.date === i.date)) acc.push(i); return acc; }, [])
+      .sort((a, b) => a.date.localeCompare(b.date)),
+    [interruptions]
+  );
+  const terms = useMemo(() => getTerms(termBreaks, melbourneNow()), [termBreaks]);
+  const currentTerm = useMemo(() => getCurrentTerm(terms, melbourneNow()), [terms]);
+  const termWeeks = useMemo(
+    () => getTermWeeks({ activeTerm: currentTerm, termBreaks, now: melbourneNow() }),
+    [currentTerm, termBreaks]
+  );
   // After 6pm Fri / Sat / Sun, calendar rolls to next week — progress bar should match
   const _tdow = today.getDay(); const _tHour = today.getHours();
   const _rollFwd = (_tdow === 5 && _tHour >= 18) || _tdow === 6 || _tdow === 0;
@@ -1301,13 +1319,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     setTriageLoading(prev => ({ ...prev, [email.id]: false }));
   }, [schools, teachers, students, recordUsage, emailStyle]);
 
-  // Alert dismissals — keyed by groupType, reset at midnight
+  // Alert dismissals — keyed by groupType. Persist across days; the only
+  // way to restore dismissed alerts is the refresh button on the alerts
+  // panel header (Dashboard.js, "Restore dismissed alerts" RotateCcw).
   const [alertDismissals, setAlertDismissals] = React.useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.alertDismissals) || "{}");
-      if (stored.date !== todayStr) return { date: todayStr, dismissed: {} };
-      return stored;
-    } catch { return { date: todayStr, dismissed: {} }; }
+      if (stored && typeof stored.dismissed === "object") return stored;
+      return { dismissed: {} };
+    } catch { return { dismissed: {} }; }
   });
   const dismissAlert = (key) => {
     const next = { ...alertDismissals, dismissed: { ...alertDismissals.dismissed, [key]: true } };
@@ -1317,18 +1337,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   const isAlertDismissed = (key) => !!alertDismissals.dismissed[key];
   const pendingDismissed = isAlertDismissed("alert-pending");
   const trialDismissed = isAlertDismissed("alert-trial");
-
-  // Reset dismissals when the calendar date changes (handles app left running overnight)
-  React.useEffect(() => {
-    setAlertDismissals(prev => {
-      if (prev.date !== todayStr) {
-        const reset = { date: todayStr, dismissed: {} };
-        try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(reset)); } catch {}
-        return reset;
-      }
-      return prev;
-    });
-  }, [todayStr]);
 
   // Lesson-change email dismissals — keyed by email id, persistent across midnight
   // (parallel to alertDismissals but no `date` field and no daily reset)
@@ -1378,11 +1386,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         .map(e => `${e.studentId}|${e.instrument}`)
     ).size;
 
-    // Note: helper requires !!makeupEligible (true only). Legacy accepted true OR undefined,
-    // but WTT.missed writers always set the field explicitly — no live entries affected.
-    const catchupTotal = findOpenCatchups({ weeklyTimetables })
-      .filter(r => r.weekKey !== currentWeekKey)
-      .length;
+    // Aligned with the alerts-panel chip (and TallyView's stats.makeupOwed):
+    // term scope, all schools, __private__/pending/trial/archived-overlap
+    // filters all inherited from deriveTallyRows. Current week is included
+    // — matches the tally summary card.
+    const catchupTotal = getOpenCatchupRows({
+      weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all",
+    }).length;
 
     const allRR = inboxEmails.filter(e => {
       if (emailNoReplyOverrides.has(e.id)) return false;
@@ -1443,7 +1453,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, termWeeks, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -2674,12 +2684,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           return Object.values(byStudent);
         })();
         const missedPriorSorted = (() => {
-          // All makeup-eligible, un-made-up misses from prior weeks — no 14-day cap, no 2+ filter.
-          // Predicate-shift: helper requires !!makeupEligible (true only); legacy accepted true OR
-          // undefined, but WTT.missed writers always set the field explicitly — no live entries affected.
+          // Canonical iterator aligned with TallyView's stats.makeupOwed
+          // (term scope, school filter "all", __private__ exclusion,
+          // pending/trial exclusion, archived-overlap, enrolment-join).
+          // Current week is INCLUDED — matches the tally summary card,
+          // which counts all term-week owed catchups including the
+          // current week.
           const byKey = {};
-          for (const r of findOpenCatchups({ weeklyTimetables })) {
-            if (r.weekKey === currentWeekKey) continue;
+          for (const r of getOpenCatchupRows({ weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all" })) {
             const e = r.missed;
             const k = `${e.studentId}|${e.instrument}`;
             if (!byKey[k]) {

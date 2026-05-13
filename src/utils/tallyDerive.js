@@ -522,6 +522,58 @@ export function findOpenCatchups({ weeklyTimetables, studentId, schoolId } = {})
   return out;
 }
 
+/**
+ * Canonical "open catchups owed" iterator — single source of truth aligned
+ * with TallyView's `stats.makeupOwed` semantics (TallyView.js:242). Unlike
+ * the lower-level `findOpenCatchups`, this helper applies the same
+ * containment filters the tally summary card uses: term scope (from
+ * termWeeks), school filter, __private__ exclusion, pending/trial exclusion,
+ * archived-term-overlap, and enrolment-join.
+ *
+ * Banking awareness is NOT applied here — the summary card itself counts
+ * banked-but-not-marked-up catchups as still owed. Banking-aware callers
+ * should consult bankingIndex (catchupsDerive.buildBankingIndex) separately.
+ *
+ * Returns rows shaped `{ weekKey, missed }` — same shape as
+ * findOpenCatchups — so existing consumers' grouping logic ports across
+ * with a one-line call-site change. The `missed` object is the entryMap
+ * shim entry (carries studentId, studentName, instrument, schoolId,
+ * makeupEligible, madeUp, etc).
+ *
+ * @param {Object} params
+ * @param {Object} params.weeklyTimetables
+ * @param {Array} params.enrolments
+ * @param {Array} params.students
+ * @param {Object} params.timetable
+ * @param {Array} params.termWeeks
+ * @param {string} [params.schoolFilter="all"]
+ * @returns {{weekKey: string, missed: Object}[]}
+ */
+export function getOpenCatchupRows({
+  weeklyTimetables,
+  enrolments,
+  students,
+  timetable,
+  termWeeks,
+  schoolFilter = "all",
+} = {}) {
+  if (!termWeeks || termWeeks.length === 0) return [];
+  const { tallyRows, entryMap } = deriveTallyRows({
+    enrolments, students, termWeeks, weeklyTimetables, timetable, schoolFilter,
+  });
+  const lessonKeySet = new Set(tallyRows.map(r => r.lessonKey));
+  const termWeekKeys = new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey));
+  const out = [];
+  for (const e of Object.values(entryMap)) {
+    if (!lessonKeySet.has(e.lessonKey)) continue;
+    if (!termWeekKeys.has(e.weekKey)) continue;
+    if (e.status !== "missed") continue;
+    if (!e.makeupEligible || e.madeUp) continue;
+    out.push({ weekKey: e.weekKey, missed: e });
+  }
+  return out;
+}
+
 // Spec 3 cluster 12b — countMissedForDate retired alongside the App.js
 // rerunAutoTallyForDate stub (its sole consumer).
 
