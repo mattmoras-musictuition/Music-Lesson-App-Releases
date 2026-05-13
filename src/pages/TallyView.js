@@ -7,6 +7,7 @@ import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send, History } f
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive, uid } from "../utils/helpers";
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
+import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
 import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
@@ -53,115 +54,15 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     [interruptions]
   );
 
-  const getMondayOf = (dt) => {
-    const m = new Date(dt);
-    const dow = m.getDay();
-    m.setDate(m.getDate() + (dow === 0 ? -6 : 1 - dow));
-    m.setHours(0, 0, 0, 0);
-    return m;
-  };
-
-  const getTerms = useMemo(() => {
-    const year = melbourneNow().getFullYear();
-    const getTerm1Start = (y) => {
-      const start = new Date(y, 0, 27);
-      while (start.getDay() !== 2) start.setDate(start.getDate() + 1);
-      return start;
-    };
-    const allBreaks = [...termBreaks];
-    const terms = [];
-    const years = [year - 1, year, year + 1];
-    for (const y of years) {
-      let termStart = getTerm1Start(y);
-      const yearBreaks = allBreaks.filter(tb => {
-        const d = new Date(tb.date + "T00:00:00");
-        return d.getFullYear() === y || (d.getMonth() === 11 && d.getFullYear() === y);
-      });
-      let termNum = 1;
-      for (const tb of yearBreaks) {
-        const breakStart = new Date(tb.date + "T00:00:00");
-        const breakEnd = new Date((tb.endDate || tb.date) + "T00:00:00");
-        if (breakStart > termStart) {
-          const termEnd = new Date(breakStart);
-          termEnd.setDate(termEnd.getDate() - 1);
-          while (termEnd.getDay() === 0 || termEnd.getDay() === 6) termEnd.setDate(termEnd.getDate() - 1);
-          terms.push({ key: `${y}-T${termNum}`, label: `${y} Term ${termNum}`, start: new Date(termStart), end: termEnd, year: y, num: termNum });
-          termNum++;
-          termStart = new Date(breakEnd);
-          termStart.setDate(termStart.getDate() + 1);
-          while (termStart.getDay() === 0 || termStart.getDay() === 6) termStart.setDate(termStart.getDate() + 1);
-        }
-      }
-      // Last term of the year
-      const yearEnd = new Date(y, 11, 18);
-      if (termStart <= yearEnd) {
-        while (yearEnd.getDay() === 0 || yearEnd.getDay() === 6) yearEnd.setDate(yearEnd.getDate() - 1);
-        terms.push({ key: `${y}-T${termNum}`, label: `${y} Term ${termNum}`, start: new Date(termStart), end: yearEnd, year: y, num: termNum });
-      }
-    }
-    return terms;
-  }, [termBreaks]);
-
-  const currentTerm = useMemo(() => {
-    const now = melbourneNow();
-    // During a term: show that term
-    const inTerm = getTerms.find(t => now >= t.start && now <= t.end);
-    if (inTerm) return inTerm;
-    // During holidays: show the most recently completed term (not the upcoming one)
-    const pastTerms = getTerms.filter(t => now > t.end);
-    if (pastTerms.length > 0) return pastTerms[pastTerms.length - 1];
-    // Before any term starts: show the first upcoming term
-    return getTerms.find(t => now < t.start) || getTerms[getTerms.length - 1];
-  }, [getTerms]);
-
+  const terms = useMemo(() => getTerms(termBreaks, melbourneNow()), [termBreaks]);
+  const currentTerm = useMemo(() => getCurrentTerm(terms, melbourneNow()), [terms]);
   const activeTerm = currentTerm;
 
   // ── Term weeks list (including holiday weeks after term) ────
-  const termWeeks = useMemo(() => {
-    if (!activeTerm) return [];
-    const weeks = [];
-    const monday = getMondayOf(activeTerm.start);
-    let w = new Date(monday);
-    let weekNum = 1;
-    // Always extend at least to today's week, in case the term end date is
-    // miscalculated (e.g. due to a malformed term_break interruption entry).
-    const todayMonday = getMondayOf(melbourneNow());
-    const loopEnd = todayMonday > activeTerm.end ? todayMonday : activeTerm.end;
-    while (w <= loopEnd) {
-      const weekKey = toLocalDateStr(w);
-      // Check if this week is entirely in a term break
-      const fri = new Date(w); fri.setDate(fri.getDate() + 4);
-      const inBreak = termBreaks.some(tb => {
-        const bs = tb.date; const be = tb.endDate || tb.date;
-        return weekKey >= bs && toLocalDateStr(fri) <= be;
-      });
-      if (!inBreak) weeks.push({ weekKey, weekNum, label: `W${weekNum}` });
-      weekNum++;
-      w = new Date(w); w.setDate(w.getDate() + 7);
-    }
-    // Append holiday weeks from the break following this term (H1, H2, …)
-    const nextBreak = termBreaks.find(tb => {
-      const bs = new Date(tb.date + "T00:00:00");
-      return bs > activeTerm.end;
-    });
-    if (nextBreak) {
-      const breakStart = nextBreak.date;
-      const breakEnd = nextBreak.endDate || nextBreak.date;
-      const breakStartMon = getMondayOf(new Date(breakStart + "T00:00:00"));
-      let hw = new Date(breakStartMon);
-      let hNum = 1;
-      while (toLocalDateStr(hw) <= breakEnd) {
-        const hwStr = toLocalDateStr(hw);
-        // Only include if this Monday actually falls within the break period
-        if (hwStr >= breakStart) {
-          weeks.push({ weekKey: hwStr, weekNum: hNum, label: `H${hNum}`, isHoliday: true });
-          hNum++;
-        }
-        hw = new Date(hw); hw.setDate(hw.getDate() + 7);
-      }
-    }
-    return weeks;
-  }, [activeTerm, termBreaks]);
+  const termWeeks = useMemo(
+    () => getTermWeeks({ activeTerm, termBreaks, now: melbourneNow() }),
+    [activeTerm, termBreaks]
+  );
 
   // ── Term-filtered entries — derived from WTT ──────────────────────────────
 
@@ -427,15 +328,15 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
 
   // ── Previous-term preview (Spec 4 cluster 8) ───────────────
   // Computes lazy on click. The button is disabled when no earlier
-  // term is reachable in getTerms.
+  // term is reachable in the terms list.
   const prevTermIdx = currentTerm
-    ? getTerms.findIndex(t => t.key === currentTerm.key) - 1
+    ? terms.findIndex(t => t.key === currentTerm.key) - 1
     : -1;
   const prevTermAvailable = prevTermIdx >= 0;
 
   const handlePreviewPrevTerm = () => {
     if (!prevTermAvailable) return;
-    const prevTerm = getTerms[prevTermIdx];
+    const prevTerm = terms[prevTermIdx];
     if (!prevTerm) return;
 
     // Build prevTermWeeks — mirrors the existing termWeeks useMemo but
