@@ -2434,6 +2434,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const expandedStripData = stripDays
           .filter(wd => expandedDays.has(wd.date))
           .map(wd => {
+            // Session 6 hotfix — derive the row's actual containing-Monday
+            // from wd.date instead of using the strip's anchor calMondayStr.
+            // At calendarWeekOffset === 0, stripDays can include rolled-
+            // forward isNextWeek days (per allDaySlots at L290+), so the
+            // strip anchor and the row's week are not always the same.
+            // dropdownWarningCounts (L180) already uses per-week wkMonday
+            // for the same reason.
+            const rowMondayStr = toLocalDateStr(_getMondayOf(new Date(wd.date + "T00:00:00")));
             const isTermBreak = interruptions.some(intr => intr.type === "term_break" && wd.date >= intr.date && wd.date <= (intr.endDate || intr.date));
             const dayInterrupts = interruptions.filter(intr => {
               if (intr.type === "term_break") return false;
@@ -2449,10 +2457,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
                 const school = schools.find(s => s.id === avail.schoolId);
                 if (school) {
-                  const wttKey = `${calMondayStr}|${school.id}`;
+                  const wttKey = `${rowMondayStr}|${school.id}`;
                   const wttEntry = weeklyTimetables[wttKey];
                   const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
-                  const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? calMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
+                  const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? rowMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                   const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                   const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                   teacherSchoolsData.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
@@ -2467,7 +2475,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             const schoolGroups = Object.values(bySchool);
             const weeklyStatus = {};
             for (const sg of schoolGroups) {
-              const key = `${calMondayStr}|${sg.school.id}`;
+              const key = `${rowMondayStr}|${sg.school.id}`;
               weeklyStatus[sg.school.id] = !!weeklyTimetables[key];
               // Substitution chips — only on WTT-backed weeks. Each active lane at
               // (school, day) is checked for a (weekKey, bucketId) override row;
@@ -2477,7 +2485,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               if (weeklyStatus[sg.school.id]) {
                 const dayLanes = (teacherCoverage || []).filter(c => c.schoolId === sg.school.id && c.day === wd.day && c.status === "active");
                 for (const lane of dayLanes) {
-                  const override = (laneOverrides || []).find(o => o.weekKey === calMondayStr && o.bucketId === lane.id);
+                  const override = (laneOverrides || []).find(o => o.weekKey === rowMondayStr && o.bucketId === lane.id);
                   if (!override || !override.overrideTeacherId || override.overrideTeacherId === lane.teacherId) continue;
                   const coverTeacher = teachers.find(t => t.id === override.overrideTeacherId);
                   const defaultTeacher = teachers.find(t => t.id === lane.teacherId);
@@ -2493,12 +2501,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             // exist in WTT, so MTT-fallback schools contribute nothing here.
             const bandEntries = [];
             for (const sch of schools) {
-              const wttKey = `${calMondayStr}|${sch.id}`;
+              const wttKey = `${rowMondayStr}|${sch.id}`;
               const wttEntry = weeklyTimetables[wttKey];
               if (!wttEntry) continue;
               const dayBands = (wttEntry.lessons || []).filter(l => l.schoolId === sch.id && l.day === wd.day && l.isBandSession);
               for (const l of dayBands) {
-                bandEntries.push({ lesson: l, school: sch, weekKey: calMondayStr });
+                bandEntries.push({ lesson: l, school: sch, weekKey: rowMondayStr });
               }
             }
             bandEntries.sort((a, b) => (a.lesson.start || "").localeCompare(b.lesson.start || ""));
@@ -2759,7 +2767,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "interruption", title: "", startTime: "", endTime: "", schoolId: gs.school.id, affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
                               style={{ padding: "8px 14px", background: gs.school.color ? `${gs.school.color}12` : colors.bg, borderRadius: 8, border: `1px solid ${gs.school.color ? `${gs.school.color}30` : colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu", opacity: isPlanned ? 0.55 : 1, fontStyle: isPlanned ? "italic" : "normal" }}>
                               <div
-                                onClick={(e) => { e.stopPropagation(); onJumpToWeekly && onJumpToWeekly(gs.school, calendarWeekOffset); }}
+                                onClick={(e) => { e.stopPropagation(); onJumpToWeekly && onJumpToWeekly(gs.school, calendarWeekOffset + (sd.isNextWeek ? 1 : 0)); }}
                                 title={`Open ${gs.school.name} in the Weekly Timetable for this week`}
                                 style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
                                 <Building2 size={13} /> {gs.school.name}
@@ -2800,7 +2808,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                   </span>
                                 ) : (
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); onImportFromMtt && onImportFromMtt(gs.school, calendarWeekOffset); }}
+                                    onClick={(e) => { e.stopPropagation(); onImportFromMtt && onImportFromMtt(gs.school, calendarWeekOffset + (sd.isNextWeek ? 1 : 0)); }}
                                     style={{ fontSize: 11, fontWeight: 600, color: colors.accentDark, background: "transparent", border: `1px solid ${colors.accentDark}40`, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}
                                     title={`Import ${gs.school.name} lessons from the Master Timetable for this week`}>
                                     Import from MTT
