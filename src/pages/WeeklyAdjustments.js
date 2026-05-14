@@ -4967,7 +4967,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
-                                        {l.teacherName && <div style={{ color: colors.textLight, fontSize: 11 }}>{l.teacherName.split(" ")[0]}</div>}
+                                        {(() => { const tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (
                                           <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>

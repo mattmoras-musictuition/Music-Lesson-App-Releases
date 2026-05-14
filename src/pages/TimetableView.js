@@ -1823,7 +1823,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const sortKey = viewState?.listSortKey || "day";
             const sortDir = viewState?.listSortDir || "asc";
             const col = columns.find(c => c.key === sortKey) || columns[0];
-            const sorted = [...filteredLessons].sort((a, b) => {
+            // Pre-resolve teacherName via lane once per lesson — comparator and cell render
+            // both read the resolved string, avoiding O(n log n × resolve) inside the sort.
+            const decorated = filteredLessons.map(l => ({
+              ...l,
+              teacherName: getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage),
+            }));
+            const sorted = decorated.sort((a, b) => {
               let r = col.sortFn(a, b);
               // Secondary sort: day then time for non-day/time columns
               if (r === 0 && sortKey !== "day") r = DAYS.indexOf(a.day) - DAYS.indexOf(b.day);

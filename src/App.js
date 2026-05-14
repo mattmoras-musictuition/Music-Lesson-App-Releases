@@ -38,7 +38,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase } from "./utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName } from "./utils/helpers";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -3546,7 +3546,7 @@ export default function MusicTimetableApp() {
     lines.push("## All Active Students");
     activeStudents.forEach(s => {
       const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
-      const instrs = (s.instruments || []).map(i => {
+      const instrs = instrumentsFromEnrolments(s.id, enrolments).map(i => {
         const teacher = teachers.find(t => t.id === i.teacherId);
         return `${i.name}${teacher ? ` (teacher: ${teacher.name})` : ""}`;
       });
@@ -3580,7 +3580,7 @@ export default function MusicTimetableApp() {
       lines.push("(Trial students have a one-off lesson booked in a specific week. They auto-promote to Pending status after their trial lesson day at 6pm. Pending students are waiting to be added to the regular timetable.)");
       pendingStudents.forEach(s => {
         const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
-        const instrs = (s.instruments || []).map(i => {
+        const instrs = instrumentsFromEnrolments(s.id, enrolments).map(i => {
           const teacher = teachers.find(t => t.id === i.teacherId);
           return `${i.name}${teacher ? ` with ${teacher.name}` : " (no teacher assigned)"}`;
         }).join(", ");
@@ -3676,7 +3676,8 @@ export default function MusicTimetableApp() {
                 } else {
                   who = l.studentName;
                 }
-                lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument}) ${String.fromCharCode(8212)} ${l.teacherName}`);
+                const tName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage);
+                lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument}) ${String.fromCharCode(8212)} ${tName}`);
               });
             }
           });
@@ -3725,7 +3726,7 @@ export default function MusicTimetableApp() {
     const weeksToShow = currentWttHasLessons && !pastWttWeeks.includes(currentWeekKey)
       ? [...pastWttWeeks, currentWeekKey]
       : pastWttWeeks;
-    const renderWttEntries = (entries) => {
+    const renderWttEntries = (entries, wttWeekKey) => {
       const wttBySchool = {};
       entries.forEach(([storageKey, data]) => {
         const schoolId = storageKey.split("|")[1];
@@ -3747,7 +3748,8 @@ export default function MusicTimetableApp() {
               if (l.isTrial) flags.push("trial");
               if (l.isGroup) flags.push("group");
               const who = l.isGroup ? (l.groupName || "Group") : (l.studentName || "");
-              lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument || "?"}) ${String.fromCharCode(8212)} ${l.teacherName || ""}${flags.length ? ` [${flags.join(", ")}]` : ""}`);
+              const tName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, wttWeekKey);
+              lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument || "?"}) ${String.fromCharCode(8212)} ${tName}${flags.length ? ` [${flags.join(", ")}]` : ""}`);
             });
           }
         });
@@ -3767,7 +3769,7 @@ export default function MusicTimetableApp() {
         const termWk = computeTermWeekNum(wk, termBreaks);
         const label = isCurrentWk ? `Week of ${wk} (THIS WEEK)` : `Week of ${wk}${termWk ? ` — Term Week ${termWk}` : ""}`;
         lines.push(`### ${label}`);
-        renderWttEntries(entries);
+        renderWttEntries(entries, wk);
       });
       lines.push("");
     }
@@ -4289,7 +4291,8 @@ export default function MusicTimetableApp() {
           timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
       });
       if (conflict) {
-        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${l.teacherName} on ${l.day} at ${l.start}` });
+        const conflictTeacherName = teachers.find(t => t.id === lTid)?.name || "(unknown)";
+        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${conflictTeacherName} on ${l.day} at ${l.start}` });
         result.lessons.splice(i, 1);
       }
     }
@@ -4415,7 +4418,8 @@ export default function MusicTimetableApp() {
           timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
       });
       if (conflict) {
-        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${l.teacherName} on ${l.day} at ${l.start}` });
+        const conflictTeacherName = teachers.find(t => t.id === lTid)?.name || "(unknown)";
+        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${conflictTeacherName} on ${l.day} at ${l.start}` });
         result.lessons.splice(i, 1);
       }
     }
@@ -6188,7 +6192,7 @@ export default function MusicTimetableApp() {
 
         <div style={{ padding: "28px 36px", maxWidth: 1200 }}>
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
+          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

@@ -15,6 +15,7 @@ import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -110,7 +111,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, catchups = [], teachers, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -218,7 +219,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
       for (const avail of dayAvails) {
         const school = schools.find(s => s.id === avail.schoolId);
         if (school) {
-          const dayLessons = timetable ? timetable.lessons.filter(l => l.teacherId === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+          const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
           const lessonCount = dayLessons.length;
           let firstLesson = null, lastLesson = null;
           if (dayLessons.length > 0) {
@@ -2153,7 +2154,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
               const school = schools.find(s => s.id === avail.schoolId);
               if (school) {
-                const dayLessons = timetable ? timetable.lessons.filter(l => l.teacherId === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+                const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
                 const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                 const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                 dayTeacherSchools.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
@@ -2313,7 +2314,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
                 const school = schools.find(s => s.id === avail.schoolId);
                 if (school) {
-                  const dayLessons = timetable ? timetable.lessons.filter(l => l.teacherId === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+                  const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
                   const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                   const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                   teacherSchoolsData.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
