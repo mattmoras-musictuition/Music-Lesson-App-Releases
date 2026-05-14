@@ -113,7 +113,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onImportFromMtt, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -2783,9 +2783,18 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 </div>
                               ))}
                               <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${colors.borderLight}` }}>
-                                <span onClick={() => onNavigate("weekly")} style={{ ...linkStyle, fontSize: 11 }}>
-                                  Weekly: {sd.weeklyStatus[gs.school.id] ? "✓ generated" : "not yet generated"}
-                                </span>
+                                {sd.weeklyStatus[gs.school.id] ? (
+                                  <span onClick={() => onNavigate("weekly")} style={{ ...linkStyle, fontSize: 11 }}>
+                                    Weekly: ✓ generated
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); onImportFromMtt && onImportFromMtt(gs.school, calendarWeekOffset); }}
+                                    style={{ fontSize: 11, fontWeight: 600, color: colors.accentDark, background: "transparent", border: `1px solid ${colors.accentDark}40`, borderRadius: 6, padding: "2px 8px", cursor: "pointer", fontFamily: "inherit" }}
+                                    title={`Import ${gs.school.name} lessons from the Master Timetable for this week`}>
+                                    Import from MTT
+                                  </button>
+                                )}
                               </div>
                             </div>
                             );

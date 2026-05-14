@@ -39,6 +39,7 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher } from "./utils/helpers";
+import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -4433,6 +4434,41 @@ export default function MusicTimetableApp() {
     }
   };
 
+  // Session 6 / Phase 2 — Dashboard "Import from MTT" button. Mirrors the
+  // whole-week branch of WeeklyAdjustments.importFromMTT (no targetDay), so
+  // band sessions on the week are preserved and missed[] is cleared. The
+  // setWeeklyTimetables call routes through the same auto-save effect that
+  // syncs to Supabase, so no explicit network call is needed here.
+  const handleImportFromMtt = (school, weekOffset) => {
+    if (!timetable) {
+      notify("No master timetable to import from", "warning");
+      return;
+    }
+    const monday = getCurrentWeekMonday();
+    monday.setDate(monday.getDate() + weekOffset * 7);
+    const weekDates = DAYS.map((day, i) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return { day, date: toLocalDateStr(d) };
+    });
+    const storageKey = `${weekDates[0].date}|${school.id}`;
+    const result = buildMttImportForWeekSchool({
+      mtt: timetable,
+      schoolId: school.id,
+      weekDates,
+      existingEntry: weeklyTimetables[storageKey] || null,
+    });
+    if (!result) {
+      notify("No master timetable to import from", "warning");
+      return;
+    }
+    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
+    const extraNote = result.preservedBandCount > 0
+      ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
+      : "";
+    notify(`Imported ${result.importedCount} lessons for ${school.name}${extraNote}`);
+  };
+
   // Remove a scheduled group lesson from the timetable (when reverting to forming)
   const handleRevertGroup = (groupId) => {
     if (!timetable) return;
@@ -6154,7 +6190,7 @@ export default function MusicTimetableApp() {
 
         <div style={{ padding: "28px 36px", maxWidth: 1200 }}>
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
+          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} onImportFromMtt={handleImportFromMtt} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
