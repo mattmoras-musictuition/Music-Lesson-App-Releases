@@ -2170,7 +2170,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
               const school = schools.find(s => s.id === avail.schoolId);
               if (school) {
-                const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+                const wttKey = `${calMondayStr}|${school.id}`;
+                const wttEntry = weeklyTimetables[wttKey];
+                const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
+                const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? calMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                 const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                 const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                 dayTeacherSchools.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
@@ -2332,7 +2335,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
                 const school = schools.find(s => s.id === avail.schoolId);
                 if (school) {
-                  const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+                  const wttKey = `${calMondayStr}|${school.id}`;
+                  const wttEntry = weeklyTimetables[wttKey];
+                  const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
+                  const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? calMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                   const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                   const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                   teacherSchoolsData.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
