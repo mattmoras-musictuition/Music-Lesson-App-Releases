@@ -2308,6 +2308,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           });
           const hasDot = dayEvents.length > 0 || dayInterrupts.length > 0;
           const hasReminderDot = dayReminders.length > 0;
+          // Session 6 / Phase 4 — red dot for any un-acked constraint
+          // warning on this day (across all schools). Reuses the
+          // dropdownWarningCounts memo: entries with count===0 are already
+          // omitted in the memo, so a non-empty array means at least one
+          // school has un-acked warnings. Lights up on MTT-fallback weeks
+          // too — the memo's lessonsSource at L218-219 covers that branch.
+          const hasWarningDot = Array.isArray(dropdownWarningCounts[wd.date]) && dropdownWarningCounts[wd.date].length > 0;
           return (
             <div key={wd.date}
               onMouseEnter={() => setHoveredDay(wd.day)}
@@ -2330,6 +2337,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                 <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? (darkMode ? "#fff" : colors.sidebarActive) : colors.textLight, textTransform: "uppercase", letterSpacing: "0.05em" }}>{wd.day.slice(0, 3)}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                   {hasDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: dayInterrupts.length > 0 ? EVENT_TYPE_META.interruption.dot : (dayEvents[0]?.type ? (EVENT_TYPE_META[dayEvents[0].type]?.dot || EVENT_TYPE_META.personal.dot) : EVENT_TYPE_META.personal.dot), display: "inline-block", flexShrink: 0 }} />}
+                  {hasWarningDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: colors.danger, display: "inline-block", flexShrink: 0 }} />}
                   {hasReminderDot && <span style={{ width: 5, height: 5, borderRadius: "50%", background: colors.accent, display: "inline-block", flexShrink: 0 }} />}
                   <span style={{ fontSize: 11, color: isActive ? (darkMode ? "#fff" : colors.sidebarActive) : colors.textMuted }}>{wd.dayNum}{isToday ? " ●" : ""}</span>
                 </div>
