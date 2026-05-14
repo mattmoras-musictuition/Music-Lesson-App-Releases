@@ -16,6 +16,7 @@ import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates,
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
+import { checkConstraints } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -112,7 +113,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -165,6 +166,72 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     () => getTermWeeks({ activeTerm: currentTerm, termBreaks, now: melbourneNow() }),
     [currentTerm, termBreaks]
   );
+
+  // Session 5B / C6 — per-day unacked constraint-warning counts for the
+  // day dropdown. Keyed by date string (YYYY-MM-DD), so rolling-boundary
+  // days at offset=0 map to their actual week. Counts LESSONS with at
+  // least one unacked warning (matches App.js weeklyWarningCount semantic).
+  // Walks both the offset week AND (at offset=0) the next week's Mon-Fri
+  // to cover the rolling boundary case where visibleDays straddles weeks.
+  const dropdownWarningCounts = useMemo(() => {
+    const counts = {};
+    const baseMonday = getCurrentWeekMonday();
+    baseMonday.setDate(baseMonday.getDate() + calendarWeekOffset * 7);
+    const weeksToCompute = [baseMonday];
+    if (calendarWeekOffset === 0) {
+      const nextMonday = new Date(baseMonday);
+      nextMonday.setDate(baseMonday.getDate() + 7);
+      weeksToCompute.push(nextMonday);
+    }
+    // Specialist lookup — identical pattern to WeeklyAdjustments.js:241
+    const specLookupRef = {};
+    for (const entry of (specialists || [])) {
+      const key = `${entry.schoolId}|${entry.className}|${entry.day}`;
+      if (!specLookupRef[key]) specLookupRef[key] = [];
+      specLookupRef[key].push({ start: timeToMin(entry.start), end: timeToMin(entry.end), subject: entry.subject });
+    }
+    for (const wkMonday of weeksToCompute) {
+      const calMondayStr = toLocalDateStr(wkMonday);
+      const weekDateMap = {};
+      DAYS.forEach((day, i) => {
+        const date = new Date(wkMonday);
+        date.setDate(wkMonday.getDate() + i);
+        weekDateMap[day] = toLocalDateStr(date);
+      });
+      const weekStart = weekDateMap.Monday;
+      const weekEnd = weekDateMap.Friday;
+      const weekInterruptions = (interruptions || []).filter(intr => {
+        if (intr.type === "term_break") return false;
+        const iStart = intr.date;
+        const iEnd = intr.endDate || intr.date;
+        return iStart <= weekEnd && iEnd >= weekStart;
+      });
+      for (const day of DAYS) {
+        const dateStr = weekDateMap[day];
+        let dayCount = 0;
+        for (const school of schools) {
+          const wttKey = `${calMondayStr}|${school.id}`;
+          const wttEntry = weeklyTimetables[wttKey];
+          const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
+          const dayLessons = lessonsSource.filter(l => l.schoolId === school.id && l.day === day);
+          for (const l of dayLessons) {
+            if (weeklyAckedConstraints && weeklyAckedConstraints.has(l.id)) continue;
+            const slot = (school.slots || []).find(s => s.start === l.start) || { start: l.start, end: l.end || l.start, type: "class" };
+            const ws = checkConstraints(l, day, slot, dayLessons, {
+              weekKey: calMondayStr, selectedSchool: school.id, currentSchool: school,
+              weeklyTimetables, teacherCoverage, laneOverrides,
+              students, enrolments, teachers, schools, bands, groups,
+              weekDateMap, weekInterruptions, specLookupRef, timetable,
+            });
+            if (ws.length > 0) dayCount++;
+          }
+        }
+        counts[dateStr] = dayCount;
+      }
+    }
+    return counts;
+  }, [calendarWeekOffset, schools, weeklyTimetables, timetable, laneOverrides, weeklyAckedConstraints, teacherCoverage, students, enrolments, teachers, bands, groups, specialists, interruptions]);
+
   // After 6pm Fri / Sat / Sun, calendar rolls to next week — progress bar should match
   const _tdow = today.getDay(); const _tHour = today.getHours();
   const _rollFwd = (_tdow === 5 && _tHour >= 18) || _tdow === 6 || _tdow === 0;
@@ -2451,6 +2518,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     <span style={{ fontSize: 13, color: colors.textLight }}>{sd.dayNum} {new Date(sd.date + "T00:00:00").toLocaleDateString("en-AU", { month: "short" })}</span>
                     {sd.date === todayStr && <span style={{ fontSize: 10, fontWeight: 700, background: colors.sidebarActive, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Today</span>}
                     {sd.isNextWeek && <span style={{ fontSize: 10, fontWeight: 700, background: colors.textMuted, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Next week</span>}
+                    {!sd.isTermBreak && dropdownWarningCounts[sd.date] > 0 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: colors.danger, background: colors.redLight, border: `1px solid ${colors.danger}40`, borderRadius: 10, padding: "2px 8px" }} title="Unacked constraint warnings on this day">
+                        <AlertTriangle size={11} /> {dropdownWarningCounts[sd.date]}
+                      </span>
+                    )}
                   </div>
                   {!sd.isWeekendCatchup && (
                     <button onClick={e => { e.stopPropagation(); setExpandedDays(prev => { const next = new Set(prev); next.delete(sd.date); return next; }); }}
