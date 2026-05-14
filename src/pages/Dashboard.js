@@ -2553,11 +2553,16 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       <div>
                         <div style={sectionLabel}>Schedule</div>
                         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          {sd.schoolGroups.map(gs => (
+                          {sd.schoolGroups.map(gs => {
+                            const isPlanned = !sd.weeklyStatus[gs.school.id];
+                            return (
                             <div key={gs.school.id}
                               onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "interruption", title: "", startTime: "", endTime: "", schoolId: gs.school.id, affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
-                              style={{ padding: "8px 14px", background: gs.school.color ? `${gs.school.color}12` : colors.bg, borderRadius: 8, border: `1px solid ${gs.school.color ? `${gs.school.color}30` : colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu" }}>
-                              <div style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5 }}><Building2 size={13} /> {gs.school.name}</div>
+                              style={{ padding: "8px 14px", background: gs.school.color ? `${gs.school.color}12` : colors.bg, borderRadius: 8, border: `1px solid ${gs.school.color ? `${gs.school.color}30` : colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu", opacity: isPlanned ? 0.55 : 1, fontStyle: isPlanned ? "italic" : "normal" }}>
+                              <div style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5 }}>
+                                <Building2 size={13} /> {gs.school.name}
+                                {isPlanned && <span style={{ fontSize: 10, fontWeight: 500, color: colors.textMuted, fontStyle: "italic" }}>(planned)</span>}
+                              </div>
                               {gs.teachers.map(t => (
                                 <div key={t.teacher.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: teacherColorMap[t.teacher.id], borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>
@@ -2577,7 +2582,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 </span>
                               </div>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}
