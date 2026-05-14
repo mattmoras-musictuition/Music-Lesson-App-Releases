@@ -2096,27 +2096,21 @@ export default function MusicTimetableApp() {
     })();
   }, []);
 
-  // ── Reactive reconciliation: keep lessons in sync with live student/teacher data ──
-  // Lessons store frozen snapshots (studentName, teacherId, teacherName) at creation
-  // time. If Matt renames a student, changes their teacher, or tweaks their instrument,
-  // existing lessons don't automatically reflect it. The admin UI uses live lookups so
-  // Matt sees correct data locally, but the teacher app and Supabase read the stored
-  // snapshots directly — so any drift breaks them.
+  // ── Reactive reconciliation: orphan-lesson detection ──
+  // Session 3 / C5: trimmed to data-integrity orphan detection only. Detects
+  // lessons that reference a deleted student or an instrument the student no
+  // longer has an active enrolment for. Teacher-attribution checks retired —
+  // teacher comes from lane membership at render time (getCardTeacherId), not
+  // from enrolment fields, so a "no teacher" or "teacher missing" condition
+  // can no longer be evaluated from the enrolment side.
   //
-  // This effect walks every lesson (master + all weekly) and rewrites any stale
-  // snapshot field from the current student + teacher records:
-  //   - studentName         ← student.name
-  //   - teacherId/Name      ← student.instruments[<matching>].teacherId + teacher.name
+  // Orphans are NOT auto-fixed — they're surfaced via a warning toast (when
+  // the count grows) and the Settings → Data Health surface so Matt can
+  // review and correct them manually. The full list is logged to console
+  // every run for diagnosis.
   //
-  // Instrument matching is case- and whitespace-tolerant. Orphaned lessons (student
-  // record has no matching instrument, student missing, teacher missing, or instrument
-  // has no assigned teacher) are NOT auto-fixed — they're surfaced via a warning toast
-  // and detailed console log so Matt can review and correct them manually.
-  //
-  // Runs on initial startup (700ms delay to wait past the storageReady timer) AND
-  // reactively whenever students, teachers, or timetable change. Idempotent — returns
-  // the same state reference if nothing needs fixing, so it never causes a re-render
-  // or wasted sync on already-clean data.
+  // Runs on initial startup (700ms delay past storageReady) AND reactively
+  // whenever students, enrolments, or timetable change.
   // Session 97: track the last surfaced orphan count so we don't refire the
   // toast every time the reconciler runs (which is on every students/teachers/
   // timetable change — i.e. every drag in TimetableView). The toast was firing
@@ -2131,7 +2125,7 @@ export default function MusicTimetableApp() {
   // The reconciler populates this on every run; the UI reads it live.
   const [orphanedLessons, setOrphanedLessons] = useState([]);
   useEffect(() => {
-    if (students.length === 0 || teachers.length === 0) return;
+    if (students.length === 0) return;
     if (!timetable || !timetable.lessons) return;
 
     const delay = initialReconcileDoneRef.current ? 0 : 700;
@@ -2140,25 +2134,19 @@ export default function MusicTimetableApp() {
 
       const normalize = (s) => (s || "").trim().toLowerCase();
 
-      // Cluster 12a: surgical strip — was a two-job reconciler (orphan detection + live
-      // stamped-field sync). Live-sync arm removed because nothing reads stamped
-      // teacherId/teacherName post-cluster-12a (lane resolves at render time). Orphan
-      // detection retained — it's the Session 97.1 Settings → Data Health surface,
-      // independent of cluster 12.
+      // Session 3 / C5 — two data-integrity conditions remain. The two
+      // teacher-attribution conditions (no enrolment teacher / teacher not
+      // found) were retired alongside enrolment.teacherId reads in C3/C4.
       const checkOrphan = (lesson) => {
         if (lesson.isGroup) return null; // groups carry their own teacherId; skip
 
         const stu = students.find(s => s.id === lesson.studentId);
         if (!stu) return { reason: "student not found" };
 
-        const inst = instrumentsFromEnrolments(stu.id, enrolments).find(
+        const hasMatchingEnrolment = instrumentsFromEnrolments(stu.id, enrolments).some(
           i => normalize(i.name) === normalize(lesson.instrument)
         );
-        if (!inst) return { reason: "instrument not in student record" };
-        if (!inst.teacherId) return { reason: "instrument has no assigned teacher" };
-
-        const teacher = teachers.find(tc => tc.id === inst.teacherId);
-        if (!teacher) return { reason: "assigned teacher not found" };
+        if (!hasMatchingEnrolment) return { reason: "instrument not in student record" };
 
         return null;
       };
@@ -2214,7 +2202,7 @@ export default function MusicTimetableApp() {
       });
     }, delay);
     return () => clearTimeout(t);
-  }, [students, teachers, timetable]);
+  }, [students, enrolments, timetable]);
 
   // Auto-save — NEVER save an empty array for any real data collection.
   // This ensures a failed/empty storage read can never silently destroy saved data.
