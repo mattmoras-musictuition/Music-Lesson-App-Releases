@@ -2355,6 +2355,21 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             for (const sg of schoolGroups) {
               const key = `${calMondayStr}|${sg.school.id}`;
               weeklyStatus[sg.school.id] = !!weeklyTimetables[key];
+              // Substitution chips — only on WTT-backed weeks. Each active lane at
+              // (school, day) is checked for a (weekKey, bucketId) override row;
+              // if the override's teacher differs from the lane's default teacher,
+              // record a (cover, default) pair for chip rendering.
+              sg.subs = [];
+              if (weeklyStatus[sg.school.id]) {
+                const dayLanes = (teacherCoverage || []).filter(c => c.schoolId === sg.school.id && c.day === wd.day && c.status === "active");
+                for (const lane of dayLanes) {
+                  const override = (laneOverrides || []).find(o => o.weekKey === calMondayStr && o.bucketId === lane.id);
+                  if (!override || !override.overrideTeacherId || override.overrideTeacherId === lane.teacherId) continue;
+                  const coverTeacher = teachers.find(t => t.id === override.overrideTeacherId);
+                  const defaultTeacher = teachers.find(t => t.id === lane.teacherId);
+                  if (coverTeacher && defaultTeacher) sg.subs.push({ coverTeacher, defaultTeacher });
+                }
+              }
             }
             const schoolIdsOnDay = new Set(schoolGroups.map(sg => sg.school.id));
             const pendingTrialOnDay = students.filter(s =>
@@ -2563,6 +2578,21 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 <Building2 size={13} /> {gs.school.name}
                                 {isPlanned && <span style={{ fontSize: 10, fontWeight: 500, color: colors.textMuted, fontStyle: "italic" }}>(planned)</span>}
                               </div>
+                              {gs.subs && gs.subs.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+                                  {gs.subs.map(({ coverTeacher, defaultTeacher }, si) => (
+                                    <span key={si} style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10 }}>
+                                      <span style={{ fontWeight: 700, color: "#fff", background: teacherColorMap[coverTeacher.id] || colors.accent, borderRadius: 3, padding: "1px 4px" }}>
+                                        {coverTeacher.name.split(" ").map(w => w[0]).join("")}
+                                      </span>
+                                      <span style={{ color: colors.textMuted, fontWeight: 600 }}>←</span>
+                                      <span style={{ fontWeight: 700, color: "#fff", background: teacherColorMap[defaultTeacher.id] || colors.accent, borderRadius: 3, padding: "1px 4px", opacity: 0.7 }}>
+                                        {defaultTeacher.name.split(" ").map(w => w[0]).join("")}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                               {gs.teachers.map(t => (
                                 <div key={t.teacher.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                                   <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: teacherColorMap[t.teacher.id], borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>
