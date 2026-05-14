@@ -9,7 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, isDayPast6pm } from "../utils/tallyHelpers";
-import { hasMissedEntry, getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
+import { getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
 import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -18,7 +18,8 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getCardTeacherId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { findLaneId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { checkConstraints } from "../utils/constraints";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -491,218 +492,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return match ? match.subject : false;
   };
 
-  const checkConstraints = (lesson, newDay, slot, _lessonList) => {
-    if (lesson.isBandSession) {
-      const warnings = [];
-      const memberIds = (lesson.members || []).map(m => m.studentId);
-      const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-      const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
-      for (const mid of memberIds) {
-        const memberLesson = lessonsToCheck.find(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession && l.studentId === mid);
-        if (memberLesson) {
-          const memberStudent = students.find(s => s.id === mid);
-          warnings.push(`${memberStudent?.name || mid} already has a lesson on ${newDay} (${memberLesson.instrument})`);
-        }
-      }
-      const school = schools.find(s => s.id === lesson.schoolId);
-      const liveBand = bands?.find(b => b.id === lesson.bandId);
-      // Cluster 12a: stamped lesson.teacherId fallback removed.
-      const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId;
-      const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
-      if (teacher && school) {
-        const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (!dayAvail) {
-          warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-        } else {
-          const slotStart = timeToMin(slot.start), slotEnd = timeToMin(slot.end);
-          if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
-            warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-          }
-        }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
-        if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
-      }
-      const targetDate = weekDateMap[newDay];
-      if (targetDate) {
-        for (const intr of weekInterruptions) {
-          const iStart = intr.date, iEnd = intr.endDate || intr.date;
-          if (targetDate < iStart || targetDate > iEnd) continue;
-          if (intr.startTime && intr.endTime) {
-            const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
-            if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
-          }
-          warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
-          break;
-        }
-      }
-      return warnings;
-    }
-    if (lesson.isGroup) {
-      const warnings = [];
-      const memberIds = lesson.studentIds || [];
-      const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-      const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
-      for (const mid of memberIds) {
-        const memberLesson = lessonsToCheck.find(l => l.id !== lesson.id && l.day === newDay && (
-          l.studentId === mid || (l.isGroup && l.studentIds && l.studentIds.includes(mid))
-        ));
-        if (memberLesson) {
-          const memberStudent = students.find(s => s.id === mid);
-          const memberName = memberStudent ? memberStudent.name : mid;
-          warnings.push(`${memberName} already has a lesson on ${newDay} (${memberLesson.isGroup ? memberLesson.groupName || "Group" : memberLesson.instrument})`);
-        }
-      }
-      // Teacher availability and double-booking for groups
-      const school = schools.find(s => s.id === lesson.schoolId);
-      // Cluster 12a: stamped lesson.teacherId fallback removed; lane / live-group only.
-      const liveGroup = groups?.find(g => g.id === lesson.groupId);
-      const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId;
-      const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
-      if (teacher && school) {
-        const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (!dayAvail) {
-          warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-        } else {
-          const slotStart = timeToMin(slot.start);
-          const slotEnd = timeToMin(slot.end);
-          if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
-            warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-          }
-        }
-        const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
-        if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
-      }
-      // Interruption check for groups
-      const targetDate = weekDateMap[newDay];
-      if (targetDate) {
-        for (const intr of weekInterruptions) {
-          const iStart = intr.date, iEnd = intr.endDate || intr.date;
-          if (targetDate < iStart || targetDate > iEnd) continue;
-          if (intr.startTime && intr.endTime) {
-            const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
-            if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
-          }
-          warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
-          break;
-        }
-      }
-      return warnings;
-    }
-    const student = students.find(s => s.id === lesson.studentId);
-    if (!student) return [];
-    const school = schools.find(s => s.id === lesson.schoolId);
-    if (!school) return [];
-    const warnings = [];
-    const slotStart = timeToMin(slot.start);
-    const slotEnd = timeToMin(slot.end);
-    const hints = student._noteHints || {};
-
-    // Pre-marked absence: warn if student has an informed_absence missed entry for this week
-    const hasPreMarkedAbsence = hasMissedEntry({
-      weeklyTimetables,
-      studentId: lesson.studentId,
-      weekKey,
-      reasons: ["informed_absence"],
-    });
-    if (hasPreMarkedAbsence) warnings.push("⚠ Pre-marked absence this week — student not expected in");
-    const hasRequiredHere = (hints.requiredTimes || []).some(function(rt) { return rt.day === newDay && rt.start === slot.start; });
-    if (slot.type === "before_school" && !student.availableBefore && !hasRequiredHere) warnings.push("Student not available before school");
-    if (slot.type === "after_school" && !student.availableAfter && !hasRequiredHere) warnings.push("Student not available after school");
-    const isBreak = ["recess", "lunch"].includes(slot.type);
-    const isBeforeAfter = ["before_school", "after_school"].includes(slot.type);
-    if (student.outsideClassOnly && !isBreak && !isBeforeAfter) warnings.push("Student should only be scheduled outside class time");
-    if (student.outsideClassPreferred && !isBreak && !isBeforeAfter && slot.type === "class") warnings.push("Student prefers outside class time");
-    if (student.avoidRecessLunch && isBreak) warnings.push("Student prefers to avoid recess/lunch lessons");
-    if (hints.avoidTimes) {
-      for (const at of hints.avoidTimes) {
-        if (at.day === newDay && slotStart < timeToMin(at.end) && slotEnd > timeToMin(at.start)) warnings.push(`Avoid time: ${at.day} ${at.start}–${at.end}`);
-      }
-    }
-    if (hints.avoidDays && hints.avoidDays.includes(newDay)) warnings.push(`Student should avoid ${newDay}`);
-    if (hints.preferredDays && hints.preferredDays.length > 0 && !hints.preferredDays.includes(newDay)) warnings.push(`Preferred day${hints.preferredDays.length > 1 ? "s" : ""}: ${hints.preferredDays.join(", ")}`);
-    const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
-    if (_wttUnassigned) {
-      warnings.push("No teacher assigned — assign a teacher in student details");
-    }
-    // Lane-first via getLiveTeacherId; fallback chain (instrument enrolment → stamped) lives in the helper.
-    const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
-    const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
-    if (teacher) {
-      const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-      if (!dayAvail) warnings.push(`${teacher.name} not available on ${newDay}`);
-      else if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-      // Teacher double-booking: another lesson at the same time with the same teacher
-      const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-      const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
-      const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === liveTeacherId && l.day === newDay && l.start === slot.start);
-      if (conflict1) warnings.push(`${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
-    }
-
-    // Multi-lesson students: must have lessons on different days
-    const _wd2 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-    const lessonsToCheck2 = _lessonList || (_wd2 ? _wd2.lessons : (timetable ? timetable.lessons : []));
-    const otherLessons = lessonsToCheck2.filter(l => l.id !== lesson.id && l.day === newDay && (
-      l.studentId === lesson.studentId ||
-      (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId))
-    ));
-    if (otherLessons.length > 0) {
-      const studentObj = student || { name: lesson.studentName };
-      warnings.push(`${studentObj.name} already has a lesson on ${newDay} (${otherLessons.map(l => l.isGroup ? l.groupName || "Group" : l.instrument).join(", ")})`);
-    }
-
-    // Interruption check — warn if this slot falls within an active interruption
-    const targetDate = weekDateMap[newDay];
-    if (targetDate) {
-      for (const intr of weekInterruptions) {
-        const iStart = intr.date, iEnd = intr.endDate || intr.date;
-        if (targetDate < iStart || targetDate > iEnd) continue;
-        // Class filter
-        if (intr.affectsClasses !== "all") {
-          const cls = student?.className || lesson.studentName || "";
-          if (!classMatchesInterruption(cls, intr.affectsClasses)) continue;
-        }
-        // Time filter
-        if (intr.startTime && intr.endTime) {
-          const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
-          if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
-        }
-        warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
-        break;
-      }
-    }
-
-    // Specialist clash — any overlap between lesson slot and specialist time
-    if (student && student.className) {
-      const key = lesson.schoolId + "|" + student.className + "|" + newDay;
-      const specs = specLookupRef[key] || [];
-      const match = specs.find(sp => slotStart < sp.end && slotEnd > sp.start);
-      if (match) {} // specialist shown as purple tag, not a red warning
-    }
-
-    // Dual class-time pullout: warn if this slot is during class and the student already has
-    // another class-time lesson on a different day in the same week
-    if (slot.type === "class") {
-      const allWeekLessons = lessonsToCheck2;
-      const otherClassLessons = allWeekLessons.filter(l =>
-        l.id !== lesson.id &&
-        l.day !== newDay &&
-        (l.studentId === lesson.studentId || (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId)))
-      );
-      if (otherClassLessons.length > 0) {
-        const classTimeConflicts = otherClassLessons.filter(ol => {
-          const olSlot = (currentSchool && currentSchool.slots ? currentSchool.slots : []).find(sl => sl.start === ol.start);
-          return olSlot && olSlot.type === "class";
-        });
-        if (classTimeConflicts.length > 0) {
-          const studentObj = student || { name: lesson.studentName };
-          warnings.push(`${studentObj.name} already has a lesson during class on ${classTimeConflicts[0].day}`);
-        }
-      }
-    }
-
-    return warnings;
-  };
-
   useEffect(() => {
     if (schools.length > 0 && !selectedSchool) setSelectedSchool(schools[0].id);
   }, [schools]);
@@ -1071,7 +860,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           if (updated[l.id]) { delete updated[l.id]; changed = true; }
           continue;
         }
-        const recomputed = checkConstraints(l, l.day, slot, lessons);
+        const recomputed = checkConstraints(l, l.day, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
         const existing = prev[l.id];
         const same = existing
           ? recomputed.length === existing.length && recomputed.every((w, i) => w === existing[i])
@@ -1313,7 +1102,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Check constraints for the newly placed band session
     const bSlot = (currentSchool?.slots || []).find(s => s.start === time);
     if (bSlot) {
-      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons);
+      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -1919,7 +1708,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const simulatedLessons = currentLessons.map(l =>
         l.id === lessonId ? { ...l, day: newDay, start: newTime, end: slot.end, slotId: slot.id } : l
       );
-      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons);
+      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
       setConstraintWarnings(prev => {
         const next = { ...prev };
         if (warnings.length > 0) next[lessonId] = warnings;
@@ -1932,7 +1721,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           const wlSchool = schools.find(s => s.id === wl.schoolId);
           const wlSlot = wlSchool?.slots.find(s => s.start === wl.start);
           if (!wlSlot) continue;
-          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons);
+          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
           if (recomputed.length > 0) next[warnId] = recomputed;
           else delete next[warnId];
         }
@@ -1980,7 +1769,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return { ...prev, [storageKey]: { ...entry, lessons: [...entry.lessons, rescuedLesson], missed: newMissed } };
     });
     // Run constraint checks — same warning/expand logic as handleWeeklyMoveLesson
-    const warnings = checkConstraints(rescuedLesson, newDay, slot);
+    const warnings = checkConstraints(rescuedLesson, newDay, slot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
     setConstraintWarnings(prev => {
       const next = { ...prev };
       if (warnings.length > 0) next[rescuedLesson.id] = warnings;
@@ -2046,7 +1835,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ...prev,
         [storageKey]: { ...existingData, lessons, catchupStaged: (existingData.catchupStaged || []).filter(c => c.id !== stagedId) }
       }));
-      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons);
+      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -3022,7 +2811,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === contextMenu.time) || { start: contextMenu.time, end: contextMenu.time };
-                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot);
+                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3066,7 +2855,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot);
+                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3206,7 +2995,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                               setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                               const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot);
+                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
                               if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                               setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                             }} style={subBtnStyle}
@@ -4762,7 +4551,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       }
                                       const sl = (currentSchool.slots || []).find(s => s.start === time);
                                       if (dl && sl) {
-                                        const raw = checkConstraints(dl, day, sl);
+                                        const raw = checkConstraints(dl, day, sl, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {
