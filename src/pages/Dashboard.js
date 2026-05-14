@@ -113,7 +113,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onImportFromMtt, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onImportFromMtt, onJumpToWeekly, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -2750,7 +2750,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             <div key={gs.school.id}
                               onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setCalEventForm({ startDate: sd.date, endDate: sd.date, type: "interruption", title: "", startTime: "", endTime: "", schoolId: gs.school.id, affectsClasses: "all", interruptionSubtype: "other", details: "", x: e.clientX, y: e.clientY }); }}
                               style={{ padding: "8px 14px", background: gs.school.color ? `${gs.school.color}12` : colors.bg, borderRadius: 8, border: `1px solid ${gs.school.color ? `${gs.school.color}30` : colors.border}`, fontSize: 12, minWidth: 160, cursor: "context-menu", opacity: isPlanned ? 0.55 : 1, fontStyle: isPlanned ? "italic" : "normal" }}>
-                              <div style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5 }}>
+                              <div
+                                onClick={(e) => { e.stopPropagation(); onJumpToWeekly && onJumpToWeekly(gs.school, calendarWeekOffset); }}
+                                title={`Open ${gs.school.name} in the Weekly Timetable for this week`}
+                                style={{ fontWeight: 600, marginBottom: 6, color: gs.school.color || colors.text, display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
                                 <Building2 size={13} /> {gs.school.name}
                                 {isPlanned && <span style={{ fontSize: 10, fontWeight: 500, color: colors.textMuted, fontStyle: "italic" }}>(planned)</span>}
                               </div>
@@ -2784,7 +2787,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               ))}
                               <div style={{ marginTop: 6, paddingTop: 6, borderTop: `1px solid ${colors.borderLight}` }}>
                                 {sd.weeklyStatus[gs.school.id] ? (
-                                  <span onClick={() => onNavigate("weekly")} style={{ ...linkStyle, fontSize: 11 }}>
+                                  <span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 500 }}>
                                     Weekly: ✓ generated
                                   </span>
                                 ) : (
