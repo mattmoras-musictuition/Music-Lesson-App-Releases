@@ -4666,26 +4666,16 @@ export default function MusicTimetableApp() {
         notify(`No covering lane for ${school.name} on ${day}.`, "warning");
         return;
       }
-      let currentTeacher = null;
-      if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
-      if (!currentTeacher) currentTeacher = teachers.find(t =>
-        t.instruments.some(ti => ti.name === inst.name) &&
-        t.availability.some(a => a.schoolId === school.id && a.day === day)
-      );
-      const currentTid = currentTeacher?.id || "";
-      let pendingEnrolmentMutation = null;
+      // Session 3 / C4 — current teacher derives from the student's existing
+      // MTT placement (lane), not from enrolment.teacherId. Modal only fires
+      // when an existing placement is being moved to a different teacher's
+      // lane; first-time placements go silent.
+      const mttCurrent = getStudentMTTTeacher(student.id, inst.name, timetable, students, teachers, enrolments, teacherCoverage);
+      const currentTid = mttCurrent?.teacherId || null;
       let isReassign = false;
       if (currentTid && destLane.teacher.id !== currentTid) {
-        const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        const modalText = `Reassign ${student.name} from ${mttCurrent.teacherName} to ${destLane.teacher.name}?`;
         if (!window.confirm(modalText)) return;
-        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
-        isReassign = true;
-      } else if (!currentTid) {
-        const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
-        if (!window.confirm(modalText)) return;
-        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
         isReassign = true;
       }
       const lesson = {
@@ -4709,7 +4699,6 @@ export default function MusicTimetableApp() {
         });
         pendingPlaceRedoStack.current = [];
         if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
-        if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
       }
       if (!timetable) {
         setTimetable({ lessons: [lesson], unscheduled: [] });
@@ -4793,31 +4782,20 @@ export default function MusicTimetableApp() {
       return;
     }
 
-    let pendingEnrolmentMutation = null;
     let isReassign = false;
     if (target === "master") {
-      let currentTeacher = null;
-      if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
-      if (!currentTeacher) currentTeacher = teachers.find(t =>
-        t.instruments.some(ti => ti.name === inst.name) &&
-        t.availability.some(a => a.schoolId === school.id && a.day === day)
-      );
-      const currentTid = currentTeacher?.id || "";
+      // Session 3 / C4 — current teacher derives from MTT placement, not
+      // enrolment stamp. Modal fires only on cross-lane reassign; first-time
+      // placements go silent.
+      const mttCurrent = getStudentMTTTeacher(student.id, inst.name, timetable, students, teachers, enrolments, teacherCoverage);
+      const currentTid = mttCurrent?.teacherId || null;
       if (currentTid && destLane.teacher.id !== currentTid) {
-        const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+        const modalText = `Reassign ${student.name} from ${mttCurrent.teacherName} to ${destLane.teacher.name}?`;
         if (!window.confirm(modalText)) return;
-        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
-        isReassign = true;
-      } else if (!currentTid) {
-        const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
-        if (!window.confirm(modalText)) return;
-        const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-        pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
         isReassign = true;
       }
     }
-    // (target === "weekly": no modal, no enrolment mutation — Q2=β.)
+    // (target === "weekly": no modal — Q2=β.)
 
     const lesson = {
       id: uid(),
@@ -4842,7 +4820,6 @@ export default function MusicTimetableApp() {
         });
         pendingPlaceRedoStack.current = [];
         if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
-        if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
       }
       if (!timetable) {
         setTimetable({ lessons: [lesson], unscheduled: [] });
@@ -6282,7 +6259,6 @@ export default function MusicTimetableApp() {
             // Cluster 12a: stamped lesson.teacherId fallback removed; lane resolution only.
             const currentTid = getCardTeacherId(lesson, teacherCoverage) || "";
             const destBucketId = destLane.lane.id;
-            let pendingEnrolmentMutation = null;
             let pendingGroupsMutation = null;
             let isReassign = false;
             if (currentTid && destLane.teacher.id !== currentTid) {
@@ -6290,14 +6266,16 @@ export default function MusicTimetableApp() {
               const destTeacherName = destLane.teacher.name;
               let modalText;
               if (lesson.isGroup) {
+                // Session 3 / C4 — group.teacherId is out of scope; group write
+                // and its modal-text second sentence preserved.
                 const groupName = lesson.groupName || lesson.studentName || "(group)";
                 modalText = `Reassign ${groupName} from ${currentTeacherName} to ${destTeacherName}?\n\nThis updates the group's teacher as well as placing this card.`;
                 pendingGroupsMutation = (prev) => prev.map(g => g.id === lesson.groupId ? { ...g, teacherId: destLane.teacher.id } : g);
               } else {
+                // Session 3 / C4 — enrolment.teacherId mutation dropped; lane
+                // bucket_id below carries the new teacher attribution.
                 const studentName = lesson.studentName || students.find(s => s.id === lesson.studentId)?.name || "(student)";
-                modalText = `Reassign ${studentName} from ${currentTeacherName} to ${destTeacherName}?\n\nThis updates ${studentName}'s enrolment to ${destTeacherName} as well as placing this card.`;
-                const enrolId = lesson.enrolmentId || enrolmentIdFor(lesson.studentId, lesson.instrument, enrolments, lesson.groupId);
-                pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
+                modalText = `Reassign ${studentName} from ${currentTeacherName} to ${destTeacherName}?`;
               }
               if (!window.confirm(modalText)) return;
               isReassign = true;
@@ -6312,7 +6290,6 @@ export default function MusicTimetableApp() {
               });
               pendingPlaceRedoStack.current = [];
               if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
-              if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
               if (pendingGroupsMutation) setGroups(pendingGroupsMutation);
             }
             setTimetable(prev => {
@@ -6393,24 +6370,15 @@ export default function MusicTimetableApp() {
               notify(`No covering lane for ${school.name} on ${day}.`, "warning");
               return;
             }
-            let currentTeacher = null;
-            if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
-            if (!currentTeacher) currentTeacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
-            const currentTid = currentTeacher?.id || "";
-            // Modal-or-stamp branch (MTT, Q1=α). Push + enrolment mutation only on reassign confirm.
-            let pendingEnrolmentMutation = null;
+            // Session 3 / C4 — current teacher derives from MTT placement.
+            // Modal fires only on cross-lane reassign; first-time placements
+            // (the common case for unscheduled drops) go silent.
+            const mttCurrent = getStudentMTTTeacher(student.id, inst.name, timetable, students, teachers, enrolments, teacherCoverage);
+            const currentTid = mttCurrent?.teacherId || null;
             let isReassign = false;
             if (currentTid && destLane.teacher.id !== currentTid) {
-              const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              const modalText = `Reassign ${student.name} from ${mttCurrent.teacherName} to ${destLane.teacher.name}?`;
               if (!window.confirm(modalText)) return;
-              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
-              isReassign = true;
-            } else if (!currentTid) {
-              const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
-              if (!window.confirm(modalText)) return;
-              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
               isReassign = true;
             }
             const lesson = {
@@ -6432,7 +6400,6 @@ export default function MusicTimetableApp() {
               });
               pendingPlaceRedoStack.current = [];
               if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
-              if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
             }
             setTimetable(prev => ({
               ...prev,
@@ -6462,23 +6429,15 @@ export default function MusicTimetableApp() {
               notify(`No covering lane for ${school.name} on ${day}.`, "warning");
               return;
             }
-            // Current teacher resolution mirrors the pre-10b chain.
-            let currentTeacher = null;
-            if (inst.teacherId) currentTeacher = teachers.find(t => t.id === inst.teacherId);
-            if (!currentTeacher) currentTeacher = teachers.find(t => t.instruments.some(ti => ti.name === inst.name) && t.availability.some(a => a.schoolId === school.id && a.day === day));
-            const currentTid = currentTeacher?.id || "";
-            // Modal-or-stamp branch (MTT, Q1=α — enrolment update on cross-teacher).
-            let pendingEnrolmentMutation = null;
+            // Session 3 / C4 — current teacher derives from MTT placement.
+            // Modal fires only on cross-lane reassign; first-time placements
+            // (the dominant case here, since this handler is the pending →
+            // active drop path) go silent.
+            const mttCurrent = getStudentMTTTeacher(student.id, inst.name, timetable, students, teachers, enrolments, teacherCoverage);
+            const currentTid = mttCurrent?.teacherId || null;
             if (currentTid && destLane.teacher.id !== currentTid) {
-              const modalText = `Reassign ${student.name} from ${currentTeacher.name} to ${destLane.teacher.name}?\n\nThis updates ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
+              const modalText = `Reassign ${student.name} from ${mttCurrent.teacherName} to ${destLane.teacher.name}?`;
               if (!window.confirm(modalText)) return;
-              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
-            } else if (!currentTid) {
-              const modalText = `Assign ${student.name} to ${destLane.teacher.name}?\n\nThis sets ${student.name}'s enrolment to ${destLane.teacher.name} as well as placing this card.`;
-              if (!window.confirm(modalText)) return;
-              const enrolId = enrolmentIdFor(student.id, inst.name, enrolments);
-              pendingEnrolmentMutation = (prev) => prev.map(e => e.id === enrolId ? { ...e, teacherId: destLane.teacher.id } : e);
             }
             const lesson = {
               id: uid(), studentId: student.id, studentName: student.name,
@@ -6490,6 +6449,9 @@ export default function MusicTimetableApp() {
               enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
             };
             // Snapshot all relevant state before mutating — order: push, then mutate.
+            // (Pending placements snapshot unconditionally, preserving pre-10b
+            // undoable behaviour; the auto-activation setStudents below is the
+            // mutation that motivates the snapshot post-C4.)
             pendingPlaceUndoStack.current.push({
               seq: ++ttPageActionSeq.current,
               timetable: JSON.parse(JSON.stringify(timetable)),
@@ -6499,7 +6461,6 @@ export default function MusicTimetableApp() {
             });
             pendingPlaceRedoStack.current = [];
             if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
-            if (pendingEnrolmentMutation) setEnrolments(pendingEnrolmentMutation);
             setTimetableRaw(prev => ({
               ...(prev || { unscheduled: [] }),
               lessons: [...((prev || { lessons: [] }).lessons), lesson],
