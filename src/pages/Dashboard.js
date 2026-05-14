@@ -167,14 +167,17 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     [currentTerm, termBreaks]
   );
 
-  // Session 5B / C6 — per-day unacked constraint-warning counts for the
-  // day dropdown. Keyed by date string (YYYY-MM-DD), so rolling-boundary
-  // days at offset=0 map to their actual week. Counts LESSONS with at
-  // least one unacked warning (matches App.js weeklyWarningCount semantic).
-  // Walks both the offset week AND (at offset=0) the next week's Mon-Fri
-  // to cover the rolling boundary case where visibleDays straddles weeks.
+  // Session 5B / C6 + chips-followup — per-day per-school unacked
+  // constraint-warning entries for the day dropdown. Return shape:
+  //   { [dateStr]: [ { schoolId, schoolCode, count, lines }, ... ] }
+  // where `count` is the number of LESSONS (matches App.js
+  // weeklyWarningCount semantic) and `lines` is one pre-formatted
+  // string per (lesson, warning) pair, time-sorted then name-sorted.
+  // Walks both the offset week AND (at offset=0) the next week's
+  // Mon-Fri to cover the rolling boundary case where visibleDays
+  // straddles weeks. Per-school entries with count===0 are omitted.
   const dropdownWarningCounts = useMemo(() => {
-    const counts = {};
+    const result = {};
     const baseMonday = getCurrentWeekMonday();
     baseMonday.setDate(baseMonday.getDate() + calendarWeekOffset * 7);
     const weeksToCompute = [baseMonday];
@@ -208,28 +211,63 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
       });
       for (const day of DAYS) {
         const dateStr = weekDateMap[day];
-        let dayCount = 0;
+        const perSchool = [];
         for (const school of schools) {
           const wttKey = `${calMondayStr}|${school.id}`;
           const wttEntry = weeklyTimetables[wttKey];
           const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
-          const dayLessons = lessonsSource.filter(l => l.schoolId === school.id && l.day === day);
+          // Bug A fix — pass the school's full-week lessons (not day-narrowed)
+          // as the 4th positional arg so the helper's dual-class-time-pullout
+          // check (which filters by l.day !== newDay) can see lessons on other
+          // days. dayLessons is the OUTER iteration (which lessons to compute
+          // warnings ON); schoolWeekLessons is what the helper sees internally.
+          const schoolWeekLessons = lessonsSource.filter(l => l.schoolId === school.id);
+          const dayLessons = schoolWeekLessons.filter(l => l.day === day);
+          const lessonRows = [];
           for (const l of dayLessons) {
             if (weeklyAckedConstraints && weeklyAckedConstraints.has(l.id)) continue;
             const slot = (school.slots || []).find(s => s.start === l.start) || { start: l.start, end: l.end || l.start, type: "class" };
-            const ws = checkConstraints(l, day, slot, dayLessons, {
+            const ws = checkConstraints(l, day, slot, schoolWeekLessons, {
               weekKey: calMondayStr, selectedSchool: school.id, currentSchool: school,
               weeklyTimetables, teacherCoverage, laneOverrides,
               students, enrolments, teachers, schools, bands, groups,
               weekDateMap, weekInterruptions, specLookupRef, timetable,
             });
-            if (ws.length > 0) dayCount++;
+            if (ws.length === 0) continue;
+            const stu = l.isGroup
+              ? null
+              : students.find(s => s.id === l.studentId);
+            const name = l.isGroup
+              ? (l.groupName || "Group")
+              : (l.isBandSession
+                  ? (l.bandName || "Band")
+                  : (stu?.name || l.studentName || "Unknown"));
+            const timeLabel = l.start ? toTimeLabel(l.start) : "";
+            lessonRows.push({ start: l.start || "", name, timeLabel, ws });
           }
+          if (lessonRows.length === 0) continue;
+          lessonRows.sort((a, b) => {
+            const t = (a.start || "").localeCompare(b.start || "");
+            if (t !== 0) return t;
+            return a.name.localeCompare(b.name);
+          });
+          const lines = [];
+          for (const row of lessonRows) {
+            for (const w of row.ws) {
+              lines.push(`${row.name} ${row.timeLabel} — ${w}`);
+            }
+          }
+          perSchool.push({
+            schoolId: school.id,
+            schoolCode: getSchoolAcronym(school),
+            count: lessonRows.length,
+            lines,
+          });
         }
-        counts[dateStr] = dayCount;
+        if (perSchool.length > 0) result[dateStr] = perSchool;
       }
     }
-    return counts;
+    return result;
   }, [calendarWeekOffset, schools, weeklyTimetables, timetable, laneOverrides, weeklyAckedConstraints, teacherCoverage, students, enrolments, teachers, bands, groups, specialists, interruptions]);
 
   // After 6pm Fri / Sat / Sun, calendar rolls to next week — progress bar should match
@@ -2518,9 +2556,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     <span style={{ fontSize: 13, color: colors.textLight }}>{sd.dayNum} {new Date(sd.date + "T00:00:00").toLocaleDateString("en-AU", { month: "short" })}</span>
                     {sd.date === todayStr && <span style={{ fontSize: 10, fontWeight: 700, background: colors.sidebarActive, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Today</span>}
                     {sd.isNextWeek && <span style={{ fontSize: 10, fontWeight: 700, background: colors.textMuted, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Next week</span>}
-                    {!sd.isTermBreak && dropdownWarningCounts[sd.date] > 0 && (
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: colors.danger, background: colors.redLight, border: `1px solid ${colors.danger}40`, borderRadius: 10, padding: "2px 8px" }} title="Unacked constraint warnings on this day">
-                        <AlertTriangle size={11} /> {dropdownWarningCounts[sd.date]}
+                    {!sd.isTermBreak && Array.isArray(dropdownWarningCounts[sd.date]) && dropdownWarningCounts[sd.date].length > 0 && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                        {dropdownWarningCounts[sd.date].map(entry => (
+                          <span key={entry.schoolId}
+                            title={entry.lines.join("\n")}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: colors.danger, background: colors.redLight, border: `1px solid ${colors.danger}40`, borderRadius: 10, padding: "2px 8px" }}>
+                            {entry.schoolCode} <AlertTriangle size={11} /> {entry.count}
+                          </span>
+                        ))}
                       </span>
                     )}
                   </div>
