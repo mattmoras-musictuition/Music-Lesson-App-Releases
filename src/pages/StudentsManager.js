@@ -12,7 +12,7 @@ import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, onTeacherChange }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment }) {
   const { colors } = useTheme();
 
   // ── Enrolment helpers (Commit 2b) ────────────────────────────
@@ -61,7 +61,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     return [];
   });
   const [isAddingEnrolment, setIsAddingEnrolment] = useState(false);
-  const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", teacherId: "", isGroup: false });
+  const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", isGroup: false });
   const [endingEnrolment, setEndingEnrolment] = useState(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
@@ -128,13 +128,11 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       // If the prefill carried an instrument hint (e.g. from an email enquiry),
       // seed one enrolment row so the user doesn't lose the hint.
       const prefillInstrument = newStudentPrefill.instrument || newStudentPrefill.instruments?.[0]?.name;
-      const prefillTeacher = newStudentPrefill.teacherId || newStudentPrefill.instruments?.[0]?.teacherId || "";
       if (prefillInstrument) {
         setFormEnrolments([{
           id: uid(),
           studentId: merged.id,
           instrument: prefillInstrument,
-          teacherId: prefillTeacher,
           isGroup: false,
           groupId: undefined,
           startDate: new Date().toISOString().split("T")[0],
@@ -165,7 +163,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   // modals, or history-expanded state leaking across students.
   useEffect(() => {
     setIsAddingEnrolment(false);
-    setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false });
+    setNewEnrolmentDraft({ instrument: "", isGroup: false });
     setEndingEnrolment(null);
     setHistoryExpanded(form?.status === "archived");
   }, [form?.id]);
@@ -312,25 +310,6 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
       return [...others, ...effectiveFormEnrolments];
     });
 
-    // Teacher-change propagation: diff formEnrolments vs priorEnrolments by id.
-    // instrumentName is included as a fallback match key for the (now-legacy)
-    // App.js handler; once 2b.8 ports that handler to prefer enrolmentId,
-    // this still works unchanged.
-    if (prevRecord && onTeacherChange) {
-      const changes = effectiveFormEnrolments.flatMap(e => {
-        const prior = priorEnrolments.find(p => p.id === e.id);
-        if (prior && prior.teacherId !== e.teacherId) {
-          return [{
-            enrolmentId: e.id,
-            instrumentName: e.instrument,
-            newTeacherId: e.teacherId || "",
-          }];
-        }
-        return [];
-      });
-      if (changes.length > 0) onTeacherChange(cleanRecord.id, changes);
-    }
-
     // Cascade: archive clears all of the student's cards in one shot (by
     // studentId, subsumes all enrolments). Otherwise each newly-ended
     // enrolment gets a per-enrolment card cascade.
@@ -429,7 +408,6 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
         id: uid(),
         studentId: s.id,
         instrument: inst.name,
-        teacherId: inst.teacherId || "",
         isGroup: inst.isGroup || false,
         groupId: undefined,
         startDate: todayISO,
@@ -747,7 +725,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         id: uid(),
         studentId: s.id,
         instrument: inst.name,
-        teacherId: inst.teacherId || "",
         isGroup: inst.isGroup || false,
         groupId: undefined,
         startDate: todayISO,
@@ -994,7 +971,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: colors.bg, borderBottom: `1px solid ${colors.border}`, position: "sticky", top: 0, zIndex: 1 }}>
-                  {["Name", "School", "Class", "Instrument", "Teacher", ""].map((h, i) => (
+                  {["Name", "School", "Class", "Instrument", ""].map((h, i) => (
                     <th key={i} style={{ padding: "10px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, background: colors.bg }}>{h}</th>
                   ))}
                 </tr>
@@ -1037,17 +1014,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         updatePreviewStudent(i, "instruments", insts);
                       }} style={{ padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 12, fontFamily: "inherit" }}>
                         
-                      </select>
-                    </td>
-                    <td style={{ padding: "6px 8px" }}>
-                      <select value={entry.instruments && entry.instruments[0] && entry.instruments[0].teacherId || ""} onChange={e => {
-                        const insts = entry.instruments ? [...entry.instruments] : [{ name: "" }];
-                        if (insts.length > 0) insts[0] = { ...insts[0], teacherId: e.target.value };
-                        updatePreviewStudent(i, "instruments", insts);
-                      }}
-                        style={{ width: "100%", padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 12, fontFamily: "inherit" }}>
-                        <option value="">Auto</option>
-                        {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                       </select>
                     </td>
                     <td style={{ padding: "6px 8px" }}>
@@ -1219,7 +1185,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: colors.textLight, textTransform: "uppercase", letterSpacing: 0.5 }}>Enrolments</label>
                   {!isArchived && !isAddingEnrolment && (
-                    <Btn variant="ghost" onClick={() => { setIsAddingEnrolment(true); setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false }); }} style={{ fontSize: 12 }}>
+                    <Btn variant="ghost" onClick={() => { setIsAddingEnrolment(true); setNewEnrolmentDraft({ instrument: "", isGroup: false }); }} style={{ fontSize: 12 }}>
                       + Add enrolment
                     </Btn>
                   )}
@@ -1259,19 +1225,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         </>
                       ) : (
                         <>
-                          <select
-                            value={e.teacherId || ""}
-                            onChange={ev => {
-                              const updatedTeacherId = ev.target.value;
-                              setFormEnrolments(prev => prev.map(x => x.id === e.id ? { ...x, teacherId: updatedTeacherId } : x));
-                            }}
-                            style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: e.teacherId ? colors.text : colors.textMuted }}>
-                            <option value="">Unassigned</option>
-                            {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                          </select>
-                          <span style={{ fontSize: 11, color: colors.textMuted }}>{formatDate(e.startDate)}</span>
+                          <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)}</span>
                           <button onClick={() => setEndingEnrolment(e)}
-                            style={{ marginLeft: "auto", padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: "none", color: colors.danger, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
+                            style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: "none", color: colors.danger, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
                             onMouseEnter={ev => { ev.currentTarget.style.background = colors.redLight; ev.currentTarget.style.borderColor = colors.danger; }}
                             onMouseLeave={ev => { ev.currentTarget.style.background = "none"; ev.currentTarget.style.borderColor = colors.border; }}>
                             End enrolment
@@ -1294,13 +1250,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       {addableInstruments.length > 0 && <option value="">Select instrument…</option>}
                       {addableInstruments.map(i => <option key={i} value={i}>{i}</option>)}
                     </select>
-                    <select
-                      value={newEnrolmentDraft.teacherId}
-                      onChange={ev => setNewEnrolmentDraft(d => ({ ...d, teacherId: ev.target.value }))}
-                      style={{ padding: "5px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", flex: 1 }}>
-                      <option value="">Unassigned</option>
-                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
                     <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "5px 10px", border: `1px solid ${newEnrolmentDraft.isGroup ? colors.accent : colors.inputBorder}`, borderRadius: 6, background: newEnrolmentDraft.isGroup ? colors.accentLight : "transparent", transition: "background 0.15s, border-color 0.15s", flexShrink: 0 }}
                       title="Mark as group enrolment (waiting for a group to form, or joining an existing group)">
                       <input type="checkbox" checked={!!newEnrolmentDraft.isGroup}
@@ -1316,20 +1265,19 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           id: uid(),
                           studentId: form.id,
                           instrument: newEnrolmentDraft.instrument,
-                          teacherId: newEnrolmentDraft.teacherId || "",
                           isGroup: newEnrolmentDraft.isGroup,
                           groupId: undefined,
                           startDate: new Date().toISOString().split("T")[0],
                           endDate: undefined,
                         }]);
                         setIsAddingEnrolment(false);
-                        setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false });
+                        setNewEnrolmentDraft({ instrument: "", isGroup: false });
                       }}
                       disabled={addableInstruments.length === 0 || !newEnrolmentDraft.instrument}
                       style={{ fontSize: 12 }}>
                       Save
                     </Btn>
-                    <Btn variant="secondary" onClick={() => { setIsAddingEnrolment(false); setNewEnrolmentDraft({ instrument: "", teacherId: "", isGroup: false }); }} style={{ fontSize: 12 }}>Cancel</Btn>
+                    <Btn variant="secondary" onClick={() => { setIsAddingEnrolment(false); setNewEnrolmentDraft({ instrument: "", isGroup: false }); }} style={{ fontSize: 12 }}>Cancel</Btn>
                   </div>
                 )}
 

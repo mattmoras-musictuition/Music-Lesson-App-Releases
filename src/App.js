@@ -390,9 +390,7 @@ const ACTION_TOOLS = [
           items: {
             type: "object",
             properties: {
-              name:        { type: "string", description: "Instrument name (e.g. 'Piano', 'Guitar')" },
-              teacherId:   { type: "string", description: "ID of the assigned teacher from the teachers list" },
-              teacherName: { type: "string", description: "Teacher name (for confirmation)" },
+              name: { type: "string", description: "Instrument name (e.g. 'Piano', 'Guitar')" },
             },
             required: ["name"],
           },
@@ -407,7 +405,7 @@ const ACTION_TOOLS = [
   },
   {
     name: "edit_student",
-    description: "Update fields on an existing student record. Only include fields you want to change — omitted fields are left unchanged. Use for name corrections, class changes, teacher reassignments, parent contact updates, notes, or status changes.",
+    description: "Update fields on an existing student record. Only include fields you want to change — omitted fields are left unchanged. Use for name corrections, class changes, parent contact updates, notes, or status changes.",
     input_schema: {
       type: "object",
       properties: {
@@ -422,8 +420,7 @@ const ACTION_TOOLS = [
           items: {
             type: "object",
             properties: {
-              name:      { type: "string", description: "Instrument name" },
-              teacherId: { type: "string", description: "Assigned teacher ID" },
+              name: { type: "string", description: "Instrument name" },
             },
             required: ["name"],
           },
@@ -3222,10 +3219,7 @@ export default function MusicTimetableApp() {
           status: "pending",
           schoolId: schoolId || "",
           className: className || "",
-          instruments: (instruments || []).map(i => ({
-            name: i.name,
-            ...(i.teacherId ? { teacherId: i.teacherId } : {}),
-          })),
+          instruments: (instruments || []).map(i => ({ name: i.name })),
           ...(parentName  ? { parentName }  : {}),
           ...(parentEmail ? { parentEmail } : {}),
           ...(parentPhone ? { parentPhone } : {}),
@@ -3243,10 +3237,7 @@ export default function MusicTimetableApp() {
           enrolments: prev,
           todayDate: todayISO,
         }));
-        const instStr = (instruments || []).map(i => {
-          const t = teachers.find(t => t.id === i.teacherId);
-          return `${i.name}${t ? ` with ${t.name}` : ""}`;
-        }).join(", ") || "no instruments set yet";
+        const instStr = (instruments || []).map(i => i.name).join(", ") || "no instruments set yet";
         notify(`Added student: ${studentName}`, "success");
         return `Done — created pending student: ${studentName} at ${schoolName}${className ? `, ${className}` : ""}. Instruments: ${instStr}. They will appear in the Pending tab, ready to be scheduled.`;
       }
@@ -3266,10 +3257,7 @@ export default function MusicTimetableApp() {
         if (parentPhone  !== undefined) patch.parentPhone = parentPhone;
         if (notes        !== undefined) patch.notes       = notes;
         if (status       !== undefined) patch.status      = status;
-        if (instruments  !== undefined) patch.instruments = instruments.map(i => ({
-          name: i.name,
-          ...(i.teacherId ? { teacherId: i.teacherId } : {}),
-        }));
+        if (instruments  !== undefined) patch.instruments = instruments.map(i => ({ name: i.name }));
         if (Object.keys(patch).length === 0) return `No fields provided — nothing changed for ${studentName}.`;
         setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, ...patch }));
         // Mirror instruments[] into enrolments only when instruments was in the
@@ -4106,8 +4094,8 @@ export default function MusicTimetableApp() {
     lines.push("- update_tally_entry: Edit an existing missed tally entry — change the reason, reasonDetail, makeupEligible (catch-up owed), or notes. Identify the entry by studentId + weekOf + day. Optionally add instrument if the student has multiple lessons that week. Only include fields you want to change.");
     lines.push("- mark_tally_completed: Mark an existing missed tally entry as completed (e.g. the lesson was made up or attendance was confirmed). Identify by studentId + weekOf + day. Set madeUp: true if it was a formal make-up lesson.");
     lines.push("- delete_tally_entry: Permanently remove a tally entry. Use ONLY when a lesson was incorrectly recorded as missed. Identify by studentId + weekOf + day. Always confirm with the user before calling this — deletions cannot be undone.");
-    lines.push("- add_student: Create a new student record with status 'pending'. They will appear in the Pending tab, not the regular timetable, until scheduled. Always include schoolId (from the schools list above), instruments with teacherId assignments where known, and parent contact details if provided. Never invent IDs — use the actual IDs from the data above.");
-    lines.push("- edit_student: Update any field on an existing student — name, school, class, instruments, parent contact, notes, or status (active/pending only). Only include fields you want to change. To update a teacher assignment, provide the full instruments array with the correct teacherId. Do NOT use status to archive — use archive_student instead.");
+    lines.push("- add_student: Create a new student record with status 'pending'. They will appear in the Pending tab, not the regular timetable, until scheduled. Always include schoolId (from the schools list above), instruments (just the names — teacher assignment is decided by lane placement in the master timetable), and parent contact details if provided. Never invent IDs — use the actual IDs from the data above.");
+    lines.push("- edit_student: Update any field on an existing student — name, school, class, instruments, parent contact, notes, or status (active/pending only). Only include fields you want to change. Teacher assignment cannot be set here — it is derived from the student's lane on the master timetable. Do NOT use status to archive — use archive_student instead.");
     lines.push("- archive_student: Archive a student who has left or is no longer active. They disappear from all active views (timetable, tally, student list) but their record is preserved and restorable. Use this instead of edit_student when a student is leaving.");
     lines.push("- restore_student: Restore a previously archived student back to pending status so they reappear in the student list.");
     lines.push("- add_teacher: Create a new teacher record. Include name, email, instruments (list of instrument name strings), and availability (array of {schoolId, day, start, end} for each day they teach). Use school IDs from the schools list above.");
@@ -6243,40 +6231,6 @@ export default function MusicTimetableApp() {
                     lessons: (entry.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
                     missed:  (entry.missed  || []).filter(m => m.enrolmentId !== enrolmentId),
                   };
-                }
-                return next;
-              });
-            }} onTeacherChange={(studentId, changes) => {
-              // Match a card's change. Prefer enrolmentId match; fall back to
-              // (studentId, instrumentName) for cards that haven't been stamped yet.
-              const matchChange = (l) => {
-                if (l.enrolmentId) {
-                  const byId = changes.find(c => c.enrolmentId === l.enrolmentId);
-                  if (byId) return byId;
-                }
-                if (l.studentId !== studentId) return null;
-                return changes.find(c => c.instrumentName === l.instrument) || null;
-              };
-              if (timetable) {
-                setTimetable(prev => ({
-                  ...prev,
-                  lessons: (prev.lessons || []).map(l => {
-                    const change = matchChange(l);
-                    if (!change) return l;
-                    return { ...l };
-                  })
-                }));
-              }
-              setWeeklyTimetables(prev => {
-                const next = { ...prev };
-                for (const key of Object.keys(next)) {
-                  const entry = next[key];
-                  if (!entry) continue;
-                  next[key] = { ...entry, lessons: (entry.lessons || []).map(l => {
-                    const change = matchChange(l);
-                    if (!change) return l;
-                    return { ...l };
-                  })};
                 }
                 return next;
               });

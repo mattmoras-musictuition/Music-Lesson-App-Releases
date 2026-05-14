@@ -29,33 +29,6 @@ export function parseStudentCSV(csvData, schools, teachers = []) {
     return match || null;
   };
 
-  // Helper: match teacher by full name, first name, last name, or initials
-  const matchTeacher = (raw) => {
-    if (!raw) return null;
-    const r = raw.trim();
-    const rLower = r.toLowerCase();
-    let match = teachers.find(t => t.name.toLowerCase() === rLower);
-    if (match) return match;
-    match = teachers.find(t => t.name.split(/\s+/)[0].toLowerCase() === rLower);
-    if (match) return match;
-    match = teachers.find(t => {
-      const parts = t.name.split(/\s+/);
-      return parts.length > 1 && parts[parts.length - 1].toLowerCase() === rLower;
-    });
-    if (match) return match;
-    const rClean = r.replace(/[.\s]/g, "").toUpperCase();
-    if (rClean.length >= 2 && rClean.length <= 4) {
-      match = teachers.find(t => {
-        const initials = t.name.split(/\s+/).map(w => w[0]).join("").toUpperCase();
-        return initials === rClean;
-      });
-      if (match) return match;
-    }
-    match = teachers.find(t => t.name.toLowerCase().includes(rLower) || rLower.includes(t.name.toLowerCase()));
-    if (match) return match;
-    return null;
-  };
-
   const results = [];
   for (const row of csvData) {
     if (!row.name && !row.Name) continue;
@@ -64,10 +37,8 @@ export function parseStudentCSV(csvData, schools, teachers = []) {
     const className = row.class || row.Class || row.className || "";
     const instrument = row.instrument || row.Instrument || "";
     const instrument2 = row.instrument2 || row.Instrument2 || "";
-    const teacherName = row.teacher || row.Teacher || "";
 
     const school = matchSchool(schoolName);
-    const matchedTeacher = matchTeacher(teacherName);
 
     const isGroupAll = (row.isGroup || row.is_group || row.group || row.Group || "").toLowerCase() === "yes";
     const isGroup1 = (row.group1 || row.Group1 || "").toLowerCase() === "yes" || isGroupAll;
@@ -82,7 +53,7 @@ export function parseStudentCSV(csvData, schools, teachers = []) {
       schoolId: school ? school.id : "",
       schoolName: schoolName.trim(),
       className: className.trim(),
-      instruments: instruments.map((inst, i) => i === 0 && matchedTeacher ? { ...inst, teacherId: matchedTeacher.id } : { ...inst, teacherId: "" }),
+      instruments,
       outsideClassOnly: (row.outsideClassOnly || row.outside_class_only || row.breakTimeOnly || row.break_time_only || "").toLowerCase() === "yes",
       outsideClassPreferred: (row.outsideClassPreferred || row.outside_class_preferred || "").toLowerCase() === "yes",
       availableBefore: (row.availableBefore || row.available_before || row.availableBeforeAfter || row.available_before_after || row.beforeAfterOnly || row.before_after_only || "").toLowerCase() === "yes",

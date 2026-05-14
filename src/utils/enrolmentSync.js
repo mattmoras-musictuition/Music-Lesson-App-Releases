@@ -50,15 +50,6 @@ export function syncEnrolmentsFromInstruments({
   // setEnrolments(prev => helper(...)) is a no-op when nothing changed.
   if (toAdd.length === 0 && toEndIds.size === 0) return current;
 
-  // Pick up teacherId hints from object-shaped instrument inputs
-  // (AI tool input shape is [{ name, teacherId? }, ...]).
-  const teacherByName = {};
-  (newInstruments || []).forEach(i => {
-    if (typeof i === "object" && i && i.name && i.teacherId) {
-      teacherByName[i.name] = i.teacherId;
-    }
-  });
-
   const ended = current.map(e =>
     toEndIds.has(e.id) ? { ...e, endDate: todayDate } : e
   );
@@ -67,7 +58,6 @@ export function syncEnrolmentsFromInstruments({
     id: generateId(),
     studentId,
     instrument: name,
-    teacherId: teacherByName[name] || "",
     isGroup: false,
     groupId: undefined,
     startDate: todayDate,
