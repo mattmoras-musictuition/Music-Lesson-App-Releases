@@ -125,6 +125,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const [calEventMenu, setCalEventMenu] = useState(null); // { x, y, date, time, prefill }
   const [calEventForm, setCalEventForm] = useState(null); // rich form: { type, title, startDate, endDate, startTime, endTime, schoolId, affectsClasses, interruptionSubtype, details, id?, sourceStore?, x?, y? }
   const [expandedDays, setExpandedDays] = useState(new Set()); // Set of date strings with open expanded strips
+  const [warningPopover, setWarningPopover] = useState(null); // { chipKey, rect, lines } — hover detail for per-school warning chips
 
   const EVENT_TYPE_META = {
     personal:     { label: "Personal / Admin", bg: "#E8EDF5", border: "#6B82A8", text: "#3B4E6E", dot: "#6B82A8" },
@@ -2558,13 +2559,20 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     {sd.isNextWeek && <span style={{ fontSize: 10, fontWeight: 700, background: colors.textMuted, color: "#fff", borderRadius: 10, padding: "2px 8px" }}>Next week</span>}
                     {!sd.isTermBreak && Array.isArray(dropdownWarningCounts[sd.date]) && dropdownWarningCounts[sd.date].length > 0 && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                        {dropdownWarningCounts[sd.date].map(entry => (
-                          <span key={entry.schoolId}
-                            title={entry.lines.join("\n")}
-                            style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: colors.danger, background: colors.redLight, border: `1px solid ${colors.danger}40`, borderRadius: 10, padding: "2px 8px" }}>
-                            {entry.schoolCode} <AlertTriangle size={11} /> {entry.count}
-                          </span>
-                        ))}
+                        {dropdownWarningCounts[sd.date].map(entry => {
+                          const chipKey = `${sd.date}|${entry.schoolId}`;
+                          return (
+                            <span key={entry.schoolId}
+                              onMouseEnter={e => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setWarningPopover({ chipKey, rect, lines: entry.lines });
+                              }}
+                              onMouseLeave={() => setWarningPopover(prev => (prev && prev.chipKey === chipKey ? null : prev))}
+                              style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, fontWeight: 700, color: colors.danger, background: colors.redLight, border: `1px solid ${colors.danger}40`, borderRadius: 10, padding: "2px 8px" }}>
+                              {entry.schoolCode} <AlertTriangle size={11} /> {entry.count}
+                            </span>
+                          );
+                        })}
                       </span>
                     )}
                   </div>
@@ -6871,6 +6879,32 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         </div>,
         document.body
       )}
+
+      {/* Session 5B follow-up — styled hover popover for per-school warning chips.
+          Style values lifted verbatim from WeeklyAdjustments.js renderHoverPopover's
+          "constraints" variant (L344-368) so the two surfaces read as the same family. */}
+      {warningPopover && (() => {
+        const { rect, lines } = warningPopover;
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const topPos = spaceBelow > 200 ? rect.bottom + 6 : rect.top - 6;
+        const anchor = spaceBelow > 200 ? "top" : "bottom";
+        const popLeft = Math.min(rect.left, window.innerWidth - 280);
+        return (
+          <div style={{
+            position: "fixed", left: popLeft,
+            [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+            zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+            boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${colors.danger}`,
+            padding: "10px 13px", width: 260, pointerEvents: "none", fontFamily: "inherit",
+          }}>
+            {lines.map((line, li) => (
+              <div key={li} style={{ color: colors.danger, fontWeight: 500, fontSize: 11, display: "flex", alignItems: "flex-start", gap: 5, marginBottom: li < lines.length - 1 ? 4 : 0 }}>
+                <AlertTriangle size={11} style={{ flexShrink: 0, marginTop: 2 }} /> <span>{line}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
     </div>
   );
