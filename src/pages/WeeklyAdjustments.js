@@ -20,6 +20,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { checkConstraints } from "../utils/constraints";
+import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -1321,51 +1322,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   const importFromMTT = (targetDay) => {
     if (!timetable) { notify("No master timetable to import from", "warning"); return; }
-    const weekDateMap = {};
-    for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
-    const mttLessons = timetable.lessons.filter(l =>
-      l.schoolId === selectedSchool && (!targetDay || l.day === targetDay)
-    );
-    const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), weekDate: weekDateMap[l.day], adjusted: false }));
+    const result = buildMttImportForWeekSchool({
+      mtt: timetable,
+      schoolId: selectedSchool,
+      weekDates,
+      existingEntry: weeklyTimetables[storageKey] || null,
+      targetDay,
+    });
+    if (!result) { notify("No master timetable to import from", "warning"); return; }
+    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
     if (targetDay) {
-      const existing = weeklyTimetables[storageKey];
-      const otherDays = existing ? existing.lessons.filter(l => l.day !== targetDay) : [];
-      // Session 97.1 (Spec 3 cluster 12c update): preserve band sessions on
-      // the target day. Band sessions aren't in the master timetable (they're
-      // scheduled ad-hoc per week), so "import from master" should never
-      // remove them. Catch-ups now live in the catchups table, not in
-      // weeklyData.lessons, so they're naturally untouched by this filter.
-      const preservedDayExtras = existing
-        ? (existing.lessons || []).filter(l => l.day === targetDay && l.isBandSession)
-        : [];
-      setWeeklyTimetables(prev => ({
-        ...prev,
-        [storageKey]: {
-          lessons: [...otherDays, ...preservedDayExtras, ...importedLessons],
-          missed: (existing?.missed || []).filter(m => m.day !== targetDay),
-          generatedAt: new Date().toISOString()
-        }
-      }));
-      notify(`Imported ${importedLessons.length} lessons for ${targetDay}`);
+      notify(`Imported ${result.importedCount} lessons for ${targetDay}`);
     } else {
-      // Session 97.1 (Spec 3 cluster 12c update): preserve band sessions
-      // through whole-week MTT re-import. Band sessions aren't in the master
-      // (scheduled ad-hoc per week), so "import from master" should never
-      // remove them. Missed-zone entries ARE still wiped — a whole-week
-      // re-import is an explicit reset of the week's state. Catch-ups now
-      // live in the catchups table, not in weeklyData.lessons.
-      const existing = weeklyTimetables[storageKey];
-      const preservedExtras = existing
-        ? (existing.lessons || []).filter(l => l.isBandSession)
-        : [];
-      setWeeklyTimetables(prev => ({
-        ...prev,
-        [storageKey]: { lessons: [...preservedExtras, ...importedLessons], missed: [], generatedAt: new Date().toISOString() }
-      }));
-      const extraNote = preservedExtras.length > 0
-        ? ` (${preservedExtras.length} band ${preservedExtras.length === 1 ? "session" : "sessions"} preserved)`
+      const extraNote = result.preservedBandCount > 0
+        ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
         : "";
-      notify(`Imported ${importedLessons.length} lessons for the week${extraNote}`);
+      notify(`Imported ${result.importedCount} lessons for the week${extraNote}`);
     }
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
