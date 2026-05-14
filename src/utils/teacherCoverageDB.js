@@ -129,26 +129,56 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
 
 /**
  * Read-side teacher resolution.
- * Cluster 6b1: override-first when week context provided (WTT callers) —
- *   a per-week (weekKey, bucketId) row in laneOverrides wins.
- * Cluster 5a: lane-first lookup as the fallback — bucket_id → teacher_coverage.
- * Returns null if the card has no bucket_id, no matching override or lane row
- * is found, or teacherCoverage isn't an array. Does NOT fall back to
- * lesson.teacherId — callers (e.g. getLiveTeacherId) own the Path-B fallback
- * chain.
+ *
+ * Phase 1 (bucket_id direct) — canonical fast path:
+ *   Cluster 6b1: override-first when week context provided (WTT callers) —
+ *     a per-week (weekKey, bucketId) row in laneOverrides wins.
+ *   Cluster 5a: lane-first lookup — bucket_id → teacher_coverage.
+ *
+ * Phase 2 (day-lane fallback) — Session 3 / C8:
+ *   For cards without bucket_id (legacy MTT data pre-dating bucket_id
+ *   stamping) OR cards whose bucket_id no longer resolves (lane archived),
+ *   fall back to the first active lane at (lesson.schoolId, lesson.day).
+ *   Same pattern as the enrichedCatchups mapper (commit c68a11b,
+ *   SPEC_3_LANE_TEACHER_DISPLAY_ADDENDUM). Override-aware against the
+ *   resolved lane's id when (laneOverrides, weekKey) are supplied.
+ *
+ * Returns null only when neither phase resolves a teacher. Does NOT fall
+ * back to lesson.teacherId — both phases are lane-derived.
  *
  * laneOverrides + weekKey default to null so MTT callers (no week context)
- * keep the cluster 5a behaviour unchanged.
+ * keep the cluster 5a behaviour unchanged for resolved cards.
  */
 export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, weekKey = null) {
-  if (!lesson?.bucket_id) return null;
-  if (Array.isArray(laneOverrides) && weekKey) {
-    const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lesson?.bucket_id);
-    if (override?.overrideTeacherId) return override.overrideTeacherId;
-  }
   if (!Array.isArray(teacherCoverage)) return null;
-  const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
-  return lane?.teacherId || null;
+
+  // Phase 1 — bucket_id direct resolution.
+  if (lesson?.bucket_id) {
+    if (Array.isArray(laneOverrides) && weekKey) {
+      const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lesson.bucket_id);
+      if (override?.overrideTeacherId) return override.overrideTeacherId;
+    }
+    const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
+    if (lane?.teacherId) return lane.teacherId;
+  }
+
+  // Phase 2 — day-lane fallback for legacy/orphan cards.
+  if (lesson?.schoolId && lesson?.day) {
+    const dayLane = teacherCoverage.find(
+      l => l.schoolId === lesson.schoolId &&
+           l.day === lesson.day &&
+           l.status === "active"
+    );
+    if (dayLane) {
+      if (Array.isArray(laneOverrides) && weekKey) {
+        const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === dayLane.id);
+        if (override?.overrideTeacherId) return override.overrideTeacherId;
+      }
+      return dayLane.teacherId || null;
+    }
+  }
+
+  return null;
 }
 
 /**
