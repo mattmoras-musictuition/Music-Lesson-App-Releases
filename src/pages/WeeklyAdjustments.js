@@ -3360,17 +3360,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             });
             const allTeacherEmails = [...teacherEmailSet];
 
-            // Staff — the music teacher assigned to the catchup's enrolment
-            const staffEmailSet = new Set();
+            // Staff — Session 3 / C7 — the music teacher attribution previously
+            // came from enrolment.teacherId (retired). Staff row dropped here;
+            // music-teacher resolution would now require an MTT lookup, which
+            // is overkill for this catchup-email staff list. Class-teacher
+            // emails above remain unchanged.
             const staffRows = [];
-            if (enrolment?.teacherId) {
-              const t = teachers.find(x => x.id === enrolment.teacherId);
-              if (t?.email && !staffEmailSet.has(t.email)) {
-                staffEmailSet.add(t.email);
-                staffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null });
-              }
-            }
-            const allStaffEmails = [...staffEmailSet];
+            const allStaffEmails = [];
 
             const noEmails = !allParentEmails.length && !allTeacherEmails.length && !allStaffEmails.length;
             if (noEmails && process.env.NODE_ENV !== 'production' && (!enrolment || studentIds.length === 0)) {
@@ -4123,8 +4119,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const laneTeacher = regularDay
                 ? getDayLaneTeacher(teacherCoverage, teachers, catchup.schoolId, regularDay)?.teacher || null
                 : null;
-              const fallbackTeacher = enrolment ? (teachers || []).find(t => t.id === enrolment.teacherId) : null;
-              const teacherName = (laneTeacher || fallbackTeacher)?.name || "";
+              // Session 3 / C7 — enrolment.teacherId fallback retired. When
+              // no regular-day lane resolves a teacher, the catchup card
+              // renders with an empty teacher name. Acceptable: cards with
+              // resolvable lanes are the common case post-Refinement-B.
+              const teacherName = laneTeacher?.name || "";
               return (
                 <div
                   draggable={!isBareGroup}

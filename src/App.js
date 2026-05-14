@@ -1703,17 +1703,22 @@ export default function MusicTimetableApp() {
       return isFirstAddedLane;
     };
 
-    // Spec 3 cluster 11b-A — catchup attribution to the lane uses the
-    // catchup's enrolment's teacherId, not the lessonBelongsToLane
-    // bucket_id/first-added heuristic. Future-safe for multi-teacher-
-    // per-day scenarios.
+    // Session 3 / C7 — catchup attribution to the lane derives from the
+    // student's current MTT placement for the catchup's enrolment instrument,
+    // not from enrolment.teacherId (retired). Edge case: a catchup whose
+    // underlying student has no MTT placement for the relevant instrument
+    // (e.g. their lesson was deleted) returns mttTeacher = null, never
+    // matches any lane → that catchup survives lane removal. Orphan catchup
+    // detection is a separate concern.
     const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
     const catchupBelongsToLane = (c) => {
       if (c.weekKey < currentMondayStr) return false;
       if (c.day !== lane.day) return false;
       if (c.schoolId !== lane.schoolId) return false;
       const enrol = enrolments.find(e => e.id === c.enrolmentId);
-      return enrol?.teacherId === lane.teacherId;
+      if (!enrol) return false;
+      const mttTeacher = getStudentMTTTeacher(enrol.studentId, enrol.instrument, timetable, students, teachers, enrolments, teacherCoverage);
+      return mttTeacher?.teacherId === lane.teacherId;
     };
 
     // Lesson count: MTT + WTT current+future + catchups current+future.
@@ -3771,7 +3776,10 @@ export default function MusicTimetableApp() {
             cpByDay[day].forEach(c => {
               const enrol = enrolments.find(e => e.id === c.enrolmentId);
               const studentName = students.find(s => s.id === enrol?.studentId)?.name || "";
-              const teacherName = teachers.find(t => t.id === enrol?.teacherId)?.name || "";
+              // Session 3 / C7 — catchup teacher derives from MTT placement, not enrolment stamp.
+              const teacherName = enrol
+                ? (getStudentMTTTeacher(enrol.studentId, enrol.instrument, timetable, students, teachers, enrolments, teacherCoverage)?.teacherName || "")
+                : "";
               const startMin = timeToMin(c.time || "00:00");
               const endMin = startMin + (c.durationMinutes ?? 30);
               const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
@@ -6473,7 +6481,7 @@ export default function MusicTimetableApp() {
           }} />}
           {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} catchups={catchups} groups={groups} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
-          {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
+          {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           <div style={{ display: page === "messages" ? "block" : "none", height: "100%" }}>
             <MessagesView

@@ -5,7 +5,6 @@
 
 import { DAYS, instruments_colors } from "../constants";
 import { supabase } from "../supabaseClient";
-import { instrumentsFromEnrolments } from "./enrolmentsDB";
 import { getCardTeacherId } from "./teacherCoverageDB";
 
 // ── ID generation ─────────────────────────────────────────────────────────────
@@ -174,71 +173,39 @@ export const groupDisplayNameLive = (lesson, groups, students) => {
 export const bandDisplayName = (lesson, members) =>
   lesson.bandName || lesson.groupName || (members && members.length > 0 ? members.map(m => m.name.split(" ")[0]).join(", ") : null) || "Band";
 
-// Derive the current teacher name for a lesson from live student/teacher data.
-// Cluster 6b1: override-first via (weekKey, bucket_id) when WTT context provided.
-// Cluster 5a: lane-first via bucket_id.
-// Cluster 12a: stamped teacherName fallback removed. Group/band lane miss now
-// returns "" (post-12a all active cards have bucket_id, so this is unreachable in
-// practice — but explicit empty-string return keeps callers' string-concatenation
-// safe). Solo student-walk preserved for the "stored instrument has changed"
-// case which is live data resolution, not stamped fallback.
-export const getLiveTeacherName = (lesson, students, teachers, enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+// Derive the current teacher name for a lesson from live lane data.
+// Session 3 / C7: Path-B fallback (enrolment.teacherId via instrumentsFromEnrolments)
+// removed. Lane resolution via getCardTeacherId is the sole source. Unused
+// students/enrolments params retained for caller-signature stability.
+// eslint-disable-next-line no-unused-vars
+export const getLiveTeacherName = (lesson, _students, teachers, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
   if (!lesson) return "";
   const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
   if (laneTid) {
     const t = teachers.find(x => x.id === laneTid);
     if (t?.name) return t.name;
   }
-  if (lesson.isGroup || lesson.isBandSession) return "";
-  const student = students.find(s => s.id === lesson.studentId);
-  if (student) {
-    // Try the stored instrument first; if the student's instrument has changed,
-    // fall back to their current primary non-group instrument.
-    const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
-    const inst = studentInsts.find(i => i.name === lesson.instrument)
-      || studentInsts.find(i => !i.isGroup);
-    if (inst) {
-      if (!inst.teacherId) return "Unassigned";
-      const teacher = teachers.find(t => t.id === inst.teacherId);
-      if (teacher) return teacher.name;
-    }
-  }
   return "";
 };
 
-// Returns the live teacher ID for a lesson, derived from current student data.
-// Cluster 6b1: override-first via (weekKey, bucket_id) when WTT context provided.
-// Cluster 5a: lane-first via bucket_id.
-// Cluster 12a: stamped teacherId fallback removed. Group/band lane miss returns
-// null. Solo student-walk preserved for instrument-changed case (live data, not
-// stamped fallback).
-export const getLiveTeacherId = (lesson, students, enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+// Returns the live teacher ID for a lesson, derived from current lane data.
+// Session 3 / C7: Path-B fallback removed; lane-only.
+// eslint-disable-next-line no-unused-vars
+export const getLiveTeacherId = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
   if (!lesson) return null;
   const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
-  if (laneTid) return laneTid;
-  if (lesson.isGroup || lesson.isBandSession) return null;
-  const student = students.find(s => s.id === lesson.studentId);
-  if (!student) return null;
-  const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
-  const inst = studentInsts.find(i => i.name === lesson.instrument)
-    || studentInsts.find(i => !i.isGroup);
-  return inst?.teacherId || null;
+  return laneTid || null;
 };
 
-// Returns true if the lesson's instrument has no assigned teacher in current student data.
-// Cluster 6b1: override-first via (weekKey, bucket_id) when WTT context provided.
-// Cluster 5a: lane-first — if a lane resolves a teacher, the lesson is assigned.
-export const isLessonUnassigned = (lesson, students, enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+// Returns true if the lesson has no lane-resolved teacher and isn't a group.
+// Session 3 / C7: Path-B fallback removed; lane-only.
+// eslint-disable-next-line no-unused-vars
+export const isLessonUnassigned = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
   if (!lesson) return false;
   const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
   if (laneTid) return false;
   if (lesson.isGroup || lesson.isBandSession) return false;
-  const student = students.find(s => s.id === lesson.studentId);
-  if (!student) return false;
-  const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
-  const inst = studentInsts.find(i => i.name === lesson.instrument)
-    || studentInsts.find(i => !i.isGroup);
-  return inst ? !inst.teacherId : false;
+  return true;
 };
 
 // Session 3 / C2 — pre-scheduling teacher attribution from MTT placement.

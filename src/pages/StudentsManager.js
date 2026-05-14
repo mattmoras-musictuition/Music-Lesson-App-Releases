@@ -504,41 +504,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         return importSchoolId ? schools.find(s => s.id === importSchoolId) : null;
       };
 
-      // Helper: match teacher by full name, first name, last name, or initials
-      const matchTeacher = (raw) => {
-        if (!raw) return null;
-        const r = raw.trim();
-        const rLower = r.toLowerCase();
-        // 1. Exact full name match
-        let match = teachers.find(t => t.name.toLowerCase() === rLower);
-        if (match) return match;
-        // 2. First name match
-        match = teachers.find(t => t.name.split(/\s+/)[0].toLowerCase() === rLower);
-        if (match) return match;
-        // 3. Last name match
-        match = teachers.find(t => {
-          const parts = t.name.split(/\s+/);
-          return parts.length > 1 && parts[parts.length - 1].toLowerCase() === rLower;
-        });
-        if (match) return match;
-        // 4. Initials match (e.g. "JS" matches "John Smith", "J.S." matches too)
-        const rClean = r.replace(/[.\s]/g, "").toUpperCase();
-        if (rClean.length >= 2 && rClean.length <= 4) {
-          match = teachers.find(t => {
-            const initials = t.name.split(/\s+/).map(w => w[0]).join("").toUpperCase();
-            return initials === rClean;
-          });
-          if (match) return match;
-        }
-        // 5. Partial/contains match (e.g. "John S" or "J Smith")
-        match = teachers.find(t => t.name.toLowerCase().includes(rLower) || rLower.includes(t.name.toLowerCase()));
-        if (match) return match;
-        // 6. First name starts-with (e.g. "Jo" matches "John Smith")
-        match = teachers.find(t => t.name.split(/\s+/)[0].toLowerCase().startsWith(rLower));
-        if (match) return match;
-        return null;
-      };
-
       // Helper: consolidate duplicate student names — merge instruments into one entry
       const consolidateStudents = (entries) => {
         const byKey = {};
@@ -569,7 +534,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
       const toPreviewEntries = (entries) => {
         const mapped = entries.map(e => {
           const school = matchSchool(e.school);
-          const matched = matchTeacher(e.teacher);
           const className = (e.class || e.className || "").trim();
           const instruments = [{ name: e.instrument || "", isGroup: false }];
           if (e.instrument2) instruments.push({ name: e.instrument2, isGroup: false });

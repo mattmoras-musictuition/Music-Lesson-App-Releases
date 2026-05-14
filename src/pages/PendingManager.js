@@ -75,7 +75,11 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
       const slot = (school.slots || []).find(sl => sl.start === ms.time);
       const endTime = slot ? slot.end : ms.time;
       const storageKey = ms.weekKey + "|" + student.schoolId;
-      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", teacherId: inst.teacherId || "", teacherName: "", enrolmentId: enrolmentIdFor(student.id, inst.name || "", enrolments), day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
+      // Session 3 / C7 — trial lessons no longer carry an enrolment-derived
+      // teacher stamp. Lesson-level teacher resolution at render time happens
+      // via bucket_id (trial-lesson bucket_id stamping is a pre-existing gap,
+      // separate concern).
+      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", teacherName: "", enrolmentId: enrolmentIdFor(student.id, inst.name || "", enrolments), day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
       setWeeklyTimetables(prev => { const existing = prev[storageKey] || { lessons: [], missed: [] }; return { ...prev, [storageKey]: { ...existing, lessons: [...(existing.lessons || []), newLesson] } }; });
       setManualSched(prev => { const n = { ...prev }; delete n[studentId]; return n; });
       notify("Trial lesson scheduled for " + student.name);

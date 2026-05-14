@@ -247,6 +247,9 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     // Row shape: spread MTT card if present (carries teacherName, groupName,
     // studentNames, id), else synthesize a minimal base from enrolment + student.
     // Day resolution order: mttCard.day → latestWttDay → "" (Spec 4 cluster 3).
+    // Session 3 / C7 — synthesised shape carries no teacher attribution;
+    // teacherName "" funnels these rows under the empty teacher group in
+    // TallyView's by-teacher grouping (acceptable for rows with no MTT card).
     const baseLesson = mttCard ? { ...mttCard } : {
       id: lessonKey,
       studentId: e.studentId,
@@ -256,7 +259,6 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       isGroup: e.isGroup || false,
       instrument: e.instrument,
       schoolId,
-      teacherId: e.teacherId,
       teacherName: "",
       day: latestWttDay || "",
     };
@@ -297,7 +299,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 // `deriveTallyCell` and `buildShimEntry` helpers — no shared helper
 // extraction (the two derivers will likely drift once C6 lands).
 // ============================================================
-export function derivePrivateTallyRows({ enrolments, students, termWeeks, weeklyTimetables, teachers }) {
+export function derivePrivateTallyRows({ enrolments, students, termWeeks, weeklyTimetables }) {
   const tallyRows = [];
   const entryMap = {};
   const seen = new Set();
@@ -363,10 +365,9 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
 
     seen.add(lessonKey);
 
-    const teacherName = e.teacherId
-      ? ((teachers || []).find(t => t.id === e.teacherId)?.name || "")
-      : "";
-
+    // Session 3 / C7 — private students have no school/lane, so lane-derived
+    // teacher attribution doesn't apply. Per Matt's Option 1: private rows
+    // collapse under the empty teacher group in TallyView's by-teacher view.
     tallyRows.push({
       id: lessonKey,
       lessonKey,
@@ -375,8 +376,7 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
       studentNames: [],
       instrument: e.instrument,
       schoolId: "__private__",
-      teacherId: e.teacherId,
-      teacherName,
+      teacherName: "",
       isGroup: false,
       groupId: undefined,
       day: latestWttDay || "",

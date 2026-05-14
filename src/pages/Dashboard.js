@@ -16,7 +16,7 @@ import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates,
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
-import { buildStudentMTTTeacherIndex } from "../utils/helpers";
+import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -2238,7 +2238,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     const byTeacher = {};
                     for (const c of cs) {
                       const enrol = enrolments.find(e => e.id === c.enrolmentId);
-                      const tid = enrol?.teacherId || "";
+                      // Session 3 / C7 — catchup teacher derives from MTT placement, not enrolment stamp.
+                      const mtt = enrol ? getStudentMTTTeacher(enrol.studentId, enrol.instrument, timetable, students, teachers, enrolments, teacherCoverage) : null;
+                      const tid = mtt?.teacherId || "";
                       if (!byTeacher[tid]) byTeacher[tid] = [];
                       byTeacher[tid].push(c);
                     }
@@ -2435,7 +2437,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       const byTeacher = {};
                       for (const c of cs) {
                         const enrol = enrolments.find(e => e.id === c.enrolmentId);
-                        const tid = enrol?.teacherId || "";
+                        // Session 3 / C7 — catchup teacher derives from MTT placement, not enrolment stamp.
+                        const mtt = enrol ? getStudentMTTTeacher(enrol.studentId, enrol.instrument, timetable, students, teachers, enrolments, teacherCoverage) : null;
+                        const tid = mtt?.teacherId || "";
                         const studentName = students.find(s => s.id === enrol?.studentId)?.name || "";
                         if (!byTeacher[tid]) byTeacher[tid] = { lessons: [] };
                         byTeacher[tid].lessons.push({ ...c, _studentName: studentName });

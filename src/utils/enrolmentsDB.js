@@ -49,12 +49,13 @@ export function activeEnrolmentsFor(studentId, enrolments) {
 }
 
 // Adapter — return active enrolments shaped like the legacy student.instruments[]
-// element format ({ name, teacherId, isGroup }). Drop-in replacement for
+// element format ({ name, isGroup }). Drop-in replacement for
 // `student.instruments || []` at sites still written against the old shape.
+// Session 3 / C7: teacherId field dropped — teacher is lane-derived, not
+// carried on the enrolment.
 export function instrumentsFromEnrolments(studentId, enrolments) {
   return activeEnrolmentsFor(studentId, enrolments).map(e => ({
     name: e.instrument,
-    teacherId: e.teacherId || "",
     isGroup: e.isGroup || false,
   }));
 }
@@ -70,12 +71,14 @@ export function stampEnrolmentIds(lessons, enrolments) {
 }
 
 // ── DB row → camelCase JS object ─────────────────────────────
+// Session 3 / C7: teacher_id field no longer round-tripped. The column
+// still exists in Supabase (separate SQL migration drops it); load/save
+// simply ignores it.
 function rowToEnrolment(row) {
   return {
     id:         row.id,
     studentId:  row.student_id,
     instrument: row.instrument,
-    teacherId:  row.teacher_id  || "",
     isGroup:    row.is_group    || false,
     groupId:    row.group_id    || undefined,
     startDate:  row.start_date,
@@ -90,7 +93,6 @@ function enrolmentToRow(enrolment, userId) {
     user_id:    userId,
     student_id: enrolment.studentId  || "",
     instrument: enrolment.instrument || "",
-    teacher_id: enrolment.teacherId  || null,
     is_group:   enrolment.isGroup    || false,
     group_id:   enrolment.groupId    || null,
     start_date: enrolment.startDate,

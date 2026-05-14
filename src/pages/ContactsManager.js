@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Mail, Phone, StickyNote, Pencil, Trash2, Check, X, Users, Building2, Download, Bot } from "lucide-react";
 import { STORAGE_KEYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, openCompose, openGmailSequential, getParentEmails } from "../utils/helpers";
+import { uid, openCompose, openGmailSequential, getParentEmails, getStudentMTTTeacher } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 // Session 95: EmailTemplatesEditor is no longer imported here — templates
 // moved to Settings. AiEmailRulesEditor and AiImportContacts still render
@@ -17,7 +17,7 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, PAGE_COLORS }
 const CONTACT_ROLES = ["Principal", "Assistant Principal", "Office Manager", "Business Manager", "Classroom Teacher", "Specialist Teacher", "Other"];
 const CLASS_ROLES = ["Classroom Teacher", "Specialist Teacher"];
 
-export function ContactsManager({ contacts, setContacts, schools, students, enrolments, setStudents, teachers, specialists, notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
+export function ContactsManager({ contacts, setContacts, schools, students, enrolments, setStudents, teachers, specialists, timetable, teacherCoverage = [], notify, resetKey, viewState, setViewState, onViewStudent, newContactPrefill, onClearNewContactPrefill, goBack, goForward, historyCursor, pageHistory }) {
   const { colors, darkMode } = useTheme();
   const ROW_HOVER_BG = darkMode ? colors.sidebarHover : "#EDF2FA";
   const [section, setSection] = useState("parents"); // "parents" | "school"
@@ -87,8 +87,19 @@ export function ContactsManager({ contacts, setContacts, schools, students, enro
           map[dedupKey]._studentNames.push(st.name);
           map[dedupKey]._schoolIds.push(st.schoolId);
         }
-        instrumentsFromEnrolments(st.id, enrolments).forEach(inst => { if (inst.name && !map[dedupKey]._instrumentNames.includes(inst.name)) map[dedupKey]._instrumentNames.push(inst.name); });
-        instrumentsFromEnrolments(st.id, enrolments).forEach(inst => { if (inst.teacherId && !map[dedupKey]._teacherIds.includes(inst.teacherId)) map[dedupKey]._teacherIds.push(inst.teacherId); });
+        // Session 3 / C7 — parent→teachers mapping derives from MTT placement
+        // (lane) instead of enrolment.teacherId. Parents whose kids have no
+        // MTT placement contribute no teacher to the mapping → the parent
+        // appears in the contact list but doesn't surface in teacher-filter.
+        instrumentsFromEnrolments(st.id, enrolments).forEach(inst => {
+          if (inst.name && !map[dedupKey]._instrumentNames.includes(inst.name)) {
+            map[dedupKey]._instrumentNames.push(inst.name);
+          }
+          const mttTeacher = getStudentMTTTeacher(st.id, inst.name, timetable, students, teachers, enrolments, teacherCoverage);
+          if (mttTeacher?.teacherId && !map[dedupKey]._teacherIds.includes(mttTeacher.teacherId)) {
+            map[dedupKey]._teacherIds.push(mttTeacher.teacherId);
+          }
+        });
       }
     }
     for (const c of contacts.filter(c => c.type === "parent")) {
@@ -99,7 +110,7 @@ export function ContactsManager({ contacts, setContacts, schools, students, enro
       }
     }
     return Object.values(map);
-  }, [students, contacts, enrolments]);
+  }, [students, contacts, enrolments, timetable, teacherCoverage, teachers]);
 
   const addManualParent = () => {
     const id = uid();
