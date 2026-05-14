@@ -4201,9 +4201,10 @@ export default function MusicTimetableApp() {
     if (teachers.length === 0) { notify("Add at least one teacher first", "warning"); return; }
 
     // Data validation warnings
+    // Session 3 / C6: "X students without assigned teacher" warning dropped —
+    // no meaningful equivalent in the lane-derived model. Per-slot feasibility
+    // is the generator's compatibility gate's job at scheduling time.
     const warnings = [];
-    const noTeacher = allSchedulable.filter(s => !instrumentsFromEnrolments(s.id, enrolments).some(i => i.teacherId));
-    if (noTeacher.length > 0) warnings.push(`${noTeacher.length} student${noTeacher.length > 1 ? "s" : ""} without assigned teacher: ${noTeacher.slice(0, 5).map(s => s.name).join(", ")}${noTeacher.length > 5 ? "..." : ""}`);
     const noInstrument = allSchedulable.filter(s => instrumentsFromEnrolments(s.id, enrolments).length === 0);
     if (noInstrument.length > 0) warnings.push(`${noInstrument.length} student${noInstrument.length > 1 ? "s" : ""} without instruments: ${noInstrument.slice(0, 5).map(s => s.name).join(", ")}${noInstrument.length > 5 ? "..." : ""}`);
     const noSlots = schools.filter(s => !s.slots || s.slots.length === 0);

@@ -346,13 +346,13 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
     if (aRequired !== bRequired) return bRequired - aRequired;
     const aInsts = instrumentsFromEnrolments(a.id, enrolments);
     const bInsts = instrumentsFromEnrolments(b.id, enrolments);
+    // Session 3 / C6: enrolment-teacher priority bump dropped. Every
+    // enrolment is uniform on this dimension post-Session-3.
     const aConstraints = (a.outsideClassOnly ? 3 : 0) + (a.outsideClassPreferred ? 2 : 0) +
-      (aInsts.some(i => i.teacherId) ? 2 : 0) +
       ((aHints.avoidDays || []).length * 2) + ((aHints.avoidTimes || []).length * 2) +
       ((aHints.preferredDays || []).length) + ((aHints.preferredTimes || []).length) +
       (aInsts.length > 1 ? 2 : 0) + (aInsts.some(i => i.isGroup) ? 2 : 0);
     const bConstraints = (b.outsideClassOnly ? 3 : 0) + (b.outsideClassPreferred ? 2 : 0) +
-      (bInsts.some(i => i.teacherId) ? 2 : 0) +
       ((bHints.avoidDays || []).length * 2) + ((bHints.avoidTimes || []).length * 2) +
       ((bHints.preferredDays || []).length) + ((bHints.preferredTimes || []).length) +
       (bInsts.length > 1 ? 2 : 0) + (bInsts.some(i => i.isGroup) ? 2 : 0);
@@ -436,27 +436,16 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
         // reason if the lesson doesn't schedule anywhere.
         const laneAbsentDays = new Set();
 
-        let compatibleTeachers = teachers.filter(t => {
+        // Session 3 / C6: compatibility gate is now lane-derived. The
+        // pre-Session-3 enrolment.teacherId narrowing is gone — the candidate
+        // pool is every teacher who teaches this instrument at this school,
+        // and the per-slot findLaneId check below filters to teachers with
+        // actual lane coverage for the chosen (school, day).
+        const compatibleTeachers = teachers.filter(t => {
           const teachesInst = t.instruments.find(ti => ti.name === inst.name);
           const teachesAtSchool = t.availability.some(a => a.schoolId === school.id);
           return teachesInst && teachesAtSchool;
         });
-
-        if (!inst.teacherId) {
-          perInstResults.push({ inst, scheduled: false, reason: "Unassigned" });
-          allScheduled = false;
-          continue;
-        }
-
-        const assignedTeacher = compatibleTeachers.find(t => t.id === inst.teacherId);
-        if (assignedTeacher) {
-          compatibleTeachers = [assignedTeacher];
-        } else {
-          const assignedName = teachers.find(t => t.id === inst.teacherId)?.name || "Unknown";
-          perInstResults.push({ inst, scheduled: false, reason: `Assigned teacher (${assignedName}) cannot teach ${inst.name} at ${school.name}` });
-          allScheduled = false;
-          continue;
-        }
 
         if (compatibleTeachers.length === 0) {
           perInstResults.push({ inst, scheduled: false, reason: "No compatible teacher" });
