@@ -4,10 +4,10 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput, Users, Guitar } from "lucide-react";
+import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput, Guitar } from "lucide-react";
 import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_COLOR } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, groupDisplayName, getInstColor, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
@@ -2375,22 +2375,20 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             const pendingTrialOnDay = students.filter(s =>
               (s.status === "pending" || s.status === "trial") && schoolIdsOnDay.has(s.schoolId)
             );
-            // Groups & bands row — collected across all schools on this day.
-            // Each entry carries an isPlanned flag so MTT-fallback groups render
-            // with the same muted treatment as their parent school card.
-            // Bands by definition only appear on WTT-backed weeks.
-            const groupBandEntries = [];
+            // Bands row — collected across all schools on this day. Bands only
+            // exist in WTT, so MTT-fallback schools contribute nothing here.
+            const bandEntries = [];
             for (const sch of schools) {
               const wttKey = `${calMondayStr}|${sch.id}`;
               const wttEntry = weeklyTimetables[wttKey];
-              const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
-              const dayLessons = lessonsSource.filter(l => l.schoolId === sch.id && l.day === wd.day && (l.isGroup || l.isBandSession));
-              for (const l of dayLessons) {
-                groupBandEntries.push({ lesson: l, school: sch, isPlanned: !wttEntry, weekKey: wttEntry ? calMondayStr : null });
+              if (!wttEntry) continue;
+              const dayBands = (wttEntry.lessons || []).filter(l => l.schoolId === sch.id && l.day === wd.day && l.isBandSession);
+              for (const l of dayBands) {
+                bandEntries.push({ lesson: l, school: sch, weekKey: calMondayStr });
               }
             }
-            groupBandEntries.sort((a, b) => (a.lesson.start || "").localeCompare(b.lesson.start || ""));
-            return { ...wd, isTermBreak, dayInterrupts, dayEvents, schoolGroups, weeklyStatus, pendingTrialOnDay, groupBandEntries };
+            bandEntries.sort((a, b) => (a.lesson.start || "").localeCompare(b.lesson.start || ""));
+            return { ...wd, isTermBreak, dayInterrupts, dayEvents, schoolGroups, weeklyStatus, pendingTrialOnDay, bandEntries };
           });
 
         // Auto-append Saturday/Sunday catch-up strips during holiday weeks (no tile, not dismissable)
@@ -2576,39 +2574,32 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       </div>
                     )}
 
-                    {/* Groups & Bands — visually distinct row above the per-school schedule */}
-                    {sd.groupBandEntries && sd.groupBandEntries.length > 0 && (
+                    {/* Bands — visually distinct row above the per-school schedule (WTT-only) */}
+                    {sd.bandEntries && sd.bandEntries.length > 0 && (
                       <div>
-                        <div style={sectionLabel}>Groups & Bands</div>
+                        <div style={sectionLabel}>Bands</div>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          {sd.groupBandEntries.map((gb, gi) => {
+                          {sd.bandEntries.map((gb, gi) => {
                             const l = gb.lesson;
-                            const isBand = !!l.isBandSession;
-                            const accent = isBand ? BAND_COLOR : getInstColor(l.instrument, true);
-                            const title = isBand
-                              ? (l.bandName || "Band")
-                              : (l.groupName || (l.studentNames ? groupDisplayName(l) : "Group"));
-                            const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, gb.weekKey ? laneOverrides : null, gb.weekKey) || "";
+                            const title = l.bandName || "Band";
+                            const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, gb.weekKey) || "";
                             const timeLabel = l.start ? toTimeLabel(l.start) : "";
                             return (
                               <div key={gi} style={{
                                 padding: "6px 10px",
-                                background: accent + "15",
-                                border: `1px solid ${accent}40`,
-                                borderLeft: `3px solid ${accent}`,
+                                background: BAND_COLOR + "15",
+                                border: `1px solid ${BAND_COLOR}40`,
+                                borderLeft: `3px solid ${BAND_COLOR}`,
                                 borderRadius: 7,
                                 fontSize: 12,
                                 minWidth: 140,
-                                opacity: gb.isPlanned ? 0.55 : 1,
-                                fontStyle: gb.isPlanned ? "italic" : "normal",
                                 display: "flex",
                                 flexDirection: "column",
                                 gap: 2,
                               }}>
-                                <div style={{ fontWeight: 600, color: accent, display: "flex", alignItems: "center", gap: 5 }}>
-                                  {isBand ? <Guitar size={12} /> : <Users size={12} />}
+                                <div style={{ fontWeight: 600, color: BAND_COLOR, display: "flex", alignItems: "center", gap: 5 }}>
+                                  <Guitar size={12} />
                                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
-                                  {gb.isPlanned && <span style={{ fontSize: 9, fontWeight: 500, color: colors.textMuted, fontStyle: "italic" }}>(planned)</span>}
                                 </div>
                                 <div style={{ fontSize: 10, color: colors.textMuted, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                                   {timeLabel && <span>{timeLabel}</span>}
