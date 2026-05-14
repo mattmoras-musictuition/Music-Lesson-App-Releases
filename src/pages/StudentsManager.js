@@ -2,17 +2,17 @@
 // STUDENTSMANAGER — extracted from App.js
 // ============================================================
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus, ClipboardList, ChevronUp, ChevronDown, Archive, RotateCcw, ChevronRight } from "lucide-react";
 import { instruments_colors } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, getInstColor, getInitials, openCompose } from "../utils/helpers";
+import { uid, getInstColor, getInitials, openCompose, getStudentMTTTeacher, buildStudentMTTTeacherIndex } from "../utils/helpers";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
 import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, onTeacherChange }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, onTeacherChange }) {
   const { colors } = useTheme();
 
   // ── Enrolment helpers (Commit 2b) ────────────────────────────
@@ -34,6 +34,13 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
 
   // Derive available instruments from what teachers can actually teach
   const availableInstruments = [...new Set(teachers.flatMap(t => t.instruments.map(i => i.name)))].sort();
+
+  // Session 3 / C2 — pre-scheduling teacher reads derive teacher from the
+  // student's current MTT placement (lane) rather than an enrolment stamp.
+  const mttTeacherIdx = useMemo(
+    () => buildStudentMTTTeacherIndex(timetable, teacherCoverage),
+    [timetable, teacherCoverage]
+  );
   // Lazy initialisers: if focusStudentId is set on mount, open edit form immediately
   // (avoids the useEffect flash where the list renders first then the form opens)
   const [editing, setEditing] = useState(() => {
@@ -769,23 +776,42 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
     setPreview(prev => ({ ...prev, entries: prev.entries.filter((_, i) => i !== idx) }));
   };
 
+  // Session 3 / C2 — set of MTT-resolved teacher ids for a student's
+  // non-group enrolments (via the bulk index). Empty when no enrolment has
+  // an MTT placement yet.
+  const getStudentMTTTeacherIds = (student, activeEnrols) => {
+    const ids = new Set();
+    for (const en of activeEnrols) {
+      if (en.isGroup) continue;
+      const key = `${student.id}:${(en.instrument || "").trim().toLowerCase()}`;
+      const tid = mttTeacherIdx.get(key);
+      if (tid) ids.add(tid);
+    }
+    return ids;
+  };
+
   const filtered = activeStudents.filter(s => {
     if (filter.school && s.schoolId !== filter.school) return false;
     if (filter.className && s.className !== filter.className) return false;
     const active = activeEnrolmentsFor(s.id, enrolments);
     if (filter.instrument && !active.some(e => e.instrument === filter.instrument)) return false;
     if (filter.teacher) {
+      const tids = getStudentMTTTeacherIds(s, active);
       if (filter.teacher === "_none_") {
-        if (active.some(e => e.teacherId)) return false;
+        if (tids.size > 0) return false;
       } else {
-        if (!active.some(e => e.teacherId === filter.teacher)) return false;
+        if (!tids.has(filter.teacher)) return false;
       }
     }
     if (filter.search && !s.name.toLowerCase().includes(filter.search.toLowerCase())) return false;
     if (filter.hasNote && !(s.notes && s.notes.trim())) return false;
     if (filter.hasWarning) {
       const isPrivate = s.schoolId === "__private__";
-      const hasUnassignedTeacher = active.some(e => !e.isGroup && !e.teacherId);
+      const hasUnassignedTeacher = active.some(e => {
+        if (e.isGroup) return false;
+        const key = `${s.id}:${(e.instrument || "").trim().toLowerCase()}`;
+        return !mttTeacherIdx.has(key);
+      });
       const hasMissingInstrument = active.length === 0;
       const hasMissingParent = !isPrivate && (!(s.parents || []).length || !(s.parents || []).some(p => p.email));
       const hasMissingClass = !isPrivate && !s.className;
@@ -817,8 +843,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         return dir * aInst.localeCompare(bInst);
       }
       case "teacher": {
-        const aTid = primaryEnrolmentFor(a.id, enrolments)?.teacherId;
-        const bTid = primaryEnrolmentFor(b.id, enrolments)?.teacherId;
+        // Session 3 / C2 — sort by MTT-derived teacher name of the primary
+        // enrolment's instrument. Unassigned (no MTT placement) sorts last.
+        const aPrim = primaryEnrolmentFor(a.id, enrolments);
+        const bPrim = primaryEnrolmentFor(b.id, enrolments);
+        const aTid = aPrim ? mttTeacherIdx.get(`${a.id}:${(aPrim.instrument || "").trim().toLowerCase()}`) : null;
+        const bTid = bPrim ? mttTeacherIdx.get(`${b.id}:${(bPrim.instrument || "").trim().toLowerCase()}`) : null;
         const aT = aTid ? (teachers.find(t => t.id === aTid)?.name || "") : "zzz";
         const bT = bTid ? (teachers.find(t => t.id === bTid)?.name || "") : "zzz";
         return dir * aT.localeCompare(bT);
@@ -1223,7 +1253,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       {isArchived ? (
                         <>
                           <span style={{ fontSize: 12, color: colors.text }}>
-                            {e.teacherId ? (teachers.find(t => t.id === e.teacherId)?.name || "—") : <span style={{ color: colors.textMuted, fontStyle: "italic" }}>Unassigned</span>}
+                            {getStudentMTTTeacher(form.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage)?.teacherName || "—"}
                           </span>
                           <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)}</span>
                         </>
@@ -1314,13 +1344,13 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                     {historyExpanded && (
                       <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
                         {endedFormEnrolments.map(e => {
-                          const teacher = e.teacherId ? teachers.find(t => t.id === e.teacherId) : null;
+                          const mttT = getStudentMTTTeacher(form.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage);
                           return (
                             <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}`, opacity: 0.8 }}>
                               <Tag color={getInstColor(e.instrument, e.isGroup)}>
                                 {e.isGroup ? <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span> : null}{e.instrument}
                               </Tag>
-                              <span style={{ fontSize: 12, color: colors.text }}>{teacher ? teacher.name : "—"}</span>
+                              <span style={{ fontSize: 12, color: colors.text }}>{mttT?.teacherName || "—"}</span>
                               <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)} – {formatDate(e.endDate)}</span>
                             </div>
                           );
@@ -1553,7 +1583,6 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                   const school = schools.find(sc => sc.id === s.schoolId);
                   const active = activeEnrolmentsFor(s.id, enrolments);
                   const primary = primaryEnrolmentFor(s.id, enrolments);
-                  const prefTeacher = primary?.teacherId ? teachers.find(t => t.id === primary.teacherId) : null;
                   const noteOpen = expandedStudentNotes.has(s.id);
                   const hasNote = !!(s.notes && s.notes.trim());
                   return (
@@ -1576,9 +1605,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           const indInsts = active.filter(e => !e.isGroup);
                           if (!indInsts.length) return <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>;
                           const parts = indInsts.map(e => {
-                            if (!e.teacherId) return <span key={e.id} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
-                            const t = teachers.find(t => t.id === e.teacherId);
-                            return <span key={e.id}>{t ? t.name : "—"}</span>;
+                            const mttT = getStudentMTTTeacher(s.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage);
+                            if (!mttT?.teacherName) return <span key={e.id} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
+                            return <span key={e.id}>{mttT.teacherName}</span>;
                           });
                           return parts.reduce((acc, el, idx) => idx === 0 ? [el] : [...acc, <span key={"sep"+idx} style={{ color: colors.borderLight }}> / </span>, el], []);
                         })()}
@@ -1593,7 +1622,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           const isPrivate = s.schoolId === "__private__";
                           const warns = [];
                           if (!active.length) warns.push("No instrument");
-                          else active.filter(e => !e.isGroup && !e.teacherId).forEach(e => warns.push(`No teacher (${e.instrument})`));
+                          else active.filter(e => !e.isGroup && !mttTeacherIdx.has(`${s.id}:${(e.instrument || "").trim().toLowerCase()}`)).forEach(e => warns.push(`No teacher (${e.instrument})`));
                           if (!isPrivate) {
                             if (!(s.parents || []).length) warns.push("No parent");
                             else if (!(s.parents || []).some(p => p.email)) warns.push("Parent missing email");
@@ -1761,8 +1790,8 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
           const s = studentCtxMenu.student;
           const school = schools.find(sc => sc.id === s.schoolId);
           const instrs = allEnrolmentsFor(s.id, enrolments).map(e => {
-            const t = teachers.find(t => t.id === e.teacherId);
-            return `${e.instrument}${t ? ` with ${t.name}` : ""}${e.endDate ? " (ended)" : ""}`;
+            const mttT = getStudentMTTTeacher(s.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage);
+            return `${e.instrument}${mttT?.teacherName ? ` with ${mttT.teacherName}` : ""}${e.endDate ? " (ended)" : ""}`;
           }).join(", ");
           const namePart = s.name;
           const schoolPart = school ? school.name : "";

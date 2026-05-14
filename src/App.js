@@ -38,7 +38,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName } from "./utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher } from "./utils/helpers";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -3547,8 +3547,8 @@ export default function MusicTimetableApp() {
     activeStudents.forEach(s => {
       const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
       const instrs = instrumentsFromEnrolments(s.id, enrolments).map(i => {
-        const teacher = teachers.find(t => t.id === i.teacherId);
-        return `${i.name}${teacher ? ` (teacher: ${teacher.name})` : ""}`;
+        const mttT = i.isGroup ? null : getStudentMTTTeacher(s.id, i.name, timetable, students, teachers, enrolments, teacherCoverage);
+        return `${i.name}${mttT?.teacherName ? ` (teacher: ${mttT.teacherName})` : ""}`;
       });
       const studentLessons = allLessons.filter(l => l.studentId === s.id);
       const schedule = studentLessons.length > 0
@@ -3581,8 +3581,8 @@ export default function MusicTimetableApp() {
       pendingStudents.forEach(s => {
         const school = schools.find(sc => sc.id === s.schoolId)?.name || "";
         const instrs = instrumentsFromEnrolments(s.id, enrolments).map(i => {
-          const teacher = teachers.find(t => t.id === i.teacherId);
-          return `${i.name}${teacher ? ` with ${teacher.name}` : " (no teacher assigned)"}`;
+          const mttT = i.isGroup ? null : getStudentMTTTeacher(s.id, i.name, timetable, students, teachers, enrolments, teacherCoverage);
+          return `${i.name}${mttT?.teacherName ? ` with ${mttT.teacherName}` : ""}`;
         }).join(", ");
 
         // For trial students, check weeklyTimetables for their trial lesson
@@ -6197,7 +6197,7 @@ export default function MusicTimetableApp() {
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "calendar" && <CalendarManager interruptions={interruptions} setInterruptions={setInterruptions} schools={schools} specialists={specialists} notify={notify} resetKey={resetKey} viewState={interruptionsViewState} setViewState={setInterruptionsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
-          {page === "students" && <StudentsManager students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} teachers={teachers} specialists={specialists} notify={notify} focusStudentId={focusStudentId} onClearFocus={() => setFocusStudentId(null)} returnPage={focusReturnPage} onReturn={() => { if (focusReturnPage) { setPage(focusReturnPage); setFocusReturnPage(null); } }} resetKey={resetKey} viewState={studentsViewState} setViewState={setStudentsViewState} newStudentPrefill={newStudentPrefill} onClearNewStudentPrefill={() => setNewStudentPrefill(null)} addParentPrefill={addParentPrefill} onClearAddParentPrefill={() => setAddParentPrefill(null)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onArchiveStudent={(id) => {
+          {page === "students" && <StudentsManager students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} focusStudentId={focusStudentId} onClearFocus={() => setFocusStudentId(null)} returnPage={focusReturnPage} onReturn={() => { if (focusReturnPage) { setPage(focusReturnPage); setFocusReturnPage(null); } }} resetKey={resetKey} viewState={studentsViewState} setViewState={setStudentsViewState} newStudentPrefill={newStudentPrefill} onClearNewStudentPrefill={() => setNewStudentPrefill(null)} addParentPrefill={addParentPrefill} onClearAddParentPrefill={() => setAddParentPrefill(null)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onArchiveStudent={(id) => {
               // Timetable cleanup only — student status is set by StudentsManager directly
               if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));
               setWeeklyTimetables(prev => {

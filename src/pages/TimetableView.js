@@ -1941,11 +1941,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 const insts = instrumentsFromEnrolments(s.id, enrolments);
                 // Placeholder row when student has no enrolments — preserves prior fallback
                 // behaviour so instrument-less pending students still appear in the waiting list.
-                const items = insts.length > 0 ? insts : [{ name: "", teacherId: "", isGroup: false }];
+                const items = insts.length > 0 ? insts : [{ name: "", isGroup: false }];
                 return items
                   .filter(inst => !inst.isGroup)
                   .filter(inst => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === s.id && l.instrument === inst.name)))
-                  .map(inst => ({ student: s, instrument: inst.name, teacherName: teachers.find(t => t.id === inst.teacherId)?.name || "" }));
+                  // Session 3 / C2 — pending cards no longer carry teacher info.
+                  // No MTT placement exists by definition; surface omitted.
+                  .map(inst => ({ student: s, instrument: inst.name }));
               });
             const hasItems = schoolPending.length > 0;
             return (
@@ -1987,7 +1989,6 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                           <Tag color={instColor}>{row.instrument || "No instrument"}</Tag>
                         </div>
-                        {row.teacherName && <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>{row.teacherName}</div>}
                       </div>
                     );
                   })}

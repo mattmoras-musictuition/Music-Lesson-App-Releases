@@ -241,6 +241,43 @@ export const isLessonUnassigned = (lesson, students, enrolments, teacherCoverage
   return inst ? !inst.teacherId : false;
 };
 
+// Session 3 / C2 — pre-scheduling teacher attribution from MTT placement.
+// Returns the lane-derived teacher for a student's instrument by looking up
+// their current MTT lesson and resolving its bucket. Null when no MTT
+// placement exists, when the lesson has no resolvable lane, or when called
+// with missing args. Groups are excluded — group teacher lives on the group
+// entity, not the per-student enrolment.
+export function getStudentMTTTeacher(studentId, instrument, timetable, students, teachers, enrolments, teacherCoverage) {
+  if (!timetable?.lessons?.length || !studentId || !instrument) return null;
+  const normInst = (instrument || "").trim().toLowerCase();
+  const lesson = timetable.lessons.find(l =>
+    l.studentId === studentId &&
+    !l.isGroup &&
+    (l.instrument || "").trim().toLowerCase() === normInst
+  );
+  if (!lesson) return null;
+  const teacherId = getCardTeacherId(lesson, teacherCoverage);
+  const teacherName = getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage);
+  return { teacherId, teacherName, lesson };
+}
+
+// Bulk index for hot-path filter consumers. Key: `${studentId}:${normInstrument}`,
+// value: resolved teacherId. Caller wraps in useMemo against [timetable,
+// teacherCoverage]; predicates then do O(1) lookups instead of an O(n) scan
+// per student.
+export function buildStudentMTTTeacherIndex(timetable, teacherCoverage) {
+  const index = new Map();
+  if (!timetable?.lessons) return index;
+  for (const l of timetable.lessons) {
+    if (l.isGroup || !l.studentId || !l.instrument) continue;
+    const tid = getCardTeacherId(l, teacherCoverage);
+    if (!tid) continue;
+    const key = `${l.studentId}:${l.instrument.trim().toLowerCase()}`;
+    index.set(key, tid);
+  }
+  return index;
+}
+
 // ── Colour helpers ────────────────────────────────────────────────────────────
 
 // ── Instrument colour overrides (user-customised, synced to Supabase) ────

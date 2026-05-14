@@ -16,6 +16,7 @@ import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates,
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
+import { buildStudentMTTTeacherIndex } from "../utils/helpers";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -274,7 +275,22 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   // Unacknowledged timetable warnings
   const archivedStudentIds = new Set(students.filter(s => s.status === "archived").map(s => s.id));
   const unschedCount = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)).length : 0;
-  const unassignedCount = students.filter(s => s.status === "active" && instrumentsFromEnrolments(s.id, enrolments).some(i => !i.isGroup && !i.teacherId)).length;
+  // Session 3 / C2 — "unassigned" semantics shift from "enrolment has no
+  // teacherId" to "non-group enrolment has no MTT placement yet." On Matt's
+  // data this typically reduces the count: enrolments with a stamped teacher
+  // but no scheduled MTT lesson used to be silent, now they surface here.
+  const mttTeacherIdx = React.useMemo(
+    () => buildStudentMTTTeacherIndex(timetable, teacherCoverage),
+    [timetable, teacherCoverage]
+  );
+  const studentHasUnplacedEnrolment = React.useCallback((s) => {
+    return instrumentsFromEnrolments(s.id, enrolments).some(i => {
+      if (i.isGroup) return false;
+      const key = `${s.id}:${(i.name || "").trim().toLowerCase()}`;
+      return !mttTeacherIdx.has(key);
+    });
+  }, [enrolments, mttTeacherIdx]);
+  const unassignedCount = students.filter(s => s.status === "active" && studentHasUnplacedEnrolment(s)).length;
   const [bannerTip, setBannerTip] = React.useState(null);
   const [dashPanels, setDashPanels] = React.useState(() => { try { return { emails: false, todo: false, alerts: false, ...JSON.parse(localStorage.getItem(STORAGE_KEYS.dashPanels) || "{}") }; } catch { return { emails: false, todo: false, alerts: false }; } });
   const saveDashPanels = (next) => { setDashPanels(next); try { localStorage.setItem(STORAGE_KEYS.dashPanels, JSON.stringify(next)); } catch {} };
@@ -2625,7 +2641,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       {/* ── Emails / To Do / Alerts — unified banner card ── */}
       {(() => {
         // Alerts data
-        const unassignedStudents = students.filter(s => s.status === "active" && instrumentsFromEnrolments(s.id, enrolments).some(i => !i.isGroup && !i.teacherId));
+        const unassignedStudents = students.filter(s => s.status === "active" && studentHasUnplacedEnrolment(s));
         // Unassigned group students — active/pending/trial students with a group instrument not yet placed in any group
         const assignedGroupStudentIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
         const unassignedGroupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupStudentIds.has(s.id));
@@ -3183,9 +3199,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     <div style={{ padding: `0 ${remindersBtnW + 30}px 0 ${pillW + 24}px`, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))`, WebkitMaskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))` }}>
                       {/* Red — blockers + urgent */}
                       {unassignedCount > 0 && !isAlertDismissed("alert-unassigned") && (
-                        <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
+                        <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !mttTeacherIdx.has(`${s.id}:${(i.name || "").trim().toLowerCase()}`)).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (setStudentsViewState) setStudentsViewState(prev => ({ ...prev, filter: { ...prev.filter, hasWarning: "any" } })); onNavigate("students"); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !i.teacherId).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !mttTeacherIdx.has(`${s.id}:${(i.name || "").trim().toLowerCase()}`)).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{unassignedCount} unassigned</span>
