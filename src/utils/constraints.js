@@ -75,6 +75,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const targetDate = weekDateMap[newDay];
     if (targetDate) {
       for (const intr of weekInterruptions) {
+        if (intr.schoolId !== lesson.schoolId && intr.schoolId !== "all") continue;
         const iStart = intr.date, iEnd = intr.endDate || intr.date;
         if (targetDate < iStart || targetDate > iEnd) continue;
         if (intr.startTime && intr.endTime) {
@@ -126,6 +127,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const targetDate = weekDateMap[newDay];
     if (targetDate) {
       for (const intr of weekInterruptions) {
+        if (intr.schoolId !== lesson.schoolId && intr.schoolId !== "all") continue;
         const iStart = intr.date, iEnd = intr.endDate || intr.date;
         if (targetDate < iStart || targetDate > iEnd) continue;
         if (intr.startTime && intr.endTime) {
@@ -204,6 +206,10 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   const targetDate = weekDateMap[newDay];
   if (targetDate) {
     for (const intr of weekInterruptions) {
+      // School filter — mirrors generator pattern at weeklyTimetableGenerator.js:43.
+      // Interruptions with schoolId === "all" apply globally; otherwise only the
+      // matching school's lessons get flagged.
+      if (intr.schoolId !== lesson.schoolId && intr.schoolId !== "all") continue;
       const iStart = intr.date, iEnd = intr.endDate || intr.date;
       if (targetDate < iStart || targetDate > iEnd) continue;
       // Class filter
