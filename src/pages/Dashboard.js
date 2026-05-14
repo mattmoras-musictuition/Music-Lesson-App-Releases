@@ -2258,6 +2258,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const activeDay = hoveredDay !== null ? hoveredDay : selectedDay !== null ? selectedDay : (stripDays[0]?.day || todayDayName);
 
         const renderDayCell = (wd) => {
+          // Session 6 hotfix #2 — mirror hotfix #1: derive the row's actual
+          // containing-Monday from wd.date instead of using the strip's
+          // anchor calMondayStr. stripDays at calendarWeekOffset === 0 can
+          // include rolled-forward isNextWeek rows that belong to Week N+1.
+          const rowMondayStr = toLocalDateStr(_getMondayOf(new Date(wd.date + "T00:00:00")));
           const isActive = activeDay === wd.day;
           const isToday = wd.date === todayStr;
           const isExpanded = expandedDays.has(wd.date);
@@ -2276,10 +2281,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
               const school = schools.find(s => s.id === avail.schoolId);
               if (school) {
-                const wttKey = `${calMondayStr}|${school.id}`;
+                const wttKey = `${rowMondayStr}|${school.id}`;
                 const wttEntry = weeklyTimetables[wttKey];
                 const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
-                const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? calMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
+                const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? rowMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                 const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                 const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
                 dayTeacherSchools.push({ teacher, school, firstLesson, lastLesson, lessonCount: dayLessons.length });
