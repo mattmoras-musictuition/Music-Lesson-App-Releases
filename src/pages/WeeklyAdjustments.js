@@ -4455,6 +4455,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 </div>
                               ) : <div />}
                               {(() => {
+                                // Suppress entirely on drained past days — pg_cron has already
+                                // merged teacher_actuals into weekly_adjustments, so the admin
+                                // view IS the actuals. No toggle needed.
+                                const isDayDrained = dayDateStr && dayDateStr < melbourneToday();
+                                if (isDayDrained) return null;
                                 const ghostKey = `${weekKey}_${d}`;
                                 const ghostsVisible = !!dayGhostsVisible[ghostKey];
                                 return (
@@ -4465,15 +4470,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     style={{
                                       padding: "2px 8px",
                                       fontSize: 11,
-                                      fontWeight: 500,
-                                      border: "1px solid rgba(255,255,255,0.35)",
-                                      background: "rgba(255,255,255,0.08)",
-                                      color: "inherit",
+                                      fontWeight: ghostsVisible ? 700 : 500,
+                                      border: ghostsVisible ? "1.5px solid #fff" : "1px solid rgba(255,255,255,0.35)",
+                                      background: ghostsVisible ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.08)",
+                                      color: ghostsVisible ? "#111" : "inherit",
                                       fontFamily: "inherit",
                                       borderRadius: 999,
                                       cursor: "pointer",
                                       opacity: ghostsVisible ? 1 : 0.55,
-                                      transition: "opacity 0.12s",
+                                      transition: "opacity 0.12s, background 0.12s, color 0.12s, border 0.12s",
                                       flexShrink: 0,
                                     }}>
                                     Actuals
