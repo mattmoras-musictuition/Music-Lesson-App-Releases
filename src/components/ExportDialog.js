@@ -6,9 +6,9 @@
 // ============================================================
 
 import React from "react";
-import { DAYS, STORAGE_KEYS } from "../constants";
+import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, uid as makeId, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
@@ -257,7 +257,12 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
 
   const doExport = async (saveToFile) => {
     setExporting(true);
-    const ttFolder = localStorage.getItem(STORAGE_KEYS.timetableFolder) || null;
+    // Session 8 follow-up Item 4: the local-Documents folder (writeBackup +
+    // ttFolder) and the browser-download fallback have both been retired
+    // for PDF exports. Exports now save only into the in-app Documents
+    // store via uploadExportToDocuments. CSV / XLSX formats still flow
+    // through exportLessons / exportTeacherSchedules and download via
+    // helpers.downloadFile — out of scope for this change.
     const daysToExport = day.size > 1 ? [...day] : [day.size === 1 ? [...day][0] : null];
     try {
       for (const exportDay of daysToExport) {
@@ -288,28 +293,13 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
               if (html) {
                 const pdfBase64 = await electronPrintToPdf(html);
                 if (pdfBase64) {
-                  if (ttFolder && window.electronAPI?.writeBackup) {
-                    await window.electronAPI.writeBackup(filenameBase + ".pdf", "__base64__" + pdfBase64, ttFolder);
-                  } else {
-                    const blob = new Blob([Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0))], { type: "application/pdf" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a"); a.href = url; a.download = filenameBase + ".pdf";
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-                  }
-                  // Session 96: upload to Supabase + register in Documents.
-                  // Runs in parallel with local save — no await blocking.
                   // Session 97: use the user's filename (filenameBase) as the
                   // label so the Documents tab matches what they typed in the
                   // export dialog, instead of a derived "Master Timetable —
                   // SPS — Mon" auto-label.
                   uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
-                  if (ttFolder && window.electronAPI?.writeBackup) {
-                    await window.electronAPI.writeBackup(filenameBase + ".html", html, ttFolder);
-                  } else {
-                    downloadFile(html, filenameBase + ".html", "text/html");
-                  }
-                  notify("PDF unavailable — saved as HTML (open and print to PDF)", "warning", 6000);
+                  notify("PDF generation unavailable — export not saved", "danger", 6000);
                 }
               }
             } else {
@@ -332,18 +322,10 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
               if (html) {
                 const pdfBase64 = await electronPrintToPdf(html);
                 if (pdfBase64) {
-                  if (ttFolder && window.electronAPI?.writeBackup) {
-                    await window.electronAPI.writeBackup(filenameBase + ".pdf", "__base64__" + pdfBase64, ttFolder);
-                  } else {
-                    const blob = new Blob([Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0))], { type: "application/pdf" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a"); a.href = url; a.download = filenameBase + ".pdf";
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-                  }
-                  // Session 96: also register teacher-schedule PDFs in Documents.
+                  // Session 96: register teacher-schedule PDFs in Documents.
                   uploadExportToDocuments(pdfBase64, filenameBase + ".pdf", filenameBase);
                 } else {
-                  await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: "pdf", schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
+                  notify("PDF generation unavailable — export not saved", "danger", 6000);
                 }
               }
             } else {
@@ -352,7 +334,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
           }
         }
       }
-      notify(ttFolder ? `Saved to ${ttFolder.split("/").pop() || "timetable folder"}` : `Saved ${formats.join(", ").toUpperCase()}`);
+      notify(`Saved to Documents`);
       if (saveToFile) onClose();
     } catch (e) {
       notify("Export failed: " + e.message, "danger");
