@@ -5314,121 +5314,122 @@ export default function MusicTimetableApp() {
               3. t.lastSeen — initial load value (may be hours stale)
               4. "—" — never seen
         */}
-        {teachers.length > 0 && (
-          <div style={{
-            padding: "8px 12px",
-            borderTop: "1px solid rgba(255,255,255,0.08)",
-            flexShrink: 0,
-            position: "relative",
-            ...(rosterExpanded
-              ? {}
-              : { display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center", lineHeight: 1.3 }),
-          }}>
-            {(() => {
-              const presenceMap = new Map(teacherPresence.map(p => [p.teacherId, p]));
-              const FRESHNESS_MS = 90 * 1000;
-              const nowMs = Date.now();
-              const formatLastSeen = (iso) => {
-                if (!iso) return "—";
-                const seen = new Date(iso);
-                if (isNaN(seen.getTime())) return "—";
-                const now = new Date();
-                // Calendar-day diff via YYYY-MM-DD (DST-safe, unlike ms/86400000).
-                const toYMD = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-                const daysAgo = Math.round((new Date(toYMD(now)).getTime() - new Date(toYMD(seen)).getTime()) / 86400000);
-                const h = seen.getHours(); const m = seen.getMinutes();
-                const t12 = `${h % 12 || 12}:${String(m).padStart(2, "0")}${h >= 12 ? "pm" : "am"}`;
-                if (daysAgo <= 0) return t12;
-                if (daysAgo === 1) return `Yesterday ${t12}`;
-                if (daysAgo <= 7) return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][seen.getDay()];
-                return "over a week ago";
-              };
-              return teachers.map(t => {
-                // Pick the freshest known timestamp for this teacher.
-                const effectiveLastSeenIso = offlineAt[t.id] || liveLastSeen[t.id] || t.lastSeen;
-                const lastSeenAgeMs = effectiveLastSeenIso
-                  ? (nowMs - new Date(effectiveLastSeenIso).getTime())
-                  : Infinity;
-                const presenceEntry = presenceMap.get(t.id);
-                // Primary online signal: presence is there and heartbeat fresh.
-                const onlineViaPresence = !!presenceEntry && lastSeenAgeMs < FRESHNESS_MS;
-                // Session 95 BUG 1 mitigation: if presence is absent but the
-                // DB heartbeat (liveLastSeen) is very fresh AND we haven't
-                // recorded an offlineAt stamp for this teacher this session,
-                // treat them as online. Prevents the "Last seen HH:MM"
-                // timestamp from climbing every minute during a presence
-                // lag — teacher is really online, admin just hasn't received
-                // the sync yet. We exclude teachers with offlineAt stamps so
-                // a teacher who genuinely just quit doesn't flicker back to
-                // online for 60s.
-                const onlineViaHeartbeat = !presenceEntry
-                  && !offlineAt[t.id]
-                  && !!liveLastSeen[t.id]
-                  && (nowMs - new Date(liveLastSeen[t.id]).getTime()) < FRESHNESS_MS;
-                const isOnline = onlineViaPresence || onlineViaHeartbeat;
-                const colour = isOnline
-                  ? (presenceEntry?.color || t.color || "rgba(255,255,255,0.9)")
-                  : "rgba(255,255,255,0.6)";
-                if (rosterExpanded) {
-                  const firstName = (t.name || "").split(" ")[0];
-                  if (isOnline) {
-                    // If we have a presence entry, show the page label.
-                    // If online via heartbeat only, show "…" as a subtle cue
-                    // that presence is catching up (no page info available).
-                    const pageText = presenceEntry?.page || "…";
-                    return (
-                      <div key={t.id} style={{ fontSize: 11, color: colour, padding: "3px 0", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.3 }}>
-                        <span style={{ fontWeight: 600 }}>{firstName}</span>
-                        <span style={{ opacity: 0.6, fontSize: 10 }}>{pageText}</span>
-                      </div>
-                    );
-                  }
-                  const lastSeenText = formatLastSeen(effectiveLastSeenIso);
+        {teachers.length > 0 && (() => {
+          const presenceMap = new Map(teacherPresence.map(p => [p.teacherId, p]));
+          const FRESHNESS_MS = 90 * 1000;
+          const nowMs = Date.now();
+          const formatLastSeen = (iso) => {
+            if (!iso) return "—";
+            const seen = new Date(iso);
+            if (isNaN(seen.getTime())) return "—";
+            const now = new Date();
+            // Calendar-day diff via YYYY-MM-DD (DST-safe, unlike ms/86400000).
+            const toYMD = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+            const daysAgo = Math.round((new Date(toYMD(now)).getTime() - new Date(toYMD(seen)).getTime()) / 86400000);
+            const h = seen.getHours(); const m = seen.getMinutes();
+            const t12 = `${h % 12 || 12}:${String(m).padStart(2, "0")}${h >= 12 ? "pm" : "am"}`;
+            if (daysAgo <= 0) return t12;
+            if (daysAgo === 1) return `Yesterday ${t12}`;
+            if (daysAgo <= 7) return ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][seen.getDay()];
+            return "over a week ago";
+          };
+          // Pre-compute derived per-teacher data so both render paths share
+          // the same online/offline determination and colour.
+          const rows = teachers.map(t => {
+            const effectiveLastSeenIso = offlineAt[t.id] || liveLastSeen[t.id] || t.lastSeen;
+            const lastSeenAgeMs = effectiveLastSeenIso
+              ? (nowMs - new Date(effectiveLastSeenIso).getTime())
+              : Infinity;
+            const presenceEntry = presenceMap.get(t.id);
+            // Primary online signal: presence is there and heartbeat fresh.
+            const onlineViaPresence = !!presenceEntry && lastSeenAgeMs < FRESHNESS_MS;
+            // Session 95 BUG 1 mitigation: if presence is absent but the
+            // DB heartbeat (liveLastSeen) is very fresh AND we haven't
+            // recorded an offlineAt stamp for this teacher this session,
+            // treat them as online. Prevents the "Last seen HH:MM"
+            // timestamp from climbing every minute during a presence
+            // lag — teacher is really online, admin just hasn't received
+            // the sync yet. We exclude teachers with offlineAt stamps so
+            // a teacher who genuinely just quit doesn't flicker back to
+            // online for 60s.
+            const onlineViaHeartbeat = !presenceEntry
+              && !offlineAt[t.id]
+              && !!liveLastSeen[t.id]
+              && (nowMs - new Date(liveLastSeen[t.id]).getTime()) < FRESHNESS_MS;
+            const isOnline = onlineViaPresence || onlineViaHeartbeat;
+            const colour = isOnline
+              ? (presenceEntry?.color || t.color || "rgba(255,255,255,0.9)")
+              : "rgba(255,255,255,0.6)";
+            return { t, isOnline, presenceEntry, effectiveLastSeenIso, colour };
+          });
+          // Chevron lives in the bottom row of the panel and stays anchored
+          // there in both states. Panel grows upward into the scrollable nav
+          // above when expanded, so the bottom edge of the roster (and the
+          // chevron with it) holds the same screen position. Glyph direction
+          // reflects the action: ChevronUp when collapsed (panel will grow
+          // up), ChevronDown when expanded (panel will shrink down).
+          const chevronBtn = (
+            <button
+              type="button"
+              onClick={() => setRosterExpanded(v => !v)}
+              title={rosterExpanded ? "Collapse roster" : "Expand roster"}
+              style={{ marginLeft: "auto", background: "none", border: "none", padding: 0, cursor: "pointer", color: "rgba(255,255,255,0.55)", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1, flexShrink: 0 }}>
+              {rosterExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
+          );
+          return (
+            <div style={{ padding: "8px 12px", borderTop: "1px solid rgba(255,255,255,0.08)", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+              {rosterExpanded && rows.map(({ t, isOnline, presenceEntry, effectiveLastSeenIso, colour }) => {
+                const firstName = (t.name || "").split(" ")[0];
+                if (isOnline) {
+                  // If we have a presence entry, show the page label.
+                  // If online via heartbeat only, show "…" as a subtle cue
+                  // that presence is catching up (no page info available).
+                  const pageText = presenceEntry?.page || "…";
                   return (
                     <div key={t.id} style={{ fontSize: 11, color: colour, padding: "3px 0", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.3 }}>
-                      <span style={{ fontWeight: 500 }}>{firstName}</span>
-                      <span style={{ opacity: 0.55, fontSize: 10 }}>
-                        {lastSeenText === "—" ? "—" : `Last seen ${lastSeenText}`}
-                      </span>
+                      <span style={{ fontWeight: 600 }}>{firstName}</span>
+                      <span style={{ opacity: 0.6, fontSize: 10 }}>{pageText}</span>
                     </div>
                   );
                 }
-                // Collapsed: two-letter initial. First letter of first + last
-                // name token, or first two letters of a single-token name.
-                // Fallback "?" for empty/whitespace-only records so the gap
-                // is visible.
-                const parts = (t.name || "").trim().split(/\s+/).filter(Boolean);
-                let initials;
-                if (parts.length >= 2) initials = (parts[0][0] + parts[parts.length - 1][0]);
-                else if (parts.length === 1) initials = parts[0].slice(0, 2);
-                else initials = "?";
-                initials = initials.toUpperCase();
+                const lastSeenText = formatLastSeen(effectiveLastSeenIso);
                 return (
-                  <span key={t.id} style={{ fontSize: 11, fontWeight: 600, color: colour }}>
-                    {initials}
-                  </span>
+                  <div key={t.id} style={{ fontSize: 11, color: colour, padding: "3px 0", display: "flex", alignItems: "center", gap: 6, lineHeight: 1.3 }}>
+                    <span style={{ fontWeight: 500 }}>{firstName}</span>
+                    <span style={{ opacity: 0.55, fontSize: 10 }}>
+                      {lastSeenText === "—" ? "—" : `Last seen ${lastSeenText}`}
+                    </span>
+                  </div>
                 );
-              });
-            })()}
-            {rosterExpanded ? (
-              <button
-                type="button"
-                onClick={() => setRosterExpanded(false)}
-                title="Collapse roster"
-                style={{ position: "absolute", top: 6, right: 8, background: "none", border: "none", padding: 2, cursor: "pointer", color: "rgba(255,255,255,0.55)", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
-                <ChevronUp size={14} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setRosterExpanded(true)}
-                title="Expand roster"
-                style={{ marginLeft: "auto", background: "none", border: "none", padding: 0, cursor: "pointer", color: "rgba(255,255,255,0.55)", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
-                <ChevronDown size={14} />
-              </button>
-            )}
-          </div>
-        )}
+              })}
+              {/* Bottom-anchored row: hosts the two-letter strip when
+                  collapsed, just the chevron when expanded. Either way the
+                  chevron sits at the bottom-right of the panel and keeps
+                  its screen position across the toggle. */}
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 7, lineHeight: 1.3 }}>
+                {!rosterExpanded && rows.map(({ t, colour }) => {
+                  // Two-letter initial: first letter of first + last name
+                  // token, or first two letters of a single-token name.
+                  // Fallback "?" for empty/whitespace-only records so the
+                  // gap is visible.
+                  const parts = (t.name || "").trim().split(/\s+/).filter(Boolean);
+                  let initials;
+                  if (parts.length >= 2) initials = (parts[0][0] + parts[parts.length - 1][0]);
+                  else if (parts.length === 1) initials = parts[0].slice(0, 2);
+                  else initials = "?";
+                  initials = initials.toUpperCase();
+                  return (
+                    <span key={t.id} style={{ fontSize: 11, fontWeight: 600, color: colour }}>
+                      {initials}
+                    </span>
+                  );
+                })}
+                {chevronBtn}
+              </div>
+            </div>
+          );
+        })()}
         <div style={{ padding: "16px 12px", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
           {/* ── Claude Panel ─────────────────────────────────── */}
           {(() => {
