@@ -643,13 +643,25 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             <tbody>
               {groupedRows.map(([groupLabel, rows]) => {
                 const filteredRows = tallySearch.trim()
-                  ? rows.filter(r => {
-                      const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
-                      const name = r.isGroup
-                        ? (groupDisplayNameLive(r, groups, students) || "")
-                        : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
-                      return name.toLowerCase().includes(tallySearch.trim().toLowerCase());
-                    })
+                  ? (() => {
+                      const q = tallySearch.trim().toLowerCase();
+                      return rows.filter(r => {
+                        const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
+                        const name = r.isGroup
+                          ? (groupDisplayNameLive(r, groups, students) || "")
+                          : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
+                        if (name.toLowerCase().includes(q)) return true;
+                        // Session 12 — restore group-name match. groupDisplayNameLive
+                        // returns the comma-joined member first names, not the
+                        // group's own name, so typing the group name itself
+                        // wouldn't match without this branch.
+                        if (r.isGroup && r.groupId) {
+                          const grp = (groups || []).find(g => g.id === r.groupId);
+                          if (grp?.name && grp.name.toLowerCase().includes(q)) return true;
+                        }
+                        return false;
+                      });
+                    })()
                   : rows;
                 if (filteredRows.length === 0) return null;
                 return (
