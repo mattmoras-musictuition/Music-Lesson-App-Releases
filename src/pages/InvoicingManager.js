@@ -728,7 +728,7 @@ export function InvoicingManager({
   weeklyTimetables, catchups = [], interruptions,
   notify, goBack, goForward, historyCursor, pageHistory,
 }) {
-  const { colors } = useTheme();
+  const { colors, darkMode } = useTheme();
 
   // ── Persisted state ───────────────────────────────────────
   const [settings, setSettings] = useState(() => {
@@ -1116,8 +1116,57 @@ export function InvoicingManager({
     return missing;
   }, [students]);
 
+  // Session 9 — count of students with an active MTT enrolment in the selected
+  // term who haven't been included on any generated invoice for that term.
+  // "Active MTT enrolment" = appears in timetable.lessons (non-group) OR is in a
+  // scheduled group's studentIds. Mirrors the two MTT paths in buildInvoices.
+  // Private enrolments (driven by `enrolments`, not the MTT) are a separate
+  // invoicing path per Spec 4 C7 and are correctly excluded.
+  // "Covered by an invoice for the selected term" = any invoice with
+  // termLabel === selTerm.label has a line with studentName === student.name.
+  // Lines carry studentName but no studentId, so the match is name-based —
+  // consistent with how the rest of this file links lines back to students.
+  const uninvoicedStudentCount = useMemo(() => {
+    if (!selTerm) return 0;
+    const active = (students || []).filter(s => s.status !== "archived");
+    const mttStudents = active.filter(s => {
+      const indiv = (timetable?.lessons || []).some(l => l.studentId === s.id && !l.isGroup);
+      if (indiv) return true;
+      return (groups || []).some(g => g.status === "scheduled" && (g.studentIds || []).includes(s.id));
+    });
+    if (mttStudents.length === 0) return 0;
+    const coveredNames = new Set();
+    for (const inv of (invoices || [])) {
+      if (inv.termLabel !== selTerm.label) continue;
+      for (const line of (inv.lines || [])) {
+        if (line.studentName) coveredNames.add(line.studentName);
+      }
+    }
+    return mttStudents.filter(s => !coveredNames.has(s.name)).length;
+  }, [students, timetable, groups, invoices, selTerm]);
+
   const renderSetup = () => (
     <div style={{ maxWidth: 760 }}>
+
+      {/* Session 9 — uninvoiced-enrolment warning. Same red banner styling
+          as ConflictBanner on the MTT/WTT views (colors.danger border,
+          darkMode-aware bg, AlertTriangle icon, font/padding/radius all
+          matched). Hidden when count is 0. */}
+      {uninvoicedStudentCount > 0 && (
+        <div style={{ marginBottom: 16, borderRadius: 10, overflow: "hidden", border: `1.5px solid ${colors.danger}`, boxShadow: "0 2px 8px rgba(196,84,84,0.10)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: darkMode ? "#2A1818" : "#FEF6F6" }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={colors.danger} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span style={{ fontWeight: 700, fontSize: 13, color: colors.danger }}>
+              {uninvoicedStudentCount === 1
+                ? "1 student has an uninvoiced enrolment this term."
+                : `${uninvoicedStudentCount} students have uninvoiced enrolments this term.`}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Missing parent info warning */}
       {missingParentInfo.length > 0 && (
