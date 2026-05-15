@@ -229,7 +229,13 @@ export function buildGridRows(lessons, students, school, teachers, opts) {
       row.cells[day] = cell.map(function(l) {
         var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
         var name = lessonDisplayName(l);
-        var cls = st ? st.className || "" : "";
+        // Band sessions don't carry a className — slot the band's student first
+        // names into the same visual position class info occupies for regular
+        // and group lessons. Empty members fall back to "" so the tidy-up at
+        // the render site (cls ? ... : '') drops the segment cleanly.
+        var cls = l.isBandSession
+          ? bandStudentFirstNames(l, students)
+          : (st ? st.className || "" : "");
         // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
         var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
         var color = ic[l.instrument] || ic.default;
@@ -616,7 +622,10 @@ export function buildTeacherSchoolGrid(tLessons, students, school, teachers, opt
       cells[day] = cell.map(function(l) {
         var st = students ? students.find(function(s){ return s.id === l.studentId; }) : null;
         var name = lessonDisplayName(l);
-        var cls = st ? st.className || "" : "";
+        // Match buildGridRows: bands slot first names into the cls position.
+        var cls = l.isBandSession
+          ? bandStudentFirstNames(l, students)
+          : (st ? st.className || "" : "");
         var color = ic[l.instrument] || ic.default;
         return { name: name, cls: cls, color: color, adjusted: l.adjusted, adjustReason: l.adjustReason };
       });
