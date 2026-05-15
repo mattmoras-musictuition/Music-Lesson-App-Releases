@@ -4201,14 +4201,12 @@ export default function MusicTimetableApp() {
   const weeklyWarningCount = Object.keys(weeklyConstraintWarnings).filter(id => !weeklyAckedConstraints.has(id)).length;
   const [dashBadges, setDashBadges] = useState({ alerts: 0, email: 0 });
 
-  const [generating, setGenerating] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null); // null | { version, available }
   const [updateProgress, setUpdateProgress] = useState(null); // null | 0-100
   const [noUpdateFlash, setNoUpdateFlash] = useState(false); // briefly show "No new updates"
   const [clockTime, setClockTime] = useState(() => { const n = melbourneNow(); const h = n.getHours(); const h12 = h % 12 || 12; return h12 + ":" + String(n.getMinutes()).padStart(2, "0"); });
 
   const handleGenerateTimetable = async () => {
-    setGenerating(false); // reset in case previous run got stuck
     if (schools.length === 0) { notify("Add at least one school first", "warning"); return; }
     const allSchedulable = students.filter(s => s.status === "active");
     if (allSchedulable.length === 0) { notify("Add at least one active student first", "warning"); return; }
@@ -4238,7 +4236,6 @@ export default function MusicTimetableApp() {
     let enrichedSpecialists = specialists;
 
     if (studentsWithNotes.length > 0 || specialistsWithNotes.length > 0) {
-      setGenerating(true);
       try {
         enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
         enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
@@ -4246,7 +4243,6 @@ export default function MusicTimetableApp() {
         console.error("Note parsing error:", err);
         notify("⚠ Note parsing skipped: " + err.message, "warning");
       }
-      setGenerating(false);
     }
 
     // Schedule eligible groups FIRST (equal priority — they compete for slots before individuals)
@@ -4335,11 +4331,9 @@ export default function MusicTimetableApp() {
     const groupsSched = groupLessons.scheduled.length;
     let msg = `Timetable scheduled: ${result.lessons.length} lessons scheduled, ${result.unscheduled.length} unscheduled`;
     if (groupsSched > 0) msg += ` (incl. ${groupsSched} group${groupsSched !== 1 ? "s" : ""})`;
-    setGenerating(false);
     notify(msg);
     setPage("timetable");
     } catch (genErr) {
-      setGenerating(false);
       notify(`Generation error: ${genErr.message}`, "danger");
     }
   };
@@ -4360,14 +4354,12 @@ export default function MusicTimetableApp() {
     const specialistsWithNotes = specialists.filter(s => s.notes && s.notes.trim() && s.schoolId === schoolId);
 
     if (studentsWithNotes.length > 0 || specialistsWithNotes.length > 0) {
-      setGenerating(true);
       try {
         enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
         enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
       } catch (err) {
         console.error("Note parsing error:", err);
       }
-      setGenerating(false);
     }
 
     // Schedule eligible groups at this school FIRST (equal priority)
