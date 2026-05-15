@@ -4582,17 +4582,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   transition: "background 0.15s, outline 0.15s"
                                 }}
                               >
-                                {/* Teacher-actuals ghost cards — read-only,
-                                    pointer-events:none, behind admin cards.
-                                    Gated by per-day toggle. */}
+                                {/* Teacher-actuals cards — read-only,
+                                    pointer-events:none. When the per-day Actuals
+                                    toggle is ON these are the only lesson layer
+                                    for that day (admin cards hidden below). */}
                                 {(() => {
                                   const ghostKey = `${weekKey}_${day}`;
                                   if (!dayGhostsVisible[ghostKey]) return null;
-                                  const cellHasAdminCard = cellLessons.length > 0;
-                                  const cellHasDraggingCard = cellLessons.some(l => l.id === draggingId);
-                                  // Hide ghosts when an admin card occupies this slot, UNLESS the
-                                  // admin card is being dragged (drag-reveal shows what's underneath).
-                                  if (cellHasAdminCard && !cellHasDraggingCard) return null;
                                   // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
                                   const ghostDayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === day && c.status === "active");
                                   const ghostViewedTeacher = ghostDayLanes.length >= 2 ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher : null;
@@ -4616,8 +4612,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         aria-hidden="true"
                                         title="Teacher's actual (read-only)"
                                         style={{
-                                          position: "absolute",
-                                          top: 4, left: 4, right: 4,
                                           padding: "6px 10px",
                                           borderRadius: 6,
                                           fontSize: 13,
@@ -4632,7 +4626,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                           opacity: 0.42,
                                           transition: "opacity 0.12s",
                                           pointerEvents: "none",
-                                          zIndex: 0,
                                         }}>
                                         <div style={{ fontWeight: 600, color: colors.text }}>
                                           {isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3 }} />}
@@ -4662,7 +4655,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       title="Remove break" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>
                                   </div>
                                 )}
-                                {cellLessons.map((l, li) => {
+                                {!dayGhostsVisible[`${weekKey}_${day}`] && cellLessons.map((l, li) => {
                                   const cWarnings = constraintWarnings[l.id] || [];
                                   // ── Band session card ──
                                   if (l.isBandSession) {
