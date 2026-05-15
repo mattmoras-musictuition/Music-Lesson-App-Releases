@@ -38,7 +38,19 @@ function isOpenCatchup(m) {
 // threshold via isDayPast6pm), not at week-end — see tallyHelpers:isDayPast6pm.
 export function deriveTallyCell({ enrolment, week, wttEntry }) {
   if (!enrolment) return "blank";
-  if (enrolment.startDate && week.weekKey < enrolment.startDate) return "inactive";
+  // v2.8.1 — start-side overlap fix. The previous predicate
+  // (week.weekKey < enrolment.startDate) compared the week's Monday against
+  // startDate, so a mid-week enrolment (e.g. startDate = Wed) dashed the
+  // entire week including lessons that fell later in the same week and
+  // after startDate. Correct rule: the enrolment overlaps the week iff
+  // startDate <= weekEnd (Sunday). End-side check stays as-is — it already
+  // tests endDate < weekStart, the symmetric overlap condition.
+  if (enrolment.startDate) {
+    const d = new Date(week.weekKey + "T00:00:00");
+    d.setDate(d.getDate() + 6);
+    const weekEnd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (enrolment.startDate > weekEnd) return "inactive";
+  }
   if (enrolment.endDate && week.weekKey > enrolment.endDate) return "inactive";
 
   if (!wttEntry) return "blank";
