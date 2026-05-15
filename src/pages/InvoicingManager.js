@@ -745,7 +745,12 @@ export function InvoicingManager({
   });
 
   // ── UI state ──────────────────────────────────────────────
-  const [view, setView]         = useState(invoices.length ? "invoices" : "setup");
+  // Session 9 follow-up — default landing is the Draft/setup view regardless
+  // of whether invoices already exist. The "← Draft" back-arrow on the
+  // invoices-list view is the entry path to setup, not the other way around.
+  // Session-only (React state); switching tabs unmounts the component, so the
+  // next entry resets to "setup".
+  const [view, setView]         = useState("setup");
   const [sections, setSections] = useState({ details: false, rates: true, term: true });
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [confirmRegen, setConfirmRegen] = useState(false);
