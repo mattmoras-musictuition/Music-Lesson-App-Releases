@@ -4620,7 +4620,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       displayName = getPrefDisplayName(ghostSt?.name || g.studentName || "");
                                       if (ghostSt?.className) classSuffix = ` · ${ghostSt.className}`;
                                     }
-                                    const teacherFirst = g.teacherName ? g.teacherName.split(" ")[0] : "";
+                                    // Lane-derived teacher name (matches regular-card render at
+                                    // line ~4827). The stamped g.teacherName in teacher_actuals JSONB
+                                    // can be stale when the day's lane has shifted (e.g. fill-in
+                                    // teacher); deriving from teacherCoverage + laneOverrides keeps
+                                    // the actuals card consistent with the admin view.
+                                    const _gtn = getLiveTeacherName(g, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey);
+                                    const teacherFirst = _gtn ? _gtn.split(" ")[0] : "";
                                     return (
                                       <div
                                         key={`ghost-${g.id || gi}`}
