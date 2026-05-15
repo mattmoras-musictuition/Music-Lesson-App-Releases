@@ -4395,7 +4395,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                     }}
                                     style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column",
                                       transform: `translateX(${swipeDx}px)`, transition: "transform 0.22s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
-                                      background: emailSelectedIds.has(email.id) ? (darkMode ? colors.sidebarActive : "#E8EDF4") : isSelected ? (darkMode ? colors.sidebarHover : "#F0F2F6") : (isPinned ? `rgba(255,251,235,${darkMode ? "0.06" : "0.85"}), ${colors.cardBg}` : colors.cardBg),
+                                      background: emailSelectedIds.has(email.id) ? (darkMode ? colors.sidebarActive : "#E8EDF4") : isSelected ? (darkMode ? colors.sidebarHover : "#F0F2F6") : (isPinned ? `linear-gradient(rgba(255,251,235,${darkMode ? "0.06" : "0.85"}), rgba(255,251,235,${darkMode ? "0.06" : "0.85"})), ${colors.cardBg}` : colors.cardBg),
                                       borderLeft: emailSelectedIds.has(email.id) ? `3px solid ${colors.sidebarActive}` : "3px solid transparent",
                                       borderBottom: `1px solid ${colors.sidebarActive}22`,
                                       cursor: "pointer" }}>
