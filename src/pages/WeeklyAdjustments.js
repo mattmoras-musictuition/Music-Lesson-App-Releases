@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
 import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
@@ -14,6 +14,7 @@ import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
+import { generateExportHtml, electronPrintToPdf, buildExportFilename } from "../data/exportHelpers";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
@@ -2374,6 +2375,54 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const keepDayHeaderOpen = () => { if (dayHeaderHideTimer.current) clearTimeout(dayHeaderHideTimer.current); };
             const scheduleDayHeaderClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
 
+            // Session 8 follow-up Item 3 — auto-attach the day's portrait
+            // single-day export to whichever email handler the user picks
+            // from the day-header menu. Fold into the existing handlers
+            // (Parents / Class Teachers / Staff, group + individual). Matt's
+            // escape hatch is removing the chip from the compose modal
+            // before sending. Failure to render the attachment is non-fatal:
+            // open the compose modal anyway and notify.
+            const composeForDay = async (emails, openOpts, useSequential) => {
+              let atts = null;
+              try {
+                const schoolForExport = schools.find(s => s.id === selectedSchool);
+                const exportTitle = `${weekLabel} Timetable — ${schoolForExport?.name || "School"} — ${day}`;
+                const html = generateExportHtml(
+                  weeklyData?.lessons || [],
+                  students, schools, teachers,
+                  {
+                    schoolId: selectedSchool,
+                    day,
+                    title: exportTitle,
+                    specialists: specialists || null,
+                    teacherCoverage,
+                    enrolments,
+                    laneOverrides,
+                    weekKey,
+                  }
+                );
+                if (html) {
+                  const filenameBase = buildExportFilename({
+                    weekLabel,
+                    day,
+                    schoolShortName: schoolForExport ? getSchoolAcronym(schoolForExport) : "",
+                  });
+                  const pdfBase64 = await electronPrintToPdf(html);
+                  if (pdfBase64) {
+                    atts = [{ filename: filenameBase + ".pdf", contentBase64: pdfBase64, mimeType: "application/pdf" }];
+                  } else {
+                    const contentBase64 = btoa(unescape(encodeURIComponent(html)));
+                    atts = [{ filename: filenameBase + ".html", contentBase64, mimeType: "text/html" }];
+                  }
+                }
+              } catch (e) {
+                notify && notify("Couldn't attach the day's timetable — " + (e?.message || "unknown error"), "warning", 4000);
+              }
+              const finalOpts = atts ? Object.assign({}, openOpts, { attachments: atts }) : openOpts;
+              if (useSequential) openGmailSequential(emails, finalOpts);
+              else openCompose(emails, finalOpts);
+            };
+
             const DaySubPanel = ({ type, rows, allEmails, color, multi, schoolSender }) => {
               if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
               const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
@@ -2384,11 +2433,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   onMouseEnter={keepDayHeaderOpen}
                   onMouseLeave={scheduleDayHeaderClose}
                   style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                  {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                  {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+                  {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+                  {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
                   {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
                   {rows.map((r, i) => (
-                    <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                    <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
                       style={r.color ? btn(colors.text) : btn(color || colors.accent)}
                       onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
                       onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
@@ -2410,7 +2459,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   <DaySubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} schoolSender={schoolSender} />
                   {multi ? (
                     <button
-                      onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
                       onMouseEnter={e => {
                         keepDayHeaderOpen();
                         e.currentTarget.style.background = colors.bg;
@@ -2423,7 +2472,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     </button>
                   ) : (
                     <button
-                      onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+                      onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
                       onMouseEnter={e => { keepDayHeaderOpen(); e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
                       style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
