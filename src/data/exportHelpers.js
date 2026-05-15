@@ -257,12 +257,64 @@ export function buildStyledTable(gridRows, tableTitle) {
 // Replaces the cramped narrow-portrait timetable grid. Groups lessons by
 // time ascending, shows day name + filter label at the top, instrument
 // dot + teacher initials on each row. Portrait phone-sized CSS.
+//
+// Session 8 (inline breaks): teacher breaks for the day — both
+// school-wide recurring (school.teacherBreaks) and per-teacher
+// (teacher.teacherBreaks, scoped to this schoolId) — merge into the
+// same time-ordered list with a slate-blue dot and "Break" label.
+// School-wide breaks render without a teacher subtitle; per-teacher
+// breaks show the teacher's first name. Per-teacher breaks are only
+// emitted for teachers whose lessons appear in the filtered set, so
+// teacher- or class-filtered exports don't show unrelated breaks.
 function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   if (!lessons || lessons.length === 0) return null;
   var ic = instruments_colors;
   var teachers = opts && opts.teachers;
-  var sorted = [...lessons].sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
+  var school = opts && opts.school;
+  var dayTeacherIds = new Set();
+  for (var dti = 0; dti < lessons.length; dti++) {
+    var dtid = getCardTeacherId(lessons[dti], opts && opts.teacherCoverage);
+    if (dtid) dayTeacherIds.add(dtid);
+  }
+  var breakRows = [];
+  if (school) {
+    var stb = school.teacherBreaks || [];
+    for (var sbi = 0; sbi < stb.length; sbi++) {
+      var sb = stb[sbi];
+      var sbDay = sb.day || "All";
+      if (sbDay !== "All" && sbDay !== day) continue;
+      breakRows.push({ _kind: "break", start: sb.start, end: sb.end, teacherName: "" });
+    }
+    if (teachers) {
+      for (var ti2 = 0; ti2 < teachers.length; ti2++) {
+        var tch = teachers[ti2];
+        if (!dayTeacherIds.has(tch.id)) continue;
+        var ttb = tch.teacherBreaks || [];
+        for (var tj = 0; tj < ttb.length; tj++) {
+          var tb = ttb[tj];
+          if (tb.schoolId && tb.schoolId !== school.id) continue;
+          if (tb.day && tb.day !== day) continue;
+          breakRows.push({ _kind: "break", start: tb.start, end: tb.end, teacherName: tch.name });
+        }
+      }
+    }
+  }
+  var lessonItems = lessons.map(function(l) { return Object.assign({}, l, { _kind: "lesson" }); });
+  var sorted = lessonItems.concat(breakRows).sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
   var rows = sorted.map(function(l) {
+    if (l._kind === "break") {
+      var btf = firstNameOf(l.teacherName || "");
+      return '<tr>'
+        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + fmt12(l.start) + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + fmt12(l.end) + '</div></td>'
+        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
+          + '<div style="display:flex;align-items:center;gap:8px">'
+            + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + SLATE + ';flex-shrink:0"></span>'
+            + '<div><div style="font-weight:600;font-size:13px;color:' + TEXT + '">Break</div>'
+            + (btf ? '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + btf + '</div>' : '')
+            + '</div>'
+          + '</div>'
+        + '</td></tr>';
+    }
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
     var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
     var cls = st ? st.className || "" : "";
@@ -374,7 +426,12 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
 
   // Session 96: for single-day exports, use the list-style renderer.
   if (day) {
-    return buildSingleDayListHtml(filtered, students, day, title, meta, leafOpts);
+    // Session 8: resolve the school so the renderer can pull teacher breaks.
+    var sdSchool = schoolId
+      ? schools.find(function(s) { return s.id === schoolId; })
+      : (filtered.length > 0 ? schools.find(function(s) { return s.id === filtered[0].schoolId; }) : null);
+    var sdOpts = Object.assign({}, leafOpts, { school: sdSchool });
+    return buildSingleDayListHtml(filtered, students, day, title, meta, sdOpts);
   }
 
   // Session 96 v2: class-filtered exports get the per-day list layout —
