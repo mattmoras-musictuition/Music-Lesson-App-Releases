@@ -80,6 +80,32 @@ function bandStudentFirstNames(l, students) {
   return names.join(", ");
 }
 
+// Default filename for exports. Examples:
+//   single-day:  "Monday Week 4 - EBPS"
+//   full-week:   "Week 4 - EBPS"
+//   master:      "Master - EBPS" (no "Week N" available for master timetable)
+// Class / teacher filters tack on after the short name: "Monday Week 4 - EBPS - 3B".
+// Teacher schedule exports keep their own shape and route through their own caller.
+export function buildExportFilename(opts) {
+  opts = opts || {};
+  // Extract "Week N" from weekLabel — accepts "Week 4", "Term 2 Week 4",
+  // "Holidays Week 1"; falls back to the raw label when nothing matches.
+  var wk;
+  if (!opts.weekLabel || opts.weekLabel === "Master") {
+    wk = "Master";
+  } else {
+    var m = String(opts.weekLabel).match(/Week\s+\d+/i);
+    wk = m ? m[0] : opts.weekLabel;
+  }
+  var head = opts.day ? (opts.day + " " + wk) : wk;
+  var tailParts = [];
+  if (opts.schoolShortName) tailParts.push(opts.schoolShortName);
+  if (opts.className) tailParts.push(opts.className);
+  if (opts.teacherName) tailParts.push(opts.teacherName);
+  var tail = tailParts.join(" - ");
+  return tail ? (head + " - " + tail) : head;
+}
+
 // 12-hour time format for the portrait single-day export: lowercase am/pm,
 // no space, no leading zero on the hour. "09:30" -> "9:30am", "13:00" -> "1:00pm".
 // Local to this file; the shared helpers.to12h produces a different shape ("9:30 AM")

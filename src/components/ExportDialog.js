@@ -8,12 +8,12 @@
 import React from "react";
 import { DAYS, STORAGE_KEYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId, getLiveTeacherName } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, downloadFile, uid as makeId, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
   exportLessons, exportTeacherSchedules,
-  electronPrintToPdf
+  electronPrintToPdf, buildExportFilename
 } from "../data/exportHelpers";
 // Session 96: upload exported timetables to the public resources bucket and
 // register them as Documents so Matt can pick them up later when emailing.
@@ -112,13 +112,23 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
       const schoolPart = schoolId ? ("-" + (schools.find(s => s.id === schoolId)?.name || "School")) : "";
       return `${sourceLabel}-Teacher-Schedules${schoolPart}`.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
     }
-    const parts = [];
-    if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
-    if (teacherName) parts.push(teacherName);
-    if (className) parts.push(className);
-    if (day.size > 0) parts.push([...day].join("-"));
-    const filterLabel = parts.length > 0 ? parts.join("-") : "All";
-    return `${sourceLabel}-${filterLabel}`.replace(/[^a-zA-Z0-9]/g, "-").replace(/-+/g, "-");
+    // Spec — Session 8 follow-up Item 2:
+    //   single-day: "Monday Week 4 - EBPS"
+    //   full-week:  "Week 4 - EBPS"
+    //   master:     "Master - EBPS"
+    // Multi-day selection: use the joined day list ("Monday, Tuesday") as the
+    // head; the per-day filename will be regenerated for each loop in doExport.
+    const headDay = day.size === 1
+      ? [...day][0]
+      : (day.size > 1 ? [...day].join(", ") : null);
+    const schoolObj = schoolId ? schools.find(s => s.id === schoolId) : null;
+    return buildExportFilename({
+      weekLabel: sourceLabel,
+      day: headDay,
+      schoolShortName: schoolObj ? getSchoolAcronym(schoolObj) : "",
+      className: className || "",
+      teacherName: teacherName || "",
+    });
   })();
 
   React.useEffect(() => { setCustomFilename(null); }, [exportType, sourceTab, selectedPastWeek, schoolId, teacherName, className, day]);
@@ -251,9 +261,19 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
     const daysToExport = day.size > 1 ? [...day] : [day.size === 1 ? [...day][0] : null];
     try {
       for (const exportDay of daysToExport) {
-        const dayPart = exportDay ? `-${exportDay}` : "";
+        // Multi-day selection: regenerate per-day default from the new format
+        // (no clean swap is possible against a custom-typed filename, so the
+        // custom override is intentionally not honoured when multiple days
+        // are selected — single-day and full-week customs still apply).
+        const schoolObj = schoolId ? schools.find(s => s.id === schoolId) : null;
         const filenameBase = daysToExport.length > 1
-          ? activeFilename.replace(/-Mon.*|-Tue.*|-Wed.*|-Thu.*|-Fri.*/i, "") + dayPart
+          ? buildExportFilename({
+              weekLabel: sourceLabel,
+              day: exportDay,
+              schoolShortName: schoolObj ? getSchoolAcronym(schoolObj) : "",
+              className: className || "",
+              teacherName: teacherName || "",
+            })
           : activeFilename;
         for (const fmt of formats) {
           if (exportType === "timetable") {
