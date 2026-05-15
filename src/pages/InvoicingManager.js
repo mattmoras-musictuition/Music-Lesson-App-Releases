@@ -14,7 +14,6 @@ import { STORAGE_KEYS } from "../constants";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
-import { supabase } from "../supabaseClient";
 // Session 95: preferredFirstName — extracts "Jenny" from "Jennifer (Jenny) Smith",
 // else returns first word. Used in _invoiceMergeCtx so parent/student names in
 // invoice emails show the short/familiar form instead of full legal name.
@@ -792,66 +791,14 @@ export function InvoicingManager({
     try { localStorage.setItem(STORAGE_KEYS.invoiceDrafts, JSON.stringify(invoices)); } catch {}
   }, [invoices]);
 
-  // ── Supabase sync — push sent invoices to the shared `invoices` table ──
-  // One-way: admin (source of truth for invoice data) → Supabase → budget app.
-  // Runs on any change to `invoices`, debounced 1s so line-item edits don't
-  // hammer the API. Only `status === "sent"` invoices are written.
-  //
-  // Admin-owned columns: id, invoice_number, parent_*, school_name, term_label,
-  //                      dates, amount_invoiced, sent_at.
-  // Budget-owned columns: amount_received, is_cash_payment. The upsert
-  // deliberately omits these so budget-app edits are preserved when admin
-  // re-syncs (e.g. after a late line-item correction on a sent invoice).
-  //
-  // Un-marking a sent invoice or deleting it causes the corresponding
-  // Supabase row to be deleted on the next sync — budget-app payment data
-  // for that row is lost by design (per Matt: delete, don't archive).
-  useEffect(() => {
-    const timer = setTimeout(async () => {
-      try {
-        const sent = invoices.filter(i => i.status === "sent");
-        const sentIdSet = new Set(sent.map(i => i.id));
-
-        // 1. Read current Supabase state (id-only, cheap)
-        const { data: existing, error: selErr } = await supabase
-          .from("invoices").select("id");
-        if (selErr) throw selErr;
-        const existingIds = new Set((existing || []).map(r => r.id));
-
-        // 2. Upsert currently-sent invoices
-        if (sent.length > 0) {
-          const rows = sent.map(inv => ({
-            id:              inv.id,
-            invoice_number:  inv.invoiceNumber,
-            parent_name:     inv.parentName,
-            parent_email:    inv.parentEmail || null,
-            school_name:     [...new Set(inv.lines.map(l => l.schoolName).filter(Boolean))][0] || null,
-            term_label:      inv.termLabel || null,
-            invoice_date:    inv.invoiceDate,
-            due_date:        inv.dueDate,
-            amount_invoiced: inv.lines.reduce((s, l) => s + (l.subtotal || 0), 0),
-            sent_at:         inv.sentAt || new Date().toISOString(),
-          }));
-          const { error: upErr } = await supabase
-            .from("invoices").upsert(rows, { onConflict: "id" });
-          if (upErr) throw upErr;
-        }
-
-        // 3. Delete rows that are no longer sent in admin
-        const toDelete = [...existingIds].filter(id => !sentIdSet.has(id));
-        if (toDelete.length > 0) {
-          const { error: delErr } = await supabase
-            .from("invoices").delete().in("id", toDelete);
-          if (delErr) throw delErr;
-        }
-      } catch (err) {
-        // Non-fatal — local state is authoritative; retry on next change.
-        console.warn("[invoices] Supabase sync failed:", err?.message || err);
-      }
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [invoices]);
+  // Session 12 — parent-billing Supabase sync removed. It was a one-way push
+  // to a budget-app pipeline that no longer exists; the shared `invoices`
+  // table was repurposed for teacher-pay records (different columns), so
+  // every upsert here was 400-ing in the console on every invoice edit.
+  // InvoicingManager is fully driven by localStorage (see invoiceDrafts
+  // load/persist effects above) — nothing reads the synced rows back.
+  // Dashboard and TeachersManager still hit `invoices` legitimately with
+  // the teacher-pay shape; those are the working flows.
 
   // ── Rates helpers ─────────────────────────────────────────
   const setRate = (schoolId, field, val) => {
