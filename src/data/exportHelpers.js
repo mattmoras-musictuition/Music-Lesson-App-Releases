@@ -44,6 +44,22 @@ function firstNameOf(name) {
   return first || name;
 }
 
+// 12-hour time format for the portrait single-day export: lowercase am/pm,
+// no space, no leading zero on the hour. "09:30" -> "9:30am", "13:00" -> "1:00pm".
+// Local to this file; the shared helpers.to12h produces a different shape ("9:30 AM")
+// and is used elsewhere in the app — don't touch it.
+function fmt12(t) {
+  if (!t || typeof t !== "string" || t.indexOf(":") === -1) return t || "";
+  var parts = t.split(":");
+  var h = parseInt(parts[0], 10);
+  var m = parts[1];
+  if (isNaN(h)) return t;
+  var ap = h >= 12 ? "pm" : "am";
+  if (h === 0) h = 12;
+  else if (h > 12) h -= 12;
+  return h + ":" + m + ap;
+}
+
 
 // Matt's Music logo — base64 PNG (180px wide source). Kept in sync with
 // InvoicingManager by copy; both render it in the same SLATE pill.
@@ -254,7 +270,7 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
     // Cluster 12a: lane-resolved teacher name.
     var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
     return '<tr>'
-      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + l.start + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + l.end + '</div></td>'
+      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + fmt12(l.start) + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + fmt12(l.end) + '</div></td>'
       + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
         + '<div style="display:flex;align-items:center;gap:8px">'
           + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>'
