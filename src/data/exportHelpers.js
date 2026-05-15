@@ -44,6 +44,19 @@ function firstNameOf(name) {
   return first || name;
 }
 
+// Display name for any lesson type. Band sessions don't carry studentName,
+// so the old "l.isGroup && l.studentNames ? join : l.studentName" pattern
+// rendered "undefined" for bands. Group lessons go through studentNames;
+// band sessions fall back to bandName (then "Band" if even that's missing);
+// regular lessons use studentName. Empty string for any unrecognised shape
+// rather than the literal "undefined".
+function lessonDisplayName(l) {
+  if (!l) return "";
+  if (l.isBandSession) return l.bandName || "Band";
+  if (l.isGroup && l.studentNames) return l.studentNames.join(", ");
+  return l.studentName || "";
+}
+
 // 12-hour time format for the portrait single-day export: lowercase am/pm,
 // no space, no leading zero on the hour. "09:30" -> "9:30am", "13:00" -> "1:00pm".
 // Local to this file; the shared helpers.to12h produces a different shape ("9:30 AM")
@@ -166,7 +179,7 @@ export function buildGridRows(lessons, students, school, teachers, opts) {
       var cell = lessons.filter(function(l) { return l.day === day && l.start === time; });
       row.cells[day] = cell.map(function(l) {
         var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-        var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
+        var name = lessonDisplayName(l);
         var cls = st ? st.className || "" : "";
         // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
         var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
@@ -190,7 +203,7 @@ export function prepareLessonRows(lessons, students, opts) {
   var DAY_ORDER = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4 };
   return [...lessons].sort(function(a, b) { return (DAY_ORDER[a.day] || 5) - (DAY_ORDER[b.day] || 5) || timeToMin(a.start) - timeToMin(b.start); }).map(function(l) {
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-    var row = { Day: l.day, Time: l.start + "-" + l.end, Student: l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName, Class: st ? st.className || "" : "", Teacher: _liveTeacherName(l, students, teachers, opts), School: l.schoolName, Instrument: l.instrument, Slot: l.slotName || "" };
+    var row = { Day: l.day, Time: l.start + "-" + l.end, Student: lessonDisplayName(l), Class: st ? st.className || "" : "", Teacher: _liveTeacherName(l, students, teachers, opts), School: l.schoolName, Instrument: l.instrument, Slot: l.slotName || "" };
     if (l.adjusted) row.Adjusted = l.adjustReason || "Yes";
     return row;
   });
@@ -316,7 +329,7 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
         + '</td></tr>';
     }
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-    var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
+    var name = lessonDisplayName(l);
     var cls = st ? st.className || "" : "";
     var color = ic[l.instrument] || ic.default;
     // Cluster 12a: lane-resolved teacher name.
@@ -327,7 +340,7 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
         + '<div style="display:flex;align-items:center;gap:8px">'
           + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>'
           + '<div><div style="font-weight:600;font-size:13px;color:' + TEXT + '">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:11.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + (l.instrument || '') + ' · ' + ti + '</div></div>'
+          + '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + (l.instrument ? l.instrument + ' · ' : '') + ti + '</div></div>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:11px;margin-top:3px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
@@ -363,7 +376,7 @@ function buildDaysListHtml(lessons, students, title, meta, opts) {
   // sensible min-width so at 5 days on landscape A4 each reads cleanly.
   var rowHtml = function(l) {
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-    var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
+    var name = lessonDisplayName(l);
     var cls = st ? st.className || "" : "";
     var color = ic[l.instrument] || ic.default;
     // Cluster 12a: lane-resolved teacher name.
@@ -374,7 +387,7 @@ function buildDaysListHtml(lessons, students, title, meta, opts) {
         + '<div style="display:flex;align-items:flex-start;gap:7px">'
           + '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:3px"></span>'
           + '<div style="min-width:0;flex:1"><div style="font-weight:600;font-size:12px;color:' + TEXT + ';line-height:1.3">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:10.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + (l.instrument || '') + ' \u00b7 ' + ti + '</div></div>'
+          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + (l.instrument ? l.instrument + ' \u00b7 ' : '') + ti + '</div></div>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:10.5px;margin-top:2px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
@@ -490,7 +503,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
     });
     var maxNameLen = 0;
     tLessons.forEach(function(l) {
-      var nm = (l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName) || "";
+      var nm = lessonDisplayName(l);
       if (nm.length > maxNameLen) maxNameLen = nm.length;
     });
     var dayColWidth = Math.min(170, Math.max(105, maxNameLen * 6.5 + 16));
@@ -553,7 +566,7 @@ export function buildTeacherSchoolGrid(tLessons, students, school, teachers, opt
       var cell = tLessons.filter(function(l){ return l.day === day && l.start === time; });
       cells[day] = cell.map(function(l) {
         var st = students ? students.find(function(s){ return s.id === l.studentId; }) : null;
-        var name = l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName;
+        var name = lessonDisplayName(l);
         var cls = st ? st.className || "" : "";
         var color = ic[l.instrument] || ic.default;
         return { name: name, cls: cls, color: color, adjusted: l.adjusted, adjustReason: l.adjustReason };
@@ -820,7 +833,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
       });
       var maxNameLen = 0;
       tLessons2.forEach(function(l) {
-        var nm = (l.isGroup && l.studentNames ? l.studentNames.join(", ") : l.studentName) || "";
+        var nm = lessonDisplayName(l);
         if (nm.length > maxNameLen) maxNameLen = nm.length;
       });
       var dayColWidth = Math.min(180, Math.max(110, maxNameLen * 7 + 20));
