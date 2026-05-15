@@ -57,6 +57,29 @@ function lessonDisplayName(l) {
   return l.studentName || "";
 }
 
+// Comma-joined first names of a band session's student members. Used as the
+// leading half of the subtitle on band rows so the export shows
+// "Student1, Student2, Student3 · Teacher". Returns "" for non-band lessons
+// and for bands without resolvable students; callers should keep the existing
+// "(prefix ? prefix + ' · ' : '') + ti" tidy-up so an empty prefix collapses
+// to just the teacher name.
+function bandStudentFirstNames(l, students) {
+  if (!l || !l.isBandSession) return "";
+  var members = l.members || [];
+  if (!members.length || !students) return "";
+  var byId = {};
+  for (var si = 0; si < students.length; si++) byId[students[si].id] = students[si];
+  var names = [];
+  for (var i = 0; i < members.length; i++) {
+    var s = byId[members[i].studentId];
+    if (s && s.name) {
+      var first = (s.name + "").split(" ")[0];
+      if (first) names.push(first);
+    }
+  }
+  return names.join(", ");
+}
+
 // 12-hour time format for the portrait single-day export: lowercase am/pm,
 // no space, no leading zero on the hour. "09:30" -> "9:30am", "13:00" -> "1:00pm".
 // Local to this file; the shared helpers.to12h produces a different shape ("9:30 AM")
@@ -340,7 +363,7 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
         + '<div style="display:flex;align-items:center;gap:8px">'
           + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>'
           + '<div><div style="font-weight:600;font-size:13px;color:' + TEXT + '">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:11.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + (l.instrument ? l.instrument + ' · ' : '') + ti + '</div></div>'
+          + '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + ((function(){ var p = l.isBandSession ? bandStudentFirstNames(l, students) : (l.instrument || ''); return p ? p + ' · ' : ''; })()) + ti + '</div></div>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:11px;margin-top:3px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
@@ -387,7 +410,7 @@ function buildDaysListHtml(lessons, students, title, meta, opts) {
         + '<div style="display:flex;align-items:flex-start;gap:7px">'
           + '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:3px"></span>'
           + '<div style="min-width:0;flex:1"><div style="font-weight:600;font-size:12px;color:' + TEXT + ';line-height:1.3">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:10.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + (l.instrument ? l.instrument + ' \u00b7 ' : '') + ti + '</div></div>'
+          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + ((function(){ var p = l.isBandSession ? bandStudentFirstNames(l, students) : (l.instrument || ''); return p ? p + ' \u00b7 ' : ''; })()) + ti + '</div></div>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:10.5px;margin-top:2px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
