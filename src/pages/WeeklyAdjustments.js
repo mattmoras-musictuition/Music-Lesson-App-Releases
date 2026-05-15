@@ -523,6 +523,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       .filter(([k]) => k.startsWith(prefix))
       .flatMap(([, entry]) => entry.lessons || []);
   }, [teacherActuals, weekKey, selectedSchool]);
+
+  // Parallel flatten for teacher-actuals missed entries — used by the
+  // missed zone when a day's Actuals toggle is ON.
+  const currentTeacherActualsMissed = useMemo(() => {
+    if (!selectedSchool) return [];
+    const prefix = `${weekKey}|${selectedSchool}|`;
+    return Object.entries(teacherActuals)
+      .filter(([k]) => k.startsWith(prefix))
+      .flatMap(([, entry]) => entry.missed || []);
+  }, [teacherActuals, weekKey, selectedSchool]);
   // ── Drag overlay: precomputed per-slot warnings + specialist tags ──
 
   // Term week number
@@ -4874,6 +4884,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic", padding: "4px 0" }}>No missed lessons this week</div>
                   )}
                   {weeklyData.missed.map((m, i) => {
+                    // When the day's Actuals toggle is ON, hide admin's missed for that day —
+                    // teacher's missed will render below in their place.
+                    if (m.day && dayGhostsVisible[`${weekKey}_${m.day}`]) return null;
                     const isSelectedMissed = selectedMissed.has(i);
                     const missedStudent = !m.isGroup ? students.find(s => s.id === m.studentId) : null;
                     const missedClassName = missedStudent?.className || "";
@@ -4919,6 +4932,47 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     </div>
                     );
                   })}
+                  {/* Teacher-actuals missed — read-only, pointer-events:none.
+                      Only renders for days whose Actuals toggle is ON; admin's
+                      missed for those same days are hidden above. */}
+                  {currentTeacherActualsMissed
+                    .filter(tm => tm.day && dayGhostsVisible[`${weekKey}_${tm.day}`])
+                    .map((tm, ti) => {
+                      const tmColor = getInstColor(tm.instrument, tm.isGroup);
+                      const tmStudent = !tm.isGroup ? students.find(s => s.id === tm.studentId) : null;
+                      const tmClass = tmStudent?.className || "";
+                      const tmName = tm.isGroup
+                        ? (groupDisplayName(tm) || tm.groupName || "Group")
+                        : getPrefDisplayName(tmStudent?.name || tm.studentName || "");
+                      return (
+                        <div key={`teacher-missed-${tm.id || ti}`}
+                          aria-hidden="true"
+                          title="Teacher's actual missed (read-only)"
+                          style={{
+                            padding: "6px 10px",
+                            background: tmColor + "18",
+                            borderRadius: 8,
+                            fontSize: 12,
+                            border: `1px dashed ${tmColor}40`,
+                            borderLeft: `3px dashed ${tmColor}`,
+                            cursor: "default",
+                            opacity: 0.42,
+                            pointerEvents: "none",
+                            maxWidth: 280,
+                            position: "relative",
+                          }}>
+                          <div style={{ fontWeight: 600 }}>
+                            {tm.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}
+                            {tmName}
+                            {tmClass ? <span style={{ fontWeight: 400, color: colors.textMuted, marginLeft: 5 }}>{tmClass}</span> : null}
+                          </div>
+                          <div style={{ color: colors.textLight, fontSize: 11 }}>
+                            {tm.instrument || ""}{tm.day ? ` · was ${tm.day} ${tm.start || ""}` : ""}
+                          </div>
+                          {tm.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{tm.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(tm.reason, tm.reasonDetail)}</div> : null}
+                        </div>
+                      );
+                    })}
                 </div>
                 </Card>
 
