@@ -9,7 +9,7 @@ import {
   Users
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
-import { uid } from "../utils/helpers";
+import { uid, getSchoolAcronym } from "../utils/helpers";
 import { STORAGE_KEYS } from "../constants";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
@@ -1116,25 +1116,30 @@ export function InvoicingManager({
     return missing;
   }, [students]);
 
-  // Session 9 — count of students with an active MTT enrolment in the selected
-  // term who haven't been included on any generated invoice for that term.
-  // "Active MTT enrolment" = appears in timetable.lessons (non-group) OR is in a
-  // scheduled group's studentIds. Mirrors the two MTT paths in buildInvoices.
-  // Private enrolments (driven by `enrolments`, not the MTT) are a separate
-  // invoicing path per Spec 4 C7 and are correctly excluded.
+  // Session 9 — students with an active MTT enrolment in the selected term who
+  // haven't been included on any generated invoice for that term. Returns the
+  // detail rows so the expanded banner can render them; the count is just the
+  // length.
+  //
+  // "Active MTT enrolment" = appears in timetable.lessons (non-group) OR is in
+  // a scheduled group's studentIds. Mirrors the two MTT paths in buildInvoices.
+  // Private enrolments (driven by `enrolments`, not the MTT) and band sessions
+  // (no top-level studentId, skipped by the indLessons filter at line 309)
+  // are not invoiced via these paths and are correctly excluded.
+  //
   // "Covered by an invoice for the selected term" = any invoice with
   // termLabel === selTerm.label has a line with studentName === student.name.
   // Lines carry studentName but no studentId, so the match is name-based —
   // consistent with how the rest of this file links lines back to students.
-  const uninvoicedStudentCount = useMemo(() => {
-    if (!selTerm) return 0;
+  //
+  // Row shape mirrors what buildInvoices would emit: parentName resolved via
+  // _primaryParent (same helper buildInvoices uses transitively); instruments
+  // = distinct l.instrument values for individual lessons + grp.instrument ||
+  // grp.name fallback for groups (mirrors the group line description at
+  // line 472); schoolAcronym via getSchoolAcronym.
+  const uninvoicedStudents = useMemo(() => {
+    if (!selTerm) return [];
     const active = (students || []).filter(s => s.status !== "archived");
-    const mttStudents = active.filter(s => {
-      const indiv = (timetable?.lessons || []).some(l => l.studentId === s.id && !l.isGroup);
-      if (indiv) return true;
-      return (groups || []).some(g => g.status === "scheduled" && (g.studentIds || []).includes(s.id));
-    });
-    if (mttStudents.length === 0) return 0;
     const coveredNames = new Set();
     for (const inv of (invoices || [])) {
       if (inv.termLabel !== selTerm.label) continue;
@@ -1142,8 +1147,44 @@ export function InvoicingManager({
         if (line.studentName) coveredNames.add(line.studentName);
       }
     }
-    return mttStudents.filter(s => !coveredNames.has(s.name)).length;
-  }, [students, timetable, groups, invoices, selTerm]);
+    const rows = [];
+    for (const s of active) {
+      if (coveredNames.has(s.name)) continue;
+      const instruments = [];
+      // Individual lessons — distinct instruments.
+      const seenInst = new Set();
+      for (const l of (timetable?.lessons || [])) {
+        if (l.studentId !== s.id || l.isGroup) continue;
+        if (!l.instrument || seenInst.has(l.instrument)) continue;
+        seenInst.add(l.instrument);
+        instruments.push(l.instrument);
+      }
+      // Groups — grp.instrument with grp.name fallback (matches buildInvoices's
+      // group line description at line 472).
+      for (const g of (groups || [])) {
+        if (g.status !== "scheduled") continue;
+        if (!(g.studentIds || []).includes(s.id)) continue;
+        const label = g.instrument || g.name || "Group";
+        if (!seenInst.has(label)) {
+          seenInst.add(label);
+          instruments.push(label);
+        }
+      }
+      if (instruments.length === 0) continue; // no MTT enrolment — skip
+      const school = (schools || []).find(sc => sc.id === s.schoolId);
+      const parentName = _primaryParent(s).name;
+      rows.push({
+        id: s.id,
+        parentName: parentName || "—",
+        studentName: s.name,
+        instruments,
+        schoolAcronym: school ? getSchoolAcronym(school) : "",
+      });
+    }
+    return rows;
+  }, [students, timetable, groups, invoices, selTerm, schools]);
+  const uninvoicedStudentCount = uninvoicedStudents.length;
+  const [bannerExpanded, setBannerExpanded] = useState(false);
 
   const renderSetup = () => (
     <div style={{ maxWidth: 760 }}>
@@ -1151,20 +1192,48 @@ export function InvoicingManager({
       {/* Session 9 — uninvoiced-enrolment warning. Same red banner styling
           as ConflictBanner on the MTT/WTT views (colors.danger border,
           darkMode-aware bg, AlertTriangle icon, font/padding/radius all
-          matched). Hidden when count is 0. */}
+          matched). Hidden when count is 0. Clicking anywhere on the banner
+          row toggles the expanded detail list. Chevron flips to reflect
+          state. State is session-only React useState; collapsed on mount. */}
       {uninvoicedStudentCount > 0 && (
         <div style={{ marginBottom: 16, borderRadius: 10, overflow: "hidden", border: `1.5px solid ${colors.danger}`, boxShadow: "0 2px 8px rgba(196,84,84,0.10)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: darkMode ? "#2A1818" : "#FEF6F6" }}>
+          <div
+            onClick={() => setBannerExpanded(v => !v)}
+            style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", background: darkMode ? "#2A1818" : "#FEF6F6", cursor: "pointer", userSelect: "none" }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={colors.danger} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
               <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
-            <span style={{ fontWeight: 700, fontSize: 13, color: colors.danger }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: colors.danger, flex: 1 }}>
               {uninvoicedStudentCount === 1
                 ? "1 student has an uninvoiced enrolment this term."
                 : `${uninvoicedStudentCount} students have uninvoiced enrolments this term.`}
             </span>
+            {bannerExpanded
+              ? <ChevronUp size={15} style={{ color: colors.danger, flexShrink: 0 }} />
+              : <ChevronDown size={15} style={{ color: colors.danger, flexShrink: 0 }} />}
           </div>
+          {bannerExpanded && (
+            <div style={{ background: darkMode ? "#2A1818" : "#FEF6F6", borderTop: `1px solid ${colors.danger}` }}>
+              {uninvoicedStudents.map((r, i) => (
+                <div key={r.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "7px 16px",
+                    fontSize: 12,
+                    color: colors.danger,
+                    borderTop: i === 0 ? "none" : `1px solid ${darkMode ? "#3D2020" : "#FEE2E2"}`,
+                  }}>
+                  <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.parentName}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.studentName}</span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.instruments.join(", ")}</span>
+                  <span style={{ minWidth: 50, textAlign: "right", fontWeight: 600 }}>{r.schoolAcronym}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
