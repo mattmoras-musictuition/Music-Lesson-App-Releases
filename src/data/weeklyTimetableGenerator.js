@@ -8,6 +8,7 @@ import { timeToMin, groupDisplayName } from "../utils/helpers";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
+import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 
 // ── classMatchesInterruption ──────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
       const start = intr.date;
       const end = intr.endDate || intr.date;
       if (date < start || date > end) return false;
-      return intr.affectsClasses === "all" && !intr.startTime;
+      return (INTR_DISPLAY_TYPE[intr.type] === "interruption" || INTR_DISPLAY_TYPE[intr.type] === "public_holiday") && intr.affectsClasses === "all" && !intr.startTime;
     });
   };
 

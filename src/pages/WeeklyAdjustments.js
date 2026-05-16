@@ -11,6 +11,7 @@ import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, computeTermKey, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries, findOpenCatchups } from "../utils/tallyDerive";
 import { getMissedReasonLabel } from "../utils/missedReasonLabels";
+import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
@@ -4387,7 +4388,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const start = intr.date;
                     const end = intr.endDate || intr.date;
                     if (dayDate.date < start || dayDate.date > end) return false;
-                    return intr.affectsClasses === "all" && !intr.startTime;
+                    return (INTR_DISPLAY_TYPE[intr.type] === "interruption" || INTR_DISPLAY_TYPE[intr.type] === "public_holiday") && intr.affectsClasses === "all" && !intr.startTime;
                   });
                 };
 
