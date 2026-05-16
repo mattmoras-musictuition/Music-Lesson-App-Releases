@@ -96,7 +96,7 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
     setLoading(true);
     try {
       const [invRes, slipRes, intrRes] = await Promise.all([
-        supabase.from("invoices").select("*").eq("teacher_id", teacherId).order("period_start", { ascending: false }),
+        supabase.from("teacher_invoices").select("*").eq("teacher_id", teacherId).order("period_start", { ascending: false }),
         supabase.from("day_slips").select("*").eq("teacher_id", teacherId).is("invoice_id", null).order("slip_date"),
         supabase.from("interruptions").select("*"),
       ]);
@@ -131,7 +131,7 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
     try {
       // Restore slips — remove invoice_id (keep is_locked: true so they reappear as confirmed)
       await supabase.from("day_slips").update({ invoice_id: null }).eq("invoice_id", deleteConfirm.id);
-      await supabase.from("invoices").delete().eq("id", deleteConfirm.id);
+      await supabase.from("teacher_invoices").delete().eq("id", deleteConfirm.id);
       setDeleteConfirm(null);
       if (notify) notify("Invoice deleted — slips restored");
       await loadAll();

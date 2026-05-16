@@ -816,9 +816,9 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     async function loadInvoices() {
       try {
         const { data } = await supabase
-          .from("invoices")
+          .from("teacher_invoices")
           .select("id, teacher_id, period_start, period_end, total_hours, total_amount, submitted_at")
-          .eq("status", "submitted")
+          .eq("status", "sent")
           .order("submitted_at", { ascending: false })
           .limit(50);
         setSubmittedInvoices(data || []);
