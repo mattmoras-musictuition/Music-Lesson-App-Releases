@@ -3921,7 +3921,7 @@ export default function MusicTimetableApp() {
 
     // ── Upcoming interruptions — all future (always — not tab-gated) ──
     const allUpcoming = interruptions
-      .filter(i => i.type !== "term_break" && i.type !== "teacher_event" && i.date >= todayStr)
+      .filter(i => i.type !== "term_break" && i.type !== "staff_event" && i.date >= todayStr)
       .sort((a, b) => a.date.localeCompare(b.date));
     if (allUpcoming.length > 0) {
       lines.push("## Upcoming Interruptions");
@@ -3935,7 +3935,7 @@ export default function MusicTimetableApp() {
     // ── Calendar / teacher events — next 60 days ──
     const calendarCutoff = (() => { const d = new Date(now); d.setDate(d.getDate() + 60); return toLocalDateStr(d); })();
     const calEvents = interruptions
-      .filter(i => i.type === "teacher_event" && i.date >= todayStr && i.date <= calendarCutoff)
+      .filter(i => i.type === "staff_event" && i.date >= todayStr && i.date <= calendarCutoff)
       .sort((a, b) => a.date.localeCompare(b.date));
     if (calEvents.length > 0) {
       lines.push("## Upcoming Calendar Events (next 60 days)");

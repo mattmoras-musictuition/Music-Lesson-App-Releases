@@ -8,45 +8,37 @@ import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
+import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 
 // ---- Constants ----
 const WEEK_DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+// Keep in sync with EVENT_TYPE_META in Dashboard.js (different shape:
+// that copy uses `dot` instead of `darkBg`).
 const EVENT_TYPE_META = {
-  personal:       { label: "Personal / Admin", bg: "#E8EDF5", darkBg: "rgba(107,130,168,0.18)", border: "#6B82A8", text: "#3B4E6E" },
-  performance:    { label: "Performance",      bg: "#EEE9F5", darkBg: "rgba(139,122,175,0.18)", border: "#8B7AAF", text: "#5C4A80" },
-  interruption:   { label: "Interruption",     bg: "#FEF3E2", darkBg: "rgba(212,136,42,0.18)",  border: "#D4882A", text: "#7A4E10" },
-  school_event:   { label: "School Event",     bg: "#E8F4F0", darkBg: "rgba(74,140,122,0.18)",  border: "#4A8C7A", text: "#1E5C4A" },
-  public_holiday: { label: "Public Holiday",   bg: "#FEE8E8", darkBg: "rgba(196,84,84,0.18)",   border: "#C45454", text: "#7A1A1A" },
-  teacher_event:  { label: "Staff Event",      bg: "#F0EEFF", darkBg: "rgba(124,58,237,0.18)",  border: "#7C3AED", text: "#4C1D95" },
+  personal:       { label: "Personal",       bg: "#E8EDF5", darkBg: "rgba(107,130,168,0.18)", border: "#6B82A8", text: "#3B4E6E" },
+  performance:    { label: "Performance",    bg: "#EEE9F5", darkBg: "rgba(139,122,175,0.18)", border: "#8B7AAF", text: "#5C4A80" },
+  interruption:   { label: "Interruption",   bg: "#FEF3E2", darkBg: "rgba(212,136,42,0.18)",  border: "#D4882A", text: "#7A4E10" },
+  public_holiday: { label: "Public Holiday", bg: "#FEE8E8", darkBg: "rgba(196,84,84,0.18)",   border: "#C45454", text: "#7A1A1A" },
+  staff_event:    { label: "Staff Event",    bg: "#F0EEFF", darkBg: "rgba(124,58,237,0.18)",  border: "#7C3AED", text: "#4C1D95" },
 };
 
+// Keep in sync with INTERRUPTION_SUBTYPES in Dashboard.js (that copy
+// also carries `curriculum_day` and omits the displayType field).
+// Display category is resolved via INTR_DISPLAY_TYPE (shared util).
 const INTERRUPTION_SUBTYPES = [
-  { value: "student_free", label: "Student Free Day",  displayType: "interruption" },
-  { value: "excursion",    label: "Excursion",          displayType: "school_event" },
-  { value: "carnival",     label: "Carnival / Sports",  displayType: "school_event" },
-  { value: "swimming",     label: "Swimming",            displayType: "school_event" },
-  { value: "assembly",     label: "Assembly",            displayType: "school_event" },
-  { value: "camp",         label: "Camp",                displayType: "interruption" },
-  { value: "photos",       label: "Photo Day",           displayType: "school_event" },
-  { value: "concert",      label: "Concert",             displayType: "performance"  },
-  { value: "other",        label: "Other",               displayType: "interruption" },
+  { value: "student_free", label: "Student Free Day"  },
+  { value: "excursion",    label: "Excursion"          },
+  { value: "carnival",     label: "Carnival / Sports"  },
+  { value: "swimming",     label: "Swimming"           },
+  { value: "assembly",     label: "Assembly"           },
+  { value: "camp",         label: "Camp"               },
+  { value: "photos",       label: "Photo Day"          },
+  { value: "concert",      label: "Concert"            },
+  { value: "other",        label: "Other"              },
 ];
-
-const INTR_DISPLAY_TYPE = {
-  public_holiday: "public_holiday",
-  student_free:   "interruption",
-  excursion:      "school_event",
-  carnival:       "school_event",
-  swimming:       "school_event",
-  assembly:       "school_event",
-  camp:           "interruption",
-  photos:         "school_event",
-  concert:        "performance",
-  other:          "interruption",
-};
 
 // ---- Helpers ----
 function getDatesInRange(a, b) {
@@ -393,7 +385,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
       if (ev.type === "teacher_event" && ev.is_private) continue;
       // For teacher events, enrich the meta label with teacher name
       const evWithMeta = ev.type === "teacher_event"
-        ? { ...ev, _store: "cal", _teacherEventMeta: { ...EVENT_TYPE_META.teacher_event, label: `${ev.teacher_name || "Staff"} Event`, border: ev.teacher_color || "#7C3AED" } }
+        ? { ...ev, _store: "cal", _teacherEventMeta: { ...EVENT_TYPE_META.staff_event, label: `${ev.teacher_name || "Staff"} Event`, border: ev.teacher_color || "#7C3AED" } }
         : { ...ev, _store: "cal" };
       add(start, evWithMeta);
       if (ev.endDate && ev.endDate > start) {
@@ -515,17 +507,26 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     const f = eventForm;
     if (!f.title.trim()) { notify("Please enter a title", "warning"); return; }
     if (!f.startDate)    { notify("Please select a date",  "warning"); return; }
-    const needsIntr = f.type === "interruption" || f.type === "school_event";
+    // Personal stays localStorage-only; everything else (interruption,
+    // performance, public_holiday, staff_event) syncs to interruptions.
+    const toIntr = f.type !== "personal";
+    // Interruption stores its subtype in `type`; the synced top-level
+    // types store their display key directly. Subtype/affectsClasses are
+    // interruption-only — synced top-level types default to whole-school.
+    const mkIntr = (id, d, ed) => ({
+      id,
+      type: f.type === "interruption" ? (f.interruptionSubtype || "other") : f.type,
+      title: f.title, date: d, endDate: ed,
+      startTime: f.startTime, endTime: f.endTime,
+      schoolId: f.schoolId || "all",
+      affectsClasses: f.type === "interruption" ? (f.affectsClasses || "all") : "all",
+      notes: f.details, source: "calendar",
+    });
 
     // Multi-date individual selection — create one event per date
     if (!f.id && f._selectedDates) {
-      if (needsIntr) {
-        setInterruptions(prev => [...prev, ...f._selectedDates.map(d => ({
-          id: uid(), type: f.interruptionSubtype || "other", title: f.title,
-          date: d, endDate: d, startTime: f.startTime, endTime: f.endTime,
-          schoolId: f.schoolId || "all", affectsClasses: f.affectsClasses || "all",
-          notes: f.details, source: "calendar",
-        }))]);
+      if (toIntr) {
+        setInterruptions(prev => [...prev, ...f._selectedDates.map(d => mkIntr(uid(), d, d))]);
       } else {
         saveCalEvents([...calEvents, ...f._selectedDates.map(d => ({
           id: uid(), type: f.type, title: f.title,
@@ -541,11 +542,11 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
 
     if (f.id) {
       if (f._store === "cal") saveCalEvents(calEvents.map(e => e.id !== f.id ? e : { ...e, type: f.type, title: f.title, startDate: f.startDate, endDate: f.endDate || f.startDate, startTime: f.startTime, endTime: f.endTime, details: f.details }));
-      else setInterruptions(prev => prev.map(e => e.id !== f.id ? e : { ...e, type: f.interruptionSubtype || "other", title: f.title, date: f.startDate, endDate: f.endDate || f.startDate, startTime: f.startTime, endTime: f.endTime, schoolId: f.schoolId || "all", affectsClasses: f.affectsClasses || "all", notes: f.details, source: "calendar" }));
+      else setInterruptions(prev => prev.map(e => e.id !== f.id ? e : { ...e, ...mkIntr(f.id, f.startDate, f.endDate || f.startDate) }));
       notify("Event updated");
     } else {
       const id = uid();
-      if (needsIntr) setInterruptions(prev => [...prev, { id, type: f.interruptionSubtype || "other", title: f.title, date: f.startDate, endDate: f.endDate || f.startDate, startTime: f.startTime, endTime: f.endTime, schoolId: f.schoolId || "all", affectsClasses: f.affectsClasses || "all", notes: f.details, source: "calendar" }]);
+      if (toIntr) setInterruptions(prev => [...prev, mkIntr(id, f.startDate, f.endDate || f.startDate)]);
       else saveCalEvents([...calEvents, { id, type: f.type, title: f.title, startDate: f.startDate, endDate: f.endDate || f.startDate, startTime: f.startTime, endTime: f.endTime, details: f.details }]);
       notify("Event added");
     }
@@ -1035,7 +1036,8 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     if (!eventForm) return null;
     const f         = eventForm;
     const isEdit    = !!f.id;
-    const needsIntr = f.type === "interruption" || f.type === "school_event";
+    const needsIntr   = f.type === "interruption";
+    const needsSchool = f.type === "interruption" || f.type === "performance" || f.type === "public_holiday" || f.type === "staff_event";
     const tm        = EVENT_TYPE_META[f.type] || EVENT_TYPE_META.personal;
     const schoolClasses = f.schoolId && f.schoolId !== "all"
       ? [...new Set(specialists.filter(s => s.schoolId === f.schoolId).map(s => s.className))].sort()
@@ -1112,19 +1114,22 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
             <div><label style={lbl}>Start Time <span style={{ textTransform:"none", fontWeight:400 }}>(optional)</span></label><input type="time" style={inp} value={f.startTime} onChange={e => setEventForm(p => ({ ...p, startTime: e.target.value }))} /></div>
             <div><label style={lbl}>End Time <span style={{ textTransform:"none", fontWeight:400 }}>(optional)</span></label><input type="time" style={inp} value={f.endTime} onChange={e => setEventForm(p => ({ ...p, endTime: e.target.value }))} /></div>
           </div>
-          {/* Interruption fields */}
-          {needsIntr && <>
-            <div style={{ marginBottom:12 }}>
-              <label style={lbl}>Subtype</label>
-              <select style={{ ...inp, appearance:"none" }} value={f.interruptionSubtype} onChange={e => setEventForm(p => ({ ...p, interruptionSubtype: e.target.value }))}>
-                {INTERRUPTION_SUBTYPES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
-            </div>
+          {/* School — interruption + performance + public_holiday + staff_event */}
+          {needsSchool && (
             <div style={{ marginBottom:12 }}>
               <label style={lbl}>School</label>
               <select style={{ ...inp, appearance:"none" }} value={f.schoolId||""} onChange={e => setEventForm(p => ({ ...p, schoolId: e.target.value, affectsClasses:"all" }))}>
                 <option value="">All Schools</option>
                 {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+          )}
+          {/* Interruption-only fields */}
+          {needsIntr && <>
+            <div style={{ marginBottom:12 }}>
+              <label style={lbl}>Subtype</label>
+              <select style={{ ...inp, appearance:"none" }} value={f.interruptionSubtype} onChange={e => setEventForm(p => ({ ...p, interruptionSubtype: e.target.value }))}>
+                {INTERRUPTION_SUBTYPES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
             </div>
             {schoolClasses.length > 0 && f.schoolId && f.schoolId !== "all" && (

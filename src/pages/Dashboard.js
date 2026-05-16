@@ -127,12 +127,19 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const [expandedDays, setExpandedDays] = useState(new Set()); // Set of date strings with open expanded strips
   const [warningPopover, setWarningPopover] = useState(null); // { chipKey, rect, lines } — hover detail for per-school warning chips
 
+  // Keep in sync with EVENT_TYPE_META in CalendarManager.js (different
+  // shape: that copy uses `darkBg` instead of `dot`). public_holiday +
+  // staff_event palettes transcribed from CalendarManager (dot = border).
   const EVENT_TYPE_META = {
-    personal:     { label: "Personal / Admin", bg: "#E8EDF5", border: "#6B82A8", text: "#3B4E6E", dot: "#6B82A8" },
-    performance:  { label: "Performance",      bg: "#EEE9F5", border: "#8B7AAF", text: "#5C4A80", dot: "#8B7AAF" },
-    interruption: { label: "Interruption",     bg: "#F7F0E0", border: "#B8892E", text: "#705218", dot: "#B8892E" },
-    school_event: { label: "School Event",     bg: "#E5EFED", border: "#4D8C82", text: "#245C52", dot: "#4D8C82" },
+    personal:       { label: "Personal",       bg: "#E8EDF5", border: "#6B82A8", text: "#3B4E6E", dot: "#6B82A8" },
+    performance:    { label: "Performance",    bg: "#EEE9F5", border: "#8B7AAF", text: "#5C4A80", dot: "#8B7AAF" },
+    interruption:   { label: "Interruption",   bg: "#F7F0E0", border: "#B8892E", text: "#705218", dot: "#B8892E" },
+    public_holiday: { label: "Public Holiday", bg: "#FEE8E8", border: "#C45454", text: "#7A1A1A", dot: "#C45454" },
+    staff_event:    { label: "Staff Event",    bg: "#F0EEFF", border: "#7C3AED", text: "#4C1D95", dot: "#7C3AED" },
   };
+  // Keep in sync with INTERRUPTION_SUBTYPES in CalendarManager.js (that
+  // copy omits curriculum_day). Display category resolved via the shared
+  // INTR_DISPLAY_TYPE util.
   const INTERRUPTION_SUBTYPES = [
     { value: "student_free",   label: "Student Free Day" },
     { value: "curriculum_day", label: "Curriculum Day" },
@@ -6156,8 +6163,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const f = calEventForm;
         const tm = EVENT_TYPE_META[f.type] || EVENT_TYPE_META.personal;
         const isEdit = !!f.id;
-        const needsSchool = f.type === "interruption" || f.type === "school_event" || f.type === "performance";
-        const needsClasses = f.type === "interruption" || f.type === "school_event";
+        const needsSchool = f.type === "interruption" || f.type === "performance" || f.type === "public_holiday" || f.type === "staff_event";
+        const needsClasses = f.type === "interruption";
         const needsSubtype = f.type === "interruption";
         const schoolClasses = f.schoolId
           ? [...new Set(students.filter(s => s.schoolId === f.schoolId).map(s => s.className).filter(Boolean))].sort()
@@ -6175,15 +6182,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
         const saveEvent = () => {
           if (!f.title.trim()) return;
-          if (f.type === "interruption" || f.type === "school_event") {
+          if (f.type !== "personal") {
             const entry = {
               id: (isEdit && f.sourceStore === "interruptions") ? f.id : uid(),
-              schoolId: f.schoolId || "",
+              schoolId: f.schoolId || "all",
               date: f.startDate,
               endDate: f.endDate || f.startDate,
               title: f.title.trim(),
-              type: f.type === "interruption" ? (f.interruptionSubtype || "other") : "other",
-              affectsClasses: f.affectsClasses || "all",
+              type: f.type === "interruption" ? (f.interruptionSubtype || "other") : f.type,
+              affectsClasses: f.type === "interruption" ? (f.affectsClasses || "all") : "all",
               startTime: f.startTime || "",
               endTime: f.endTime || "",
               notes: f.details || "",
@@ -6295,10 +6302,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               {/* School selector */}
               {needsSchool && (
                 <div style={{ marginBottom: 12 }}>
-                  <span style={labelStyle}>School {f.type !== "performance" ? "*" : "(optional)"}</span>
+                  <span style={labelStyle}>School <span style={{ textTransform: "none", fontWeight: 400 }}>(optional)</span></span>
                   <select value={f.schoolId || ""} onChange={e => setCalEventForm(prev => ({ ...prev, schoolId: e.target.value, affectsClasses: "all" }))}
                     style={{ ...inputStyle, appearance: "none" }}>
-                    <option value="">— Select school —</option>
+                    <option value="">All Schools</option>
                     {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
