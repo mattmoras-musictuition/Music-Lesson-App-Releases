@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput, Guitar } from "lucide-react";
 import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_COLOR } from "../constants";
+import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
@@ -2712,7 +2713,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                   )}
                                 </span>
                                 {isCalSource && (
-                                  <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: intr.id, sourceStore: "interruptions", type: "interruption", title: intr.title, startDate: intr.date, endDate: intr.endDate || intr.date, startTime: intr.startTime || "", endTime: intr.endTime || "", schoolId: intr.schoolId || "", affectsClasses: intr.affectsClasses || "all", interruptionSubtype: intr.type || "other", details: intr.notes || "", x: null, y: null }); }}
+                                  <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: intr.id, sourceStore: "interruptions", type: INTR_DISPLAY_TYPE[intr.type] || "interruption", title: intr.title, startDate: intr.date, endDate: intr.endDate || intr.date, startTime: intr.startTime || "", endTime: intr.endTime || "", schoolId: intr.schoolId || "", affectsClasses: intr.affectsClasses || "all", interruptionSubtype: intr.type || "other", details: intr.notes || "", x: null, y: null }); }}
                                     style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: "0 2px", flexShrink: 0, display: "flex", alignItems: "center" }} title="Edit"><Pencil size={12} /></button>
                                 )}
                                 {isCalSource && (
@@ -6255,7 +6256,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                 <span style={labelStyle}>Type</span>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {Object.entries(EVENT_TYPE_META).map(([key, meta]) => (
-                    <button key={key} onClick={() => setCalEventForm(prev => ({ ...prev, type: key, schoolId: (key === "personal") ? "" : prev.schoolId, affectsClasses: "all" }))}
+                    <button key={key} onClick={() => setCalEventForm(prev => ({ ...prev, type: key, schoolId: (key === "personal") ? "" : prev.schoolId, affectsClasses: "all", interruptionSubtype: "other" }))}
                       style={{ padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1.5px solid ${f.type === key ? meta.border : colors.border}`, background: f.type === key ? meta.bg : colors.cardBg, color: f.type === key ? meta.text : colors.textMuted, transition: "all 0.12s" }}>
                       {meta.label}
                     </button>
