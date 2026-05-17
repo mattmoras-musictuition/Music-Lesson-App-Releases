@@ -64,3 +64,38 @@ export async function syncInterruptionsToSupabase(interruptions, userId) {
     .not("id", "in", `(${currentIds.join(",")})`);
   if (deleteError) throw new Error(deleteError.message);
 }
+
+// ── Teacher-shared events (read-only on admin) ──────────────
+// Teacher app writes shared "My Events" to calendar_events with
+// is_private=false. Admin reads them to render alongside its own
+// calendar; never writes them back.
+export async function loadTeacherSharedEvents() {
+  const { data, error } = await supabase
+    .from("calendar_events")
+    .select("*")
+    .eq("is_private", false);
+  if (error) {
+    console.warn("[calendar] loadTeacherSharedEvents failed:", error.message);
+    return [];
+  }
+  return data || [];
+}
+
+export function normaliseTeacherSharedEvent(row) {
+  return {
+    id:            row.id,
+    type:          "teacher_event",
+    title:         row.title       || "",
+    startDate:     row.event_date,
+    endDate:       row.end_date    || row.event_date,
+    startTime:     row.start_time  || "",
+    endTime:       row.end_time    || "",
+    details:       row.notes       || "",
+    teacher_id:    row.teacher_id,
+    teacher_name:  row.teacher_name,
+    teacher_color: row.teacher_color,
+    is_private:    row.is_private,
+    _store:        "cal",
+    _readOnly:     true,
+  };
+}

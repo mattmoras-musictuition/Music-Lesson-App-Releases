@@ -9,6 +9,7 @@ import { uid } from "../utils/helpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
+import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 
 // ---- Constants ----
 const WEEK_DAYS   = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -23,6 +24,9 @@ const EVENT_TYPE_META = {
   interruption:   { label: "Interruption",   bg: "#FEF3E2", darkBg: "rgba(212,136,42,0.18)",  border: "#D4882A", text: "#7A4E10" },
   public_holiday: { label: "Public Holiday", bg: "#FEE8E8", darkBg: "rgba(196,84,84,0.18)",   border: "#C45454", text: "#7A1A1A" },
   staff_event:    { label: "Staff Event",    bg: "#F0EEFF", darkBg: "rgba(124,58,237,0.18)",  border: "#7C3AED", text: "#4C1D95" },
+  // teacher_event = teacher-sourced shared events from calendar_events;
+  // staff_event = admin-authored Staff Events. Distinct concepts.
+  teacher_event:  { label: "Teacher Events", bg: "#E8F4F0", darkBg: "rgba(74,140,122,0.18)",  border: "#4A8C7A", text: "#1E5C4A" },
 };
 
 // Keep in sync with INTERRUPTION_SUBTYPES in Dashboard.js (that copy
@@ -169,6 +173,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     setCalEventsState(evs);
     try { localStorage.setItem("mt-calendar-events", JSON.stringify(evs)); } catch {}
   };
+  // Teacher-shared events (read-only). Loaded from calendar_events on
+  // mount; kept separate from calEvents so saveCalEvents never persists
+  // them back to localStorage.
+  const [teacherShared, setTeacherShared] = useState([]);
 
   // ---- UI state ----
   const [eventForm,         setEventForm]         = useState(null);
@@ -245,6 +253,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
 
   // ---- Effects ----
   useEffect(() => { setMonthOffset(0); }, []);
+  useEffect(() => { (async () => { const rows = await loadTeacherSharedEvents(); setTeacherShared(rows.map(normaliseTeacherSharedEvent)); })(); }, []);
   useEffect(() => { setEventForm(null); setSelectedDays(new Set()); selectionAnchorRef.current = null; }, [resetKey]);
   useEffect(() => { if (scanPreview) setScanPreview?.(null); }, [scanPreview]);
   useEffect(() => { localStorage.setItem("mt-cal-minimonths", showMiniMonths ? "1" : "0"); }, [showMiniMonths]);
@@ -378,14 +387,14 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   const eventMap = useMemo(() => {
     const map = {};
     const add = (ds, ev) => { if (!map[ds]) map[ds] = []; map[ds].push(ev); };
-    for (const ev of calEvents) {
+    for (const ev of [...calEvents, ...teacherShared]) {
       const start = ev.startDate || ev.date;
       if (!start) continue;
       // Skip private teacher events (is_private true) — only show shared ones
       if (ev.type === "teacher_event" && ev.is_private) continue;
       // For teacher events, enrich the meta label with teacher name
       const evWithMeta = ev.type === "teacher_event"
-        ? { ...ev, _store: "cal", _teacherEventMeta: { ...EVENT_TYPE_META.staff_event, label: `${ev.teacher_name || "Staff"} Event`, border: ev.teacher_color || "#7C3AED" } }
+        ? { ...ev, _store: "cal", _teacherEventMeta: { ...EVENT_TYPE_META.teacher_event, label: `${ev.teacher_name || "Staff"} Event`, border: ev.teacher_color || "#7C3AED" } }
         : { ...ev, _store: "cal" };
       add(start, evWithMeta);
       if (ev.endDate && ev.endDate > start) {
@@ -407,7 +416,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
       }
     }
     return map;
-  }, [calEvents, interruptions]);
+  }, [calEvents, interruptions, teacherShared]);
 
   // ---- Upcoming events (next 2 months, respects filter) ----
   const upcomingEvents = useMemo(() => {
@@ -415,7 +424,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     d.setMonth(d.getMonth() + 2);
     const limit = toDS(d);
     const all = [];
-    for (const ev of calEvents) {
+    for (const ev of [...calEvents, ...teacherShared]) {
       const ds = ev.startDate || ev.date;
       if (ds && ds >= today && ds <= limit)
         all.push({ ds, title: ev.title, type: ev.type || "personal", startTime: ev.startTime, endTime: ev.endTime, endDate: ev.endDate || ds });
@@ -429,7 +438,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     }
     const filtered = activeFilters.length > 0 ? all.filter(e => activeFilters.includes(e.type)) : all;
     return filtered.sort((a, b) => a.ds.localeCompare(b.ds));
-  }, [calEvents, interruptions, today, activeFilters]);
+  }, [calEvents, interruptions, teacherShared, today, activeFilters]);
 
   // ---- Hovered event range (for mini month border span) ----
   const _hoveredEvent = hoveredDs ? upcomingEvents.find(e => e.ds === hoveredDs) : null;
@@ -487,7 +496,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
       interruptionSubtype: "other", affectsClasses: "all", details: "", _store: null,
     });
   };
-  const openEditEvent = ev => setEventForm({
+  const openEditEvent = ev => {
+    if (ev._readOnly) return; // read-only (teacher-shared / scanned-source) — not editable
+    setEventForm({
     id: ev.id,
     type: ev._store === "cal" ? (ev.type || "personal") : (INTR_DISPLAY_TYPE[ev.type] || "interruption"),
     title:       ev.title       || "",
@@ -501,7 +512,8 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     details:     ev.details || ev.notes || "",
     _store:      ev._store,
     _readOnly:   ev._store === "intr" && !!ev.source && ev.source !== "calendar",
-  });
+    });
+  };
 
   const saveEvent = () => {
     const f = eventForm;
@@ -555,7 +567,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   };
 
   const deleteEvent = () => {
-    if (!eventForm?.id) return;
+    if (!eventForm?.id || eventForm._readOnly) return;
     if (eventForm._store === "cal") saveCalEvents(calEvents.filter(e => e.id !== eventForm.id));
     else setInterruptions(prev => prev.filter(e => e.id !== eventForm.id));
     notify("Event deleted");

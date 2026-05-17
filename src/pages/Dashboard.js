@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput, Guitar } from "lucide-react";
 import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_COLOR } from "../constants";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
+import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
@@ -123,6 +124,10 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const [selectedDay, setSelectedDay] = useState(null); // persists after click
   const [calendarEvents, setCalendarEvents] = useState(() => { try { return JSON.parse(localStorage.getItem("mt-calendar-events") || "[]"); } catch { return []; } });
   const saveCalendarEvents = (evs) => { setCalendarEvents(evs); try { localStorage.setItem("mt-calendar-events", JSON.stringify(evs)); } catch {} };
+  // Teacher-shared events (read-only), loaded from calendar_events on
+  // mount. Separate state so saveCalendarEvents never persists them back.
+  const [teacherShared, setTeacherShared] = useState([]);
+  useEffect(() => { (async () => { const rows = await loadTeacherSharedEvents(); setTeacherShared(rows.map(normaliseTeacherSharedEvent)); })(); }, []);
   const [calEventMenu, setCalEventMenu] = useState(null); // { x, y, date, time, prefill }
   const [calEventForm, setCalEventForm] = useState(null); // rich form: { type, title, startDate, endDate, startTime, endTime, schoolId, affectsClasses, interruptionSubtype, details, id?, sourceStore?, x?, y? }
   const [expandedDays, setExpandedDays] = useState(new Set()); // Set of date strings with open expanded strips
@@ -137,6 +142,9 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     interruption:   { label: "Interruption",   bg: "#F7F0E0", border: "#B8892E", text: "#705218", dot: "#B8892E" },
     public_holiday: { label: "Public Holiday", bg: "#FEE8E8", border: "#C45454", text: "#7A1A1A", dot: "#C45454" },
     staff_event:    { label: "Staff Event",    bg: "#F0EEFF", border: "#7C3AED", text: "#4C1D95", dot: "#7C3AED" },
+    // teacher_event = teacher-sourced shared events from calendar_events;
+    // staff_event = admin-authored Staff Events. Distinct concepts.
+    teacher_event:  { label: "Teacher Events", bg: "#E5EFED", border: "#4D8C82", text: "#245C52", dot: "#4D8C82" },
   };
   // Keep in sync with INTERRUPTION_SUBTYPES in CalendarManager.js (that
   // copy omits curriculum_day). Display category resolved via the shared
@@ -2279,7 +2287,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             if (intr.type === "term_break") return false;
             return wd.date >= intr.date && wd.date <= (intr.endDate || intr.date);
           });
-          const dayEvents = calendarEvents.filter(ev => {
+          const dayEvents = [...calendarEvents, ...teacherShared].filter(ev => {
             const start = ev.startDate || ev.date;
             const end = ev.endDate || start;
             return start <= wd.date && end >= wd.date;
@@ -2407,10 +2415,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                   {dayEvents.length > 0 && (
                     <div style={{ marginBottom: 4 }}>
                       {dayEvents.map(ev => {
+                        const isTE = ev.type === "teacher_event";
                         const tm = EVENT_TYPE_META[ev.type] || EVENT_TYPE_META.personal;
                         return (
-                          <div key={ev.id} style={{ fontSize: 9, background: tm.bg, color: tm.text, borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {(ev.startTime || ev.time) ? (ev.startTime || ev.time) + " " : ""}{ev.title}
+                          <div key={ev.id} style={{ fontSize: 9, background: isTE ? (ev.teacher_color || tm.bg) : tm.bg, color: isTE ? "#fff" : tm.text, borderRadius: 3, padding: "1px 4px", marginBottom: 2, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {(ev.startTime || ev.time) ? (ev.startTime || ev.time) + " " : ""}{isTE ? `${ev.teacher_name || "Staff"} Event` : ev.title}
                           </div>
                         );
                       })}
@@ -2460,7 +2469,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               if (intr.type === "term_break") return false;
               return wd.date >= intr.date && wd.date <= (intr.endDate || intr.date);
             });
-            const dayEvents = calendarEvents.filter(ev => {
+            const dayEvents = [...calendarEvents, ...teacherShared].filter(ev => {
               const start = ev.startDate || ev.date;
               const end = ev.endDate || start;
               return start <= wd.date && end >= wd.date;
@@ -2675,17 +2684,24 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         <div style={sectionLabel}>Events</div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                           {sd.dayEvents.map(ev => {
+                            const isTE = ev.type === "teacher_event";
                             const tm = EVENT_TYPE_META[ev.type] || EVENT_TYPE_META.personal;
+                            const teBg = isTE ? (ev.teacher_color || tm.bg) : tm.bg;
+                            const teBd = isTE ? (ev.teacher_color || tm.border) : tm.border;
+                            const teFg = isTE ? "#fff" : tm.text;
+                            const teLabel = isTE ? `${ev.teacher_name || "Staff"} Event` : tm.label;
                             return (
-                              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: tm.bg, borderRadius: 7, border: `1px solid ${tm.border}40` }}>
-                                <span style={{ fontSize: 10, fontWeight: 700, color: tm.text, background: `${tm.border}22`, padding: "1px 6px", borderRadius: 4, flexShrink: 0 }}>{tm.label}</span>
-                                {(ev.startTime || ev.time) && <span style={{ fontSize: 11, color: tm.text, fontWeight: 600, flexShrink: 0 }}>{ev.startTime || ev.time}{ev.endTime ? `–${ev.endTime}` : ""}</span>}
-                                <span style={{ fontSize: 13, color: tm.text, fontWeight: 600, flex: 1 }}>{ev.title}</span>
-                                {ev.details && <span style={{ fontSize: 11, color: tm.text, opacity: 0.7, flex: 1 }}>{ev.details}</span>}
+                              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: teBg, borderRadius: 7, border: `1px solid ${teBd}40` }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: teFg, background: isTE ? "rgba(255,255,255,0.25)" : `${tm.border}22`, padding: "1px 6px", borderRadius: 4, flexShrink: 0 }}>{teLabel}</span>
+                                {(ev.startTime || ev.time) && <span style={{ fontSize: 11, color: teFg, fontWeight: 600, flexShrink: 0 }}>{ev.startTime || ev.time}{ev.endTime ? `–${ev.endTime}` : ""}</span>}
+                                <span style={{ fontSize: 13, color: teFg, fontWeight: 600, flex: 1 }}>{ev.title}</span>
+                                {ev.details && <span style={{ fontSize: 11, color: teFg, opacity: 0.7, flex: 1 }}>{ev.details}</span>}
+                                {!isTE && <>
                                 <button onClick={e => { e.stopPropagation(); setCalEventForm({ id: ev.id, sourceStore: "calendar", type: ev.type || "personal", title: ev.title, startDate: ev.startDate || ev.date, endDate: ev.endDate || ev.startDate || ev.date, startTime: ev.startTime || ev.time || "", endTime: ev.endTime || "", schoolId: ev.schoolId || "", affectsClasses: ev.affectsClasses || "all", interruptionSubtype: ev.interruptionSubtype || "other", details: ev.details || "", x: null, y: null }); }}
-                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: "0 2px", flexShrink: 0, display: "flex", alignItems: "center" }} title="Edit"><Pencil size={12} /></button>
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: teFg, opacity: 0.5, padding: "0 2px", flexShrink: 0, display: "flex", alignItems: "center" }} title="Edit"><Pencil size={12} /></button>
                                 <button onClick={e => { e.stopPropagation(); saveCalendarEvents(calendarEvents.filter(ce => ce.id !== ev.id)); }}
-                                  style={{ background: "none", border: "none", cursor: "pointer", color: tm.text, opacity: 0.5, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }} title="Delete"><X size={12} /></button>
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: teFg, opacity: 0.5, padding: 0, flexShrink: 0, display: "flex", alignItems: "center" }} title="Delete"><X size={12} /></button>
+                                </>}
                               </div>
                             );
                           })}
