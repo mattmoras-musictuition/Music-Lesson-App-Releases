@@ -21,12 +21,13 @@ import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -852,6 +853,43 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       logError && logError("Failed to delete catchup", err?.message || String(err));
       console.error("[catchup delete] failed:", err);
       alert("Failed to delete catchup. See console.");
+    }
+  };
+
+  // Temporary-lanes session 3 — create a one-week-only lane row. userId
+  // via supabase.auth.getUser(), mirroring handleScheduleCatchup. weekKey/
+  // schoolId/day are passed from component scope at the call site (the
+  // day-header context menu state carries no weekKey — see :2312/:2505).
+  const handleAddTemporaryTeacher = async (schoolId, day, weekKey, teacherId) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) throw new Error("Not authenticated");
+      const inserted = await insertTemporaryLane({ userId: user.id, schoolId, day, weekKey, teacherId });
+      setTemporaryLanes(prev => [...prev, inserted]);
+      setContextMenu(null);
+      setDayHeaderSubmenu(null);
+      if (notify) notify("Temporary teacher added");
+    } catch (err) {
+      logError && logError("Failed to add temporary teacher", err?.message || String(err));
+      console.error("[temporary-lane add] failed:", err);
+      alert("Failed to add temporary teacher. See console.");
+    }
+  };
+
+  // Temporary-lanes session 3 — remove a temp lane row. No confirm dialog:
+  // single right-click + click, trivially redoable (matches the lightweight
+  // substitute-teacher change pattern).
+  const handleRemoveTemporaryLane = async (laneId) => {
+    try {
+      await deleteTemporaryLane({ id: laneId });
+      setTemporaryLanes(prev => prev.filter(t => t.id !== laneId));
+      setContextMenu(null);
+      setDayHeaderSubmenu(null);
+      if (notify) notify("Temporary teacher removed");
+    } catch (err) {
+      logError && logError("Failed to remove temporary teacher", err?.message || String(err));
+      console.error("[temporary-lane remove] failed:", err);
+      alert("Failed to remove temporary teacher. See console.");
     }
   };
 
@@ -2545,6 +2583,108 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> {triggerLabel}</span>
+                          <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+                {/* Temporary-lanes session 3 — Add Teacher. Unconditional on
+                    day headers (works on empty days, unlike the lane-gated
+                    Substitute item). weekKey/selectedSchool come from
+                    component scope, mirroring the Substitute submenu. */}
+                {(() => {
+                  const isOpen = dayHeaderSubmenu?.type === "addteacher";
+                  const sortedTeachers = teachers.slice().sort((a, b) => a.name.localeCompare(b.name));
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={dayHeaderSubRef}
+                            onMouseEnter={keepDayHeaderOpen}
+                            onMouseLeave={scheduleDayHeaderClose}
+                            style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            {sortedTeachers.map(t => (
+                              <button key={t.id} onClick={() => { handleAddTemporaryTeacher(selectedSchool, day, weekKey, t.id); }}
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
+                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                                {t.name.split(" ")[0]}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => {
+                            keepDayHeaderOpen();
+                            e.currentTarget.style.background = colors.bg;
+                            if (!isOpen) setDayHeaderSubmenu({ type: "addteacher", y: e.currentTarget.getBoundingClientRect().top });
+                          }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Plus size={13} /> Add Teacher</span>
+                          <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+                {/* Temporary-lanes session 3 — Remove temporary teacher.
+                    Conditional: only when a temp lane matches
+                    (selectedSchool, contextMenu.day, weekKey). Single →
+                    direct action; multiple → submenu. */}
+                {(() => {
+                  const matching = (temporaryLanes || []).filter(t => t.schoolId === selectedSchool && t.day === day && t.weekKey === weekKey);
+                  if (matching.length === 0) return null;
+                  if (matching.length === 1) {
+                    const lane = matching[0];
+                    const tName = teachers.find(t => t.id === lane.teacherId)?.name || "teacher";
+                    return (
+                      <>
+                        <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                        <button onClick={() => { handleRemoveTemporaryLane(lane.id); }}
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
+                          onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                          <X size={13} /> Remove temporary teacher: {tName.split(" ")[0]}
+                        </button>
+                      </>
+                    );
+                  }
+                  const isOpen = dayHeaderSubmenu?.type === "removetemp";
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={dayHeaderSubRef}
+                            onMouseEnter={keepDayHeaderOpen}
+                            onMouseLeave={scheduleDayHeaderClose}
+                            style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            {matching.map(lane => {
+                              const tName = teachers.find(t => t.id === lane.teacherId)?.name || "teacher";
+                              return (
+                                <button key={lane.id} onClick={() => { handleRemoveTemporaryLane(lane.id); }}
+                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
+                                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
+                                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                  <X size={12} /> {tName.split(" ")[0]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => {
+                            keepDayHeaderOpen();
+                            e.currentTarget.style.background = colors.bg;
+                            if (!isOpen) setDayHeaderSubmenu({ type: "removetemp", y: e.currentTarget.getBoundingClientRect().top });
+                          }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove temporary teacher</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
                       </div>
