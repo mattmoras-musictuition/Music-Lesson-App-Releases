@@ -48,7 +48,6 @@ function fromRow(row) {
     weekKey:              row.week_key               || "",
     day:                  row.day                    || "",
     time:                 row.time                   || "",
-    durationMinutes:      row.duration_minutes       ?? null,
     instrument:           row.instrument             || "",
     enrolmentId:          row.enrolment_id           || "",
     resolvesEnrolmentId:  row.resolves_enrolment_id  || null,
@@ -78,7 +77,6 @@ function toRow(catchup) {
   if (catchup.weekKey              !== undefined) out.week_key               = catchup.weekKey;
   if (catchup.day                  !== undefined) out.day                    = catchup.day;
   if (catchup.time                 !== undefined) out.time                   = catchup.time;
-  if (catchup.durationMinutes      !== undefined) out.duration_minutes       = catchup.durationMinutes;
   if (catchup.instrument           !== undefined) out.instrument             = catchup.instrument;
   if (catchup.enrolmentId          !== undefined) out.enrolment_id           = catchup.enrolmentId;
   if (catchup.resolvesEnrolmentId  !== undefined) out.resolves_enrolment_id  = catchup.resolvesEnrolmentId;
@@ -132,9 +130,6 @@ export async function loadCatchupsFromSupabase() {
  * @property {string} time         Slot time as HH:MM (24-hour).
  *                                 Reserved-word column; safe
  *                                 through PostgREST.
- * @property {number|null} durationMinutes  Slot duration. null
- *                                 means inherit from the
- *                                 enrolment's standard duration.
  * @property {string} instrument
  * @property {string} enrolmentId  enrolments.id of the student
  *                                 receiving the catchup.
@@ -210,7 +205,6 @@ export async function insertCatchup({ userId, id, ...catchupFields }) {
       weekKey: row.week_key,
       day: row.day,
       time: row.time,
-      durationMinutes: row.duration_minutes ?? null,
       instrument: row.instrument,
       enrolmentId: row.enrolment_id,
       resolvesEnrolmentId: row.resolves_enrolment_id ?? null,
