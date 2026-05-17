@@ -1731,7 +1731,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                               onDoubleClick={() => { if (l.isGroup && onViewGroup) onViewGroup(l.groupId); else if (!l.isGroup && onViewStudent) onViewStudent(l.studentId); }}
                               onClick={e => { if (showRed && !isExpanded) { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); next.add(l.id); return next; }); } else if (isExpanded || showRed) { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
                               style={{
-                                padding: "6px 10px", borderRadius: 6, fontSize: 13, position: "relative",
+                                padding: "6px 10px", borderRadius: 6, fontSize: 13, position: "relative", zIndex: isExpanded ? 40 : "auto",
                                 background: showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
                                 borderLeft: `3px solid ${showRed ? colors.danger : getInstColor(liveInst, l.isGroup)}`,
                                 lineHeight: 1.4, cursor: "grab",

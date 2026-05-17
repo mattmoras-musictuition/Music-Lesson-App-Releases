@@ -4921,7 +4921,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         onMouseLeave={() => setHoverPopover(null)}
                                         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, isBandSession: true, lessonId: l.id, bandName: l.bandName, bandId: l.bandId }); }}
                                         onClick={e => { if (isBandExpanded || hasBandWarning) { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
-                                        style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, lineHeight: 1.4, position: "relative", cursor: "grab",
+                                        style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, lineHeight: 1.4, position: "relative", zIndex: isBandExpanded ? 40 : "auto", cursor: "grab",
                                           background: hasBandWarning ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : instruments_colors.Band + "18",
                                           borderLeft: `3px solid ${hasBandWarning ? colors.danger : instruments_colors.Band}`,
                                           opacity: draggingId === l.id ? 0.4 : 1, transition: "opacity 0.15s"
@@ -5007,7 +5007,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       }, 220);
                                     }}
                                     style={{
-                                      padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4, cursor: "grab", position: "relative", zIndex: 1,
+                                      padding: "6px 10px", borderRadius: 6, fontSize: 13, lineHeight: 1.4, cursor: "grab", position: "relative", zIndex: isExpanded ? 40 : 1,
                                       background: selectedCards.has(l.id) ? `${colors.sidebarActive}18` : showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
                                       borderLeft: `3px solid ${selectedCards.has(l.id) ? colors.sidebarActive : showRed ? colors.danger : getInstColor(liveInst, l.isGroup)}`,
                                       borderTop: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
