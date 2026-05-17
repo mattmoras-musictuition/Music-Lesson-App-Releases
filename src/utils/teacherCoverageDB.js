@@ -182,6 +182,54 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
 }
 
 /**
+ * Temporary-lanes session 2 — shared day-lane enumerator.
+ *
+ * Returns every lane on (schoolId, day) for the given week: the
+ * active permanent teacher_coverage lanes plus, when a weekKey
+ * is supplied, any temporary lanes whose row matches (schoolId,
+ * day, weekKey). Temporary lanes are synthesised into the same
+ * camelCase shape teacher_coverage lanes use — status:"active"
+ * is required because getDayLaneTeacher and the day-header chip
+ * strip both filter on it — plus an informational
+ * isTemporary:true flag (no styling differentiation; per the UX
+ * choice temp lanes look identical to permanent lanes).
+ *
+ * When weekKey is null or temporaryLanes is empty, the permanent
+ * set is returned unchanged, so every pre-session-2 caller
+ * behaves exactly as before.
+ *
+ * Consolidates a (schoolId, day, active) predicate that was
+ * duplicated across getDayLaneTeacher and three inline
+ * WeeklyAdjustments call sites, mirroring the Spec 2 cluster 13b
+ * lessonBelongsToViewedLane consolidation precedent.
+ *
+ * @returns {Array} permanent + temporary lane objects.
+ */
+export function getDayLanes(teacherCoverage, schoolId, day, temporaryLanes = [], weekKey = null) {
+  const permanent = (teacherCoverage || []).filter(
+    l => l.schoolId === schoolId && l.day === day && l.status === "active"
+  );
+  if (!weekKey || !Array.isArray(temporaryLanes) || temporaryLanes.length === 0) {
+    return permanent;
+  }
+  const temp = temporaryLanes
+    .filter(t => t.schoolId === schoolId && t.day === day && t.weekKey === weekKey)
+    .map(t => ({
+      id: t.id,
+      userId: t.userId,
+      schoolId: t.schoolId,
+      day: t.day,
+      teacherId: t.teacherId,
+      status: "active",
+      notes: null,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      isTemporary: true,
+    }));
+  return [...permanent, ...temp];
+}
+
+/**
  * Spec 2 cluster 7 — day-level lane resolution.
  * Returns the day's primary active lane row alongside the effective teacher
  * for that lane. The lane row carries the default teacher (lane.teacherId);
@@ -202,14 +250,16 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
  * null (MTT, single-lane data, pre-cluster-8 callers), behaviour matches
  * cluster 7 — first-added active lane wins.
  *
+ * Temporary-lanes session 2: a trailing `temporaryLanes` arg is
+ * unioned into the enumeration via getDayLanes when weekKey is
+ * supplied — temp lanes participate in the pick-one rule equally.
+ *
  * @returns {{ lane, teacher } | null}  null when no active lane exists for
  *          (schoolId, day). `teacher` may be null if the resolved teacherId
  *          isn't in `teachers` (defensive).
  */
-export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides = null, weekKey = null, viewedLanes = null) {
-  const dayLanes = (teacherCoverage || []).filter(
-    l => l.schoolId === schoolId && l.day === day && l.status === "active"
-  );
+export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides = null, weekKey = null, viewedLanes = null, temporaryLanes = []) {
+  const dayLanes = getDayLanes(teacherCoverage, schoolId, day, temporaryLanes, weekKey);
   if (dayLanes.length === 0) return null;
   const storedLaneId = viewedLanes?.[schoolId]?.[day];
   const lane = (storedLaneId && dayLanes.some(l => l.id === storedLaneId))

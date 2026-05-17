@@ -20,13 +20,13 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { checkConstraints } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -1571,7 +1571,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }));
       // Toast mirrors the pill wording. Override-aware via getDayLaneTeacher.
       // Defensive fallback to today's wording if no lane resolves.
-      const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher;
+      const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
       if (laneTeacher) {
         const firstName = laneTeacher.name.split(" ")[0];
         notify(`Cleared ${firstName}'s ${beforeCount} lesson${beforeCount !== 1 ? "s" : ""} on ${day}`);
@@ -1660,7 +1660,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // match; the chip-active lane determines bucket_id and teacherName stamp.
     // Effective teacher rendering picks up via cluster 6b1 override-aware
     // resolution at render time.
-    const destLane = getDayLaneTeacher(teacherCoverage, teachers, lesson.schoolId, newDay, laneOverrides, weekKey, viewedLanes);
+    const destLane = getDayLaneTeacher(teacherCoverage, teachers, lesson.schoolId, newDay, laneOverrides, weekKey, viewedLanes, temporaryLanes);
     if (!destLane || !destLane.lane) {
       if (notify) notify(`No covering lane for ${currentSchool.name} on ${newDay}.`, "warning");
       return;
@@ -1729,7 +1729,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
     // The missed entry's bucket_id was stale on day-change; use the chip-active
     // lane instead. No modal regardless of teacher match (WTT week-scoped).
-    const destLane = getDayLaneTeacher(teacherCoverage, teachers, missed.schoolId, newDay, laneOverrides, weekKey, viewedLanes);
+    const destLane = getDayLaneTeacher(teacherCoverage, teachers, missed.schoolId, newDay, laneOverrides, weekKey, viewedLanes, temporaryLanes);
     if (!destLane || !destLane.lane) {
       if (notify) notify(`No covering lane for ${currentSchool.name} on ${newDay}.`, "warning");
       return;
@@ -2496,7 +2496,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 {/* Spec 2 cluster 6c — Substitute teacher (single-day; cluster 9a Q8 — viewed-lane aware) */}
                 {(() => {
                   if (isLocked) return null;
-                  const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  const dayLanes = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey);
                   if (dayLanes.length === 0) return null;
                   const storedLaneId = viewedLanes?.[selectedSchool]?.[day];
                   const targetLane = (storedLaneId && dayLanes.find(l => l.id === storedLaneId)) || dayLanes[0];
@@ -2823,7 +2823,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // resolution is override-aware (laneOverrides + weekKey) so a
                   // sub-this-week lane lands in the right place.
                   const { teacherId: _optsTid, teacherName: _optsTname, ...restOpts } = opts || {};
-                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, sId, contextMenu.day, laneOverrides, contextMenu.weekKey, viewedLanes);
+                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, sId, contextMenu.day, laneOverrides, contextMenu.weekKey, viewedLanes, temporaryLanes);
                   if (!destLane || !destLane.lane) {
                     const sName = schools.find(sc => sc.id === sId)?.name || sId;
                     if (notify) notify(`No covering lane for ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
@@ -2866,7 +2866,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
                   // ml.teacherId/teacherName are vestigial for lane lookup; the
                   // chip-active lane decides where the missed-rescue card lands.
-                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, ml.schoolId, wkDay, laneOverrides, weekKey, viewedLanes);
+                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, ml.schoolId, wkDay, laneOverrides, weekKey, viewedLanes, temporaryLanes);
                   if (!destLane || !destLane.lane) {
                     const sName = schools.find(sc => sc.id === ml.schoolId)?.name || ml.schoolId;
                     if (notify) notify(`No covering lane for ${sName} on ${wkDay}. Add staff first.`, "warning");
@@ -4266,7 +4266,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       if (confirmClearWeek === "all") return "Clear full week?";
                       const day = confirmClearWeek;
                       const count = (weeklyData?.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool)).length;
-                      const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher;
+                      const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
                       if (!laneTeacher) return `Clear ${day}?`;
                       const firstName = laneTeacher.name.split(" ")[0];
                       return `Clear ${firstName}'s ${count} lesson${count !== 1 ? "s" : ""} on ${day}?`;
@@ -4404,8 +4404,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isResettingThis = resettingDay === dayDateStr;
                         const isConfirmingThis = confirmingDay === dayDateStr;
                         const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
-                        const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey, viewedLanes)?.teacher;
-                        const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
+                        const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
+                        const dayLanes = getDayLanes(teacherCoverage, selectedSchool, d, temporaryLanes, weekKey);
                         const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
                         // Header label "Mon 4 May" — reuses precomputed dayDateStr.
                         const colDate = dayDateStr ? new Date(`${dayDateStr}T00:00:00`) : null;
@@ -4653,8 +4653,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   const ghostKey = `${weekKey}_${day}`;
                                   if (!dayGhostsVisible[ghostKey]) return null;
                                   // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
-                                  const ghostDayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === day && c.status === "active");
-                                  const ghostViewedTeacher = ghostDayLanes.length >= 2 ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes)?.teacher : null;
+                                  const ghostDayLanes = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey);
+                                  const ghostViewedTeacher = ghostDayLanes.length >= 2 ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher : null;
                                   const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time && (!ghostViewedTeacher || g.teacherId === ghostViewedTeacher.id));
                                   return cellGhosts.map((g, gi) => {
                                     const color = getInstColor(g.instrument, g.isGroup);
