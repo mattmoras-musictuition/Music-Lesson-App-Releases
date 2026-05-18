@@ -395,18 +395,15 @@ function buildSingleDayHeaderBand(shortCode, weekNum, dayName, teacherFirst, les
 }
 
 // Session 96: list-style single-day export for phone/quick-check use.
-// Replaces the cramped narrow-portrait timetable grid. Groups lessons by
-// time ascending, shows day name + filter label at the top, instrument
-// dot + teacher initials on each row. Portrait phone-sized CSS.
+// Replaces the cramped narrow-portrait timetable grid. Time-sorted, one
+// line per lesson (start time, instrument pill, names + class code),
+// breaks interleaved as dimmed "Break" rows. Portrait phone-sized CSS.
 //
-// Session 8 (inline breaks): teacher breaks for the day — both
-// school-wide recurring (school.teacherBreaks) and per-teacher
-// (teacher.teacherBreaks, scoped to this schoolId) — merge into the
-// same time-ordered list with a slate-blue dot and "Break" label.
-// School-wide breaks render without a teacher subtitle; per-teacher
-// breaks show the teacher's first name. Per-teacher breaks are only
-// emitted for teachers whose lessons appear in the filtered set, so
-// teacher- or class-filtered exports don't show unrelated breaks.
+// Breaks: configured recurring teacher breaks (school.teacherBreaks +
+// per-teacher teacher.teacherBreaks scoped to this school/day, only for
+// teachers with lessons in the filtered set) plus ad-hoc WTT "Break ×"
+// cards forwarded as opts.breaks. No recess/lunch slots, no auto
+// gap-detection.
 function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   if (!lessons || lessons.length === 0) return null;
   var teachers = opts && opts.teachers;
@@ -416,35 +413,29 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
     var dtid = getCardTeacherId(lessons[dti], opts && opts.teacherCoverage);
     if (dtid) dayTeacherIds.add(dtid);
   }
-  // Configured breaks. Bug fix: the single-day list previously read only
-  // school.teacherBreaks + per-teacher teacherBreaks and never consulted
-  // school.slots, so recess/lunch slot breaks (e.g. a 1:00pm school lunch)
-  // were silently dropped here while the grid export — which goes through
-  // the canonical getBreaksForSchool — showed them. We now include slot
-  // recess/lunch alongside the existing teacher-break sources, deduped by
-  // start/end. All configured breaks render as a plain "Break" (no staff
-  // name) per Matt's request.
+  // Two break sources only — no recess/lunch slots (those are slot markers,
+  // not breaks) and no auto gap-detection:
+  //   1. configured recurring teacher breaks: school-wide
+  //      (school.teacherBreaks, day-filtered) and per-teacher
+  //      (teacher.teacherBreaks, scoped to this school + day, and only for
+  //      teachers with lessons in the filtered set).
+  //   2. ad-hoc WTT "Break ×" cards for this week, stored in
+  //      weeklyData.breaks and forwarded as opts.breaks ({schoolId, day,
+  //      time} with no end). This is where Matt's 1:00pm EBPS Tuesday
+  //      break lives; it was previously dropped because composeForDay
+  //      never forwarded it.
+  // All render as a plain "Break" (no staff name).
   var breakRows = [];
-  var seenBrk = {};
-  function pushBrk(start, end, gap) {
-    if (!start) return;
-    var k = start + "-" + (end || "");
-    if (seenBrk[k]) return;
-    seenBrk[k] = true;
-    breakRows.push({ _kind: "break", start: start, end: end, _gap: !!gap });
+  function pushBrk(start) {
+    if (start) breakRows.push({ _kind: "break", start: start });
   }
   if (school) {
-    var slots = school.slots || [];
-    for (var ssi = 0; ssi < slots.length; ssi++) {
-      var sl = slots[ssi];
-      if (sl && (sl.type === "recess" || sl.type === "lunch")) pushBrk(sl.start, sl.end);
-    }
     var stb = school.teacherBreaks || [];
     for (var sbi = 0; sbi < stb.length; sbi++) {
       var sb = stb[sbi];
       var sbDay = sb.day || "All";
       if (sbDay !== "All" && sbDay !== day) continue;
-      pushBrk(sb.start, sb.end);
+      pushBrk(sb.start);
     }
     if (teachers) {
       for (var ti2 = 0; ti2 < teachers.length; ti2++) {
@@ -455,28 +446,18 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
           var tb = ttb[tj];
           if (tb.schoolId && tb.schoolId !== school.id) continue;
           if (tb.day && tb.day !== day) continue;
-          pushBrk(tb.start, tb.end);
+          pushBrk(tb.start);
         }
       }
     }
   }
-  // Automatic gap breaks: between consecutive lessons whose times don't
-  // abut (lesson N end strictly before lesson N+1 start). Suppressed when a
-  // configured break already covers any portion of that gap, so the two
-  // mechanisms coexist without doubling up. Never before the first lesson
-  // or after the last — only between lessons.
-  var lessonsByStart = lessons.slice().sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
-  for (var gi = 0; gi < lessonsByStart.length - 1; gi++) {
-    var curL = lessonsByStart[gi], nxtL = lessonsByStart[gi + 1];
-    if (!curL.end || !nxtL.start) continue;
-    var gStart = timeToMin(curL.end), gEnd = timeToMin(nxtL.start);
-    if (gStart >= gEnd) continue;
-    var covered = false;
-    for (var bi = 0; bi < breakRows.length; bi++) {
-      var brk = breakRows[bi];
-      if (brk.end && timeToMin(brk.start) < gEnd && timeToMin(brk.end) > gStart) { covered = true; break; }
-    }
-    if (!covered) pushBrk(curL.end, nxtL.start, true);
+  var cardBreaks = (opts && opts.breaks) || [];
+  for (var cbi = 0; cbi < cardBreaks.length; cbi++) {
+    var cb = cardBreaks[cbi];
+    if (!cb) continue;
+    if (cb.day && cb.day !== day) continue;
+    if (school && cb.schoolId && cb.schoolId !== school.id) continue;
+    pushBrk(cb.time);
   }
   var lessonItems = lessons.map(function(l) { return Object.assign({}, l, { _kind: "lesson" }); });
   var sorted = lessonItems.concat(breakRows).sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
