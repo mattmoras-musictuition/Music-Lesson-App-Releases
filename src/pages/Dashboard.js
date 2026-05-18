@@ -941,6 +941,7 @@ For other: {"type":"other","summary":""}`,
     // pills left and dropped the dropdown off the left edge.
     const DROPDOWN_WIDTH = 400;
     const VIEWPORT_MARGIN = 12;
+    const minLeft = cRect.left + VIEWPORT_MARGIN;     // 12px inside the content area, not the window
     const maxLeft = window.innerWidth - DROPDOWN_WIDTH - VIEWPORT_MARGIN;
     let absLeft;
     if (data.anchor === "right") {
@@ -948,12 +949,12 @@ For other: {"type":"other","summary":""}`,
       // clamped so it never spills off the viewport. Only the lesson-change pill
       // uses this; other pills keep the default left-flush behaviour below.
       const desiredLeft = data.rect.right - DROPDOWN_WIDTH;
-      const finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(desiredLeft, maxLeft));
+      const finalLeft = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
       absLeft = finalLeft - cRect.left;
     } else {
       // Left-flush opener: align to the pill's left edge, same viewport clamp.
       const desiredLeft = data.rect.left;
-      const finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(desiredLeft, maxLeft));
+      const finalLeft = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
       absLeft = finalLeft - cRect.left;
     }
     setAlertDropdown({
