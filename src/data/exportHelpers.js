@@ -344,14 +344,35 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
     var dtid = getCardTeacherId(lessons[dti], opts && opts.teacherCoverage);
     if (dtid) dayTeacherIds.add(dtid);
   }
+  // Configured breaks. Bug fix: the single-day list previously read only
+  // school.teacherBreaks + per-teacher teacherBreaks and never consulted
+  // school.slots, so recess/lunch slot breaks (e.g. a 1:00pm school lunch)
+  // were silently dropped here while the grid export — which goes through
+  // the canonical getBreaksForSchool — showed them. We now include slot
+  // recess/lunch alongside the existing teacher-break sources, deduped by
+  // start/end. All configured breaks render as a plain "Break" (no staff
+  // name) per Matt's request.
   var breakRows = [];
+  var seenBrk = {};
+  function pushBrk(start, end, gap) {
+    if (!start) return;
+    var k = start + "-" + (end || "");
+    if (seenBrk[k]) return;
+    seenBrk[k] = true;
+    breakRows.push({ _kind: "break", start: start, end: end, _gap: !!gap });
+  }
   if (school) {
+    var slots = school.slots || [];
+    for (var ssi = 0; ssi < slots.length; ssi++) {
+      var sl = slots[ssi];
+      if (sl && (sl.type === "recess" || sl.type === "lunch")) pushBrk(sl.start, sl.end);
+    }
     var stb = school.teacherBreaks || [];
     for (var sbi = 0; sbi < stb.length; sbi++) {
       var sb = stb[sbi];
       var sbDay = sb.day || "All";
       if (sbDay !== "All" && sbDay !== day) continue;
-      breakRows.push({ _kind: "break", start: sb.start, end: sb.end, teacherName: "" });
+      pushBrk(sb.start, sb.end);
     }
     if (teachers) {
       for (var ti2 = 0; ti2 < teachers.length; ti2++) {
@@ -362,25 +383,37 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
           var tb = ttb[tj];
           if (tb.schoolId && tb.schoolId !== school.id) continue;
           if (tb.day && tb.day !== day) continue;
-          breakRows.push({ _kind: "break", start: tb.start, end: tb.end, teacherName: tch.name });
+          pushBrk(tb.start, tb.end);
         }
       }
     }
+  }
+  // Automatic gap breaks: between consecutive lessons whose times don't
+  // abut (lesson N end strictly before lesson N+1 start). Suppressed when a
+  // configured break already covers any portion of that gap, so the two
+  // mechanisms coexist without doubling up. Never before the first lesson
+  // or after the last — only between lessons.
+  var lessonsByStart = lessons.slice().sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
+  for (var gi = 0; gi < lessonsByStart.length - 1; gi++) {
+    var curL = lessonsByStart[gi], nxtL = lessonsByStart[gi + 1];
+    if (!curL.end || !nxtL.start) continue;
+    var gStart = timeToMin(curL.end), gEnd = timeToMin(nxtL.start);
+    if (gStart >= gEnd) continue;
+    var covered = false;
+    for (var bi = 0; bi < breakRows.length; bi++) {
+      var brk = breakRows[bi];
+      if (brk.end && timeToMin(brk.start) < gEnd && timeToMin(brk.end) > gStart) { covered = true; break; }
+    }
+    if (!covered) pushBrk(curL.end, nxtL.start, true);
   }
   var lessonItems = lessons.map(function(l) { return Object.assign({}, l, { _kind: "lesson" }); });
   var sorted = lessonItems.concat(breakRows).sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
   var rows = sorted.map(function(l) {
     if (l._kind === "break") {
-      var btf = firstNameOf(l.teacherName || "");
       return '<tr>'
-        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + fmt12(l.start) + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + fmt12(l.end) + '</div></td>'
-        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
-          + '<div style="display:flex;align-items:center;gap:8px">'
-            + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + SLATE + ';flex-shrink:0"></span>'
-            + '<div><div style="font-weight:600;font-size:13px;color:' + TEXT + '">Break</div>'
-            + (btf ? '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + btf + '</div>' : '')
-            + '</div>'
-          + '</div>'
+        + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:400;color:#a39f97;font-size:14px;background:#F6F4EE">' + fmt12(l.start) + '</td>'
+        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;background:#F6F4EE">'
+          + '<span style="font-style:italic;font-size:13px;color:#9a978f">Break</span>'
         + '</td></tr>';
     }
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
