@@ -366,6 +366,34 @@ function pillColors(instrument) {
   return { bg: _pdHexMix(base, "#ffffff", 0.86), fg: _pdHexMix(base, "#000000", 0.5) };
 }
 
+// Dedicated header band for the single-day export only. The shared
+// buildHeaderBand is used by every other export (week grid, multi-day
+// panels, teacher schedules) so it must stay untouched; this three-line
+// variant keeps the existing band/logo background and just restructures
+// the text. Line 1: "{SHORT} Lesson Timetable"; line 2: "Week N · Day"
+// (week prefix dropped when no week number is available, e.g. master or
+// the day-header trigger which doesn't forward a week label); line 3:
+// "{TeacherFirstName} · N lessons" (teacher omitted if not resolvable).
+function buildSingleDayHeaderBand(shortCode, weekNum, dayName, teacherFirst, lessonCount) {
+  var logoSrc = "data:image/png;base64," + LOGO_B64;
+  var l1 = (shortCode ? shortCode + " " : "") + "Lesson Timetable";
+  var l2 = (weekNum ? weekNum + " · " : "") + (dayName || "");
+  var l3parts = [];
+  if (teacherFirst) l3parts.push(teacherFirst);
+  l3parts.push(lessonCount + " lesson" + (lessonCount !== 1 ? "s" : ""));
+  var l3 = l3parts.join(" · ");
+  return '<div class="mm-header" style="background:' + SLATE + ';color:#fff;padding:12px 18px;border-radius:8px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:24px">'
+    + '<div style="background:' + NAVY + ';border-radius:8px;padding:8px 14px;display:flex;align-items:center;flex-shrink:0">'
+    +   '<img src="' + logoSrc + '" alt="Matt\'s Music" style="width:140px;height:auto;display:block"/>'
+    + '</div>'
+    + '<div style="text-align:right;min-width:0">'
+    +   '<div style="font-size:17px;font-weight:500;color:#fff;line-height:1.2">' + l1 + '</div>'
+    +   '<div style="font-size:14px;color:rgba(255,255,255,0.82);margin-top:3px">' + l2 + '</div>'
+    +   '<div style="font-size:13px;color:rgba(255,255,255,0.62);margin-top:3px">' + l3 + '</div>'
+    + '</div>'
+  + '</div>';
+}
+
 // Session 96: list-style single-day export for phone/quick-check use.
 // Replaces the cramped narrow-portrait timetable grid. Groups lessons by
 // time ascending, shows day name + filter label at the top, instrument
@@ -478,7 +506,25 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   }).join('');
   var phoneCss = "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','DM Sans',sans-serif;margin:14px;font-size:12px;color:" + TEXT + ";max-width:440px}"
     + "@media print{body{margin:6mm}@page{size:A4 portrait;margin:6mm}}";
-  var body = buildHeaderBand(title, day, meta)
+  var sdShort = (opts && opts.schoolShortName) || (school ? getSchoolAcronym(school) : "");
+  var sdWeek = "";
+  if (opts && opts.weekLabel) {
+    var wkm = String(opts.weekLabel).match(/Week\s+\d+/i);
+    if (wkm) sdWeek = wkm[0];
+  }
+  var sdTeacher = "";
+  if (opts && opts.teacherName) {
+    sdTeacher = firstNameOf(opts.teacherName);
+  } else {
+    var tcount = {};
+    for (var sti = 0; sti < lessons.length; sti++) {
+      var tn = firstNameOf(_liveTeacherName(lessons[sti], students, teachers, opts));
+      if (tn) tcount[tn] = (tcount[tn] || 0) + 1;
+    }
+    var bestN = 0;
+    for (var tk in tcount) { if (tcount[tk] > bestN) { bestN = tcount[tk]; sdTeacher = tk; } }
+  }
+  var body = buildSingleDayHeaderBand(sdShort, sdWeek, day, sdTeacher, lessons.length)
     + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid ' + BORDER + ';border-radius:8px;overflow:hidden">' + rows + '</table>';
   return '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + title + '</title><style>' + phoneCss + '</style></head><body>' + body + '</body></html>';
 }
