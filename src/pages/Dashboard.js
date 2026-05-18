@@ -406,6 +406,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     [timetable, teacherCoverage]
   );
   const studentHasUnplacedEnrolment = React.useCallback((s) => {
+    if (s.schoolId === "__private__") return false;
     return instrumentsFromEnrolments(s.id, enrolments).some(i => {
       if (i.isGroup) return false;
       const key = `${s.id}:${(i.name || "").trim().toLowerCase()}`;
@@ -934,19 +935,26 @@ For other: {"type":"other","summary":""}`,
     const sc = document.querySelector("[data-printarea]");
     if (!sc) { setAlertDropdown(data); return; }
     const cRect = sc.getBoundingClientRect();
+    // Viewport clamp constants shared by both anchor branches so a pill
+    // near either edge keeps the dropdown fully on-screen. The else
+    // branch previously had no clamp — a collapsed alerts row shifted
+    // pills left and dropped the dropdown off the left edge.
+    const DROPDOWN_WIDTH = 400;
+    const VIEWPORT_MARGIN = 12;
+    const maxLeft = window.innerWidth - DROPDOWN_WIDTH - VIEWPORT_MARGIN;
     let absLeft;
     if (data.anchor === "right") {
       // Right-anchored opener: align dropdown's right edge to chip's right edge,
       // clamped so it never spills off the viewport. Only the lesson-change pill
       // uses this; other pills keep the default left-flush behaviour below.
-      const DROPDOWN_WIDTH = 400;
-      const VIEWPORT_MARGIN = 12;
       const desiredLeft = data.rect.right - DROPDOWN_WIDTH;
-      const maxLeft = window.innerWidth - DROPDOWN_WIDTH - VIEWPORT_MARGIN;
       const finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(desiredLeft, maxLeft));
       absLeft = finalLeft - cRect.left;
     } else {
-      absLeft = data.rect.left - cRect.left;
+      // Left-flush opener: align to the pill's left edge, same viewport clamp.
+      const desiredLeft = data.rect.left;
+      const finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(desiredLeft, maxLeft));
+      absLeft = finalLeft - cRect.left;
     }
     setAlertDropdown({
       ...data,

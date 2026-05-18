@@ -748,7 +748,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
     if (filter.hasNote && !(s.notes && s.notes.trim())) return false;
     if (filter.hasWarning) {
       const isPrivate = s.schoolId === "__private__";
-      const hasUnassignedTeacher = active.some(e => {
+      const hasUnassignedTeacher = !isPrivate && active.some(e => {
         if (e.isGroup) return false;
         const key = `${s.id}:${(e.instrument || "").trim().toLowerCase()}`;
         return !mttTeacherIdx.has(key);
@@ -1516,9 +1516,12 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         {(() => {
                           const indInsts = active.filter(e => !e.isGroup);
                           if (!indInsts.length) return <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>;
+                          const isPrivate = s.schoolId === "__private__";
                           const parts = indInsts.map(e => {
                             const mttT = getStudentMTTTeacher(s.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage);
-                            if (!mttT?.teacherName) return <span key={e.id} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
+                            if (!mttT?.teacherName) return isPrivate
+                              ? <span key={e.id} style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>
+                              : <span key={e.id} style={{ color: colors.danger, fontStyle: "italic" }}>Unassigned</span>;
                             return <span key={e.id}>{mttT.teacherName}</span>;
                           });
                           return parts.reduce((acc, el, idx) => idx === 0 ? [el] : [...acc, <span key={"sep"+idx} style={{ color: colors.borderLight }}> / </span>, el], []);
@@ -1534,7 +1537,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           const isPrivate = s.schoolId === "__private__";
                           const warns = [];
                           if (!active.length) warns.push("No instrument");
-                          else active.filter(e => !e.isGroup && !mttTeacherIdx.has(`${s.id}:${(e.instrument || "").trim().toLowerCase()}`)).forEach(e => warns.push(`No teacher (${e.instrument})`));
+                          else if (!isPrivate) active.filter(e => !e.isGroup && !mttTeacherIdx.has(`${s.id}:${(e.instrument || "").trim().toLowerCase()}`)).forEach(e => warns.push(`No teacher (${e.instrument})`));
                           if (!isPrivate) {
                             if (!(s.parents || []).length) warns.push("No parent");
                             else if (!(s.parents || []).some(p => p.email)) warns.push("Parent missing email");
