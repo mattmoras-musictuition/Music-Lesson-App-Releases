@@ -459,6 +459,20 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
     if (school && cb.schoolId && cb.schoolId !== school.id) continue;
     pushBrk(cb.time);
   }
+  // Drop leading/trailing breaks: a break only renders if it falls within
+  // the lesson day — at least one lesson starts before it AND at least one
+  // lesson is still relevant at-or-after it (a lesson starting at-or-after
+  // the break, or whose end is after it). Applied uniformly to every break
+  // source collected above.
+  breakRows = breakRows.filter(function(b) {
+    var bt = timeToMin(b.start);
+    var hasBefore = false, hasAfter = false;
+    for (var li = 0; li < lessons.length; li++) {
+      if (timeToMin(lessons[li].start) < bt) hasBefore = true;
+      if (timeToMin(lessons[li].start) >= bt || timeToMin(lessons[li].end) > bt) hasAfter = true;
+    }
+    return hasBefore && hasAfter;
+  });
   var lessonItems = lessons.map(function(l) { return Object.assign({}, l, { _kind: "lesson" }); });
   var sorted = lessonItems.concat(breakRows).sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
   var rows = sorted.map(function(l) {
