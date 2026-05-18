@@ -321,6 +321,51 @@ export function buildStyledTable(gridRows, tableTitle) {
   return html;
 }
 
+// Preferred-name substitution for the single-day export. A near-identical
+// regex lives in TimetableView/tallyPdfHtml as local copies; this file
+// can't import those without a cross-module refactor that's out of scope,
+// so we keep a fourth local copy consistent with the existing pattern.
+// "Megumi (Meg) Van Haven" -> "Meg Van Haven"; no brackets -> unchanged.
+function preferredName(name) {
+  if (!name) return name || "";
+  var m = name.match(/\(([^)]+)\)/);
+  if (!m) return name;
+  var pref = m[1];
+  var surname = name.replace(/^[^\s(]+\s*\([^)]+\)\s*/, "").trim();
+  return surname ? pref + " " + surname : pref;
+}
+// Group lessons carry comma-joined names; apply the rule to each.
+function applyPreferred(displayName) {
+  if (!displayName) return "";
+  return displayName.split(", ").map(preferredName).join(", ");
+}
+
+function _pdHexMix(hex, target, t) {
+  function p(h) {
+    h = String(h).replace("#", "");
+    if (h.length === 3) h = h.split("").map(function(c) { return c + c; }).join("");
+    return [parseInt(h.substr(0, 2), 16), parseInt(h.substr(2, 2), 16), parseInt(h.substr(4, 2), 16)];
+  }
+  var a = p(hex), b = p(target), o = [];
+  for (var i = 0; i < 3; i++) {
+    var v = Math.round(a[i] + (b[i] - a[i]) * t);
+    o.push(("0" + Math.max(0, Math.min(255, v)).toString(16)).slice(-2));
+  }
+  return "#" + o.join("");
+}
+// Explicit pill pairs Matt approved; any other instrument derives a very
+// light tint + dark shade from its existing dot hue (same hue family).
+var PILL_OVERRIDES = {
+  Voice: { bg: "#E6F1FB", fg: "#0C447C" },
+  Piano: { bg: "#FBEAF0", fg: "#72243E" },
+  Group: { bg: "#FAECE7", fg: "#712B13" }
+};
+function pillColors(instrument) {
+  if (PILL_OVERRIDES[instrument]) return PILL_OVERRIDES[instrument];
+  var base = instruments_colors[instrument] || instruments_colors.default;
+  return { bg: _pdHexMix(base, "#ffffff", 0.86), fg: _pdHexMix(base, "#000000", 0.5) };
+}
+
 // Session 96: list-style single-day export for phone/quick-check use.
 // Replaces the cramped narrow-portrait timetable grid. Groups lessons by
 // time ascending, shows day name + filter label at the top, instrument
@@ -336,7 +381,6 @@ export function buildStyledTable(gridRows, tableTitle) {
 // teacher- or class-filtered exports don't show unrelated breaks.
 function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   if (!lessons || lessons.length === 0) return null;
-  var ic = instruments_colors;
   var teachers = opts && opts.teachers;
   var school = opts && opts.school;
   var dayTeacherIds = new Set();
@@ -417,18 +461,17 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
         + '</td></tr>';
     }
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
-    var name = lessonDisplayName(l);
+    var rawName = lessonDisplayName(l);
+    var name = l.isBandSession ? rawName : applyPreferred(rawName);
     var cls = st ? st.className || "" : "";
-    var color = ic[l.instrument] || ic.default;
-    // Cluster 12a: lane-resolved teacher name.
-    var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
+    var label = l.instrument || (l.isBandSession ? "Band" : "");
+    var pc = pillColors(label);
     return '<tr>'
-      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:700;color:' + NAVY + ';font-size:13px">' + fmt12(l.start) + '<div style="font-size:10px;color:' + MUTED + ';font-weight:500;margin-top:1px">' + fmt12(l.end) + '</div></td>'
-      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top">'
-        + '<div style="display:flex;align-items:center;gap:8px">'
-          + '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>'
-          + '<div><div style="font-weight:600;font-size:13px;color:' + TEXT + '">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:11.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:11px;color:' + MUTED + ';margin-top:1px">' + ((function(){ var p = l.isBandSession ? bandStudentFirstNames(l, students) : (l.instrument || ''); return p ? p + ' · ' : ''; })()) + ti + '</div></div>'
+      + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:500;color:' + TEXT + ';font-size:14px">' + fmt12(l.start) + '</td>'
+      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle">'
+        + '<div style="display:flex;align-items:center;gap:10px">'
+          + '<span style="display:inline-block;min-width:54px;padding:3px 11px;border-radius:999px;background:' + pc.bg + ';color:' + pc.fg + ';font-size:12px;font-weight:500;text-align:center;flex-shrink:0">' + label + '</span>'
+          + '<span style="font-size:14px;color:' + TEXT + '">' + name + (cls ? ' · ' + cls : '') + '</span>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:11px;margin-top:3px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
