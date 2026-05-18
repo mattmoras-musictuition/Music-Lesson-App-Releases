@@ -2446,6 +2446,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     enrolments,
                     laneOverrides,
                     weekKey,
+                    weekLabel,
+                    schoolShortName: schoolForExport ? getSchoolAcronym(schoolForExport) : "",
+                    breaks: weeklyData?.breaks || [],
                   }
                 );
                 if (html) {
