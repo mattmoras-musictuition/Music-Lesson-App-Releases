@@ -41,10 +41,20 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
   const [loading, setLoading] = React.useState(false);
   const webviewRef = React.useRef(null);
 
-  const navigate = React.useCallback((rawUrl) => {
-    let url = rawUrl.trim();
-    if (!url) return;
-    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  const navigate = React.useCallback((rawInput) => {
+    const raw = (rawInput || "").trim();
+    if (!raw) return;
+    // Chrome-omnibox behaviour: explicit scheme → as-is; a domain-like
+    // token (no spaces, has a dot) → prepend https://; anything else
+    // (spaces, or no dot) → Google search.
+    let url;
+    if (/^https?:\/\//i.test(raw)) {
+      url = raw;
+    } else if (!/\s/.test(raw) && /\.[^\s.]/.test(raw)) {
+      url = "https://" + raw;
+    } else {
+      url = "https://www.google.com/search?q=" + encodeURIComponent(raw);
+    }
     setCurrentUrl(url); setInputUrl(url);
     try { if (webviewRef.current) webviewRef.current.src = url; } catch {}
   }, []);
