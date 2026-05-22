@@ -19,6 +19,16 @@ import {
   BUCKET_RESOURCES, BUCKET_DOCUMENTS,
   makeStoragePath, uploadToBucket, signedUrlFor, deleteFromBucket,
 } from "../utils/storageHelpers";
+// Resources are a shared pool persisted per-row (no whole-list sync).
+import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow } from "../utils/resourcesDB";
+
+// Parse the storage object path out of a public resources file_url
+// (".../object/public/resources/<path>"), for storage cleanup on delete.
+function storagePathFromResourceUrl(fileUrl) {
+  if (!fileUrl) return null;
+  const m = fileUrl.match(/\/object\/public\/resources\/(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
 const RESOURCE_CATEGORIES = ["Book", "Equipment", "Website", "Sheet Music", "Video", "Other"];
 const DOCUMENT_TYPES     = ["Insurance", "WWCC", "License Agreement", "Policy", "Other"];
@@ -120,16 +130,20 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       const res = await uploadToBucket(bucket, storagePath, file);
       setUploadingFor(null);
       if (!res) { notify("Upload failed — try again", "danger"); return; }
-      updateForm({
-        filename: file.name,
-        storage_path: res.storagePath,
-        size_bytes: file.size,
-        mime_type: file.type || "application/octet-stream",
-        // Public bucket returns a URL we can store alongside; private bucket
-        // signs on demand via openPrivate(). For resources we save the URL
-        // so existing email-attach-by-URL flows keep working.
-        url: bucket === BUCKET_RESOURCES ? res.publicUrl : "",
-      });
+      if (bucket === BUCKET_RESOURCES) {
+        // Resources (public bucket): store the public file location in
+        // file_url / file_name; a file resource carries no separate URL.
+        updateForm({ file_url: res.publicUrl || "", file_name: file.name, url: "" });
+      } else {
+        // Documents (private bucket) keep the storage_path model — signed
+        // on demand via openPrivate(). Unchanged by the resources rework.
+        updateForm({
+          filename: file.name,
+          storage_path: res.storagePath,
+          size_bytes: file.size,
+          mime_type: file.type || "application/octet-stream",
+        });
+      }
       notify("File uploaded ✓");
     };
     input.click();
@@ -145,30 +159,42 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // ── Resources CRUD ──────────────────────────────────────────
   const addResource = () => {
-    const id = makeId();
-    // Session 96: storage fields set on upload; URL vs file path exclusive.
-    const blank = { id, label: "", url: "", category: "", description: "", storage_path: "", filename: "", size_bytes: null, mime_type: "", _isNew: true };
+    const id = crypto.randomUUID();
+    // File location lives in file_url / file_name (set on upload); a row is
+    // either URL-based OR file-based. source / added_by_name are carried
+    // through the data layer (not surfaced in the UI this step).
+    const blank = { id, label: "", url: "", category: "", description: "", file_url: "", file_name: "", source: "direct", added_by_name: "Admin", _isNew: true };
     setResources(prev => [blank, ...prev]);
     setREditId(id); setREditForm({ ...blank });
   };
-  const saveResource = () => {
+  const saveResource = async () => {
     if (!rEditForm) return;
     const { _isNew, ...toSave } = rEditForm;
-    setResources(prev => prev.map(r => r.id === rEditId ? toSave : r));
-    setREditId(null); setREditForm(null);
+    try {
+      // Per-row write: insert a brand-new row, update an existing one.
+      const saved = _isNew ? await insertResourceRow(toSave) : await updateResourceRow(toSave);
+      setResources(prev => prev.map(r => r.id === rEditId ? saved : r));
+      setREditId(null); setREditForm(null);
+    } catch (e) {
+      notify("Couldn't save resource — try again", "danger");
+    }
   };
   const cancelResource = () => {
     const r = resources.find(r => r.id === rEditId);
     if (r && r._isNew) setResources(prev => prev.filter(r => r.id !== rEditId));
     setREditId(null); setREditForm(null);
   };
-  const deleteResource = (id) => {
+  const deleteResource = async (id) => {
     const r = resources.find(r => r.id === id);
-    // Session 96: if this row has an uploaded file, delete from storage too.
-    // Non-blocking: even if storage delete fails, we still remove locally.
-    if (r?.storage_path) deleteFromBucket(BUCKET_RESOURCES, r.storage_path);
+    // If this row has an uploaded file, delete the storage object too
+    // (path parsed from the public file_url). Non-blocking.
+    if (r?.file_url) {
+      const path = storagePathFromResourceUrl(r.file_url);
+      if (path) deleteFromBucket(BUCKET_RESOURCES, path);
+    }
     setResources(prev => prev.filter(r => r.id !== id));
     if (rEditId === id) { setREditId(null); setREditForm(null); }
+    try { await deleteResourceRow(id); } catch (e) { notify("Couldn't remove resource — try again", "danger"); }
     notify("Resource removed");
   };
   const copyLink = (url) => {
@@ -361,16 +387,15 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                         </td>
                         <td style={{ padding: "8px 12px", maxWidth: 220 }}>
                           {isEditing ? (
-                            // Session 96: Resources now accept either a URL
-                            // OR an uploaded file. If a file is uploaded, the
-                            // URL field is hidden (file path wins); click
-                            // "×" on the file to clear and fall back to URL.
-                            rEditForm.storage_path ? (
+                            // Resources accept either a URL OR an uploaded
+                            // file. If a file is uploaded, the URL field is
+                            // hidden (file wins); click "×" to clear and fall
+                            // back to URL. File location lives in file_url.
+                            rEditForm.file_url ? (
                               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, background: colors.blueLight, fontSize: 12 }}>
                                 <FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} />
-                                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={rEditForm.filename}>{rEditForm.filename}</span>
-                                {rEditForm.size_bytes ? <span style={{ color: colors.textMuted, fontSize: 10, flexShrink: 0 }}>{fmtBytes(rEditForm.size_bytes)}</span> : null}
-                                <button onClick={() => setREditForm(f => ({ ...f, storage_path: "", filename: "", size_bytes: null, mime_type: "", url: "" }))} title="Clear uploaded file"
+                                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={rEditForm.file_name}>{rEditForm.file_name}</span>
+                                <button onClick={() => setREditForm(f => ({ ...f, file_url: "", file_name: "" }))} title="Clear uploaded file"
                                   style={{ border: "none", background: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex" }}>
                                   <X size={12} />
                                 </button>
@@ -386,10 +411,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                                 </button>
                               </div>
                             )
-                          ) : r.storage_path && r.filename ? (
+                          ) : r.file_url && r.file_name ? (
                             <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.textLight, fontSize: 12 }}>
                               <FileText size={11} style={{ color: colors.accent }} />
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }} title={r.filename}>{r.filename}</span>
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }} title={r.file_name}>{r.file_name}</span>
                             </span>
                           ) : r.url ? (
                             <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: colors.accent, textDecoration: "none", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 200 }}>{r.url.replace(/^https?:\/\//, "")}</a>
@@ -406,10 +431,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                               </>
                             ) : (
                               <>
-                                {/* Session 96: uploaded resource → open the
-                                    stored public URL; URL-based → same. */}
-                                {r.url && iconBtn(() => setBrowserLink({ url: r.url, title: r.label || r.category }), <Eye size={13} />, colors.textMuted, "View in browser")}
-                                {r.url && iconBtn(() => copyLink(r.url), <Copy size={13} />, colors.textMuted, "Copy link")}
+                                {/* Uploaded resource → open its public
+                                    file_url; URL resource → open its url. */}
+                                {(r.url || r.file_url) && iconBtn(() => setBrowserLink({ url: r.url || r.file_url, title: r.label || r.category }), <Eye size={13} />, colors.textMuted, "View in browser")}
+                                {(r.url || r.file_url) && iconBtn(() => copyLink(r.url || r.file_url), <Copy size={13} />, colors.textMuted, "Copy link")}
                                 {iconBtn(() => { setREditId(r.id); setREditForm({ ...r }); }, <Pencil size={13} />, colors.textMuted, "Edit")}
                                 {iconBtn(() => deleteResource(r.id), <Trash2 size={13} />, colors.danger, "Delete", { border: "1px solid " + colors.danger + "60" })}
                               </>

@@ -28,7 +28,7 @@ import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
-import { loadResourcesFromSupabase, syncResourcesToSupabase } from "./utils/resourcesDB";
+import { loadResourcesFromSupabase } from "./utils/resourcesDB";
 import { loadDocumentsFromSupabase, syncDocumentsToSupabase } from "./utils/documentsDB";
 import { loadInterruptionsFromSupabase, syncInterruptionsToSupabase } from "./utils/interruptionsDB";
 import { loadSpecialistsFromSupabase, syncSpecialistsToSupabase } from "./utils/specialistsDB";
@@ -2287,7 +2287,11 @@ export default function MusicTimetableApp() {
   useEffect(() => { if (storageReady.current && interruptions.length > 0) { saveData(STORAGE_KEYS.interruptions, interruptions); if (sessionUserId && !isDev) syncInterruptionsToSupabase(interruptions, sessionUserId).catch(err => logError("Interruptions Supabase sync failed", err.message)); else if (!isDev) console.warn("[sync] Interruptions — no Supabase session"); } }, [interruptions, sessionUserId]);
   useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.groups, groups); if (sessionUserId && !isDev) syncGroupsToSupabase(groups, sessionUserId).catch(err => logError("Groups Supabase sync failed", err.message)); else if (groups.length > 0 && !isDev) console.warn("[sync] Groups — no Supabase session"); } }, [groups, sessionUserId]);
   useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.bands, bands); if (sessionUserId && !isDev) syncBandsToSupabase(bands, sessionUserId).catch(err => logError("Bands Supabase sync failed", err.message)); else if (bands.length > 0 && !isDev) console.warn("[sync] Bands — no Supabase session"); } }, [bands, sessionUserId]);
-  useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.resources, resources); if (sessionUserId && !isDev) syncResourcesToSupabase(resources, sessionUserId).catch(err => logError("Resources Supabase sync failed", err.message)); else if (resources.length > 0 && !isDev) console.warn("[sync] Resources — no Supabase session"); } }, [resources, sessionUserId]);
+  // Resources are a SHARED pool persisted per-row at each mutation site
+  // (see resourcesDB insert/update/delete); the old destructive whole-list
+  // sync was removed so one app can't delete rows the other created. This
+  // effect only keeps the localStorage cache fresh for offline load.
+  useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.resources, resources); } }, [resources]);
   useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.documents, documents); if (sessionUserId && !isDev) syncDocumentsToSupabase(documents, sessionUserId).catch(err => logError("Documents Supabase sync failed", err.message)); else if (documents.length > 0 && !isDev) console.warn("[sync] Documents — no Supabase session"); } }, [documents, sessionUserId]);
   useEffect(() => {
     if (!storageReady.current) return;

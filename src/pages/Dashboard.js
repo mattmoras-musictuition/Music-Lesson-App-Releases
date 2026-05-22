@@ -17,6 +17,7 @@ import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
@@ -669,8 +670,13 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
       setDocuments(prev => [doc, ...prev]);
       notify("Saved to Documents");
     } else {
-      const res = { id, label: saveAttachForm.label || att.filename, url: "", category: saveAttachForm.category, description: saveAttachForm.description, gmailRef };
+      // Resources are a shared pool persisted per-row (no whole-list sync),
+      // so insert this row directly. A fresh uuid keeps the id format aligned
+      // with the shared table. gmailRef stays in local state only (not a
+      // resources column); source/added_by_name are carried for the library.
+      const res = { id: crypto.randomUUID(), label: saveAttachForm.label || att.filename, url: "", category: saveAttachForm.category, description: saveAttachForm.description, source: "direct", added_by_name: "Admin", gmailRef };
       setResources(prev => [res, ...prev]);
+      insertResourceRow(res).catch(() => notify("Saved locally, but couldn't sync to the server", "danger"));
       notify("Saved to Resources");
     }
     setSaveAttachModal(null);
