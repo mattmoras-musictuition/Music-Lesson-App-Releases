@@ -105,3 +105,63 @@ export async function deleteResource(id) {
     .eq("id", id);
   if (error) throw new Error(error.message);
 }
+
+// ── Resource Library view helpers (taxonomy + subject names) ──
+
+// Coerce an app_settings value (jsonb array, JSON-stringified array,
+// or null) into a plain string array. Never throws.
+function _taxArray(value) {
+  if (Array.isArray(value)) return value.filter(v => typeof v === "string");
+  if (typeof value === "string") {
+    try { const p = JSON.parse(value); return Array.isArray(p) ? p.filter(v => typeof v === "string") : []; }
+    catch { return []; }
+  }
+  return [];
+}
+
+// Fetch the three Resource Library taxonomy lists from app_settings
+// (managed by the Settings screen). A missing row yields an empty
+// array — never throws.
+export async function fetchResourceTaxonomies() {
+  try {
+    const { data, error } = await supabase
+      .from("app_settings").select("key,value")
+      .in("key", ["resource_types", "skill_levels", "instruments"]);
+    if (error) throw error;
+    const byKey = {};
+    for (const row of data || []) byKey[row.key] = _taxArray(row.value);
+    return {
+      resourceTypes: byKey.resource_types || [],
+      skillLevels:   byKey.skill_levels   || [],
+      instruments:   byKey.instruments    || [],
+    };
+  } catch (err) {
+    console.warn("[resources] taxonomy load failed:", err?.message);
+    return { resourceTypes: [], skillLevels: [], instruments: [] };
+  }
+}
+
+// id→name maps for resolving a resource's originating subject when
+// source='student_note'. Students and groups each have their own
+// table in the admin app. Best-effort: failures yield empty maps.
+export async function loadSubjectNameMaps() {
+  const studentsById = new Map();
+  const groupsById = new Map();
+  try {
+    const { data } = await supabase.from("students").select("id, name");
+    for (const s of data || []) studentsById.set(s.id, s.name || "");
+  } catch (err) { console.warn("[resources] students load failed:", err?.message); }
+  try {
+    const { data } = await supabase.from("groups").select("id, name");
+    for (const g of data || []) groupsById.set(g.id, g.name || "");
+  } catch (err) { console.warn("[resources] groups load failed:", err?.message); }
+  return { studentsById, groupsById };
+}
+
+// Resolve a subject to a display name, or null if unresolvable.
+export function resolveSubjectName(subjectType, subjectId, maps) {
+  if (!subjectType || !subjectId || !maps) return null;
+  const m = subjectType === "group" ? maps.groupsById : maps.studentsById;
+  const name = m?.get(subjectId);
+  return name || null;
+}
