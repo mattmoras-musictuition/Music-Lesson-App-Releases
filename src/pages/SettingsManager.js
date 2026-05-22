@@ -50,6 +50,126 @@ function SectionPanel({ isOpen, danger = false, colors, children }) {
   );
 }
 
+// ── Resource Library taxonomy lists ──────────────────────────────────────────
+// Manages the three app_settings rows that drive the Resource Library's
+// Instrument / Type / Skill-level pickers and filters. Each row is a jsonb
+// array of strings. Editing a list does NOT cascade: resources already tagged
+// with a removed value keep that value (no migration, no row rewrites).
+const RESOURCE_TAXONOMIES = [
+  { key: "instruments",    label: "Instruments",  noun: "instrument",  sub: "Instrument options for tagging and filtering resources." },
+  { key: "resource_types", label: "Types",        noun: "type",        sub: "Resource types — the Type field (stored on the resources.category column)." },
+  { key: "skill_levels",   label: "Skill levels", noun: "skill level", sub: "Skill-level options for tagging and filtering resources." },
+];
+
+// Coerce a stored app_settings value (jsonb array, JSON-stringified array, or
+// null) into a plain string array. Never throws.
+function _taxArray(value) {
+  if (Array.isArray(value)) return value.filter(v => typeof v === "string");
+  if (typeof value === "string") {
+    try { const p = JSON.parse(value); return Array.isArray(p) ? p.filter(v => typeof v === "string") : []; }
+    catch { return []; }
+  }
+  return [];
+}
+
+function ResourceTaxonomyPanel({ colors, notify }) {
+  const [lists, setLists]   = React.useState(null); // { instruments: [], resource_types: [], skill_levels: [] }
+  const [loadErr, setLoadErr] = React.useState(false);
+  const [drafts, setDrafts] = React.useState({});   // { key: "new entry draft" }
+  const [editing, setEditing] = React.useState(null); // { key, idx }
+  const [editVal, setEditVal] = React.useState("");
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("app_settings").select("key,value")
+          .in("key", RESOURCE_TAXONOMIES.map(t => t.key));
+        if (error) throw error;
+        const byKey = { instruments: [], resource_types: [], skill_levels: [] };
+        for (const row of data || []) byKey[row.key] = _taxArray(row.value);
+        setLists(byKey);
+      } catch {
+        setLoadErr(true);
+      }
+    })();
+  }, []);
+
+  // Save the full array back to the app_settings row (stored as a jsonb array).
+  const persist = async (key, arr) => {
+    setLists(prev => ({ ...prev, [key]: arr }));
+    try {
+      const { error } = await supabase.from("app_settings").upsert({ key, value: arr });
+      if (error) throw error;
+    } catch {
+      notify && notify("Couldn't save the list — try again", "danger");
+    }
+  };
+
+  const addEntry = (key) => {
+    const v = (drafts[key] || "").trim();
+    if (!v) return;
+    const arr = lists[key] || [];
+    if (!arr.some(x => x.toLowerCase() === v.toLowerCase())) persist(key, [...arr, v]);
+    setDrafts(d => ({ ...d, [key]: "" }));
+  };
+  const removeEntry = (key, idx) => persist(key, (lists[key] || []).filter((_, i) => i !== idx));
+  const startEdit = (key, idx) => { setEditing({ key, idx }); setEditVal((lists[key] || [])[idx] || ""); };
+  const saveEdit = () => {
+    if (!editing) return;
+    const v = editVal.trim();
+    const { key, idx } = editing;
+    if (v) { const arr = [...(lists[key] || [])]; arr[idx] = v; persist(key, arr); }
+    setEditing(null);
+  };
+
+  if (loadErr) return <div style={{ padding: "16px 18px", fontSize: 13, color: colors.textMuted, fontStyle: "italic" }}>Couldn't load the lists. Restart the app if this persists.</div>;
+  if (!lists)  return <div style={{ padding: "16px 18px", fontSize: 13, color: colors.textMuted, fontStyle: "italic" }}>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: colors.textMuted, padding: "12px 18px 0" }}>
+        Manage the Instrument, Type and Skill-level options used across the Resource Library. Removing an entry does not change resources already tagged with it.
+      </div>
+      {RESOURCE_TAXONOMIES.map(tx => {
+        const arr = lists[tx.key] || [];
+        return (
+          <div key={tx.key} style={{ padding: "14px 18px", borderTop: `1px solid ${colors.borderLight}` }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{tx.label}</div>
+            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, marginBottom: 10, lineHeight: 1.4 }}>{tx.sub}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+              {arr.length === 0 && <span style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No entries yet</span>}
+              {arr.map((entry, idx) => (
+                editing && editing.key === tx.key && editing.idx === idx ? (
+                  <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input value={editVal} onChange={e => setEditVal(e.target.value)} autoFocus
+                      onKeyDown={e => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditing(null); }}
+                      style={{ padding: "4px 8px", border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none", width: 130 }} />
+                    <button onClick={saveEdit} style={{ background: colors.accent, color: "#fff", border: "none", borderRadius: 6, padding: "4px 8px", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>Save</button>
+                    <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex" }}><X size={13} /></button>
+                  </span>
+                ) : (
+                  <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", borderRadius: 16, background: colors.bg, border: `1px solid ${colors.border}`, fontSize: 12, color: colors.text }}>
+                    {entry}
+                    <button onClick={() => startEdit(tx.key, idx)} title="Rename" style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex", padding: 0 }}><Sparkles size={12} /></button>
+                    <button onClick={() => removeEntry(tx.key, idx)} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex", padding: 0 }}><Trash2 size={12} /></button>
+                  </span>
+                )
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input value={drafts[tx.key] || ""} onChange={e => setDrafts(d => ({ ...d, [tx.key]: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") addEntry(tx.key); }}
+                placeholder={`Add ${tx.noun}…`}
+                style={{ flex: 1, maxWidth: 240, padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }} />
+              <button onClick={() => addEntry(tx.key)} style={{ background: colors.accent, color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 4 }}><Plus size={13} /> Add</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Context trigger category definitions ─────────────────────────────────────
 // These are the display labels and descriptions shown in Settings.
 // The actual keyword arrays live in App.js (DEFAULT_CONTEXT_TRIGGERS) and
@@ -354,8 +474,8 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
   // ── Fetch Term Dates ──────────────────────────────────────
 
   // ── Collapsible sections ──────────────────────────────────
-  const [openSections, setOpenSections] = React.useState({ claude: false, context: false, categories: false, data: false, app: false, sounds: false, instruments: false, lessonrecords: false, datahealth: false, danger: false, messages: false, templates: false });
-  const SECTIONS_ALL_CLOSED = { claude: false, context: false, categories: false, data: false, app: false, sounds: false, instruments: false, lessonrecords: false, datahealth: false, danger: false, messages: false, templates: false };
+  const [openSections, setOpenSections] = React.useState({ claude: false, context: false, categories: false, resourceLists: false, data: false, app: false, sounds: false, instruments: false, lessonrecords: false, datahealth: false, danger: false, messages: false, templates: false });
+  const SECTIONS_ALL_CLOSED = { claude: false, context: false, categories: false, resourceLists: false, data: false, app: false, sounds: false, instruments: false, lessonrecords: false, datahealth: false, danger: false, messages: false, templates: false };
 
   // Todo categories state
   const [todoCats, setTodoCats] = React.useState(() => { try { return JSON.parse(localStorage.getItem("mt-todo-categories") || "[]"); } catch { return []; } });
@@ -762,6 +882,12 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
               </div>
             );
           })()}
+        </SectionPanel>
+
+        {/* ── RESOURCE LIBRARY LISTS ── */}
+        <SectionBanner sectionKey="resourceLists" label="Resource Library Lists" icon={<Folder size={14} />} isOpen={openSections.resourceLists} onToggle={toggleSection} colors={colors} />
+        <SectionPanel isOpen={openSections.resourceLists} colors={colors}>
+          <ResourceTaxonomyPanel colors={colors} notify={notify} />
         </SectionPanel>
 
         {/* ── SOUNDS ── */}
