@@ -1967,16 +1967,14 @@ export default function MusicTimetableApp() {
         logError("Failed to load bands from Supabase", err.message);
         bn = await loadData(STORAGE_KEYS.bands, []);
       }
-      // ── Resources: try Supabase first, fall back to localStorage ──
+      // ── Resources: Supabase is authoritative; cache is an error-only
+      // fallback. A successful fetch wins even when it returns zero rows
+      // (an empty shared pool is a valid state), and overwrites the cache
+      // so it can't drift. Only a thrown error falls back to localStorage.
       let rc;
       try {
-        const supabaseResources = await loadResourcesFromSupabase();
-        if (supabaseResources.length > 0) {
-          rc = supabaseResources;
-          saveData(STORAGE_KEYS.resources, rc);
-        } else {
-          rc = await loadData(STORAGE_KEYS.resources, []);
-        }
+        rc = await loadResourcesFromSupabase();
+        saveData(STORAGE_KEYS.resources, rc);
       } catch (err) {
         logError("Failed to load resources from Supabase", err.message);
         rc = await loadData(STORAGE_KEYS.resources, []);
