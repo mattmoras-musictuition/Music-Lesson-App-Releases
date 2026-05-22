@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Video</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden; }
+    iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+    .msg {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: #ddd; font-family: -apple-system, system-ui, sans-serif; font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // Hosts a YouTube/Vimeo embed inside a real <iframe> so the provider
+    // player has a valid embedding context (a bare top-level /embed/ load
+    // is rejected by YouTube with "Error 153"). provider + id come from
+    // the query string; id is sanitized to a strict charset.
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var provider = params.get("provider");
+      var rawId = params.get("id") || "";
+      var id = (rawId.match(/[A-Za-z0-9_-]+/g) || []).join("");
+
+      var src = null;
+      if (id && rawId === id) {
+        if (provider === "youtube") {
+          src = "https://www.youtube.com/embed/" + id + "?rel=0";
+        } else if (provider === "vimeo") {
+          src = "https://player.vimeo.com/video/" + id;
+        }
+      }
+
+      if (!src) {
+        var msg = document.createElement("div");
+        msg.className = "msg";
+        msg.textContent = "Unable to load video.";
+        document.body.appendChild(msg);
+        return;
+      }
+
+      var iframe = document.createElement("iframe");
+      iframe.src = src;
+      iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture");
+      document.body.appendChild(iframe);
+    })();
+  </script>
+</body>
+</html>

@@ -19,26 +19,32 @@ const tbBtn = (active = false) => ({
   padding: "0 8px", height: 28, flexShrink: 0, fontFamily: "inherit", fontSize: 12, gap: 5,
 });
 
-// YouTube / Vimeo watch URLs → provider embed URLs, so they render as a
-// clean player in the panel rather than the full heavy site. Anything
-// else is returned unchanged.
+// YouTube / Vimeo watch URLs → our local player host page (public/
+// player.html), which holds the provider embed in a real <iframe> so it
+// has a valid embedding context — a bare top-level /embed/ load is
+// rejected by YouTube with "Error 153". The page is shipped in public/
+// and resolved via PUBLIC_URL (same base-path approach as the
+// self-hosted pdfjs worker), so it works in dev and packaged builds.
+// Anything that isn't YouTube/Vimeo is returned unchanged.
 function toEmbedUrl(rawUrl) {
+  const playerUrl = (provider, id) =>
+    `${process.env.PUBLIC_URL || ""}/player.html?provider=${provider}&id=${encodeURIComponent(id)}`;
   try {
     const u = new URL(rawUrl);
     const h = u.hostname.toLowerCase();
     if (h === "youtu.be") {
       const id = u.pathname.slice(1).split("/")[0];
-      return id ? `https://www.youtube.com/embed/${id}` : rawUrl;
+      return id ? playerUrl("youtube", id) : rawUrl;
     }
     if (h === "youtube.com" || h === "www.youtube.com" || h === "m.youtube.com" || h === "music.youtube.com") {
       const v = u.searchParams.get("v");
-      if (v) return `https://www.youtube.com/embed/${v}`;
+      if (v) return playerUrl("youtube", v);
       const em = u.pathname.match(/^\/embed\/([^/?#]+)/);
-      return em ? `https://www.youtube.com/embed/${em[1]}` : rawUrl;
+      return em ? playerUrl("youtube", em[1]) : rawUrl;
     }
     if (h === "vimeo.com" || h === "www.vimeo.com") {
       const id = u.pathname.split("/").filter(Boolean)[0];
-      return /^\d+$/.test(id || "") ? `https://player.vimeo.com/video/${id}` : rawUrl;
+      return /^\d+$/.test(id || "") ? playerUrl("vimeo", id) : rawUrl;
     }
     return rawUrl;
   } catch { return rawUrl; }
@@ -65,11 +71,6 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
   const [canGoFwd, setCanGoFwd] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [maximized, setMaximized] = React.useState(false);
-  // TEMP diagnostic scaffolding — remove once the blank-browser cause is
-  // found and fixed. Surfaces the webview lifecycle as a visible status
-  // line so a blank panel is self-diagnosing without devtools.
-  const [diag, setDiag] = React.useState("initializing…");
-  const [diagFailed, setDiagFailed] = React.useState(false);
   const webviewRef = React.useRef(null);
 
   const navigate = React.useCallback((rawInput) => {
@@ -103,12 +104,7 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
         setCanGoFwd(wv.canGoForward?.() || false);
       } catch {}
     };
-    // TEMP visible-diagnostic state shared by the lifecycle handlers and
-    // the 8s no-response watchdog below.
-    let lastEvent = "initializing";
-    let settled = false; // dom-ready OR did-fail-load has fired
-
-    const onStart = () => { setLoading(true); lastEvent = "did-start-loading"; setDiag("loading…"); console.log("[LinkBrowser] did-start-loading"); };
+    const onStart = () => { setLoading(true); };
     const onStop = () => { setLoading(false); try { setCanGoBack(wv.canGoBack?.() || false); setCanGoFwd(wv.canGoForward?.() || false); } catch {} };
 
     // First load is deferred until the <webview> guest has actually
@@ -125,12 +121,8 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
       try { wv.src = toEmbedUrl(initialUrl); } catch {}
     };
 
-    // Diagnostics — kept in for this round; trim the verbose ones once
-    // the desktop browser is confirmed working.
-    const onAttach     = () => { lastEvent = "did-attach"; setDiag("attached"); console.log("[LinkBrowser] did-attach"); loadInitial(); };
-    const onDomReady   = () => { lastEvent = "dom-ready"; settled = true; setDiag("content ready"); console.log("[LinkBrowser] dom-ready"); };
-    const onFinish     = () => { lastEvent = "did-finish-load"; settled = true; setDiag("loaded"); console.log("[LinkBrowser] did-finish-load:", wv.getURL?.()); };
-    const onFail       = (e) => { lastEvent = "did-fail-load"; settled = true; setDiagFailed(true); setDiag(`LOAD FAILED — code ${e.errorCode}: ${e.errorDescription}${e.validatedURL ? ` (${e.validatedURL})` : ""}`); console.warn("[LinkBrowser] did-fail-load:", e.errorCode, e.errorDescription, e.validatedURL); };
+    // did-attach is the safe trigger for the first load (see loadInitial).
+    const onAttach     = () => { loadInitial(); };
     const onConsoleMsg = (e) => console.log("[LinkBrowser webview]", e.message);
 
     wv.addEventListener("did-navigate", onNav);
@@ -138,31 +130,18 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
     wv.addEventListener("did-start-loading", onStart);
     wv.addEventListener("did-stop-loading", onStop);
     wv.addEventListener("did-attach", onAttach);
-    wv.addEventListener("dom-ready", onDomReady);
-    wv.addEventListener("did-finish-load", onFinish);
-    wv.addEventListener("did-fail-load", onFail);
     wv.addEventListener("console-message", onConsoleMsg);
 
     const raf = requestAnimationFrame(loadInitial);
 
-    // Watchdog: if neither dom-ready nor did-fail-load fired within 8s,
-    // surface where it stalled (TEMP diagnostic).
-    const stuckTimer = setTimeout(() => {
-      if (!settled) setDiag("no response after 8s — stuck at: " + lastEvent);
-    }, 8000);
-
     return () => {
       cancelAnimationFrame(raf);
-      clearTimeout(stuckTimer);
       try {
         wv.removeEventListener("did-navigate", onNav);
         wv.removeEventListener("did-navigate-in-page", onNav);
         wv.removeEventListener("did-start-loading", onStart);
         wv.removeEventListener("did-stop-loading", onStop);
         wv.removeEventListener("did-attach", onAttach);
-        wv.removeEventListener("dom-ready", onDomReady);
-        wv.removeEventListener("did-finish-load", onFinish);
-        wv.removeEventListener("did-fail-load", onFail);
         wv.removeEventListener("console-message", onConsoleMsg);
       } catch {}
     };
@@ -210,7 +189,7 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 9990, pointerEvents: "none" }}>
-      <div style={{ position: "fixed", ...(maximized ? { left: 8, top: 8, right: 8, bottom: 8 } : { left: pos.x, top: pos.y, width: size.w, height: size.h }), display: "flex", flexDirection: "column", background: colors.cardBg, borderRadius: 10, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", pointerEvents: "auto", userSelect: "none" }}>
+      <div style={{ position: "fixed", ...(maximized ? { left: 8, top: 8, right: 8, bottom: 8 } : { left: pos.x, top: pos.y, width: size.w, height: size.h }), display: "flex", flexDirection: "column", background: colors.cardBg, borderRadius: 10, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", pointerEvents: "auto", userSelect: "none", WebkitAppRegion: "no-drag" }}>
 
         {/* Toolbar */}
         <div onMouseDown={handleDragStart}
@@ -287,19 +266,6 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
             onMouseLeave={e => e.currentTarget.style.color = TB.text}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
-        </div>
-
-        {/* TEMP diagnostic status line — remove with the lifecycle
-            scaffolding once the blank-browser cause is fixed. */}
-        <div style={{
-          flexShrink: 0, padding: "2px 10px", fontSize: 10,
-          fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden",
-          textOverflow: "ellipsis", borderBottom: `1px solid ${TB.border}`,
-          background: diagFailed ? "#7F1D1D" : TB.bg,
-          color: diagFailed ? "#FECACA" : TB.muted,
-          fontWeight: diagFailed ? 700 : 400,
-        }}>
-          {diag}
         </div>
 
         {/* Webview */}
