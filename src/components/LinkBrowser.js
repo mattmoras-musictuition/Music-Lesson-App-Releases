@@ -65,6 +65,11 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
   const [canGoFwd, setCanGoFwd] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [maximized, setMaximized] = React.useState(false);
+  // TEMP diagnostic scaffolding — remove once the blank-browser cause is
+  // found and fixed. Surfaces the webview lifecycle as a visible status
+  // line so a blank panel is self-diagnosing without devtools.
+  const [diag, setDiag] = React.useState("initializing…");
+  const [diagFailed, setDiagFailed] = React.useState(false);
   const webviewRef = React.useRef(null);
 
   const navigate = React.useCallback((rawInput) => {
@@ -98,7 +103,12 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
         setCanGoFwd(wv.canGoForward?.() || false);
       } catch {}
     };
-    const onStart = () => { setLoading(true); console.log("[LinkBrowser] did-start-loading"); };
+    // TEMP visible-diagnostic state shared by the lifecycle handlers and
+    // the 8s no-response watchdog below.
+    let lastEvent = "initializing";
+    let settled = false; // dom-ready OR did-fail-load has fired
+
+    const onStart = () => { setLoading(true); lastEvent = "did-start-loading"; setDiag("loading…"); console.log("[LinkBrowser] did-start-loading"); };
     const onStop = () => { setLoading(false); try { setCanGoBack(wv.canGoBack?.() || false); setCanGoFwd(wv.canGoForward?.() || false); } catch {} };
 
     // First load is deferred until the <webview> guest has actually
@@ -117,10 +127,10 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
 
     // Diagnostics — kept in for this round; trim the verbose ones once
     // the desktop browser is confirmed working.
-    const onAttach     = () => { console.log("[LinkBrowser] did-attach"); loadInitial(); };
-    const onDomReady   = () => console.log("[LinkBrowser] dom-ready");
-    const onFinish     = () => console.log("[LinkBrowser] did-finish-load:", wv.getURL?.());
-    const onFail       = (e) => console.warn("[LinkBrowser] did-fail-load:", e.errorCode, e.errorDescription, e.validatedURL);
+    const onAttach     = () => { lastEvent = "did-attach"; setDiag("attached"); console.log("[LinkBrowser] did-attach"); loadInitial(); };
+    const onDomReady   = () => { lastEvent = "dom-ready"; settled = true; setDiag("content ready"); console.log("[LinkBrowser] dom-ready"); };
+    const onFinish     = () => { lastEvent = "did-finish-load"; settled = true; setDiag("loaded"); console.log("[LinkBrowser] did-finish-load:", wv.getURL?.()); };
+    const onFail       = (e) => { lastEvent = "did-fail-load"; settled = true; setDiagFailed(true); setDiag(`LOAD FAILED — code ${e.errorCode}: ${e.errorDescription}${e.validatedURL ? ` (${e.validatedURL})` : ""}`); console.warn("[LinkBrowser] did-fail-load:", e.errorCode, e.errorDescription, e.validatedURL); };
     const onConsoleMsg = (e) => console.log("[LinkBrowser webview]", e.message);
 
     wv.addEventListener("did-navigate", onNav);
@@ -135,8 +145,15 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
 
     const raf = requestAnimationFrame(loadInitial);
 
+    // Watchdog: if neither dom-ready nor did-fail-load fired within 8s,
+    // surface where it stalled (TEMP diagnostic).
+    const stuckTimer = setTimeout(() => {
+      if (!settled) setDiag("no response after 8s — stuck at: " + lastEvent);
+    }, 8000);
+
     return () => {
       cancelAnimationFrame(raf);
+      clearTimeout(stuckTimer);
       try {
         wv.removeEventListener("did-navigate", onNav);
         wv.removeEventListener("did-navigate-in-page", onNav);
@@ -270,6 +287,19 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
             onMouseLeave={e => e.currentTarget.style.color = TB.text}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
+        </div>
+
+        {/* TEMP diagnostic status line — remove with the lifecycle
+            scaffolding once the blank-browser cause is fixed. */}
+        <div style={{
+          flexShrink: 0, padding: "2px 10px", fontSize: 10,
+          fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden",
+          textOverflow: "ellipsis", borderBottom: `1px solid ${TB.border}`,
+          background: diagFailed ? "#7F1D1D" : TB.bg,
+          color: diagFailed ? "#FECACA" : TB.muted,
+          fontWeight: diagFailed ? 700 : 400,
+        }}>
+          {diag}
         </div>
 
         {/* Webview */}
