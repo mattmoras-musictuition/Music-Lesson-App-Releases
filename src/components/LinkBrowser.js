@@ -19,6 +19,31 @@ const tbBtn = (active = false) => ({
   padding: "0 8px", height: 28, flexShrink: 0, fontFamily: "inherit", fontSize: 12, gap: 5,
 });
 
+// YouTube / Vimeo watch URLs → provider embed URLs, so they render as a
+// clean player in the panel rather than the full heavy site. Anything
+// else is returned unchanged.
+function toEmbedUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    const h = u.hostname.toLowerCase();
+    if (h === "youtu.be") {
+      const id = u.pathname.slice(1).split("/")[0];
+      return id ? `https://www.youtube.com/embed/${id}` : rawUrl;
+    }
+    if (h === "youtube.com" || h === "www.youtube.com" || h === "m.youtube.com" || h === "music.youtube.com") {
+      const v = u.searchParams.get("v");
+      if (v) return `https://www.youtube.com/embed/${v}`;
+      const em = u.pathname.match(/^\/embed\/([^/?#]+)/);
+      return em ? `https://www.youtube.com/embed/${em[1]}` : rawUrl;
+    }
+    if (h === "vimeo.com" || h === "www.vimeo.com") {
+      const id = u.pathname.split("/").filter(Boolean)[0];
+      return /^\d+$/.test(id || "") ? `https://player.vimeo.com/video/${id}` : rawUrl;
+    }
+    return rawUrl;
+  } catch { return rawUrl; }
+}
+
 export function LinkBrowser({ initialUrl, title, onClose }) {
   const { colors } = useTheme();
 
@@ -39,6 +64,7 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
   const [canGoBack, setCanGoBack] = React.useState(false);
   const [canGoFwd, setCanGoFwd] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [maximized, setMaximized] = React.useState(false);
   const webviewRef = React.useRef(null);
 
   const navigate = React.useCallback((rawInput) => {
@@ -55,8 +81,9 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
     } else {
       url = "https://www.google.com/search?q=" + encodeURIComponent(raw);
     }
-    setCurrentUrl(url); setInputUrl(url);
-    try { if (webviewRef.current) webviewRef.current.src = url; } catch {}
+    const loadUrl = toEmbedUrl(url);
+    setCurrentUrl(loadUrl); setInputUrl(loadUrl);
+    try { if (webviewRef.current) webviewRef.current.src = loadUrl; } catch {}
   }, []);
 
   // ── Webview wiring ────────────────────────────────────────
@@ -71,26 +98,62 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
         setCanGoFwd(wv.canGoForward?.() || false);
       } catch {}
     };
-    const onStart = () => setLoading(true);
+    const onStart = () => { setLoading(true); console.log("[LinkBrowser] did-start-loading"); };
     const onStop = () => { setLoading(false); try { setCanGoBack(wv.canGoBack?.() || false); setCanGoFwd(wv.canGoForward?.() || false); } catch {} };
+
+    // First load is deferred until the <webview> guest has actually
+    // attached. Setting .src in a bare mount effect can land before
+    // Electron finishes attaching the guest — consistently so when the
+    // opener is async (e.g. Student Notes awaits a signed URL) — which
+    // leaves the webview blank. did-attach is the safe trigger; the
+    // requestAnimationFrame is a fallback for the case where did-attach
+    // already fired before this effect ran. A guard makes it run once.
+    let loaded = false;
+    const loadInitial = () => {
+      if (loaded || !initialUrl) return;
+      loaded = true;
+      try { wv.src = toEmbedUrl(initialUrl); } catch {}
+    };
+
+    // Diagnostics — kept in for this round; trim the verbose ones once
+    // the desktop browser is confirmed working.
+    const onAttach     = () => { console.log("[LinkBrowser] did-attach"); loadInitial(); };
+    const onDomReady   = () => console.log("[LinkBrowser] dom-ready");
+    const onFinish     = () => console.log("[LinkBrowser] did-finish-load:", wv.getURL?.());
+    const onFail       = (e) => console.warn("[LinkBrowser] did-fail-load:", e.errorCode, e.errorDescription, e.validatedURL);
+    const onConsoleMsg = (e) => console.log("[LinkBrowser webview]", e.message);
+
     wv.addEventListener("did-navigate", onNav);
     wv.addEventListener("did-navigate-in-page", onNav);
     wv.addEventListener("did-start-loading", onStart);
     wv.addEventListener("did-stop-loading", onStop);
-    if (initialUrl) try { wv.src = initialUrl; } catch {}
+    wv.addEventListener("did-attach", onAttach);
+    wv.addEventListener("dom-ready", onDomReady);
+    wv.addEventListener("did-finish-load", onFinish);
+    wv.addEventListener("did-fail-load", onFail);
+    wv.addEventListener("console-message", onConsoleMsg);
+
+    const raf = requestAnimationFrame(loadInitial);
+
     return () => {
+      cancelAnimationFrame(raf);
       try {
         wv.removeEventListener("did-navigate", onNav);
         wv.removeEventListener("did-navigate-in-page", onNav);
         wv.removeEventListener("did-start-loading", onStart);
         wv.removeEventListener("did-stop-loading", onStop);
+        wv.removeEventListener("did-attach", onAttach);
+        wv.removeEventListener("dom-ready", onDomReady);
+        wv.removeEventListener("did-finish-load", onFinish);
+        wv.removeEventListener("did-fail-load", onFail);
+        wv.removeEventListener("console-message", onConsoleMsg);
       } catch {}
     };
   }, []); // eslint-disable-line
 
   // ── Drag ──────────────────────────────────────────────────
   const handleDragStart = React.useCallback((e) => {
-    if (e.button !== 0 || e.target.tagName === "INPUT") return;
+    if (e.button !== 0 || e.target.tagName === "INPUT" || maximized) return;
     e.preventDefault();
     const sx = e.clientX, sy = e.clientY;
     const { x: ox, y: oy } = posRef.current;
@@ -98,7 +161,7 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
     const onUp = () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
-  }, []);
+  }, [maximized]);
 
   // ── Resize ────────────────────────────────────────────────
   const startResize = React.useCallback((e, n, s, east, w) => {
@@ -130,7 +193,7 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 9990, pointerEvents: "none" }}>
-      <div style={{ position: "fixed", left: pos.x, top: pos.y, width: size.w, height: size.h, display: "flex", flexDirection: "column", background: colors.cardBg, borderRadius: 10, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", pointerEvents: "auto", userSelect: "none" }}>
+      <div style={{ position: "fixed", ...(maximized ? { left: 8, top: 8, right: 8, bottom: 8 } : { left: pos.x, top: pos.y, width: size.w, height: size.h }), display: "flex", flexDirection: "column", background: colors.cardBg, borderRadius: 10, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.4)", pointerEvents: "auto", userSelect: "none" }}>
 
         {/* Toolbar */}
         <div onMouseDown={handleDragStart}
@@ -186,6 +249,16 @@ export function LinkBrowser({ initialUrl, title, onClose }) {
             onClick={e => { e.stopPropagation(); if (currentUrl) window.electronAPI?.openExternal?.(currentUrl) || window.open(currentUrl, "_blank"); }}
             title="Open in default browser">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </button>
+
+          {/* Maximize / restore */}
+          <button style={tbBtn(maximized)} onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); setMaximized(m => !m); }}
+            title={maximized ? "Restore" : "Maximize"}>
+            {maximized
+              ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+            }
           </button>
 
           <div style={{ width: 1, height: 18, background: TB.border, flexShrink: 0, margin: "0 2px" }} />
