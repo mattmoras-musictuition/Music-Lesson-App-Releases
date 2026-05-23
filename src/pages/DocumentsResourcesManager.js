@@ -20,7 +20,7 @@ import {
   makeStoragePath, uploadToBucket, signedUrlFor, deleteFromBucket,
 } from "../utils/storageHelpers";
 // Resources are a shared pool persisted per-row (no whole-list sync).
-import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName } from "../utils/resourcesDB";
+import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, resourceFileSharedByUpload, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName } from "../utils/resourcesDB";
 import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
 
 // Fixed Source filter options (the `source` column).
@@ -214,11 +214,28 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const cancelResource = () => { setREditId(null); setREditForm(null); setREditErr(""); };
   const deleteResource = async (id) => {
     const r = resources.find(r => r.id === id);
-    // If this row has an uploaded file, delete the storage object too
-    // (path parsed from the public file_url). Non-blocking.
+    // 8.1's RLS lets an admin delete ANY library item, so this confirm is the
+    // guard against an accidental deletion.
+    if (!window.confirm(`Remove "${r?.label || "this resource"}"?`)) return;
+    // Shared-file-safe (8.3b): if a teacher-app published upload still shares
+    // this stored file (a student_attachments row with resource_id = this
+    // resource AND a non-null storage_path), keep the file — only the resources
+    // row is deleted, and the FK then clears resource_id on referrers. If the
+    // referrer check itself errors, err safe and keep the file (a stray unused
+    // object is harmless; deleting an in-use file is not). Otherwise remove the
+    // storage object as before.
     if (r?.file_url) {
-      const path = storagePathFromResourceUrl(r.file_url);
-      if (path) deleteFromBucket(BUCKET_RESOURCES, path);
+      let sharedByUpload = false;
+      try {
+        sharedByUpload = await resourceFileSharedByUpload(id);
+      } catch (e) {
+        console.error("[resources delete] shared-file check failed — keeping file:", e);
+        sharedByUpload = true;
+      }
+      if (!sharedByUpload) {
+        const path = storagePathFromResourceUrl(r.file_url);
+        if (path) deleteFromBucket(BUCKET_RESOURCES, path);
+      }
     }
     setResources(prev => prev.filter(r => r.id !== id));
     if (rEditId === id) { setREditId(null); setREditForm(null); }

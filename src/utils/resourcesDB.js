@@ -106,6 +106,24 @@ export async function deleteResource(id) {
   if (error) throw new Error(error.message);
 }
 
+// Shared-file safety (cluster 8.3b): true when a teacher-app "published
+// upload" still shares this resource's stored file — a student_attachments
+// row with resource_id = this resource AND a non-null storage_path. The
+// caller uses this to decide whether deleting the resources row may also
+// remove the storage object. Throws on query error so the caller can err
+// safe (keep the file). The student_attachments SELECT policy is open to
+// any authenticated user, so this read is permitted from the admin app.
+export async function resourceFileSharedByUpload(resourceId) {
+  const { data, error } = await supabase
+    .from("student_attachments")
+    .select("id")
+    .eq("resource_id", resourceId)
+    .not("storage_path", "is", null)
+    .limit(1);
+  if (error) throw new Error(error.message);
+  return (data || []).length > 0;
+}
+
 // ── Resource Library view helpers (taxonomy + subject names) ──
 
 // Coerce an app_settings value (jsonb array, JSON-stringified array,
