@@ -21,6 +21,7 @@ import {
 } from "../utils/storageHelpers";
 // Resources are a shared pool persisted per-row (no whole-list sync).
 import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName } from "../utils/resourcesDB";
+import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
 
 // Fixed Source filter options (the `source` column).
 const SOURCE_OPTIONS = [
@@ -421,17 +422,25 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredResources.map(r => (
+                  {filteredResources.map(r => {
+                    const RowIcon = iconForResourceType(r.category)
+                      || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
+                    return (
                     <tr key={r.id}
                       style={{ background: rHovered === r.id ? colors.blueLight : colors.cardBg, borderBottom: "1px solid " + colors.borderLight }}
                       onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}>
                       {/* Name (+ origin line for student_note) */}
                       <td style={{ padding: "8px 12px", fontWeight: 600 }}>
-                        {r.label || <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>}
-                        {r.source === "student_note" && (() => {
-                          const subjName = resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps);
-                          return subjName ? <div style={{ fontSize: 11, fontWeight: 400, color: colors.textMuted, marginTop: 2 }}>from {subjName}'s notes</div> : null;
-                        })()}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <RowIcon size={16} style={{ flexShrink: 0, color: colors.textMuted }} />
+                          <div>
+                            {r.label || <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>}
+                            {r.source === "student_note" && (() => {
+                              const subjName = resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps);
+                              return subjName ? <div style={{ fontSize: 11, fontWeight: 400, color: colors.textMuted, marginTop: 2 }}>from {subjName}'s notes</div> : null;
+                            })()}
+                          </div>
+                        </div>
                       </td>
                       {/* Type */}
                       <td style={{ padding: "8px 12px" }}>
@@ -480,7 +489,8 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
               {filteredResources.length === 0 && resources.length > 0 && (
