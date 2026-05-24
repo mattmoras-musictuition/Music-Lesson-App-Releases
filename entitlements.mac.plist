@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Microphone access (voice notes feature). Without this entitlement,
+       the hardened-runtime app cannot access the mic even when Info.plist's
+       NSMicrophoneUsageDescription is set and the user has granted
+       permission in System Settings. Both pieces are required. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Standard Electron entitlements. The app loads JavaScript from disk
+       and runs an embedded V8 — required by every Electron app under
+       hardened runtime. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+
+  <!-- Outbound network for Supabase, Gmail API, GitHub releases auto-update. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+
+  <!-- Read user-selected files (attachment uploads, future features). -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>

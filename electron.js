@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, session, systemPreferences } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
@@ -286,8 +286,46 @@ ipcMain.handle("gmail-send", async (_e, { to, from, cc, bcc, subject, bodyHtml, 
   }
 });
 
+// ── Microphone permissions ─────────────────────────────────────────────────
+// The admin voice-notes feature records via getUserMedia + MediaRecorder,
+// which on macOS needs microphone access at three layers (mirrors the teacher
+// app's proven setup):
+//   1. Info.plist NSMicrophoneUsageDescription — via build.mac.extendInfo.
+//   2. Hardened-runtime entitlement com.apple.security.device.audio-input —
+//      via entitlements.mac.plist (build.mac.entitlements/entitlementsInherit).
+//   3. Electron permission gate — session.defaultSession's permission handler.
+//      The renderer's getUserMedia goes through this gate before reaching
+//      macOS; without granting "media" here the call rejects without ever
+//      surfacing a macOS prompt. Missing any one layer yields the same silent
+//      failure (no prompt, never appears in System Settings → Microphone).
+async function setupMicPermissions() {
+  // (3) Grant the Electron-side request gate for media (mic + camera). Scoped
+  // to media only; everything else continues to use Electron defaults.
+  if (session && session.defaultSession) {
+    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
+      if (permission === "media" || permission === "audioCapture") {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+  }
+
+  // (1) + (2) are build-config. On macOS we also proactively call
+  // askForMediaAccess so the OS prompt fires on first launch rather than
+  // waiting for the user's first click on the record button.
+  if (process.platform === "darwin" && systemPreferences?.askForMediaAccess) {
+    try {
+      await systemPreferences.askForMediaAccess("microphone");
+    } catch (e) {
+      console.warn("[mic] askForMediaAccess failed:", e?.message || e);
+    }
+  }
+}
+
 // ── App lifecycle ──────────────────────────────────────────────────────────
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await setupMicPermissions();
   createWindow();
   buildMenu();
   setupUpdater();

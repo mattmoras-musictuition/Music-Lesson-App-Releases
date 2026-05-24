@@ -43,7 +43,14 @@
           ]
         }
       ],
-      "darkModeSupport": true
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Matt Moras Music Tuition needs microphone access so you can record voice notes."
+      }
     },
     "files": [
       "build/**/*",
