@@ -14,7 +14,15 @@
 //     break that follows the active term, plus the active term itself.
 // ============================================================
 
-import { toLocalDateStr } from "./helpers";
+// Inlined from admin's helpers.js: teacher-app's helpers.js doesn't
+// export toLocalDateStr. Single-line YYYY-MM-DD local-date formatter
+// — semantically identical to admin's export.
+const toLocalDateStr = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
 /**
  * Snap a date to its Monday. Mutating-safe (works on a copy).
