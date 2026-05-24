@@ -29,6 +29,7 @@ import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contac
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
 import { loadResourcesFromSupabase } from "./utils/resourcesDB";
+import { signedUrlFor, BUCKET_VOICE_NOTES } from "./utils/storageHelpers";
 import { loadDocumentsFromSupabase, syncDocumentsToSupabase } from "./utils/documentsDB";
 import { loadInterruptionsFromSupabase, syncInterruptionsToSupabase } from "./utils/interruptionsDB";
 import { loadSpecialistsFromSupabase, syncSpecialistsToSupabase } from "./utils/specialistsDB";
@@ -6736,7 +6737,7 @@ export default function MusicTimetableApp() {
                         <span style={{ fontWeight: 600 }}>{time}</span>
                         <span>·</span>
                         <span>{date}</span>
-                        {note.audioDataUrl && <span style={{ marginLeft: "auto", fontSize: 10, color: colors.accent, fontWeight: 600 }}>● Audio</span>}
+                        {(note.audioDataUrl || note.audio_path) && <span style={{ marginLeft: "auto", fontSize: 10, color: colors.accent, fontWeight: 600 }}>● Audio</span>}
                       </div>
                       {!note._isShared && isEditing ? (
                         <textarea autoFocus value={editingNoteText} onChange={e => setEditingNoteText(e.target.value)}
@@ -6753,14 +6754,24 @@ export default function MusicTimetableApp() {
                         </div>
                       )}
                       <div style={{ display: "flex", gap: 6, marginTop: 10, alignItems: "center" }}>
-                        {note.audioDataUrl ? (
-                          <button onClick={() => {
+                        {(note.audioDataUrl || note.audio_path) ? (
+                          <button onClick={async () => {
                             if (playingNoteId === note.id) return;
-                            const a = new Audio(note.audioDataUrl);
                             setPlayingNoteId(note.id);
-                            a.onended = () => setPlayingNoteId(null);
-                            a.onerror = () => setPlayingNoteId(null);
-                            a.play();
+                            try {
+                              // Local notes have the audio in memory; shared notes
+                              // carry an object path in the private voice-notes bucket
+                              // and must be signed before playback.
+                              const src = note.audioDataUrl
+                                || await signedUrlFor(note.audio_path, 3600, BUCKET_VOICE_NOTES);
+                              if (!src) { setPlayingNoteId(null); return; }
+                              const a = new Audio(src);
+                              a.onended = () => setPlayingNoteId(null);
+                              a.onerror = () => setPlayingNoteId(null);
+                              await a.play();
+                            } catch (e) {
+                              setPlayingNoteId(null);
+                            }
                           }} title={playingNoteId === note.id ? "Playing…" : "Play recording"}
                             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", border: `1px solid ${playingNoteId === note.id ? colors.accent : colors.border}`, borderRadius: 6, background: playingNoteId === note.id ? colors.accentLight : colors.cardBg, color: playingNoteId === note.id ? colors.accent : colors.textMuted, fontSize: 12, cursor: playingNoteId === note.id ? "default" : "pointer", fontFamily: "inherit", minWidth: 64 }}
                             onMouseEnter={e => { if (playingNoteId !== note.id) { e.currentTarget.style.borderColor = colors.accent; e.currentTarget.style.color = colors.accent; }}}

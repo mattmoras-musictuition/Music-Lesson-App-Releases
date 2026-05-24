@@ -21,6 +21,9 @@ import { supabase } from "../supabaseClient";
 
 export const BUCKET_RESOURCES = "resources";
 export const BUCKET_DOCUMENTS = "teacher-documents";
+// Private bucket holding teacher voice-note audio uploaded by the teacher app.
+// Read-only here (admin plays via signed URLs); admin never uploads to it.
+export const BUCKET_VOICE_NOTES = "voice-notes";
 
 // Path pattern: <id>/<timestamp>-<random>.<ext>. ID scopes files to the
 // logical record (resource/document/timetable-export) so deletes can also
@@ -52,17 +55,19 @@ export async function uploadToBucket(bucket, storagePath, file) {
   }
 }
 
-// Generate a short-lived signed URL for the private documents bucket.
-// 3600s = 1hr; enough for a user clicking View, reloading once, etc.
-export async function signedUrlFor(storagePath, expiresIn = 3600) {
+// Generate a short-lived signed URL for a private bucket. Defaults to the
+// teacher-documents bucket (existing callers); pass BUCKET_VOICE_NOTES to sign
+// a voice-note audio object instead. 3600s = 1hr; enough for a user clicking
+// View / Play, reloading once, etc.
+export async function signedUrlFor(storagePath, expiresIn = 3600, bucket = BUCKET_DOCUMENTS) {
   try {
     const { data, error } = await supabase.storage
-      .from(BUCKET_DOCUMENTS)
+      .from(bucket)
       .createSignedUrl(storagePath, expiresIn);
     if (error) throw error;
     return data?.signedUrl || null;
   } catch (e) {
-    console.warn("[storage] sign failed", storagePath, e?.message || e);
+    console.warn("[storage] sign failed", bucket, storagePath, e?.message || e);
     return null;
   }
 }
