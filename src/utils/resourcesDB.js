@@ -43,7 +43,7 @@ function rowToResource(row) {
 // (stray UI fields like _isNew / gmailRef are dropped). created_at
 // is left to the DB default on insert and untouched on update.
 function resourceToRow(r) {
-  return {
+  const row = {
     id:                  r.id,
     label:               r.label       || null,
     url:                 r.url         || null,
@@ -60,6 +60,13 @@ function resourceToRow(r) {
     source_subject_type: r.source_subject_type || null,
     source_subject_id:   r.source_subject_id   || null,
   };
+  // The shared `resources` INSERT RLS is WITH CHECK (auth.uid() = user_id),
+  // so the Student-Notes publish path (studentNotesDB.publishUploadToLibrary /
+  // addUploadToLibrary) passes an explicit user_id that must reach the row.
+  // Admin Resource Library writes never set user_id, so only forward it when
+  // the caller supplies one — keeping admin write behaviour unchanged.
+  if (r.user_id !== undefined && r.user_id !== null) row.user_id = r.user_id;
+  return row;
 }
 
 // Load the whole shared library (all rows), mapped through the full
@@ -84,12 +91,23 @@ export async function insertResource(resource) {
   return rowToResource(data);
 }
 
-// Update one resource row by id; returns the mapped, DB-canonical row.
-export async function updateResource(resource) {
+// Update one resource row; returns the mapped, DB-canonical row.
+//
+// Accepts two call shapes:
+//   • updateResource(resource)   — full resource object (admin Resource
+//     Library): mapped through resourceToRow, updated by resource.id.
+//   • updateResource(id, patch)  — partial column patch by id (the shape the
+//     mirrored studentNotesDB.editLibraryItem uses). The patch is applied
+//     verbatim; only the named columns change.
+// Both return the mapped, DB-canonical row.
+export async function updateResource(idOrResource, patch) {
+  const isPatchForm = typeof idOrResource === "string";
+  const id      = isPatchForm ? idOrResource : idOrResource.id;
+  const updates = isPatchForm ? patch : resourceToRow(idOrResource);
   const { data, error } = await supabase
     .from("resources")
-    .update(resourceToRow(resource))
-    .eq("id", resource.id)
+    .update(updates)
+    .eq("id", id)
     .select("*")
     .single();
   if (error) throw new Error(error.message);
@@ -182,4 +200,98 @@ export function resolveSubjectName(subjectType, subjectId, maps) {
   const m = subjectType === "group" ? maps.groupsById : maps.studentsById;
   const name = m?.get(subjectId);
   return name || null;
+}
+
+// ── Student Notes feature additions (cluster 6.1) ─────────────
+//
+// Ported from the teacher-app resourcesDB.js to support the Student Notes
+// attachment / library-picker surface (studentNotesDB.js + later admin
+// components). resourcesDB.js is per-app (NOT a byte-identical mirror), so
+// these live alongside the admin-specific exports above. They operate on RAW
+// `resources` rows (no rowToResource mapping) because the Student-Notes code
+// path consumes the snake_case rows directly, mirroring the teacher app.
+
+// Load the whole shared library as raw rows, ordered by label. (Distinct from
+// loadResourcesFromSupabase, which maps rows for the admin Resource Library.)
+export async function loadResources() {
+  const { data, error } = await supabase
+    .from("resources")
+    .select("*")
+    .order("label", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+// Find library resources whose name matches `name`, case-insensitively.
+// Compares against both the resource's stored file_name and its label, so
+// an incoming file matches whether the library item was named after the
+// file or given a custom label. Operates on an already-loaded resources
+// array — no fetch. Returns the matching rows (empty array = no match).
+export function findResourcesByName(resources, name) {
+  const q = (name || "").trim().toLowerCase();
+  if (!q) return [];
+  return (resources || []).filter(r => {
+    const fn = (r.file_name || "").trim().toLowerCase();
+    const lb = (r.label || "").trim().toLowerCase();
+    return fn === q || lb === q;
+  });
+}
+
+// Shared-file-safe delete of a resources row (8.3a logic, extracted in 8.4 so
+// the Resources tab and the Student-Notes "remove from library" path share it).
+// Before removing the storage object, check for a teacher-app published upload
+// that still shares this file — a student_attachments row with resource_id =
+// this resource AND a non-null storage_path. If one exists, KEEP the file (only
+// the resources row is deleted; the FK then clears resource_id on referrers). If
+// the referrer check itself errors, err safe and keep the file. Then delete the
+// resources row.
+export async function deleteResourceSharedFileSafe(resource) {
+  if (!resource?.id) return;
+  if (resource.file_url) {
+    let sharedByUpload = false;
+    try {
+      const { data, error } = await supabase
+        .from("student_attachments")
+        .select("id")
+        .eq("resource_id", resource.id)
+        .not("storage_path", "is", null)
+        .limit(1);
+      if (error) throw error;
+      sharedByUpload = (data || []).length > 0;
+    } catch (e) {
+      console.error("[resources delete] shared-file check failed — keeping file:", e);
+      sharedByUpload = true;
+    }
+    if (!sharedByUpload) {
+      const match = resource.file_url.match(/\/object\/public\/resources\/(.+)$/);
+      if (match) {
+        await supabase.storage.from("resources").remove([decodeURIComponent(match[1])]);
+      }
+    }
+  }
+  const { error } = await supabase.from("resources").delete().eq("id", resource.id);
+  if (error) throw error;
+}
+
+// Realtime subscription on the shared `resources` library table. Fires onChange
+// with the postgres_changes payload for every insert/update/delete on the table
+// (no filter — the library is a shared pool). Mirrors the established pattern in
+// studentNotesDB (subscribeToSubjectNotes / subscribeToSubjectAttachments): one
+// channel, "*" event, public schema; returns an unsubscribe fn. The channel
+// name carries a per-subscriber uuid so the two views (Resources tab + Student
+// Notes) and any remount never collide on one channel.
+//
+// NOTE: this only receives events if the `resources` table is in the database's
+// realtime publication (verified/enabled separately). Until then it is inert —
+// the subscription is harmless and starts delivering once the publication is on.
+export function subscribeToResources(onChange) {
+  const channel = supabase
+    .channel(`resources:${crypto.randomUUID()}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "resources" },
+      payload => onChange(payload)
+    )
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
 }
