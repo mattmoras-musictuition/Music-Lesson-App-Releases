@@ -620,33 +620,39 @@ export function StudentNotesView({
   // ── Row + small presentational pieces ─────────────────────
   const SubjectRow = ({ subj }) => {
     const isSel = selected && selected.type === subj.type && selected.id === subj.id;
+    const [hover, setHover] = useState(false);
+    // Navy highlight (the admin standard for selected/active list rows —
+    // sidebarActive selected, sidebarHover on hover) flips the row's content to
+    // the inverted light colour (colors.white) so name, subline and group icon
+    // stay readable against it. Resting unselected rows are unchanged.
+    const active = isSel || hover;
     return (
       <button
         onClick={() => setSelected({ type: subj.type, id: subj.id })}
         title={subj.displayName}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         style={{
           display: "flex", alignItems: "center", gap: 8, width: "100%",
           padding: "7px 10px", border: "none", borderRadius: 7, cursor: "pointer",
-          background: isSel ? colors.accentLight : "transparent",
+          background: isSel ? colors.sidebarActive : hover ? colors.sidebarHover : "transparent",
           textAlign: "left", fontFamily: "inherit", marginBottom: 1,
           transition: "background 0.12s",
         }}
-        onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = colors.sidebarHover; }}
-        onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = "transparent"; }}
       >
         {subj.type === "group" && (
-          <Users size={13} style={{ flexShrink: 0, color: isSel ? colors.accent : colors.textMuted }} />
+          <Users size={13} style={{ flexShrink: 0, color: active ? colors.white : colors.textMuted }} />
         )}
         <span style={{ flex: 1, minWidth: 0 }}>
           <span style={{
             display: "block", fontSize: 13, fontWeight: isSel ? 600 : 500,
-            color: isSel ? colors.accent : colors.text,
+            color: active ? colors.white : colors.text,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
             {subj.displayName}
           </span>
           {subj.type === "student" && subj.className && (
-            <span style={{ display: "block", fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
+            <span style={{ display: "block", fontSize: 11, color: active ? colors.white : colors.textMuted, marginTop: 1 }}>
               {subj.className}
             </span>
           )}
