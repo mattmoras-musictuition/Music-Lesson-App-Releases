@@ -19,7 +19,7 @@
 // prep for 6.3's note authoring; it has no visible effect in 6.2.
 // ============================================================
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Users, Search, X, ChevronRight, ChevronDown } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { supabase } from "../supabaseClient";
@@ -27,6 +27,24 @@ import { PageTitle, EmptyState } from "../components/ui/SharedUI";
 import { preferredDisplayName, preferredFirstName } from "../utils/studentName";
 import { buildStudentMTTTeacherIndex } from "../utils/helpers";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
+import { getNotesForSubject, upsertNote, deleteNote, subscribeToSubjectNotes } from "../utils/studentNotesDB";
+import { SubjectNotesPage } from "../components/SubjectNotesPage";
+
+// Raw realtime row (snake_case) → camelCase note, matching studentNotesDB's
+// noteFromRow shape so optimistic state and realtime updates stay aligned.
+function realtimeRowToNote(row) {
+  return {
+    id:          row.id,
+    subjectType: row.subject_type,
+    subjectId:   row.subject_id,
+    weekKey:     row.week_key,
+    termId:      row.term_id    || null,
+    authorId:    row.author_id,
+    body:        row.body       || {},
+    createdAt:   row.created_at || "",
+    updatedAt:   row.updated_at || "",
+  };
+}
 
 function firstNameOf(full) {
   return preferredFirstName(full);
@@ -58,20 +76,20 @@ export function StudentNotesView({
   enrolments = [],
   timetable = null,
   teacherCoverage = [],
+  interruptions = [],
 }) {
   const { colors } = useTheme();
 
   // ── Component state ───────────────────────────────────────
-  // myTeacherId is resolved on mount but not read in 6.2 — it is prep for
-  // 6.3's note authoring (the author identity). Intentionally unused here.
-  // eslint-disable-next-line no-unused-vars
-  const [myTeacherId, setMyTeacherId] = useState(null);          // prep for 6.3
+  const [myTeacherId, setMyTeacherId] = useState(null);          // author identity (6.3)
   const [selected, setSelected] = useState(null);                // { type, id } | null
   const [search, setSearch] = useState("");
   const [filterTeacher, setFilterTeacher] = useState("");
   const [filterClass, setFilterClass] = useState("");
   const [filterType, setFilterType] = useState("");              // "" | "student" | "group"
   const [expandedSchools, setExpandedSchools] = useState(() => new Set()); // collapsed by default
+  const [notes, setNotes] = useState([]);                        // notes for the selected subject
+  const [notesLoading, setNotesLoading] = useState(false);
 
   // ── Resolve the admin's own teacher id (prep for 6.3 authoring) ──
   // No visible effect in 6.2. Fail soft: hold null + log, never break the list.
@@ -126,6 +144,136 @@ export function StudentNotesView({
     }
     return ids;
   };
+
+  // ── Lookups for the subject page ──────────────────────────
+  const groupsById = useMemo(() => {
+    const m = new Map();
+    for (const g of groups) m.set(g.id, g);
+    return m;
+  }, [groups]);
+
+  const teachersById = useMemo(() => {
+    const m = new Map();
+    for (const t of teachers) m.set(t.id, t);
+    return m;
+  }, [teachers]);
+
+  const schoolName = useCallback((id) => schoolsById.get(id)?.name || "", [schoolsById]);
+
+  // Term boundaries for the subject page, from the admin's interruptions
+  // (term_break entries) — same source the rest of the app uses.
+  const termBreaks = useMemo(
+    () => (interruptions || [])
+      .filter(i => i.type === "term_break")
+      .map(i => ({ date: i.date, endDate: i.endDate || null })),
+    [interruptions]
+  );
+
+  const lessons = useMemo(() => timetable?.lessons || [], [timetable]);
+
+  // Primary teacher for the selected subject — same source as 6.2's teacher
+  // filter: group.teacherId for groups; first MTT-resolved teacher for a
+  // student. Returns { id, name, colour } or null when unassigned.
+  const selectedPrimaryTeacher = useMemo(() => {
+    if (!selected) return null;
+    let tid = null;
+    if (selected.type === "group") {
+      tid = groupsById.get(selected.id)?.teacherId || null;
+    } else {
+      const st = studentsById.get(selected.id);
+      if (st) {
+        for (const en of activeEnrolmentsFor(st.id, enrolments)) {
+          if (en.isGroup) continue;
+          const t = mttTeacherIdx.get(`${st.id}:${(en.instrument || "").trim().toLowerCase()}`);
+          if (t) { tid = t; break; }
+        }
+      }
+    }
+    if (!tid) return null;
+    const t = teachersById.get(tid);
+    return { id: tid, name: t?.name || "", colour: t?.colour || t?.color || null };
+  }, [selected, groupsById, studentsById, teachersById, enrolments, mttTeacherIdx]);
+
+  // ── Notes for the selected subject (cancellable load) ─────
+  useEffect(() => {
+    if (!selected) { setNotes([]); setNotesLoading(false); return; }
+    let cancelled = false;
+    setNotesLoading(true);
+    (async () => {
+      try {
+        const rows = await getNotesForSubject(selected.type, selected.id);
+        if (!cancelled) setNotes(rows);
+      } catch (e) {
+        console.error("[student-notes] notes load error:", e);
+        if (!cancelled) setNotes([]);
+      } finally {
+        if (!cancelled) setNotesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selected]);
+
+  // ── Note writes (optimistic) ──────────────────────────────
+  const handleSaveNote = useCallback(async (weekKey, termId, body) => {
+    if (!selected || !myTeacherId) return;
+    const existing = notes.find(n => n.weekKey === weekKey && n.authorId === myTeacherId);
+    if (body == null) {                 // empty body → delete any existing row
+      if (existing) {
+        await deleteNote(existing.id);
+        setNotes(prev => prev.filter(n => n.id !== existing.id));
+      }
+      return;
+    }
+    const row = await upsertNote({
+      subjectType: selected.type, subjectId: selected.id,
+      weekKey, termId, authorId: myTeacherId, body,
+    });
+    setNotes(prev => {
+      const idx = prev.findIndex(n => n.id === row.id);
+      if (idx >= 0) { const next = prev.slice(); next[idx] = row; return next; }
+      return [...prev, row];
+    });
+  }, [selected, myTeacherId, notes]);
+
+  const handleDeleteNote = useCallback(async (id) => {
+    await deleteNote(id);
+    setNotes(prev => prev.filter(n => n.id !== id));
+  }, []);
+
+  // ── Realtime: live sync of other authors' (and cross-tab) edits ─
+  // The guard ignores echoes of my own in-progress typing (within 2s of my
+  // last keystroke) so the cursor never jumps mid-edit; everything else applies.
+  const editActivityRef = useRef({ weekKey: null, ts: 0 });
+  const handleEditActivity = useCallback((weekKey) => {
+    editActivityRef.current = { weekKey, ts: Date.now() };
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    const unsubscribe = subscribeToSubjectNotes(selected.type, selected.id, (payload) => {
+      const row = payload.new || payload.old;
+      if (!row) return;
+      if (row.author_id === myTeacherId) {
+        const a = editActivityRef.current;
+        if (a.weekKey === row.week_key && Date.now() - a.ts < 2000) return;
+      }
+      setNotes(prev => {
+        if (payload.eventType === "DELETE") {
+          const id = payload.old?.id;
+          return id ? prev.filter(n => n.id !== id) : prev;
+        }
+        const note = realtimeRowToNote(payload.new);
+        const idx = prev.findIndex(n => n.id === note.id);
+        if (idx >= 0) {
+          const next = prev.slice();
+          next[idx] = { ...next[idx], ...note };
+          return next;
+        }
+        return [...prev, note];
+      });
+    });
+    return unsubscribe;
+  }, [selected, myTeacherId]);
 
   // ── Unified subject list (students + groups) ──────────────
   const subjects = useMemo(() => {
@@ -389,17 +537,30 @@ export function StudentNotesView({
           </div>
         </div>
 
-        {/* ── Right pane: placeholder (6.3 replaces with SubjectNotesPage) ── */}
+        {/* ── Right pane: subject notes page (or empty state) ── */}
         <div style={{
-          flex: 1, border: `1px solid ${colors.border}`, borderRadius: 12,
-          background: colors.cardBg, overflow: "auto", display: "flex",
-          alignItems: "center", justifyContent: "center",
+          flex: 1, minWidth: 0, border: `1px solid ${colors.border}`, borderRadius: 12,
+          background: colors.cardBg, overflow: "hidden", display: "flex",
+          alignItems: selected ? "stretch" : "center", justifyContent: selected ? "stretch" : "center",
         }}>
           {selected ? (
-            <EmptyState
-              icon="📝"
-              title="Notes coming soon"
-              subtitle="The per-subject notes page is added in the next update."
+            <SubjectNotesPage
+              selected={selected}
+              setSelected={setSelected}
+              myTeacherId={myTeacherId}
+              lessons={lessons}
+              enrolments={enrolments}
+              studentsById={studentsById}
+              groupsById={groupsById}
+              schoolName={schoolName}
+              teachersById={teachersById}
+              primaryTeacher={selectedPrimaryTeacher}
+              termBreaks={termBreaks}
+              notes={notes}
+              notesLoading={notesLoading}
+              onSaveNote={handleSaveNote}
+              onDeleteNote={handleDeleteNote}
+              onEditActivity={handleEditActivity}
             />
           ) : (
             <EmptyState

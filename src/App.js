@@ -6314,7 +6314,7 @@ export default function MusicTimetableApp() {
                 return next;
               });
             }} />}
-          {page === "studentnotes" && <StudentNotesView students={students} groups={groups} schools={schools} teachers={teachers} enrolments={enrolments} timetable={timetable} teacherCoverage={teacherCoverage} />}
+          {page === "studentnotes" && <StudentNotesView students={students} groups={groups} schools={schools} teachers={teachers} enrolments={enrolments} timetable={timetable} teacherCoverage={teacherCoverage} interruptions={interruptions} />}
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} />}
           {page === "pending" && <PendingManager students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("pending"); setPage("students"); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "groups-bands" && (
