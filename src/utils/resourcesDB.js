@@ -47,7 +47,12 @@ function resourceToRow(r) {
     id:                  r.id,
     label:               r.label       || null,
     url:                 r.url         || null,
-    category:            r.category    || null,
+    // resources.category is `text NOT NULL DEFAULT ''` (see studentNotesDB
+    // publish path) — '' means "no type". Preserve a string verbatim (incl.
+    // '') rather than coercing '' → null, which would violate the NOT NULL
+    // constraint when the Student-Notes publish path writes a no-type row.
+    // Non-string/undefined falls back to '' so the column is never null.
+    category:            typeof r.category === "string" ? r.category : (r.category ?? ""),
     description:         r.description || null,
     file_url:            r.file_url    || null,
     file_name:           r.file_name   || null,

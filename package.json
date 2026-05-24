@@ -72,6 +72,7 @@
     "@tiptap/react": "^3.23.5",
     "electron-updater": "^6.8.3",
     "lucide-react": "^1.0.1",
+    "pdfjs-dist": "5.7.284",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-scripts": "5.0.1",
