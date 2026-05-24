@@ -6,7 +6,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useRef } from "react";
-import { House, Calendar, CalendarDays, LayoutGrid, ClipboardCheck, GraduationCap, Clock, Palette, Building2, Guitar, BookUser, Library, Settings, Piano, MessageSquare, Lightbulb, Receipt, ChevronDown, ChevronUp } from "lucide-react";
+import { House, Calendar, CalendarDays, LayoutGrid, ClipboardCheck, GraduationCap, NotebookPen, Clock, Palette, Building2, Guitar, BookUser, Library, Settings, Piano, MessageSquare, Lightbulb, Receipt, ChevronDown, ChevronUp } from "lucide-react";
 
 // ── Constants & config ──────────────────────────────────────
 import { colors as lightColors, darkColors, DAYS, STORAGE_KEYS, APP_VERSION, DATA_VERSION, TIMEZONE, HEADER_HEIGHT } from "./constants";
@@ -72,6 +72,7 @@ import { DocumentsResourcesManager } from "./pages/DocumentsResourcesManager";
 import { SpecialistManager } from "./pages/SpecialistManager";
 import { CalendarManager } from "./pages/CalendarManager";
 import { StudentsManager } from "./pages/StudentsManager";
+import { StudentNotesView } from "./pages/StudentNotesView";
 import { TimetableView } from "./pages/TimetableView";
 import { WeeklyAdjustments } from "./pages/WeeklyAdjustments";
 import { ContactsManager } from "./pages/ContactsManager";
@@ -5230,6 +5231,7 @@ export default function MusicTimetableApp() {
             { id: "weekly", icon: <CalendarDays size={16} />, label: "Weekly Adjustments" },
             { id: "tally", icon: <ClipboardCheck size={16} />, label: "Master Tally" },
             { id: "students", icon: <GraduationCap size={16} />, label: "Students" },
+            { id: "studentnotes", icon: <NotebookPen size={16} />, label: "Student Notes" },
             { id: "groups-bands", icon: <Piano size={16} />, label: "Groups & Bands" },
             { id: "pending", icon: <Clock size={16} />, label: "Waiting List" },
             { id: "specialists", icon: <Palette size={16} />, label: "Specialist Classes" },
@@ -6312,6 +6314,7 @@ export default function MusicTimetableApp() {
                 return next;
               });
             }} />}
+          {page === "studentnotes" && <StudentNotesView students={students} groups={groups} schools={schools} teachers={teachers} enrolments={enrolments} timetable={timetable} teacherCoverage={teacherCoverage} />}
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} />}
           {page === "pending" && <PendingManager students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("pending"); setPage("students"); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "groups-bands" && (
