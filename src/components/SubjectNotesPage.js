@@ -37,6 +37,7 @@ import { preferredDisplayName } from "../utils/studentName";
 import { renderNoteBody } from "../utils/noteBody";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
 import { NoteEditor } from "./NoteEditor";
+import { AttachmentsPanel } from "./AttachmentsPanel";
 
 // ── Small helpers ────────────────────────────────────────────
 function fmtTimestamp(iso) {
@@ -64,6 +65,9 @@ export function SubjectNotesPage({
   termBreaks,
   notes, notesLoading,
   onSaveNote, onDeleteNote, onEditActivity,
+  // Attachments (cluster 6.3b)
+  attachments, onAddFile, onAddLink, onDeleteAttachment, onSaveAttachmentEdit, onOpenAttachment,
+  resourcesById, resourcesLoaded, resourceTypes, onRefreshResources, onAttachFromLibrary, onPublishFile,
 }) {
   const { colors, darkMode } = useTheme();
 
@@ -402,7 +406,26 @@ export function SubjectNotesPage({
       <div style={{ overflowY: "auto" }}>
         <Header />
         <div style={{ padding: "16px 20px 24px" }}>
-          {/* ── Attachments seam — cluster 6.3b re-adds <AttachmentsPanel> here. ── */}
+          {selected && (
+            <AttachmentsPanel
+              subjectType={selected.type}
+              subjectId={selected.id}
+              authorId={myTeacherId}
+              attachments={attachments}
+              teachersById={teachersById}
+              resourcesById={resourcesById}
+              resourcesLoaded={resourcesLoaded}
+              resourceTypes={resourceTypes}
+              onRefreshResources={onRefreshResources}
+              onAddFile={onAddFile}
+              onAddLink={onAddLink}
+              onDelete={onDeleteAttachment}
+              onSaveEdit={onSaveAttachmentEdit}
+              onOpen={onOpenAttachment}
+              onAttachFromLibrary={onAttachFromLibrary}
+              onPublishFile={onPublishFile}
+            />
+          )}
           {notesLoading && (
             <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
               Loading notes…

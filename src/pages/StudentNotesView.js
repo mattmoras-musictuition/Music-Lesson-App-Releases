@@ -27,8 +27,15 @@ import { PageTitle, EmptyState } from "../components/ui/SharedUI";
 import { preferredDisplayName, preferredFirstName } from "../utils/studentName";
 import { buildStudentMTTTeacherIndex } from "../utils/helpers";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
-import { getNotesForSubject, upsertNote, deleteNote, subscribeToSubjectNotes } from "../utils/studentNotesDB";
+import {
+  getNotesForSubject, upsertNote, deleteNote, subscribeToSubjectNotes,
+  getAttachmentsForSubject, uploadFileAttachment, addLinkAttachment, deleteAttachment,
+  renameAttachment, subscribeToSubjectAttachments, addLibraryReference, publishUploadToLibrary,
+  addUploadToLibrary, removeUploadFromLibrary, editLibraryItem, classifyAttachment,
+} from "../utils/studentNotesDB";
+import { loadResources, fetchResourceTaxonomies, subscribeToResources } from "../utils/resourcesDB";
 import { SubjectNotesPage } from "../components/SubjectNotesPage";
+import { LinkBrowser } from "../components/LinkBrowser";
 
 // Raw realtime row (snake_case) → camelCase note, matching studentNotesDB's
 // noteFromRow shape so optimistic state and realtime updates stay aligned.
@@ -44,6 +51,30 @@ function realtimeRowToNote(row) {
     createdAt:   row.created_at || "",
     updatedAt:   row.updated_at || "",
   };
+}
+
+// Raw realtime attachment row (snake_case) → camelCase + classification,
+// matching studentNotesDB.attachmentFromRow so realtime rows carry the same
+// isUploadedFile/isUploadedLink/isReference/inLibrary flags as the initial load.
+function realtimeRowToAttachment(row) {
+  const att = {
+    id:            row.id,
+    subjectType:   row.subject_type,
+    subjectId:     row.subject_id,
+    authorId:      row.author_id,
+    kind:          row.kind,
+    storagePath:   row.storage_path    || null,
+    fileName:      row.file_name       || null,
+    fileSizeBytes: row.file_size_bytes ?? null,
+    mimeType:      row.mime_type       || null,
+    url:           row.url             || null,
+    pageTitle:     row.page_title      || null,
+    ogImageUrl:    row.og_image_url    || null,
+    displayLabel:  row.display_label   || null,
+    resourceId:    row.resource_id     || null,
+    createdAt:     row.created_at      || "",
+  };
+  return { ...att, ...classifyAttachment(att) };
 }
 
 function firstNameOf(full) {
@@ -90,6 +121,11 @@ export function StudentNotesView({
   const [expandedSchools, setExpandedSchools] = useState(() => new Set()); // collapsed by default
   const [notes, setNotes] = useState([]);                        // notes for the selected subject
   const [notesLoading, setNotesLoading] = useState(false);
+  const [attachments, setAttachments] = useState([]);            // attachments for the selected subject
+  const [resourcesById, setResourcesById] = useState(() => new Map()); // id → raw resources row (reference resolution)
+  const [resourcesLoaded, setResourcesLoaded] = useState(false); // false until the library has loaded (avoids dead-reference flash)
+  const [resourceTypes, setResourceTypes] = useState([]);        // Type options for attachment edit/publish
+  const [browserLink, setBrowserLink] = useState(null);          // { url, title } | null — in-app browser
 
   // ── Resolve the admin's own teacher id (prep for 6.3 authoring) ──
   // No visible effect in 6.2. Fail soft: hold null + log, never break the list.
@@ -274,6 +310,202 @@ export function StudentNotesView({
     });
     return unsubscribe;
   }, [selected, myTeacherId]);
+
+  // ── Attachments for the selected subject (cancellable load) ─
+  useEffect(() => {
+    if (!selected) { setAttachments([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await getAttachmentsForSubject(selected.type, selected.id);
+        if (!cancelled) setAttachments(rows);
+      } catch (e) {
+        console.error("[student-notes] attachments load error:", e);
+        if (!cancelled) setAttachments([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selected]);
+
+  // ── Shared resources library (for reference resolution + Type options) ─
+  // Refresh on mount; resourcesLoaded only flips true on success so a failed
+  // load never marks live references dead.
+  const refreshResources = useCallback(async () => {
+    try {
+      const rows = await loadResources();
+      setResourcesById(new Map((rows || []).map(r => [r.id, r])));
+      setResourcesLoaded(true);
+    } catch { /* keep last-known snapshot */ }
+  }, []);
+
+  useEffect(() => {
+    refreshResources();
+    fetchResourceTaxonomies()
+      .then(tax => setResourceTypes(tax?.resourceTypes || []))
+      .catch(() => {});
+  }, [refreshResources]);
+
+  // ── Realtime: attachments (no edit guard needed) ────────────
+  useEffect(() => {
+    if (!selected) return;
+    const unsubscribe = subscribeToSubjectAttachments(selected.type, selected.id, (payload) => {
+      setAttachments(prev => {
+        if (payload.eventType === "DELETE") {
+          const id = payload.old?.id;
+          return id ? prev.filter(a => a.id !== id) : prev;
+        }
+        const att = realtimeRowToAttachment(payload.new);
+        const idx = prev.findIndex(a => a.id === att.id);
+        if (idx >= 0) { const next = prev.slice(); next[idx] = att; return next; }
+        return [...prev, att];
+      });
+    });
+    return unsubscribe;
+  }, [selected]);
+
+  // ── Realtime: the shared resources library ──────────────────
+  // Keeps resourcesById live so reference attachments re-resolve without a
+  // restart. Rows stored raw (snake_case), matching loadResources / the payload.
+  useEffect(() => {
+    const unsubscribe = subscribeToResources((payload) => {
+      setResourcesById(prev => {
+        const m = new Map(prev);
+        if (payload.eventType === "DELETE") {
+          const id = payload.old?.id;
+          if (id) m.delete(id);
+        } else if (payload.new?.id) {
+          m.set(payload.new.id, payload.new);
+        }
+        return m;
+      });
+    });
+    return unsubscribe;
+  }, []);
+
+  // Derive the library-row fields auto-set from the current subject (school,
+  // instrument, teacher name) for publish / add-to-library. Admin shape:
+  // camelCase schoolId; a student's instrument comes from active enrolments
+  // (student.instruments is deprecated/empty); a group carries its own
+  // instrument.
+  const deriveSubjectLibraryFields = useCallback(() => {
+    let schoolId = null, instrument = null;
+    if (!selected) return { schoolId, instrument, teacherName: "" };
+    if (selected.type === "student") {
+      const s = studentsById.get(selected.id);
+      schoolId = s?.schoolId || null;
+      instrument = activeEnrolmentsFor(selected.id, enrolments).map(e => e.instrument).find(Boolean) || null;
+    } else {
+      const g = groupsById.get(selected.id);
+      schoolId = g?.schoolId || null;
+      instrument = g?.instrument || null;
+    }
+    const teacherName = teachersById.get(myTeacherId)?.name || "";
+    return { schoolId, instrument, teacherName };
+  }, [selected, myTeacherId, studentsById, groupsById, teachersById, enrolments]);
+
+  // ── Attachment writes (optimistic) ──────────────────────────
+  const handleAddFile = useCallback(async (file, displayLabel) => {
+    if (!selected || !myTeacherId) return;
+    const row = await uploadFileAttachment({
+      subjectType: selected.type, subjectId: selected.id, authorId: myTeacherId, file, displayLabel,
+    });
+    setAttachments(prev => (prev.some(a => a.id === row.id) ? prev : [...prev, row]));
+  }, [selected, myTeacherId]);
+
+  const handleAddLink = useCallback(async (url, displayLabel) => {
+    if (!selected || !myTeacherId) return;
+    const row = await addLinkAttachment({
+      subjectType: selected.type, subjectId: selected.id, authorId: myTeacherId, url, displayLabel,
+    });
+    setAttachments(prev => (prev.some(a => a.id === row.id) ? prev : [...prev, row]));
+  }, [selected, myTeacherId]);
+
+  const handleDeleteAttachment = useCallback(async (row) => {
+    await deleteAttachment(row);
+    setAttachments(prev => prev.filter(a => a.id !== row.id));
+  }, []);
+
+  // Attach an existing library item by reference (no copy). Never throws —
+  // returns { ok }. On failure (e.g. the resource was deleted between the
+  // snapshot and the click, so the FK rejects) we drop the stale entry.
+  const handleAttachFromLibrary = useCallback(async (resource) => {
+    if (!selected || !myTeacherId || !resource?.id) return { ok: false };
+    try {
+      const row = await addLibraryReference({
+        subjectType: selected.type, subjectId: selected.id, authorId: myTeacherId, resource,
+      });
+      setResourcesById(prev => { const m = new Map(prev); m.set(resource.id, resource); return m; });
+      setAttachments(prev => (prev.some(a => a.id === row.id) ? prev : [...prev, row]));
+      return { ok: true };
+    } catch (e) {
+      console.error("[attach-from-library] failed — the resource may have been removed:", e);
+      setResourcesById(prev => { if (!prev.has(resource.id)) return prev; const m = new Map(prev); m.delete(resource.id); return m; });
+      return { ok: false };
+    }
+  }, [selected, myTeacherId]);
+
+  // Opt-in publish: upload a file AND create a library item referencing it.
+  const handlePublishFile = useCallback(async (file, displayLabel, category) => {
+    if (!selected || !myTeacherId) throw new Error("No subject selected");
+    const { schoolId, instrument, teacherName } = deriveSubjectLibraryFields();
+    const res = await publishUploadToLibrary({
+      subjectType: selected.type, subjectId: selected.id, authorId: myTeacherId, file,
+      schoolId, instrument, category, teacherId: myTeacherId, teacherName, displayLabel,
+    });
+    setAttachments(prev => (prev.some(a => a.id === res.attachment.id) ? prev : [...prev, res.attachment]));
+    if (res.published && res.resource) {
+      setResourcesById(prev => { const m = new Map(prev); m.set(res.resource.id, res.resource); return m; });
+    }
+    return res;
+  }, [selected, myTeacherId, deriveSubjectLibraryFields]);
+
+  // Full attachment edit: name (+ Type / library membership) per kind.
+  const handleSaveAttachmentEdit = useCallback(async (att, { name, category, inLibrary }) => {
+    if (!att) return;
+    const wasInLibrary = !!att.resourceId;
+
+    if (att.isReference) {             // owned pure reference → edit the library item
+      const { attachment, resource } = await editLibraryItem({
+        attachmentId: att.id, resourceId: att.resourceId, name, category,
+      });
+      setAttachments(prev => prev.map(a => (a.id === att.id ? attachment : a)));
+      if (resource) setResourcesById(prev => { const m = new Map(prev); m.set(resource.id, resource); return m; });
+      return;
+    }
+
+    if (att.isUploadedFile) {          // name/type + add/remove-from-library toggle
+      if (wasInLibrary && !inLibrary) {
+        const resource = resourcesById.get(att.resourceId) || null;
+        const { attachment } = await removeUploadFromLibrary({ attachment: att, resource, name });
+        setAttachments(prev => prev.map(a => (a.id === att.id ? attachment : a)));
+        setResourcesById(prev => { const m = new Map(prev); m.delete(att.resourceId); return m; });
+        return;
+      }
+      if (!wasInLibrary && inLibrary) {
+        const { schoolId, instrument, teacherName } = deriveSubjectLibraryFields();
+        const { attachment, resource } = await addUploadToLibrary({
+          attachment: att, name, category, schoolId, instrument, teacherId: myTeacherId, teacherName,
+        });
+        setAttachments(prev => prev.map(a => (a.id === att.id ? attachment : a)));
+        setResourcesById(prev => { const m = new Map(prev); m.set(resource.id, resource); return m; });
+        return;
+      }
+      if (wasInLibrary && inLibrary) {
+        const { attachment, resource } = await editLibraryItem({
+          attachmentId: att.id, resourceId: att.resourceId, name, category,
+        });
+        setAttachments(prev => prev.map(a => (a.id === att.id ? attachment : a)));
+        if (resource) setResourcesById(prev => { const m = new Map(prev); m.set(resource.id, resource); return m; });
+        return;
+      }
+      const row = await renameAttachment(att.id, name);   // plain file, not in library → name only
+      setAttachments(prev => prev.map(a => (a.id === att.id ? row : a)));
+      return;
+    }
+
+    const row = await renameAttachment(att.id, name);      // uploaded link → name only
+    setAttachments(prev => prev.map(a => (a.id === att.id ? row : a)));
+  }, [resourcesById, myTeacherId, deriveSubjectLibraryFields]);
 
   // ── Unified subject list (students + groups) ──────────────
   const subjects = useMemo(() => {
@@ -561,6 +793,18 @@ export function StudentNotesView({
               onSaveNote={handleSaveNote}
               onDeleteNote={handleDeleteNote}
               onEditActivity={handleEditActivity}
+              attachments={attachments}
+              resourcesById={resourcesById}
+              resourcesLoaded={resourcesLoaded}
+              resourceTypes={resourceTypes}
+              onRefreshResources={refreshResources}
+              onAddFile={handleAddFile}
+              onAddLink={handleAddLink}
+              onDeleteAttachment={handleDeleteAttachment}
+              onSaveAttachmentEdit={handleSaveAttachmentEdit}
+              onOpenAttachment={setBrowserLink}
+              onAttachFromLibrary={handleAttachFromLibrary}
+              onPublishFile={handlePublishFile}
             />
           ) : (
             <EmptyState
@@ -571,6 +815,14 @@ export function StudentNotesView({
           )}
         </div>
       </div>
+
+      {browserLink && (
+        <LinkBrowser
+          initialUrl={browserLink.url}
+          title={browserLink.title}
+          onClose={() => setBrowserLink(null)}
+        />
+      )}
     </>
   );
 }
