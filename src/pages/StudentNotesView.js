@@ -20,7 +20,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { Users, Search, X, ChevronRight, ChevronDown } from "lucide-react";
+import { Users, Search, X, ChevronRight, ChevronDown, StickyNote, Paperclip } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { supabase } from "../supabaseClient";
 import { PageTitle, EmptyState } from "../components/ui/SharedUI";
@@ -147,6 +147,33 @@ export function StudentNotesView({
         console.warn("[student-notes] my_teacher_id() threw:", e?.message || e);
         setMyTeacherId(null);
       });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Per-subject status flags for the left-panel rows ──────
+  // One query each (NOT per-row): which subjects have at least one note,
+  // and which have at least one attachment. Keyed `${subjectType}:${subjectId}`.
+  const [subjectsWithNotes, setSubjectsWithNotes] = useState(() => new Set());
+  const [subjectsWithAttachments, setSubjectsWithAttachments] = useState(() => new Set());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [notesRes, attsRes] = await Promise.all([
+          supabase.from("student_notes").select("subject_type, subject_id"),
+          supabase.from("student_attachments").select("subject_type, subject_id"),
+        ]);
+        if (cancelled) return;
+        if (!notesRes.error) {
+          setSubjectsWithNotes(new Set((notesRes.data || []).map(r => `${r.subject_type}:${r.subject_id}`)));
+        }
+        if (!attsRes.error) {
+          setSubjectsWithAttachments(new Set((attsRes.data || []).map(r => `${r.subject_type}:${r.subject_id}`)));
+        }
+      } catch (e) {
+        if (!cancelled) console.warn("[student-notes] row-status load failed:", e?.message || e);
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
@@ -621,6 +648,9 @@ export function StudentNotesView({
   const SubjectRow = ({ subj }) => {
     const isSel = selected && selected.type === subj.type && selected.id === subj.id;
     const [hover, setHover] = useState(false);
+    const subjKey = `${subj.type}:${subj.id}`;
+    const hasNotes = subjectsWithNotes.has(subjKey);
+    const hasAttachments = subjectsWithAttachments.has(subjKey);
     // Navy highlight (the admin standard for selected/active list rows —
     // sidebarActive selected, sidebarHover on hover) flips the row's content to
     // the inverted light colour (colors.white) so name, subline and group icon
@@ -657,6 +687,12 @@ export function StudentNotesView({
             </span>
           )}
         </span>
+        {(hasNotes || hasAttachments) && (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+            {hasNotes && <StickyNote size={13} style={{ color: active ? colors.white : colors.textMuted, opacity: active ? 0.9 : 0.65 }} />}
+            {hasAttachments && <Paperclip size={13} style={{ color: active ? colors.white : colors.textMuted, opacity: active ? 0.9 : 0.65 }} />}
+          </span>
+        )}
       </button>
     );
   };
