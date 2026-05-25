@@ -4494,7 +4494,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // adds `start: c.time` so the existing `l.start === time`
                 // cell filter at the per-cell map below sees the catchup
                 // at the right slot.
-                const enrichedCatchups = (catchups || []).map(c => {
+                // Scope catch-ups to the selected school before merging into
+                // the period grid (regular displayLessons are already
+                // school-scoped via the weekKey|selectedSchool storageKey).
+                // Fail-safe: no selectedSchool → no catch-ups (never leak all).
+                const enrichedCatchups = (selectedSchool ? (catchups || []).filter(c => c.schoolId === selectedSchool) : []).map(c => {
                   const en = (enrolments || []).find(e => e.id === c.enrolmentId);
                   const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
                   const base = en ? { ...c, studentId: en.studentId } : c;
