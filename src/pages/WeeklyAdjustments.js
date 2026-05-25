@@ -2406,10 +2406,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             dayLessons.forEach(l => {
               const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
               const t = teachers.find(x => x.id === tid);
-              if (t?.email && !staffEmailSet.has(t.email)) {
-                staffEmailSet.add(t.email);
-                staffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null });
-              }
+              if (!t) return;
+              // Add BOTH the app email and the personal email as recipients;
+              // skip whichever is blank so we never add an empty recipient.
+              [t.email, t.personalEmail].forEach(em => {
+                if (em && !staffEmailSet.has(em)) {
+                  staffEmailSet.add(em);
+                  staffRows.push({ name: t.name || em, email: em, color: t.color || null });
+                }
+              });
             });
             const allStaffEmails = [...staffEmailSet];
 
@@ -3748,8 +3753,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     // Cluster 12a: lane-resolved teacher only; stamped fallbacks gone.
                     const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
                     const t = teachers.find(x => x.id === tid);
-                    const email = t?.email;
-                    if (email && !staffMap[email]) staffMap[email] = { name: t?.name || email, color: t?.color || null };
+                    if (!t) return;
+                    // Add BOTH app + personal email; skip blanks (no empty recipient).
+                    [t.email, t.personalEmail].forEach(email => {
+                      if (email && !staffMap[email]) staffMap[email] = { name: t.name || email, color: t.color || null };
+                    });
                   });
                   const allStaffEmails = Object.keys(staffMap);
                   const staffRows = Object.entries(staffMap).map(([email, { name, color }]) => ({ email, name, color }));
