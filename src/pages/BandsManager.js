@@ -78,7 +78,7 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
     ? students.filter(s => s.schoolId === form.schoolId && s.status === "active" && !form.members.some(m => m.studentId === s.id) && s.name.toLowerCase().includes(memberSearch.toLowerCase())).slice(0, 6)
     : [];
 
-  const inputStyle = { width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+  const inputStyle = { width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.cardBg, color: colors.text };
   const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 };
 
   if (form) {
@@ -166,7 +166,7 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
                 <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.1)", zIndex: 100, marginTop: 2 }}>
                   {memberResults.map((s, idx) => (
                     <button key={s.id} onClick={() => { addMember(s); setMemberSearchIdx(-1); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: idx === memberSearchIdx ? colors.sidebarHover : "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: idx === memberSearchIdx ? colors.sidebarHover : "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: colors.text }}
                       onMouseEnter={e => { setMemberSearchIdx(idx); e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => e.currentTarget.style.background = idx === memberSearchIdx ? colors.sidebarHover : "none"}>
                       <span>{s.name}</span>
