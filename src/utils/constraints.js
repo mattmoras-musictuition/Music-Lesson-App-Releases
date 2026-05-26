@@ -12,6 +12,74 @@ import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin } from "./helpers";
 
+// ============================================================
+// v2.9.9 relational-constraint group acknowledge.
+// Single source of truth for the two RELATIONAL (paired) constraint
+// detections. Both checkConstraints (which pushes a warning string) and
+// getRelationalPartnerIds (which returns the conflicting lessons' ids, so
+// acknowledging one card of a conflict can clear the whole group) call these
+// — keep all relational matching here, never inline.
+// ============================================================
+
+// Same-day double-booking: other lessons for this student on the same day.
+// `day` is the candidate day (checkConstraints passes its newDay parameter;
+// getRelationalPartnerIds passes the lesson's own day).
+function findSameDayConflicts(lesson, day, lessons) {
+  return (lessons || []).filter(l => l.id !== lesson.id && l.day === day && (
+    l.studentId === lesson.studentId ||
+    (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId))
+  ));
+}
+
+// Dual class-time pullout: other class-time lessons for this student on a
+// DIFFERENT day. The caller gates on the subject lesson's own slot being a
+// "class" slot; this only classifies the partner lessons' slots via schoolSlots.
+function findClassTimeConflicts(lesson, day, lessons, schoolSlots) {
+  const otherClassLessons = (lessons || []).filter(l =>
+    l.id !== lesson.id &&
+    l.day !== day &&
+    (l.studentId === lesson.studentId || (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId)))
+  );
+  return otherClassLessons.filter(ol => {
+    const olSlot = (schoolSlots || []).find(sl => sl.start === ol.start);
+    return olSlot && olSlot.type === "class";
+  });
+}
+
+/**
+ * v2.9.9 relational-constraint group acknowledge.
+ * Return the ids of every lesson forming a relational conflict GROUP with
+ * `lesson` — the union of the two relational detections checkConstraints runs
+ * (same-day double-booking + dual class-time pullout). Returns the full group
+ * (not just a 2-id pair), so a 3+-lesson same-day clash is fully cleared when
+ * any one card is acknowledged.
+ *
+ * Solo-subject only: relational warning strings are pushed solely from
+ * checkConstraints' solo branch, so a group/band subject returns [] (and the
+ * subject-keyed studentId filter would otherwise mis-match group cards).
+ * Group/band PARTNERS are still returned (a solo lesson can clash with a group
+ * lesson that contains the same student).
+ *
+ * @param lesson         — the acknowledged solo lesson.
+ * @param lessons        — the week's lesson list (same list the adjacent
+ *                         checkConstraints call uses, e.g. weeklyData.lessons).
+ * @param currentSchool  — the current school object; its .slots classify slot
+ *                         types for the class-time gate (same value the adjacent
+ *                         checkConstraints ctx carries).
+ * @returns {string[]} partner lesson ids (excludes `lesson.id` itself).
+ */
+export function getRelationalPartnerIds(lesson, lessons, currentSchool) {
+  if (!lesson || lesson.isGroup || lesson.isBandSession) return [];
+  const ids = new Set();
+  for (const l of findSameDayConflicts(lesson, lesson.day, lessons)) ids.add(l.id);
+  const slots = (currentSchool && currentSchool.slots) ? currentSchool.slots : [];
+  const ownSlot = slots.find(sl => sl.start === lesson.start);
+  if (ownSlot && ownSlot.type === "class") {
+    for (const l of findClassTimeConflicts(lesson, lesson.day, lessons, slots)) ids.add(l.id);
+  }
+  return [...ids];
+}
+
 /**
  * Compute constraint warnings for a single lesson in a (day, slot, lessons)
  * context, with all environment data supplied via ctx.
@@ -193,10 +261,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   // Multi-lesson students: must have lessons on different days
   const _wd2 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
   const lessonsToCheck2 = _lessonList || (_wd2 ? _wd2.lessons : (timetable ? timetable.lessons : []));
-  const otherLessons = lessonsToCheck2.filter(l => l.id !== lesson.id && l.day === newDay && (
-    l.studentId === lesson.studentId ||
-    (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId))
-  ));
+  const otherLessons = findSameDayConflicts(lesson, newDay, lessonsToCheck2);
   if (otherLessons.length > 0) {
     const studentObj = student || { name: lesson.studentName };
     warnings.push(`${studentObj.name} already has a lesson on ${newDay} (${otherLessons.map(l => l.isGroup ? l.groupName || "Group" : l.instrument).join(", ")})`);
@@ -238,21 +303,13 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   // Dual class-time pullout: warn if this slot is during class and the student already has
   // another class-time lesson on a different day in the same week
   if (slot.type === "class") {
-    const allWeekLessons = lessonsToCheck2;
-    const otherClassLessons = allWeekLessons.filter(l =>
-      l.id !== lesson.id &&
-      l.day !== newDay &&
-      (l.studentId === lesson.studentId || (l.isGroup && l.studentIds && l.studentIds.includes(lesson.studentId)))
+    const classTimeConflicts = findClassTimeConflicts(
+      lesson, newDay, lessonsToCheck2,
+      (currentSchool && currentSchool.slots) ? currentSchool.slots : []
     );
-    if (otherClassLessons.length > 0) {
-      const classTimeConflicts = otherClassLessons.filter(ol => {
-        const olSlot = (currentSchool && currentSchool.slots ? currentSchool.slots : []).find(sl => sl.start === ol.start);
-        return olSlot && olSlot.type === "class";
-      });
-      if (classTimeConflicts.length > 0) {
-        const studentObj = student || { name: lesson.studentName };
-        warnings.push(`${studentObj.name} already has a lesson during class on ${classTimeConflicts[0].day}`);
-      }
+    if (classTimeConflicts.length > 0) {
+      const studentObj = student || { name: lesson.studentName };
+      warnings.push(`${studentObj.name} already has a lesson during class on ${classTimeConflicts[0].day}`);
     }
   }
 
