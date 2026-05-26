@@ -1102,7 +1102,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const teacher = teachers.find(t => t.id === band.teacherId);
     const existingData = weeklyTimetables[storageKey] || { lessons: [], missed: [] };
     let lessons = [...(existingData.lessons || [])];
-    const newTallyEntries = [];
     const bandRemovedLessons = [];
     for (const member of (band.members || [])) {
       const student = students.find(s => s.id === member.studentId);
@@ -1118,25 +1117,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           removedLesson = guitarLesson || studentLessons[0];
         }
         if (removedLesson) { bandRemovedLessons.push(removedLesson); lessons = lessons.filter(l => l.id !== removedLesson.id); }
-      }
-      const masterLesson = timetable?.lessons?.find(l =>
-        l.studentId === member.studentId &&
-        (removedLesson ? l.instrument === removedLesson.instrument : l.instrument === member.instrument)
-      ) || timetable?.lessons?.find(l => l.studentId === member.studentId);
-      if (masterLesson) {
-        const lKey = `${member.studentId}|${masterLesson.instrument}`;
-        newTallyEntries.push({
-          id: uid(), lessonKey: lKey, lessonId: masterLesson.id,
-          isGroup: false, studentId: member.studentId, studentName: student.name,
-          instrument: masterLesson.instrument, schoolId: band.schoolId,
-          teacherId: band.teacherId || "", teacherName: teacher?.name || "",
-          weekKey, weekLabel, weekNum: termWeek, termKey: null, day,
-          status: "completed", reason: null,
-          notes: `Band Session ${weekLabel}`,
-          bandSession: true,
-          makeupEligible: false, madeUp: false,
-          recordedAt: new Date().toISOString(),
-        });
       }
     }
     // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
