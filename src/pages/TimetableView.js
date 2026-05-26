@@ -15,6 +15,7 @@ import { generateWeeklyTimetable, buildWeeklyAIPrompt, printMasterTimetable, pri
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { ExportDialog } from "../components/ExportDialog";
+import { getRelationalPartnerIds } from "../utils/constraints";
 
 // "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
 function buildPreferredDisplayName(name) {
@@ -1729,7 +1730,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                               onMouseLeave={() => setHoverPopover(null)}
                               onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); const _ctxSt = !l.isGroup ? (allStudents || students).find(s => s.id === l.studentId) : null; setContextMenu({ x: e.clientX, y: e.clientY, lessonId: l.id, studentId: l.studentId, isGroup: l.isGroup, lessonName: l.isGroup && l.studentNames ? `${l.studentNames.join(", ")} — ${l.instrument}` : `${buildPreferredDisplayName(_ctxSt?.name || l.studentName)} — ${liveInst}` }); }}
                               onDoubleClick={() => { if (l.isGroup && onViewGroup) onViewGroup(l.groupId); else if (!l.isGroup && onViewStudent) onViewStudent(l.studentId); }}
-                              onClick={e => { if (showRed && !isExpanded) { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); next.add(l.id); return next; }); } else if (isExpanded || showRed) { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
+                              onClick={e => { if (showRed && !isExpanded) { e.stopPropagation(); setExpandedWarnings(prev => { const next = new Set(prev); next.add(l.id); return next; }); } else if (isExpanded || showRed) { e.stopPropagation(); /* v2.9.10 relational-constraint group acknowledge (MTT) — clear the whole conflict group */ setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); for (const pid of getRelationalPartnerIds(l, timetable?.lessons, schools.find(s => s.id === l.schoolId))) next.add(pid); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); } }}
                               style={{
                                 padding: "6px 10px", borderRadius: 6, fontSize: 13, position: "relative", zIndex: isExpanded ? 40 : "auto",
                                 background: showRed ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : getInstColor(liveInst, l.isGroup) + "18",
@@ -1739,7 +1740,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                                 transition: "opacity 0.15s",
                               }} title={l.isGroup ? l.groupName || l.studentName : undefined}>
                               {showRed && (
-                                <span onClick={e => { e.stopPropagation(); setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }}
+                                <span onClick={e => { e.stopPropagation(); /* v2.9.10 relational-constraint group acknowledge (MTT) — clear the whole conflict group */ setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); for (const pid of getRelationalPartnerIds(l, timetable?.lessons, schools.find(s => s.id === l.schoolId))) next.add(pid); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }}
                                   style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }}
                                   title="Confirm this time"><Check size={11} /></span>
                               )}
