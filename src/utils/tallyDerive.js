@@ -215,8 +215,35 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
         return k === lessonKey;
       };
 
+      // v2.9.8 band-session tally fix. A band session entry carries no
+      // top-level studentId / instrument / enrolmentId, so neither match above
+      // finds it; placing a band session also removes each member's regular
+      // lesson from that week's WTT, so the cell would otherwise derive to
+      // blank. Recognise the band here for SOLO enrolments only (groups never
+      // join bands this way). Anchor the match on removedLessons[] — it records
+      // exactly which lesson the band replaced (studentId+instrument, plus
+      // enrolmentId when it was stamped), so we tick the cell of the enrolment
+      // whose lesson was actually pulled. Fall back to members[] only when
+      // removedLessons is empty/absent. The matched VALUE is the band entry
+      // itself, fed through the same lesson path below: bandSession flows onto
+      // the shim and the band's own `day` drives the post-6pm completed
+      // threshold. Chained after the regular matches so a regular lesson always
+      // takes precedence and the band is never double-counted.
+      const matchByBandSession = (item) => {
+        if (!item.isBandSession) return false;
+        const removed = item.removedLessons || [];
+        if (removed.length > 0) {
+          return removed.some(rl =>
+            rl.enrolmentId === e.id ||
+            (!rl.isGroup && rl.studentId === e.studentId && rl.instrument === e.instrument));
+        }
+        return (item.members || []).some(m =>
+          m.studentId === e.studentId && m.instrument === e.instrument);
+      };
+
       const lessonMatch = (weekData.lessons || []).find(matchByEnrolment)
-        || (weekData.lessons || []).find(matchByLessonKey);
+        || (weekData.lessons || []).find(matchByLessonKey)
+        || (!e.isGroup ? (weekData.lessons || []).find(matchByBandSession) : undefined);
       const missedMatch = !lessonMatch
         ? ((weekData.missed || []).find(matchByEnrolment)
             || (weekData.missed || []).find(matchByLessonKey))
