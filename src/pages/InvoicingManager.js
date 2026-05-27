@@ -14,6 +14,7 @@ import { STORAGE_KEYS } from "../constants";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
+import { supabase } from "../supabaseClient";
 // Session 95: preferredFirstName — extracts "Jenny" from "Jennifer (Jenny) Smith",
 // else returns first word. Used in _invoiceMergeCtx so parent/student names in
 // invoice emails show the short/familiar form instead of full legal name.
@@ -791,14 +792,115 @@ export function InvoicingManager({
     try { localStorage.setItem(STORAGE_KEYS.invoiceDrafts, JSON.stringify(invoices)); } catch {}
   }, [invoices]);
 
-  // Session 12 — parent-billing Supabase sync removed. It was a one-way push
-  // to a budget-app pipeline that no longer exists; the shared `invoices`
-  // table was repurposed for teacher-pay records (different columns), so
-  // every upsert here was 400-ing in the console on every invoice edit.
-  // InvoicingManager is fully driven by localStorage (see invoiceDrafts
-  // load/persist effects above) — nothing reads the synced rows back.
-  // Dashboard and TeachersManager still hit `invoices` legitimately with
-  // the teacher-pay shape; those are the working flows.
+  // ── Supabase sync — push sent invoices to the shared `invoices` table ──
+  // One-way: admin (source of truth for invoice data) → Supabase → budget app.
+  // Runs on any change to `invoices`, debounced 1s so line-item edits don't
+  // hammer the API. Only `status === "sent"` invoices are written.
+  //
+  // Restored Session 13 — this sync was removed IN ERROR by edda8ac on
+  // 2026-05-15 on the wrong belief that `invoices` had been repurposed for
+  // teacher-pay. It hadn't: `invoices` is the parent-billing / budget-app
+  // table; teacher-pay lives in the separate `teacher_invoices` table (which
+  // is what Dashboard.js and TeachersManager.js query). Removing the sync
+  // stopped every invoice sent after 2026-05-15 from reaching the budget app.
+  //
+  // Hardening added on restore: each sent invoice is validated before the
+  // upsert, and any row that would violate a NOT NULL / type constraint is
+  // SKIPPED (not null-filled), so one malformed invoice can't 400 the whole
+  // batch — the most likely cause of the original 400.
+  //
+  // Admin-owned columns written: id, invoice_number, parent_name,
+  //   parent_email, school_name, term_label, invoice_date, due_date,
+  //   amount_invoiced, sent_at.
+  // Budget-owned / DB-managed columns NEVER written here (so budget-app edits
+  //   survive admin re-syncs): amount_received, is_cash_payment,
+  //   amount_outstanding, received_at, created_at, updated_at.
+  //
+  // Un-marking a sent invoice or deleting it causes the corresponding
+  // Supabase row to be deleted on the next sync — but the delete pass only
+  // runs if the read of existing ids succeeded (on read error we skip the
+  // delete and leave the table as-is).
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const sent = invoices.filter(i => i.status === "sent");
+        const sentIdSet = new Set(sent.map(i => i.id));
+
+        // Row-level validation — skip (do NOT null-fill) any invoice that
+        // would violate the table's NOT NULL / type constraints.
+        const isValidDate = (s) =>
+          typeof s === "string" && s.trim() !== "" && !Number.isNaN(Date.parse(s));
+        let skippedCount = 0;
+        const validSent = sent.filter(inv => {
+          const amountInvoiced = inv.lines.reduce((s, l) => s + (l.subtotal || 0), 0);
+          let reason = null;
+          if (!(typeof inv.parentName === "string" && inv.parentName.trim() !== "")) {
+            reason = "parent_name empty";
+          } else if (!isValidDate(inv.invoiceDate)) {
+            reason = "invoice_date invalid";
+          } else if (!isValidDate(inv.dueDate)) {
+            reason = "due_date invalid";
+          } else if (!Number.isFinite(amountInvoiced)) {
+            reason = "amount_invoiced not finite";
+          }
+          if (reason) {
+            skippedCount++;
+            console.warn("[invoices] skipped invoice", inv.id, inv.invoiceNumber, reason);
+            return false;
+          }
+          return true;
+        });
+
+        // 1. Read current Supabase state (id-only, cheap). Read errors do not
+        //    abort the upsert — they only suppress the delete pass below.
+        const { data: existing, error: selErr } = await supabase
+          .from("invoices").select("id");
+
+        // 2. Upsert validated sent invoices (10 admin-owned columns only)
+        let upsertedCount = 0;
+        if (validSent.length > 0) {
+          const rows = validSent.map(inv => ({
+            id:              inv.id,
+            invoice_number:  inv.invoiceNumber,
+            parent_name:     inv.parentName,
+            parent_email:    inv.parentEmail || null,
+            school_name:     [...new Set(inv.lines.map(l => l.schoolName).filter(Boolean))][0] || null,
+            term_label:      inv.termLabel || null,
+            invoice_date:    inv.invoiceDate,
+            due_date:        inv.dueDate,
+            amount_invoiced: inv.lines.reduce((s, l) => s + (l.subtotal || 0), 0),
+            sent_at:         inv.sentAt || new Date().toISOString(),
+          }));
+          const { error: upErr } = await supabase
+            .from("invoices").upsert(rows, { onConflict: "id" });
+          if (upErr) throw upErr;
+          upsertedCount = rows.length;
+        }
+
+        // 3. Delete rows that are no longer sent in admin — ONLY if the
+        //    existing-id read above succeeded. On read error, skip the delete
+        //    entirely and leave the table untouched.
+        if (selErr) {
+          console.warn("[invoices] skipped delete pass — existing-id read failed:", selErr?.message || selErr);
+        } else {
+          const existingIds = new Set((existing || []).map(r => r.id));
+          const toDelete = [...existingIds].filter(id => !sentIdSet.has(id));
+          if (toDelete.length > 0) {
+            const { error: delErr } = await supabase
+              .from("invoices").delete().in("id", toDelete);
+            if (delErr) throw delErr;
+          }
+        }
+
+        console.log("[invoices] synced", upsertedCount, "invoices, skipped", skippedCount);
+      } catch (err) {
+        // Non-fatal — local state is authoritative; retry on next change.
+        console.error("[invoices] Supabase sync failed:", err?.message || err);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [invoices]);
 
   // ── Rates helpers ─────────────────────────────────────────
   const setRate = (schoolId, field, val) => {
