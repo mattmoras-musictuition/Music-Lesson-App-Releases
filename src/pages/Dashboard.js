@@ -5767,7 +5767,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             })()}
                             {displayDoneTodo.length > 0 && (
                               <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.borderLight}` }}>
-                                <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>Done</div>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Done</div>
+                                  {doneTodo.length > 0 && (
+                                    <button title="Clear all completed" onClick={() => saveTodo(todoItems.filter(t => !t.done))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}><X size={12} /></button>
+                                  )}
+                                </div>
                                 {displayDoneTodo.map(item => (
                                   <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 7, marginBottom: 3, background: colors.bg, opacity: 0.6 }}>
                                     <input type="checkbox" checked={true} onChange={() => saveTodo(todoItems.map(t => t.id === item.id ? { ...t, done: false, doneAt: undefined } : t))} style={{ flexShrink: 0, cursor: "pointer" }} />
