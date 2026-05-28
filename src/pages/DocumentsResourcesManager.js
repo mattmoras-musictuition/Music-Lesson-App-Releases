@@ -6,10 +6,10 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
+import { Library, FileText, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
-import { PageTitle, NavButtons, Btn, Card, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
+import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 // Session 96: storage helpers — resources-public + documents-private buckets.
 // uploadToBucket handles the upload and returns a storagePath (+ publicUrl
@@ -135,12 +135,33 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [renameDraft, setRenameDraft] = useState("");
 
   // ── Documents state ─────────────────────────────────────────
-  const [dEditId,   setDEditId]   = useState(null);
+  // Mirrors the Resources Finder: add/edit happens in a modal and the old
+  // table is replaced by a three-pane folder / list / detail view.
+  const [dEditId,   setDEditId]   = useState(null);   // "new" | id | null
   const [dEditForm, setDEditForm] = useState(null);
+  const [dEditErr,  setDEditErr]  = useState("");
   const [dSearch,   setDSearch]   = useState("");
-  const [dTypeFilter, setDTypeFilter] = useState("");
-  const [dSchoolFilter, setDSchoolFilter] = useState("");
   const [dHovered,  setDHovered]  = useState(null);
+
+  // Tucked filter — assigned teacher (Type + School are sidebar folders).
+  const [dfTeacher,    setDfTeacher]    = useState([]);
+  const [dShowFilters, setDShowFilters] = useState(false);
+  const dFiltersBtnRef = useRef(null);
+
+  // Finder state: own folder + detail selection.
+  const [dSelectedFolder, setDSelectedFolder] = useState({ dim: "all", value: null });
+  const [dSelectedId,     setDSelectedId]     = useState(null);
+
+  // Documents folder overrides — a SEPARATE app_settings key from Resources,
+  // so the two surfaces never interfere.
+  const { overrides: dOverrides, folderKey: dFolderKey, folderLabel: dFolderLabelFn, isFolderHidden: dIsFolderHidden, renameFolder: dRenameFolder, hideFolder: dHideFolder, unhideFolder: dUnhideFolder, addCustom: dAddCustom, renameCustom: dRenameCustom, deleteCustom: dDeleteCustom } = useFolderOverrides("document_folder_overrides", notify);
+  const [dShowHidden,     setDShowHidden]     = useState(false);
+  const [dFolderMenu,     setDFolderMenu]     = useState(null);
+  const [dRenamingKey,    setDRenamingKey]    = useState(null);
+  const [dRenameDraft,    setDRenameDraft]    = useState("");
+  const [dActiveCustomId, setDActiveCustomId] = useState(null);
+  const [dSavingView,     setDSavingView]     = useState(false);
+  const [dNewViewName,    setDNewViewName]    = useState("");
 
   useEffect(() => {
     setREditId(null); setREditForm(null);
@@ -376,30 +397,27 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     const m = new Map(); for (const s of (schools || [])) m.set(s.id, s.name); return m;
   }, [schools]);
 
-  // ── Documents CRUD ──────────────────────────────────────────
-  const addDocument = () => {
-    const id = makeId();
-    // Session 96: storage_path / filename / size_bytes / mime_type set on
-    // upload. Row is either URL-based (d.url) OR file-based (d.storage_path),
-    // but the edit form is initialised blank and user picks one.
-    const blank = { id, label: "", type: "", teacherId: "", schoolId: "", expiryDate: "", url: "", notes: "", storage_path: "", filename: "", size_bytes: null, mime_type: "", _isNew: true };
-    setDocuments(prev => [blank, ...prev]);
-    setDEditId(id); setDEditForm({ ...blank });
-  };
+  // ── Documents CRUD (modal add/edit, mirrors Resources) ───────
+  // The row is written to the list only on Save, so cancelling leaves nothing
+  // behind. storage_path / filename / size_bytes / mime_type are set on upload;
+  // a row is either URL-based (d.url) OR file-based (d.storage_path).
+  const blankDocument = () => ({ id: makeId(), label: "", type: "", teacherId: "", schoolId: "", expiryDate: "", url: "", notes: "", storage_path: "", filename: "", size_bytes: null, mime_type: "" });
+  const addDocument = () => { setDEditErr(""); setDEditForm(blankDocument()); setDEditId("new"); };
+  const openEditDocument = (d) => { setDEditErr(""); setDEditForm({ ...d }); setDEditId(d.id); };
   const saveDocument = () => {
     if (!dEditForm) return;
-    const { _isNew, ...toSave } = dEditForm;
-    setDocuments(prev => prev.map(d => d.id === dEditId ? toSave : d));
-    setDEditId(null); setDEditForm(null);
+    if (!dEditForm.label.trim()) { setDEditErr("Name is required."); return; }
+    const isNew = dEditId === "new";
+    const toSave = { ...dEditForm, label: dEditForm.label.trim() };
+    setDocuments(prev => isNew ? [toSave, ...prev] : prev.map(d => d.id === toSave.id ? toSave : d));
+    setDSelectedId(toSave.id);
+    setDEditId(null); setDEditForm(null); setDEditErr("");
     notify("Document saved");
   };
-  const cancelDocument = () => {
-    const d = documents.find(d => d.id === dEditId);
-    if (d && d._isNew) setDocuments(prev => prev.filter(d => d.id !== dEditId));
-    setDEditId(null); setDEditForm(null);
-  };
+  const cancelDocument = () => { setDEditId(null); setDEditForm(null); setDEditErr(""); };
   const deleteDocument = (id) => {
     const d = documents.find(d => d.id === id);
+    if (!window.confirm(`Remove "${d?.label || "this document"}"?`)) return;
     // Session 96: remove uploaded blob from private bucket alongside the row.
     if (d?.storage_path) deleteFromBucket(BUCKET_DOCUMENTS, d.storage_path);
     setDocuments(prev => prev.filter(d => d.id !== id));
@@ -407,16 +425,71 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     notify("Document removed");
   };
 
+  // ── Documents folders (auto-derived live): by type + by school ─
+  const docTypeFolders = useMemo(() => {
+    const counts = new Map();
+    for (const d of documents) { const v = (d.type || "").trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }));
+  }, [documents]);
+  const docSchoolFolders = useMemo(() => {
+    const counts = new Map();
+    for (const d of documents) { if (d.schoolId) counts.set(d.schoolId, (counts.get(d.schoolId) || 0) + 1); }
+    return [...counts.entries()]
+      .map(([value, count]) => ({ value, count, name: (schools.find(s => s.id === value)?.name) || "Unknown school" }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [documents, schools]);
+
+  // Tucked teacher filter — only teachers actually assigned to a document.
+  const dfTeacherOptions = useMemo(() => {
+    const ids = new Set(documents.map(d => d.teacherId).filter(Boolean));
+    return (teachers || []).filter(t => ids.has(t.id)).map(t => ({ value: t.id, label: t.name }));
+  }, [documents, teachers]);
+  const anyDocFilter = !!dfTeacher.length;
+  const dFilterCount = dfTeacher.length;
+  const clearDocFilters = () => setDfTeacher([]);
+
+  // ── Filter: folder narrowing + teacher filter + search (AND) ──
   const filteredDocuments = useMemo(() => documents.filter(d => {
-    if (d._isNew) return true;
-    if (dTypeFilter && d.type !== dTypeFilter) return false;
-    if (dSchoolFilter && d.schoolId !== dSchoolFilter) return false;
-    if (dSearch) {
-      const q = dSearch.toLowerCase();
-      return (d.label||"").toLowerCase().includes(q) || (d.notes||"").toLowerCase().includes(q);
+    if (dSelectedFolder.dim === "type"   && d.type     !== dSelectedFolder.value) return false;
+    if (dSelectedFolder.dim === "school" && d.schoolId !== dSelectedFolder.value) return false;
+    if (dfTeacher.length && !dfTeacher.includes(d.teacherId)) return false;
+    if (dSearch.trim()) {
+      const q = dSearch.trim().toLowerCase();
+      if (!(d.label||"").toLowerCase().includes(q) && !(d.notes||"").toLowerCase().includes(q)) return false;
     }
     return true;
-  }), [documents, dSearch, dTypeFilter, dSchoolFilter]);
+  }), [documents, dSelectedFolder, dfTeacher, dSearch]);
+
+  useEffect(() => {
+    if (dSelectedId && !filteredDocuments.some(d => d.id === dSelectedId)) setDSelectedId(null);
+  }, [filteredDocuments, dSelectedId]);
+  const selectedDocument = useMemo(() => documents.find(d => d.id === dSelectedId) || null, [documents, dSelectedId]);
+
+  // ── Documents custom saved views (own snapshot shape) ────────
+  const dCurrentSnapshot = useMemo(() => ({ folder: dSelectedFolder, teacher: dfTeacher, search: dSearch.trim() }), [dSelectedFolder, dfTeacher, dSearch]);
+  const dViewIsCustomizable = dSelectedFolder.dim !== "all" || anyDocFilter || !!dSearch.trim();
+  const applyDocCustom = (c) => {
+    const f = c.filters || {};
+    setDSelectedFolder(f.folder || { dim: "all", value: null });
+    setDfTeacher(f.teacher || []);
+    setDSearch(f.search || "");
+    setDActiveCustomId(c.id);
+  };
+  const dCommitSaveView = () => {
+    const name = dNewViewName.trim();
+    if (name) setDActiveCustomId(dAddCustom(name, dCurrentSnapshot));
+    setDSavingView(false); setDNewViewName("");
+  };
+  useEffect(() => {
+    if (!dActiveCustomId) return;
+    const c = dOverrides.custom.find(x => x.id === dActiveCustomId);
+    if (!c || JSON.stringify(c.filters) !== JSON.stringify(dCurrentSnapshot)) setDActiveCustomId(null);
+  }, [dActiveCustomId, dOverrides.custom, dCurrentSnapshot]);
+  useEffect(() => {
+    if (dSelectedFolder.dim !== "all" && dOverrides.hidden.includes(`${dSelectedFolder.dim}:${dSelectedFolder.value}`)) {
+      setDSelectedFolder({ dim: "all", value: null });
+    }
+  }, [dOverrides.hidden, dSelectedFolder]);
 
   // Session 97: merged option list — defaults plus any custom types in use.
   const documentTypeOptions = useMemo(
@@ -436,11 +509,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   }, [documents]);
 
   // ── Shared styles ───────────────────────────────────────────
-  const thStyle = { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#fff", textTransform: "uppercase", letterSpacing: 0.5, background: colors.sidebarHover, whiteSpace: "nowrap" };
   const inputStyle = { width: "100%", padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text };
-  const iconBtn = (onClick, icon, col, title, extra = {}) => (
-    <button onClick={onClick} title={title} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: col, borderRadius: 6, padding: "4px 7px", cursor: "pointer", display: "inline-flex", alignItems: "center", ...extra }}>{icon}</button>
-  );
   const modalLabel = { display: "block", fontSize: 11, fontWeight: 600, color: colors.textMuted, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.3 };
   const modalSelect = { width: "100%", padding: "6px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text, boxSizing: "border-box" };
 
@@ -834,7 +903,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
         <div>
           {/* Expiry alert banner */}
           {expiringDocs.length > 0 && (
-            <div style={{ marginBottom: 16, padding: "12px 16px", background: colors.amberLight, border: "1px solid #FED7AA", borderRadius: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ marginBottom: 16, padding: "12px 16px", background: colors.amberLight, border: "1px solid " + colors.warning + "40", borderRadius: 10, display: "flex", flexDirection: "column", gap: 6 }}>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 13, color: colors.amberDark }}>
                 <AlertTriangle size={14} /> {expiringDocs.length} document{expiringDocs.length !== 1 ? "s" : ""} expiring soon
               </div>
@@ -843,7 +912,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   const days = daysUntilExpiry(d.expiryDate);
                   const expired = days < 0;
                   return (
-                    <span key={d.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", background: expired ? "#FEF2F2" : colors.cardBg, border: `1px solid ${expired ? colors.danger + "60" : "#FED7AA"}`, borderRadius: 20, fontSize: 12, color: expired ? colors.danger : colors.amberDark, fontWeight: 600 }}>
+                    <span key={d.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", background: expired ? colors.redLight : colors.cardBg, border: `1px solid ${expired ? colors.danger + "60" : colors.warning + "40"}`, borderRadius: 20, fontSize: 12, color: expired ? colors.danger : colors.amberDark, fontWeight: 600 }}>
                       {d.label} — {expired ? `expired ${Math.abs(days)}d ago` : days === 0 ? "expires today" : `expires in ${days}d`}
                     </span>
                   );
@@ -851,24 +920,6 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
               </div>
             </div>
           )}
-
-          <Card style={{ marginBottom: 16, padding: 14 }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 160, position: "relative" }}>
-                <input value={dSearch} onChange={e => setDSearch(e.target.value)} placeholder="Search documents…"
-                  style={{ width: "100%", padding: "8px 32px 8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
-                {dSearch && <button onClick={() => setDSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
-              </div>
-              <select value={dTypeFilter} onChange={e => setDTypeFilter(e.target.value)} style={{ padding: "8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
-                <option value="">All Types</option>
-                {documentTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-              <select value={dSchoolFilter} onChange={e => setDSchoolFilter(e.target.value)} style={{ padding: "8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
-                <option value="">All Schools</option>
-                {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-          </Card>
 
           {documents.length === 0 ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 20px", gap: 12 }}>
@@ -878,149 +929,328 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
               <Btn onClick={addDocument} style={{ marginTop: 4 }}>+ Add Document</Btn>
             </div>
           ) : (
-            <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>Label</th>
-                    <th style={thStyle}>Type</th>
-                    <th style={thStyle}>Assigned to</th>
-                    <th style={thStyle}>Expiry</th>
-                    <th style={thStyle}>Link</th>
-                    <th style={{ ...thStyle, width: 100 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredDocuments.map(d => {
-                    const isEditing = dEditId === d.id;
-                    const teacherName = teachers.find(t => t.id === d.teacherId)?.name || "";
-                    const schoolName  = schools.find(s => s.id === d.schoolId)?.name || "";
-                    const assignedTo  = [teacherName, schoolName].filter(Boolean).join(", ");
+            /* Finder-style three-pane library: folder sidebar / list / detail. */
+            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
+
+              {/* ── LEFT: folder sidebar ── */}
+              <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
+                <FolderRow icon={FileText} label="All documents" count={documents.length}
+                  selected={!dActiveCustomId && dSelectedFolder.dim === "all"}
+                  onClick={() => setDSelectedFolder({ dim: "all", value: null })} colors={colors} />
+
+                {/* Custom saved views — "Save current view" plus any saved folders. */}
+                <SidebarGroupLabel colors={colors}>Custom</SidebarGroupLabel>
+                {dSavingView ? (
+                  <div style={{ padding: "2px 4px" }}>
+                    <input autoFocus value={dNewViewName} onChange={e => setDNewViewName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") dCommitSaveView(); if (e.key === "Escape") { setDSavingView(false); setDNewViewName(""); } }}
+                      onBlur={dCommitSaveView} placeholder="Folder name…"
+                      style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
+                  </div>
+                ) : (
+                  <div onClick={() => { if (dViewIsCustomizable) { setDNewViewName(""); setDSavingView(true); } }}
+                    title={dViewIsCustomizable ? "Save the current folder, filters and search as a custom folder" : "Pick a folder, filter or search first"}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: dViewIsCustomizable ? "pointer" : "not-allowed", opacity: dViewIsCustomizable ? 1 : 0.45, userSelect: "none" }}>
+                    <FolderPlus size={15} style={{ flexShrink: 0, color: colors.textMuted }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>Save current view…</span>
+                  </div>
+                )}
+                {dOverrides.custom.map(c => (
+                  <FolderRow key={"c:" + c.id} icon={Folder} label={c.name}
+                    selected={dActiveCustomId === c.id}
+                    onClick={() => applyDocCustom(c)}
+                    onContextMenu={(e) => { e.preventDefault(); setDFolderMenu({ x: e.clientX, y: e.clientY, custom: c.id }); }}
+                    renaming={dRenamingKey === "custom:" + c.id}
+                    renameDraft={dRenameDraft} setRenameDraft={setDRenameDraft}
+                    onCommitRename={() => { dRenameCustom(c.id, dRenameDraft); setDRenamingKey(null); }}
+                    onCancelRename={() => setDRenamingKey(null)}
+                    colors={colors} />
+                ))}
+
+                {docTypeFolders.length > 0 && <SidebarGroupLabel colors={colors}>By type</SidebarGroupLabel>}
+                {docTypeFolders.map(f => (
+                  dIsFolderHidden("type", f.value) ? null : (
+                    <FolderRow key={"t:" + f.value} icon={Folder} count={f.count}
+                      label={dFolderLabelFn("type", f.value)}
+                      aliased={!!dOverrides.aliases[dFolderKey("type", f.value)]}
+                      selected={!dActiveCustomId && dSelectedFolder.dim === "type" && dSelectedFolder.value === f.value}
+                      onClick={() => setDSelectedFolder({ dim: "type", value: f.value })}
+                      onContextMenu={(e) => { e.preventDefault(); setDFolderMenu({ x: e.clientX, y: e.clientY, dim: "type", value: f.value }); }}
+                      renaming={dRenamingKey === dFolderKey("type", f.value)}
+                      renameDraft={dRenameDraft} setRenameDraft={setDRenameDraft}
+                      onCommitRename={() => { dRenameFolder("type", f.value, dRenameDraft); setDRenamingKey(null); }}
+                      onCancelRename={() => setDRenamingKey(null)}
+                      colors={colors} />
+                  )
+                ))}
+
+                {docSchoolFolders.length > 0 && <SidebarGroupLabel colors={colors}>By school</SidebarGroupLabel>}
+                {docSchoolFolders.map(f => (
+                  dIsFolderHidden("school", f.value) ? null : (
+                    <FolderRow key={"s:" + f.value} icon={Folder} count={f.count}
+                      label={dOverrides.aliases[dFolderKey("school", f.value)] || f.name}
+                      aliased={!!dOverrides.aliases[dFolderKey("school", f.value)]}
+                      selected={!dActiveCustomId && dSelectedFolder.dim === "school" && dSelectedFolder.value === f.value}
+                      onClick={() => setDSelectedFolder({ dim: "school", value: f.value })}
+                      onContextMenu={(e) => { e.preventDefault(); setDFolderMenu({ x: e.clientX, y: e.clientY, dim: "school", value: f.value, fallback: f.name }); }}
+                      renaming={dRenamingKey === dFolderKey("school", f.value)}
+                      renameDraft={dRenameDraft} setRenameDraft={setDRenameDraft}
+                      onCommitRename={() => { dRenameFolder("school", f.value, dRenameDraft); setDRenamingKey(null); }}
+                      onCancelRename={() => setDRenamingKey(null)}
+                      colors={colors} />
+                  )
+                ))}
+
+                {/* Show-hidden control + greyed hidden folders with right-click Unhide */}
+                {dOverrides.hidden.length > 0 && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${colors.borderLight}` }}>
+                    <button onClick={() => setDShowHidden(h => !h)}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: colors.textLight, fontFamily: "inherit", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <EyeOff size={12} /> {dShowHidden ? "Hide hidden folders" : `Show hidden folders (${dOverrides.hidden.length})`}
+                    </button>
+                    {dShowHidden && dOverrides.hidden.map(key => {
+                      const [dim, ...rest] = key.split(":"); const value = rest.join(":");
+                      const fallback = dim === "school" ? (schools.find(s => s.id === value)?.name || value) : value;
+                      return (
+                        <FolderRow key={"h:" + key} icon={Folder} dim greyed
+                          label={dOverrides.aliases[key] || fallback}
+                          onContextMenu={(e) => { e.preventDefault(); setDFolderMenu({ x: e.clientX, y: e.clientY, dim, value, hidden: true }); }}
+                          colors={colors} />
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* ── MIDDLE: compact document list ── */}
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0, borderRight: `1px solid ${colors.borderLight}` }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", padding: 10, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  <div style={{ flex: 1, minWidth: 120, position: "relative" }}>
+                    <input value={dSearch} onChange={e => setDSearch(e.target.value)} placeholder="Search documents…"
+                      style={{ width: "100%", padding: "7px 30px 7px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
+                    {dSearch && <button onClick={() => setDSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
+                  </div>
+                  {/* Filters — assigned teacher tucked behind one control */}
+                  <div>
+                    <button ref={dFiltersBtnRef} onClick={() => setDShowFilters(o => !o)}
+                      style={{ padding: "7px 11px", border: "1px solid " + (anyDocFilter ? colors.accent : colors.inputBorder), borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", background: anyDocFilter ? colors.accentLight : colors.cardBg, color: anyDocFilter ? colors.accent : colors.textLight, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                      <SlidersHorizontal size={13} /> Filters{anyDocFilter ? ` (${dFilterCount})` : ""}
+                    </button>
+                    <PortalPopover anchorRef={dFiltersBtnRef} open={dShowFilters} onClose={() => setDShowFilters(false)} width={224}>
+                      <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.35)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <FilterDropdown label="Assigned teacher" options={dfTeacherOptions} selected={dfTeacher} onChange={setDfTeacher} colors={colors} />
+                        {anyDocFilter && (
+                          <button onClick={clearDocFilters} style={{ padding: "6px 10px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textLight, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                            <X size={12} /> Clear filters
+                          </button>
+                        )}
+                      </div>
+                    </PortalPopover>
+                  </div>
+                </div>
+
+                <div style={{ flex: 1 }}>
+                  {filteredDocuments.length === 0 ? (
+                    <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No documents match the current view</div>
+                  ) : filteredDocuments.map(d => {
+                    const RowIcon = iconForFileName({ fileName: d.filename, url: d.url }) || FileText;
+                    const isSel = dSelectedId === d.id;
+                    const schoolName = d.schoolId ? (schools.find(s => s.id === d.schoolId)?.name || "") : "";
+                    const sub = [d.type, schoolName].filter(Boolean).join(" · ");
                     return (
-                      <tr key={d.id}
-                        style={{ background: isEditing ? colors.blueLight : (dHovered === d.id ? colors.blueLight : colors.cardBg), borderBottom: "1px solid " + colors.borderLight }}
-                        onMouseEnter={() => setDHovered(d.id)} onMouseLeave={() => setDHovered(null)}>
-
-                        {/* Label */}
-                        <td style={{ padding: "8px 12px", fontWeight: 600 }}>
-                          {isEditing
-                            ? <input autoFocus value={dEditForm.label} onChange={e => setDEditForm(f => ({ ...f, label: e.target.value }))} onKeyDown={e => { if (e.key === "Escape") cancelDocument(); }} placeholder="e.g. Public Liability Insurance 2025" style={inputStyle} />
-                            : d.label || <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>}
-                        </td>
-
-                        {/* Type */}
-                        <td style={{ padding: "8px 12px" }}>
-                          {isEditing
-                            ? <>
-                                <input list={`docTypeList-${d.id}`} value={dEditForm.type} onChange={e => setDEditForm(f => ({ ...f, type: e.target.value }))} placeholder="Type or pick…" onKeyDown={e => { if (e.key === "Escape") cancelDocument(); }} style={{ padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text, width: 140 }} />
-                                <datalist id={`docTypeList-${d.id}`}>
-                                  {documentTypeOptions.map(t => <option key={t} value={t} />)}
-                                </datalist>
-                              </>
-                            : d.type
-                              ? <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.blueLight, color: colors.sidebarHover, border: "1px solid " + colors.sidebarHover + "30" }}>{d.type}</span>
-                              : <span style={{ color: colors.textMuted }}>—</span>}
-                        </td>
-
-                        {/* Assigned to */}
-                        <td style={{ padding: "8px 12px", color: colors.textLight, fontSize: 12 }}>
-                          {isEditing ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                              <select value={dEditForm.teacherId} onChange={e => setDEditForm(f => ({ ...f, teacherId: e.target.value }))} style={{ padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 12, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
-                                <option value="">No teacher</option>
-                                {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                              </select>
-                              <select value={dEditForm.schoolId} onChange={e => setDEditForm(f => ({ ...f, schoolId: e.target.value }))} style={{ padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 12, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
-                                <option value="">No school</option>
-                                {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                              </select>
-                            </div>
-                          ) : assignedTo || <span style={{ color: colors.textMuted }}>—</span>}
-                        </td>
-
-                        {/* Expiry */}
-                        <td style={{ padding: "8px 12px" }}>
-                          {isEditing
-                            ? <input type="date" value={dEditForm.expiryDate || ""} onChange={e => setDEditForm(f => ({ ...f, expiryDate: e.target.value }))} style={{ padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }} />
-                            : <ExpiryBadge dateStr={d.expiryDate} />}
-                        </td>
-
-                        {/* Link */}
-                        <td style={{ padding: "8px 12px", maxWidth: 220 }}>
-                          {isEditing ? (
-                            dEditForm.storage_path ? (
-                              // Session 96: uploaded-file display for Documents.
-                              // Same pattern as Resources but bucket is private.
-                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, background: colors.blueLight, fontSize: 12 }}>
-                                  <FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} />
-                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={dEditForm.filename}>{dEditForm.filename}</span>
-                                  {dEditForm.size_bytes ? <span style={{ color: colors.textMuted, fontSize: 10, flexShrink: 0 }}>{fmtBytes(dEditForm.size_bytes)}</span> : null}
-                                  <button onClick={() => setDEditForm(f => ({ ...f, storage_path: "", filename: "", size_bytes: null, mime_type: "" }))} title="Clear uploaded file"
-                                    style={{ border: "none", background: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex" }}>
-                                    <X size={12} />
-                                  </button>
-                                </div>
-                                <input value={dEditForm.notes || ""} onChange={e => setDEditForm(f => ({ ...f, notes: e.target.value }))} placeholder="Notes (optional)" style={{ ...inputStyle, fontSize: 12, color: colors.textLight }} />
-                              </div>
-                            ) : (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                  <input value={dEditForm.url} onChange={e => setDEditForm(f => ({ ...f, url: e.target.value }))} placeholder="https://…" style={{ ...inputStyle, flex: 1 }} />
-                                  <button onClick={() => pickAndUploadFile(BUCKET_DOCUMENTS, dEditId, (patch) => setDEditForm(f => ({ ...f, ...patch })))}
-                                    disabled={uploadingFor === dEditId}
-                                    title="Upload a file instead"
-                                    style={{ border: `1px solid ${colors.inputBorder}`, background: colors.cardBg, borderRadius: 6, padding: "5px 7px", cursor: uploadingFor === dEditId ? "wait" : "pointer", display: "inline-flex", alignItems: "center", color: colors.textLight }}>
-                                    {uploadingFor === dEditId ? <Loader size={12} className="spin" /> : <Upload size={12} />}
-                                  </button>
-                                </div>
-                                <input value={dEditForm.notes || ""} onChange={e => setDEditForm(f => ({ ...f, notes: e.target.value }))} placeholder="Notes (optional)" style={{ ...inputStyle, fontSize: 12, color: colors.textLight }} />
-                              </div>
-                            )
-                          ) : d.storage_path && d.filename ? (
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.textLight, fontSize: 12 }}>
-                              <FileText size={11} style={{ color: colors.accent }} />
-                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }} title={d.filename}>{d.filename}</span>
-                            </span>
-                          ) : d.url ? (
-                            <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.accent, textDecoration: "none", fontSize: 12 }}><Link size={11} />{d.url.replace(/^https?:\/\//, "").slice(0, 28)}{d.url.replace(/^https?:\/\//, "").length > 28 ? "…" : ""}</a>
-                          ) : (
-                            <span style={{ color: colors.textMuted }}>—</span>
-                          )}
-                        </td>
-
-                        {/* Actions */}
-                        <td style={{ padding: "8px 12px" }}>
-                          <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
-                            {isEditing ? (
-                              <>
-                                <button onClick={saveDocument} title="Save" style={{ border: "none", background: colors.success, color: "#fff", borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><Check size={14} /></button>
-                                <button onClick={cancelDocument} title="Cancel" style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.textMuted, borderRadius: 6, padding: "4px 8px", cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
-                              </>
-                            ) : (
-                              <>
-                                {/* Session 96: view button routes by source.
-                                    Uploaded doc → sign + open (private bucket).
-                                    URL doc → open directly. */}
-                                {d.storage_path
-                                  ? iconBtn(() => openPrivate(d.storage_path, d.label || d.type), <Eye size={13} />, colors.textMuted, "View document")
-                                  : (d.url || d.file_url) && iconBtn(() => setBrowserLink({ url: d.url || d.file_url, title: d.label || d.type }), <Eye size={13} />, colors.textMuted, "View in browser")
-                                }
-                                {d.url && iconBtn(() => copyLink(d.url), <Copy size={13} />, colors.textMuted, "Copy link")}
-                                {iconBtn(() => { setDEditId(d.id); setDEditForm({ ...d }); }, <Pencil size={13} />, colors.textMuted, "Edit")}
-                                {iconBtn(() => deleteDocument(d.id), <Trash2 size={13} />, colors.danger, "Delete", { border: "1px solid " + colors.danger + "60" })}
-                              </>
-                            )}
+                      <div key={d.id} onClick={() => setDSelectedId(d.id)}
+                        onMouseEnter={() => setDHovered(d.id)} onMouseLeave={() => setDHovered(null)}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (dHovered === d.id ? colors.blueLight : colors.cardBg) }}>
+                        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {d.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
                           </div>
-                        </td>
-                      </tr>
+                          {sub && <div style={{ fontSize: 11, color: isSel ? "rgba(255,255,255,0.8)" : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+                        </div>
+                        {d.expiryDate && <ExpiryBadge dateStr={d.expiryDate} />}
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
-              {filteredDocuments.length === 0 && documents.length > 0 && (
-                <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No documents match the current filters</div>
-              )}
+                </div>
+              </div>
+
+              {/* ── RIGHT: detail panel ── */}
+              <div style={{ minWidth: 0 }}>
+                {!selectedDocument ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "60px 24px", textAlign: "center", color: colors.textMuted }}>
+                    <FileText size={32} style={{ opacity: 0.4 }} />
+                    <div style={{ fontSize: 13 }}>Select a document to see its details</div>
+                  </div>
+                ) : (() => {
+                  const d = selectedDocument;
+                  const BigIcon = iconForFileName({ fileName: d.filename, url: d.url }) || FileText;
+                  const teacherName = d.teacherId ? (teachers.find(t => t.id === d.teacherId)?.name || "") : "";
+                  const schoolName = d.schoolId ? (schools.find(s => s.id === d.schoolId)?.name || "") : "";
+                  const assignedTo = [teacherName, schoolName].filter(Boolean).join(", ");
+                  const detailRow = (label, value) => (
+                    <div style={{ display: "flex", gap: 10, padding: "7px 0", borderBottom: `1px solid ${colors.borderLight}` }}>
+                      <div style={{ width: 92, flexShrink: 0, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: colors.text }}>{value}</div>
+                    </div>
+                  );
+                  return (
+                    <div>
+                      <div style={{ height: 140, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `1px solid ${colors.borderLight}`, overflow: "hidden" }}>
+                        <BigIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />
+                      </div>
+                      <div style={{ padding: 16 }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{d.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
+                        {d.type && <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.accentLight, color: colors.accentDark, marginBottom: 12 }}>{d.type}</span>}
+
+                        <div style={{ marginTop: 6 }}>
+                          {detailRow("Assigned to", assignedTo || <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Expiry", d.expiryDate ? <ExpiryBadge dateStr={d.expiryDate} /> : <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Link", d.storage_path && d.filename
+                            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}><FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={d.filename}>{d.filename}</span></span>
+                            : d.url
+                              ? <a href={d.url} target="_blank" rel="noopener noreferrer" style={{ color: colors.accent, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{d.url.replace(/^https?:\/\//, "")}</a>
+                              : <span style={{ color: colors.textMuted }}>—</span>)}
+                          {d.notes && detailRow("Notes", d.notes)}
+                        </div>
+
+                        {/* Action row — wired to the existing handlers */}
+                        <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
+                          {d.storage_path
+                            ? <button onClick={() => openPrivate(d.storage_path, d.label || d.type)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> View</button>
+                            : d.url && <button onClick={() => setBrowserLink({ url: d.url, title: d.label || d.type })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> View</button>}
+                          {d.url && <button onClick={() => copyLink(d.url)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Copy size={13} /> Copy</button>}
+                          <button onClick={() => openEditDocument(d)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Pencil size={13} /> Edit</button>
+                          <button onClick={() => deleteDocument(d.id)} style={{ border: "1px solid " + colors.danger + "60", background: colors.cardBg, color: colors.danger, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Trash2 size={13} /> Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
+
+          {/* Folder right-click context menu (overlay closes on outside click) */}
+          {dFolderMenu && (
+            <>
+              <div onMouseDown={() => setDFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setDFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
+              <div style={{ position: "fixed", zIndex: 9971, top: dFolderMenu.y, left: dFolderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
+                {dFolderMenu.custom ? (
+                  <>
+                    <button onClick={() => { const c = dOverrides.custom.find(x => x.id === dFolderMenu.custom); setDRenamingKey("custom:" + dFolderMenu.custom); setDRenameDraft(c?.name || ""); setDFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Pencil size={13} /> Rename…
+                    </button>
+                    <button onClick={() => { if (dActiveCustomId === dFolderMenu.custom) { setDActiveCustomId(null); setDSelectedFolder({ dim: "all", value: null }); clearDocFilters(); setDSearch(""); } dDeleteCustom(dFolderMenu.custom); setDFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.danger, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Trash2 size={13} /> Delete
+                    </button>
+                  </>
+                ) : dFolderMenu.hidden ? (
+                  <button onClick={() => { dUnhideFolder(dFolderMenu.dim, dFolderMenu.value); setDFolderMenu(null); }}
+                    style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Eye size={13} /> Unhide
+                  </button>
+                ) : (
+                  <>
+                    <button onClick={() => { setDRenamingKey(dFolderKey(dFolderMenu.dim, dFolderMenu.value)); setDRenameDraft(dFolderMenu.dim === "school" ? (dOverrides.aliases[dFolderKey("school", dFolderMenu.value)] || dFolderMenu.fallback || "") : dFolderLabelFn(dFolderMenu.dim, dFolderMenu.value)); setDFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Pencil size={13} /> Rename…
+                    </button>
+                    {!!dOverrides.aliases[dFolderKey(dFolderMenu.dim, dFolderMenu.value)] && (
+                      <button onClick={() => { dRenameFolder(dFolderMenu.dim, dFolderMenu.value, ""); setDFolderMenu(null); }}
+                        style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                        <X size={13} /> Reset name
+                      </button>
+                    )}
+                    <button onClick={() => { dHideFolder(dFolderMenu.dim, dFolderMenu.value); setDFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <EyeOff size={13} /> Hide
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Add / edit-details modal — the single edit path */}
+          {dEditId && dEditForm && (
+            <div onMouseDown={cancelDocument} style={{ position: "fixed", inset: 0, zIndex: 9980, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div onMouseDown={e => e.stopPropagation()} style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, padding: 20, width: 480, maxWidth: "100%", maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+                <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <FileText size={15} /> {dEditId === "new" ? "Add document" : "Edit details"}
+                </div>
+
+                {/* Name */}
+                <label style={modalLabel}>NAME *</label>
+                <input value={dEditForm.label} onChange={e => setDEditForm(f => ({ ...f, label: e.target.value }))} placeholder="e.g. Public Liability Insurance 2025" style={{ ...inputStyle, padding: "7px 10px", marginBottom: 12 }} autoFocus />
+
+                {/* Link OR uploaded file (exclusive) */}
+                <label style={modalLabel}>LINK / FILE</label>
+                {dEditForm.storage_path ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, background: colors.blueLight, fontSize: 12, marginBottom: 12 }}>
+                    <FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} />
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={dEditForm.filename}>{dEditForm.filename}</span>
+                    {dEditForm.size_bytes ? <span style={{ color: colors.textMuted, fontSize: 10, flexShrink: 0 }}>{fmtBytes(dEditForm.size_bytes)}</span> : null}
+                    <button onClick={() => setDEditForm(f => ({ ...f, storage_path: "", filename: "", size_bytes: null, mime_type: "" }))} title="Clear uploaded file" style={{ border: "none", background: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex" }}><X size={12} /></button>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 12 }}>
+                    <input value={dEditForm.url} onChange={e => setDEditForm(f => ({ ...f, url: e.target.value }))} placeholder="https://…" style={{ ...inputStyle, padding: "7px 10px", flex: 1 }} />
+                    <button onClick={() => pickAndUploadFile(BUCKET_DOCUMENTS, dEditForm.id, (patch) => setDEditForm(f => ({ ...f, ...patch })))} disabled={uploadingFor === dEditForm.id} title="Upload a file instead"
+                      style={{ border: `1px solid ${colors.inputBorder}`, background: colors.cardBg, borderRadius: 6, padding: "7px 9px", cursor: uploadingFor === dEditForm.id ? "wait" : "pointer", display: "inline-flex", alignItems: "center", color: colors.textLight }}>
+                      {uploadingFor === dEditForm.id ? <Loader size={13} className="spin" /> : <Upload size={13} />}
+                    </button>
+                  </div>
+                )}
+
+                {/* Type + Expiry */}
+                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={modalLabel}>TYPE</label>
+                    <input list="docTypeModalList" value={dEditForm.type} onChange={e => setDEditForm(f => ({ ...f, type: e.target.value }))} placeholder="Type or pick…" style={{ ...inputStyle, padding: "7px 10px" }} />
+                    <datalist id="docTypeModalList">
+                      {documentTypeOptions.map(t => <option key={t} value={t} />)}
+                    </datalist>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={modalLabel}>EXPIRY</label>
+                    <input type="date" value={dEditForm.expiryDate || ""} onChange={e => setDEditForm(f => ({ ...f, expiryDate: e.target.value }))} style={{ ...inputStyle, padding: "7px 10px" }} />
+                  </div>
+                </div>
+
+                {/* Teacher + School */}
+                <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={modalLabel}>TEACHER</label>
+                    <select value={dEditForm.teacherId || ""} onChange={e => setDEditForm(f => ({ ...f, teacherId: e.target.value }))} style={modalSelect}>
+                      <option value="">No teacher</option>
+                      {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={modalLabel}>SCHOOL</label>
+                    <select value={dEditForm.schoolId || ""} onChange={e => setDEditForm(f => ({ ...f, schoolId: e.target.value }))} style={modalSelect}>
+                      <option value="">No school</option>
+                      {schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Notes */}
+                <label style={modalLabel}>NOTES</label>
+                <input value={dEditForm.notes || ""} onChange={e => setDEditForm(f => ({ ...f, notes: e.target.value }))} placeholder="Brief note (optional)" style={{ ...inputStyle, padding: "7px 10px", marginBottom: 14 }} />
+
+                {dEditErr && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 10 }}>{dEditErr}</div>}
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={saveDocument} style={{ padding: "8px 18px", border: "none", borderRadius: 8, background: colors.success, color: "#fff", fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <Check size={14} /> Save
+                  </button>
+                  <button onClick={cancelDocument} style={{ padding: "8px 16px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
             </div>
           )}
         </div>
