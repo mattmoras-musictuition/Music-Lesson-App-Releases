@@ -2163,6 +2163,16 @@ export default function MusicTimetableApp() {
       // found) were retired alongside enrolment.teacherId reads in C3/C4.
       const checkOrphan = (lesson) => {
         if (lesson.isGroup) return null; // groups carry their own teacherId; skip
+        // Bands are stored on weekly timetables with shape { isBandSession,
+        // members[], bandName/bandId, removedLessons[] } and intentionally
+        // carry NO top-level studentId / studentName / instrument — they
+        // aren't single-student lessons. Without this skip the band falls
+        // through to the studentId lookup, fails, and surfaces in Settings
+        // → Data Health as "(no name) · (no instrument) · student not
+        // found". That entry's Delete then wipes the band AND the regular
+        // lessons it absorbed (stashed in band.removedLessons), so the
+        // mis-flag is destructive, not just cosmetic.
+        if (lesson.isBandSession) return null;
 
         const stu = students.find(s => s.id === lesson.studentId);
         if (!stu) return { reason: "student not found" };
