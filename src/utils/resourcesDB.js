@@ -182,6 +182,57 @@ export async function fetchResourceTaxonomies() {
   }
 }
 
+// ── Folder overrides (shared sidebar aliases + hidden folders) ──
+//
+// The Resource Library's Finder-style sidebar auto-generates one folder per
+// instrument and one per type from the live data. Admins/teachers can give a
+// folder a display alias (label only — the underlying instrument/type value and
+// the taxonomy lists are untouched) or hide it from the sidebar (reversible).
+// Both are stored in ONE shared app_settings row so every client sees the same
+// overrides. Shape: { aliases: { "instrument:Ukulele": "Uke", ... },
+// hidden: ["type:Equipment", ...] }. Keys are `${dim}:${value}` where dim is
+// "instrument" or "type". No schema change — this reuses app_settings.
+const FOLDER_OVERRIDES_KEY = "resource_folder_overrides";
+
+// Coerce a stored value (jsonb object, JSON string, or null) into the canonical
+// { aliases, hidden } shape. Never throws.
+function _coerceOverrides(value) {
+  let v = value;
+  if (typeof v === "string") { try { v = JSON.parse(v); } catch { v = null; } }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { aliases: {}, hidden: [] };
+  const aliases = {};
+  if (v.aliases && typeof v.aliases === "object" && !Array.isArray(v.aliases)) {
+    for (const [k, val] of Object.entries(v.aliases)) {
+      if (typeof k === "string" && typeof val === "string" && val.trim()) aliases[k] = val;
+    }
+  }
+  const hidden = Array.isArray(v.hidden) ? v.hidden.filter(x => typeof x === "string") : [];
+  return { aliases, hidden };
+}
+
+// Fetch the shared folder overrides. Missing row → empty overrides. Never throws.
+export async function fetchFolderOverrides() {
+  try {
+    const { data, error } = await supabase
+      .from("app_settings").select("value").eq("key", FOLDER_OVERRIDES_KEY);
+    if (error) throw error;
+    return _coerceOverrides((data || [])[0]?.value);
+  } catch (err) {
+    console.warn("[resources] folder overrides load failed:", err?.message);
+    return { aliases: {}, hidden: [] };
+  }
+}
+
+// Persist the shared folder overrides (upsert one app_settings row). Returns the
+// cleaned overrides actually written, so the caller can adopt the canonical shape.
+export async function saveFolderOverrides(overrides) {
+  const clean = _coerceOverrides(overrides);
+  const { error } = await supabase
+    .from("app_settings").upsert({ key: FOLDER_OVERRIDES_KEY, value: clean }, { onConflict: "key" });
+  if (error) throw new Error(error.message);
+  return clean;
+}
+
 // id→name maps for resolving a resource's originating subject when
 // source='student_note'. Students and groups each have their own
 // table in the admin app. Best-effort: failures yield empty maps.
