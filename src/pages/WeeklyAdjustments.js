@@ -2941,11 +2941,23 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const wkDate = (weekDates || []).find(wd => wd.day === wkDay)?.date || "";
             const mttLessons = timetable ? timetable.lessons.filter(l => l.schoolId === sId && !l.isBandSession) : [];
             const wttLessons = (weeklyTimetables[contextMenu.weekKey] || {}).lessons || [];
-            const missing = mttLessons.filter(ml =>
-              ml.isGroup
-                ? !wttLessons.some(wl => wl.groupId === ml.groupId)
-                : !wttLessons.some(wl => wl.studentId === ml.studentId && wl.instrument === ml.instrument)
-            );
+            const wttMissed = (weeklyTimetables[contextMenu.weekKey] || {}).missed || [];
+            // Unified "unscheduled" rule (matches the banner source): a
+            // student counts as unscheduled ONLY if they have no presence in
+            // the (school, week) — no grid lesson (individual OR group OR
+            // band-session member) and no Missed-zone card.
+            const missing = mttLessons.filter(ml => {
+              if (ml.isGroup) {
+                if (wttLessons.some(wl => wl.groupId === ml.groupId)) return false;
+                if (wttMissed.some(wm => wm.groupId === ml.groupId)) return false;
+                return true;
+              }
+              if (wttLessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)) return false;
+              if (wttLessons.some(wl => wl.isGroup && (wl.studentIds || []).includes(ml.studentId))) return false;
+              if (wttLessons.some(wl => wl.isBandSession && (wl.members || []).some(mb => mb.studentId === ml.studentId))) return false;
+              if (wttMissed.some(wm => wm.studentId === ml.studentId && wm.instrument === ml.instrument)) return false;
+              return true;
+            });
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -4178,19 +4190,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           {!isHolidayWeek && timetable && selectedSchool && (() => {
             const mttLessons = timetable.lessons.filter(l => l.schoolId === selectedSchool && !l.isBandSession);
             const wttLessons = (weeklyData?.lessons) || [];
+            const wttMissed = (weeklyData?.missed) || [];
             const seen = new Set();
             const missing = [];
             for (const ml of mttLessons) {
               const key = ml.isGroup ? `group|${ml.groupId}` : `${ml.studentId}|${ml.instrument}`;
               if (seen.has(key)) continue;
               seen.add(key);
-              const found = wttLessons.some(wl =>
-                ml.isGroup ? wl.groupId === ml.groupId : (wl.studentId === ml.studentId && wl.instrument === ml.instrument)
-              );
-              const foundInMissed = (weeklyData?.missed || []).some(wm =>
-                ml.isGroup ? wm.groupId === ml.groupId : (wm.studentId === ml.studentId && wm.instrument === ml.instrument)
-              );
-              if (!found && !foundInMissed) {
+              // Unified "unscheduled" rule (matches the add-unscheduled menu
+              // source): in grid (individual OR group OR band-session member)
+              // or in Missed zone → not unscheduled.
+              let present;
+              if (ml.isGroup) {
+                present = wttLessons.some(wl => wl.groupId === ml.groupId)
+                       || wttMissed.some(wm => wm.groupId === ml.groupId);
+              } else {
+                present = wttLessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)
+                       || wttLessons.some(wl => wl.isGroup && (wl.studentIds || []).includes(ml.studentId))
+                       || wttLessons.some(wl => wl.isBandSession && (wl.members || []).some(mb => mb.studentId === ml.studentId))
+                       || wttMissed.some(wm => wm.studentId === ml.studentId && wm.instrument === ml.instrument);
+              }
+              if (!present) {
                 const label = ml.isGroup
                   ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group")
                   : ml.studentName;
