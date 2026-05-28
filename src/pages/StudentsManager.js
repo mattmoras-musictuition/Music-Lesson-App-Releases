@@ -12,8 +12,20 @@ import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, groupsView, groupsCount = 0, onAddGroup, focusGroupId, initialTabRequest, onClearTabRequest }) {
   const { colors } = useTheme();
+
+  // Individuals | Groups segmented toggle — local to this page, not persisted.
+  // Fresh visits land on Individuals; a group focus (focusGroupId) or an
+  // explicit request (initialTabRequest) lands on Groups instead.
+  const [studentTab, setStudentTab] = useState(() =>
+    (focusGroupId || initialTabRequest === "groups") ? "groups" : "individuals"
+  );
+  useEffect(() => { if (focusStudentId) setStudentTab("individuals"); }, [focusStudentId]);
+  useEffect(() => { if (focusGroupId) setStudentTab("groups"); }, [focusGroupId]);
+  useEffect(() => {
+    if (initialTabRequest) { setStudentTab(initialTabRequest); if (onClearTabRequest) onClearTabRequest(); }
+  }, [initialTabRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Enrolment helpers (Commit 2b) ────────────────────────────
   // activeEnrolmentsFor lifted to src/utils/enrolmentsDB.js — see import above.
@@ -1336,13 +1348,15 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
   return (
     <div>
       <PageTitle subtitle={
-          students.filter(s => s.status === "active").length + " active" +
-          (students.filter(s => s.status === "pending").length > 0 ? " · " + students.filter(s => s.status === "pending").length + " pending" : "") +
-          (students.filter(s => s.status === "trial").length > 0 ? " · " + students.filter(s => s.status === "trial").length + " trial" : "")
+          studentTab === "groups"
+            ? `${groupsCount} ${groupsCount === 1 ? "group" : "groups"}`
+            : students.filter(s => s.status === "active").length + " active" +
+              (students.filter(s => s.status === "pending").length > 0 ? " · " + students.filter(s => s.status === "pending").length + " pending" : "") +
+              (students.filter(s => s.status === "trial").length > 0 ? " · " + students.filter(s => s.status === "trial").length + " trial" : "")
         }
         pageColor={PAGE_COLORS.students}
         action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ position: "relative", display: "inline-block" }}
+          {studentTab === "individuals" && <div style={{ position: "relative", display: "inline-block" }}
             onMouseEnter={e => { const t = e.currentTarget.querySelector(".import-tooltip"); if (t) t.style.display = "block"; }}
             onMouseLeave={e => { const t = e.currentTarget.querySelector(".import-tooltip"); if (t) t.style.display = "none"; }}>
             <Btn variant="secondary" onClick={() => openImport("spreadsheet")}>Import</Btn>
@@ -1377,12 +1391,25 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                 <code style={{ background: colors.bg, borderRadius: 4, padding: "1px 5px", fontSize: 11 }}>notes</code> <span style={{ color: colors.textMuted }}>— any scheduling notes</span>
               </div>
             </div>
-          </div>
-          <Btn onClick={newStudent}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Plus size={13}/>Add</span></Btn>
+          </div>}
+          <Btn onClick={studentTab === "groups" ? onAddGroup : newStudent}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><Plus size={13}/>Add</span></Btn>
         </div>}
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>
         Students
       </PageTitle>
+
+      {/* Individuals | Groups segmented toggle — between header band and body */}
+      <div style={{ display: "inline-flex", border: "2px solid " + colors.sidebarActive, borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
+        {[{ id: "individuals", label: "Individuals" }, { id: "groups", label: "Groups" }].map(t => (
+          <button key={t.id} onClick={() => setStudentTab(t.id)}
+            style={{ width: 130, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: studentTab === t.id ? colors.sidebarActive : "transparent", color: studentTab === t.id ? colors.accent : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {studentTab === "groups" && groupsView}
+      {studentTab === "individuals" && (<>{/* ── Individuals side: existing Students table ── */}
 
       {/* ── Add-parent student picker banner ── */}
       {pickingStudentForParent && (
@@ -1739,6 +1766,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         
         </>
       )}
+      </>)}
 
 
     </div>
