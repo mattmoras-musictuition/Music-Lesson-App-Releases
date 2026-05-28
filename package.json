@@ -1,6 +1,6 @@
 {
   "name": "matt-moras-music-tuition",
-  "version": "2.9.10",
+  "version": "2.9.11",
   "description": "Music lesson timetabling app for Matt Moras",
   "main": "electron.js",
   "homepage": "./",
