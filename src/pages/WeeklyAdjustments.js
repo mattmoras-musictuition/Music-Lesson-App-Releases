@@ -3004,12 +3004,45 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // Open submenu to the right; if it overflows viewport flip to the left of the main menu
                 const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
                 const mkItemStyle = (fg) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${colors.borderLight}`, fontSize: 13, cursor: "pointer", color: fg, borderRadius: 6, fontFamily: "inherit" });
-                // Missed this week at this school
-                const thisWeekMissed = ((weeklyTimetables[contextMenu.weekKey] || {}).missed || []).filter(m => (m.schoolId || (students.find(s => s.id === m.studentId) || {}).schoolId) === sId);
+                // Missed this week at this school — keep BOTH individuals and
+                // group-shaped entries. Group entries have isGroup/groupId and
+                // a null/missing top-level studentId, so we resolve their
+                // schoolId via the groups table when m.schoolId isn't set.
+                const thisWeekMissed = ((weeklyTimetables[contextMenu.weekKey] || {}).missed || []).filter(m => {
+                  if (m.isGroup) {
+                    const grp = (groups || []).find(g => g.id === m.groupId);
+                    return (m.schoolId || grp?.schoolId) === sId;
+                  }
+                  return (m.schoolId || (students.find(s => s.id === m.studentId) || {}).schoolId) === sId;
+                });
                 const missedByStudent = {};
-                for (const m of thisWeekMissed) { missedByStudent[m.studentId] = (missedByStudent[m.studentId] || 0) + 1; }
+                for (const m of thisWeekMissed) {
+                  if (m.isGroup) continue; // groups counted separately
+                  missedByStudent[m.studentId] = (missedByStudent[m.studentId] || 0) + 1;
+                }
                 const missedStu = Object.keys(missedByStudent).map(sid => students.find(s => s.id === sid)).filter(Boolean).sort((a, b) => (missedByStudent[b.id] || 0) - (missedByStudent[a.id] || 0));
-                const hasMissed = missedStu.length > 0;
+                // Group-shaped missed entries — dedupe by groupId, count
+                // occurrences, render the way the Missed-zone card does
+                // (member first names + class codes).
+                const missedGroupCounts = {};
+                for (const m of thisWeekMissed) {
+                  if (!m.isGroup || !m.groupId) continue;
+                  missedGroupCounts[m.groupId] = (missedGroupCounts[m.groupId] || 0) + 1;
+                }
+                const missedGroupRows = Object.keys(missedGroupCounts).map(gid => {
+                  const m = thisWeekMissed.find(x => x.isGroup && x.groupId === gid);
+                  const grp = (groups || []).find(g => g.id === gid);
+                  const memberStudents = (grp?.studentIds || []).map(sid => students.find(s => s.id === sid)).filter(Boolean);
+                  const names = memberStudents.length > 0
+                    ? memberStudents.map(s => (s.name || "").split(" ")[0]).join(", ")
+                    : (m.groupName || grp?.name || "Group");
+                  const uniqueClasses = [...new Set(memberStudents.map(s => s.className || "").filter(Boolean))];
+                  const classSuffix = uniqueClasses.length > 0
+                    ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", "))
+                    : "";
+                  return { groupId: gid, label: names + classSuffix, count: missedGroupCounts[gid], m, grp, memberStudents };
+                }).sort((a, b) => b.count - a.count);
+                const hasMissed = missedStu.length > 0 || missedGroupRows.length > 0;
                 // Hoist data needed by submenu types
                 const schoolBands = (bands || []).filter(b => b.schoolId === sId && (b.members || []).length > 0);
                 const placeOne = (ml) => {
@@ -3094,7 +3127,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr("#DC2626")}>Add missed lesson</div>
                           {missedStu.map(s => {
                             const count = missedByStudent[s.id] || 0;
-                            const missedLesson = thisWeekMissed.find(m => m.studentId === s.id);
+                            const missedLesson = thisWeekMissed.find(m => !m.isGroup && m.studentId === s.id);
                             return (
                               <button key={s.id} onClick={() => { if (!missedLesson) return; placeLesson(s, { instrument: missedLesson.instrument || "", teacherId: missedLesson.teacherId || "", teacherName: missedLesson.teacherName || "" }); }}
                                 style={subBtnStyle}
@@ -3105,6 +3138,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               </button>
                             );
                           })}
+                          {missedGroupRows.map(row => (
+                            <button key={"g:" + row.groupId} onClick={() => placeOne({
+                              isGroup: true,
+                              groupId: row.groupId,
+                              groupName: row.m.groupName || row.grp?.name || "Group",
+                              studentIds: row.m.studentIds || (row.grp?.studentIds || []),
+                              studentNames: row.m.studentNames || row.memberStudents.map(s => s.name),
+                              members: row.m.members || undefined,
+                              schoolId: row.m.schoolId || row.grp?.schoolId || sId,
+                              schoolName: schools.find(sc => sc.id === (row.m.schoolId || row.grp?.schoolId || sId))?.name || "",
+                              instrument: row.m.instrument || row.grp?.instrument || "",
+                              teacherId: row.m.teacherId || row.grp?.teacherId || "",
+                              teacherName: row.m.teacherName || "",
+                              enrolmentId: row.m.enrolmentId,
+                            })}
+                              style={subBtnStyle}
+                              onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
+                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                              <span><Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />{row.label}</span>
+                              <span style={{ fontSize: 11, color: colors.gray500, whiteSpace: "nowrap" }}>{row.count} missed</span>
+                            </button>
+                          ))}
                         </>}
                         {addLessonSubmenu.type === "trial" && <>
                           <div style={subHdr(colors.sidebarActive)}>Add trial</div>
