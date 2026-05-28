@@ -706,9 +706,10 @@ export default function MusicTimetableApp() {
   const [focusReturnPage, setFocusReturnPage] = useState(null);
   const [focusGroupId, setFocusGroupId] = useState(null);
   const [focusGroupReturnPage, setFocusGroupReturnPage] = useState(null);
-  const [groupsBandsTab, setGroupsBandsTab] = useState("groups"); // "groups" | "bands"
   const [triggerNewGroup, setTriggerNewGroup] = useState(0);
-  const [triggerNewBand, setTriggerNewBand] = useState(0);
+  // One-shot request to open the Students page on a given tab (e.g. from the
+  // dashboard "ungrouped" pill). null | "individuals" | "groups"; cleared on consume.
+  const [studentsTabRequest, setStudentsTabRequest] = useState(null);
   // masterBreaks: slot-specific breaks that survive regen { id, schoolId, day, time }
   const [masterBreaks, setMasterBreaks] = useState([]);
   const [pageHistory, setPageHistory] = useState(["dashboard"]);
@@ -748,13 +749,13 @@ export default function MusicTimetableApp() {
   // Save scroll position for the given page into its viewState
   const saveScrollForPage = (pg) => {
     const st = mainScrollRef.current?.scrollTop || 0;
-    const map = { timetable: setTtViewState, weekly: setWeeklyViewState, students: setStudentsViewState, schools: setSchoolsViewState, teachers: setTeachersViewState, "groups-bands": setGroupsViewState, tally: setTallyViewState, specialists: setSpecialistsViewState, calendar: setInterruptionsViewState, dashboard: setDashboardViewState, contacts: setContactsViewState, resources: setResourcesViewState, settings: setSettingsViewState, invoicing: setInvoicingViewState, messages: () => {} };
+    const map = { timetable: setTtViewState, weekly: setWeeklyViewState, students: setStudentsViewState, schools: setSchoolsViewState, teachers: setTeachersViewState, tally: setTallyViewState, specialists: setSpecialistsViewState, calendar: setInterruptionsViewState, dashboard: setDashboardViewState, contacts: setContactsViewState, resources: setResourcesViewState, settings: setSettingsViewState, invoicing: setInvoicingViewState, messages: () => {} };
     if (map[pg]) map[pg](prev => ({ ...prev, scrollTop: st }));
   };
 
   // Restore scroll position for the given page from its viewState
   const getScrollForPage = (pg) => {
-    const map = { timetable: ttViewState, weekly: weeklyViewState, students: studentsViewState, schools: schoolsViewState, teachers: teachersViewState, "groups-bands": groupsViewState, tally: tallyViewState, specialists: specialistsViewState, calendar: interruptionsViewState, dashboard: dashboardViewState, contacts: contactsViewState, resources: resourcesViewState, settings: settingsViewState, invoicing: invoicingViewState, messages: {} };
+    const map = { timetable: ttViewState, weekly: weeklyViewState, students: studentsViewState, schools: schoolsViewState, teachers: teachersViewState, tally: tallyViewState, specialists: specialistsViewState, calendar: interruptionsViewState, dashboard: dashboardViewState, contacts: contactsViewState, resources: resourcesViewState, settings: settingsViewState, invoicing: invoicingViewState, messages: {} };
     return (map[pg] || {}).scrollTop || 0;
   };
 
@@ -765,7 +766,6 @@ export default function MusicTimetableApp() {
       students: () => setStudentsViewState({ filter: { school: "", className: "", instrument: "", teacher: "", search: "", hasNote: false, hasWarning: "" }, sortCol: "name", sortDir: "asc", scrollTop: 0 }),
       schools: () => setSchoolsViewState({ scrollTop: 0 }),
       teachers: () => setTeachersViewState({ scrollTop: 0 }),
-      "groups-bands": () => setGroupsViewState({ filterSchool: "", scrollTop: 0 }),
       tally: () => setTallyViewState({ selectedSchool: "all", groupBy: "day_school", scrollTop: 0 }),
       specialists: () => setSpecialistsViewState({ filterSchool: "", filterClass: "", filterDay: "", filterSubject: "", scrollTop: 0 }),
       calendar: () => setInterruptionsViewState({ filterSchool: "", filterType: "", scrollTop: 0 }),
@@ -5242,7 +5242,7 @@ export default function MusicTimetableApp() {
             { id: "tally", icon: <ClipboardCheck size={16} />, label: "Master Tally" },
             { id: "students", icon: <GraduationCap size={16} />, label: "Students" },
             { id: "studentnotes", icon: <NotebookPen size={16} />, label: "Student Notes" },
-            { id: "groups-bands", icon: <Piano size={16} />, label: "Groups & Bands" },
+            { id: "bands", icon: <Piano size={16} />, label: "Bands" },
             { id: "pending", icon: <Clock size={16} />, label: "Waiting List" },
             { id: "specialists", icon: <Palette size={16} />, label: "Specialist Classes" },
             { id: "schools", icon: <Building2 size={16} />, label: "Schools" },
@@ -5254,13 +5254,7 @@ export default function MusicTimetableApp() {
           ].map(item => (
             <button
               key={item.id}
-              onClick={() => {
-                if (item.id === "groups-bands" && page === "groups-bands") {
-                  setGroupsViewState(prev => ({ ...prev, resetSignal: ((prev.resetSignal || 0) + 1) }));
-                } else {
-                  setPage(item.id);
-                }
-              }}
+              onClick={() => setPage(item.id)}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%",
                 height: 34, padding: "0 16px", border: "2px solid transparent", borderRadius: 8, cursor: "pointer",
@@ -6327,30 +6321,7 @@ export default function MusicTimetableApp() {
           {page === "studentnotes" && <StudentNotesView students={students} groups={groups} schools={schools} teachers={teachers} enrolments={enrolments} timetable={timetable} teacherCoverage={teacherCoverage} interruptions={interruptions} />}
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} />}
           {page === "pending" && <PendingManager students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("pending"); setPage("students"); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
-          {page === "groups-bands" && (
-            <div>
-              <PageTitle
-                pageColor={PAGE_COLORS.groups}
-                navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
-                action={groupsBandsTab === "groups"
-                  ? <button onClick={() => setTriggerNewGroup(n => n + 1)} style={{ padding: "0 16px", height: 36, background: colors.accent, color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ New Group</button>
-                  : <button onClick={() => setTriggerNewBand(n => n + 1)} style={{ padding: "0 16px", height: 36, background: colors.accent, color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>+ New Band</button>
-                }>
-                Groups &amp; Bands
-              </PageTitle>
-              {/* D&R-style toggle — below banner */}
-              <div style={{ display: "flex", gap: 0, background: colors.bg, border: "2px solid " + colors.sidebarHover, borderRadius: 10, overflow: "hidden", alignSelf: "flex-start", marginBottom: 16 }}>
-                {[{ id: "groups", label: "Groups" }, { id: "bands", label: "Bands" }].map(tab => (
-                  <button key={tab.id} onClick={() => setGroupsBandsTab(tab.id)}
-                    style={{ flex: 1, width: 120, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: groupsBandsTab === tab.id ? colors.sidebarHover : "transparent", color: groupsBandsTab === tab.id ? colors.white : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-              {groupsBandsTab === "groups" && <GroupsManager groups={groups} setGroups={setGroups} students={activeStudents} enrolments={enrolments} schools={schools} teachers={teachers} timetable={timetable} onRevertGroup={handleRevertGroup} onAddGroupToMaster={handleAddGroupToMaster} notify={notify} focusGroupId={focusGroupId} onClearFocusGroup={() => setFocusGroupId(null)} onReturn={() => { if (focusGroupReturnPage) { setPage(focusGroupReturnPage); setFocusGroupReturnPage(null); } }} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("groups-bands"); setPage("students"); }} viewState={groupsViewState} setViewState={setGroupsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} hideTitle={true} triggerNew={triggerNewGroup} />}
-              {groupsBandsTab === "bands" && <BandsManager bands={bands} setBands={setBands} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} hideTitle={true} triggerNew={triggerNewBand} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
-            </div>
-          )}
+          {page === "bands" && <BandsManager bands={bands} setBands={setBands} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
           {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
             // Q1=α MTT cross-teacher: modal confirms enrolment update; on confirm
@@ -6460,8 +6431,7 @@ export default function MusicTimetableApp() {
           }} onViewGroup={(groupId) => {
             setFocusGroupId(groupId);
             setFocusGroupReturnPage("timetable");
-            setGroupsBandsTab("groups");
-            setPage("groups-bands");
+            setPage("students");
           }} onPlaceUnsched={(data, day, time) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
             // Push undo only on the reassign-confirmed branch (per spec rule).
@@ -6595,7 +6565,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setGroupsBandsTab("groups"); setPage("groups-bands"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setPage("students"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} catchups={catchups} groups={groups} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
