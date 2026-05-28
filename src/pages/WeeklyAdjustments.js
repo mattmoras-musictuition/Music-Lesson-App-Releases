@@ -23,7 +23,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
-import { checkConstraints, getRelationalPartnerIds } from "../utils/constraints";
+import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
@@ -515,6 +515,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const weekKey = weekDates[0].date;
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+  // v2.9.12 past-dated display gate: today's date in Melbourne local time, as
+  // a 'YYYY-MM-DD' string for comparison against weekDateMap entries.
+  const weeklyTodayStr = melbourneToday();
   const currentSchool = schools.find(s => s.id === selectedSchool);
 
   // Flatten all teacher_actuals lessons for the current (week, school)
@@ -4958,7 +4961,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   </div>
                                 )}
                                 {!dayGhostsVisible[`${weekKey}_${day}`] && cellLessons.map((l, li) => {
-                                  const cWarnings = constraintWarnings[l.id] || [];
+                                  // v2.9.12 past-dated display gate: a past lesson (or a future
+                                  // lesson whose relational partner is past) shows no warnings —
+                                  // past lessons can't be retroactively fixed. Ack state untouched.
+                                  const cWarnings = isConstraintVisibleForLesson(l, weeklyData?.lessons, weeklyTodayStr, weekDateMap, currentSchool)
+                                    ? (constraintWarnings[l.id] || [])
+                                    : [];
                                   // ── Band session card ──
                                   if (l.isBandSession) {
                                     const bandMembers = (l.members || []);

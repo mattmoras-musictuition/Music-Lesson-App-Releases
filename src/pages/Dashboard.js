@@ -19,7 +19,7 @@ import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, g
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
-import { checkConstraints } from "../utils/constraints";
+import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -196,6 +196,10 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   // straddles weeks. Per-school entries with count===0 are omitted.
   const dropdownWarningCounts = useMemo(() => {
     const result = {};
+    // v2.9.12 past-dated display gate: today's date (Melbourne local) as a
+    // 'YYYY-MM-DD' string. Computed via the stable imported helper so it's not
+    // a reactive dependency of this memo.
+    const todayStrGate = melbourneToday();
     const baseMonday = getCurrentWeekMonday();
     baseMonday.setDate(baseMonday.getDate() + calendarWeekOffset * 7);
     const weeksToCompute = [baseMonday];
@@ -244,6 +248,10 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
           const lessonRows = [];
           for (const l of dayLessons) {
             if (weeklyAckedConstraints && weeklyAckedConstraints.has(l.id)) continue;
+            // v2.9.12 past-dated display gate: keep the dashboard count in sync
+            // with the Weekly view — past lessons (and future lessons whose
+            // relational partner is past) contribute no warnings.
+            if (!isConstraintVisibleForLesson(l, schoolWeekLessons, todayStrGate, weekDateMap, school)) continue;
             const slot = (school.slots || []).find(s => s.start === l.start) || { start: l.start, end: l.end || l.start, type: "class" };
             const ws = checkConstraints(l, day, slot, schoolWeekLessons, {
               weekKey: calMondayStr, selectedSchool: school.id, currentSchool: school,

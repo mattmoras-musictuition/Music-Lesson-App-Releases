@@ -81,6 +81,52 @@ export function getRelationalPartnerIds(lesson, lessons, currentSchool) {
 }
 
 /**
+ * v2.9.12 past-dated display gate.
+ *
+ * A constraint warning should DISPLAY on a lesson card only when:
+ *   (a) the card's own date is today-or-later, AND
+ *   (b) every relational-conflict partner (same-day double-booking /
+ *       dual class-time pullout) is ALSO today-or-later — so a relational
+ *       pair vanishes together the moment either side falls into the past.
+ *
+ * Non-relational-only cards satisfy (b) trivially (no partners); group/band
+ * cards have no relational partners, so only (a) applies. This is a pure
+ * DISPLAY gate — acknowledgement state, the warning strings, and the
+ * constraint checker are all untouched; past lessons simply render as if
+ * they had no warnings (if a date later moves forward, the existing ack
+ * state applies again exactly as before).
+ *
+ * Dates are resolved via weekDateMap (day name -> 'YYYY-MM-DD'), the Weekly
+ * view's canonical per-lesson date source (lessons don't carry their own
+ * date). `todayStr` is a 'YYYY-MM-DD' string (e.g. melbourneToday()); the
+ * YYYY-MM-DD format makes a plain string comparison a valid date comparison.
+ * If a lesson's date can't be resolved (no weekDateMap entry — e.g. the
+ * date-less Master Timetable), the gate fails OPEN and the warning shows as
+ * before.
+ *
+ * @param lesson        — the card being gated.
+ * @param lessons       — the week's lesson list (for partner lookup).
+ * @param todayStr      — 'YYYY-MM-DD' reference for "today".
+ * @param weekDateMap   — { [dayName]: 'YYYY-MM-DD' } for the displayed week.
+ * @param currentSchool — current school object; forwarded to
+ *                        getRelationalPartnerIds (its slots classify the
+ *                        class-time partners).
+ * @returns {boolean} true if warnings should display for this lesson.
+ */
+export function isConstraintVisibleForLesson(lesson, lessons, todayStr, weekDateMap, currentSchool) {
+  if (!lesson) return false;
+  const dateOf = (l) => (l && weekDateMap ? weekDateMap[l.day] : null);
+  const own = dateOf(lesson);
+  if (own && own < todayStr) return false;                       // (a)
+  for (const pid of getRelationalPartnerIds(lesson, lessons, currentSchool)) {
+    const partner = (lessons || []).find(l => l.id === pid);
+    const pd = dateOf(partner);
+    if (pd && pd < todayStr) return false;                       // (b)
+  }
+  return true;
+}
+
+/**
  * Compute constraint warnings for a single lesson in a (day, slot, lessons)
  * context, with all environment data supplied via ctx.
  *
