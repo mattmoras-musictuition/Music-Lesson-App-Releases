@@ -5,7 +5,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useMemo } from "react";
-import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles } from "lucide-react";
+import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, EyeOff, SlidersHorizontal } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
 import { PageTitle, NavButtons, Btn, Card, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -20,7 +20,7 @@ import {
   makeStoragePath, uploadToBucket, signedUrlFor, deleteFromBucket,
 } from "../utils/storageHelpers";
 // Resources are a shared pool persisted per-row (no whole-list sync).
-import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, resourceFileSharedByUpload, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName } from "../utils/resourcesDB";
+import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, resourceFileSharedByUpload, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName, fetchFolderOverrides, saveFolderOverrides } from "../utils/resourcesDB";
 import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
 
 // Fixed Source filter options (the `source` column).
@@ -103,13 +103,29 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // Subject-name maps, loaded lazily only when a student_note resource exists.
   const [subjectMaps, setSubjectMaps] = useState(null);
 
-  // Six multi-select filters; empty array = no constraint. Combine with AND.
-  const [rfInstrument, setRfInstrument] = useState([]);
-  const [rfType,       setRfType]       = useState([]);
+  // Remaining filters (instrument + type now live in the sidebar). Each is a
+  // multi-select; empty array = no constraint. Combine with AND. Tucked behind
+  // the compact "Filters" control so the three-pane view stays calm.
   const [rfSkill,      setRfSkill]      = useState([]);
   const [rfSchool,     setRfSchool]     = useState([]);
   const [rfUploadedBy, setRfUploadedBy] = useState([]);
   const [rfSource,     setRfSource]     = useState([]);
+  const [showFilters,  setShowFilters]  = useState(false);
+
+  // ── Finder-style library state ───────────────────────────────
+  // selectedFolder narrows the middle list: { dim:"all" } shows everything;
+  // { dim:"instrument"|"type", value } narrows to that folder. selectedId is
+  // the row whose detail shows in the right pane (null = placeholder).
+  const [selectedFolder, setSelectedFolder] = useState({ dim: "all", value: null });
+  const [selectedId,     setSelectedId]     = useState(null);
+  // Shared sidebar overrides (aliases + hidden folders) from app_settings.
+  const [overrides,  setOverrides]  = useState({ aliases: {}, hidden: [] });
+  const [showHidden, setShowHidden] = useState(false);
+  // Right-click context menu on a folder: { x, y, dim, value }.
+  const [folderMenu, setFolderMenu] = useState(null);
+  // Inline rename of a folder alias: the folder key being renamed + draft text.
+  const [renamingKey, setRenamingKey] = useState(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   // ── Documents state ─────────────────────────────────────────
   const [dEditId,   setDEditId]   = useState(null);
@@ -249,6 +265,42 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // Taxonomy lists for the filter bar + edit modal.
   useEffect(() => { fetchResourceTaxonomies().then(setTax); }, []);
+  // Shared folder overrides (aliases + hidden) for the sidebar.
+  useEffect(() => { fetchFolderOverrides().then(setOverrides); }, []);
+
+  // ── Folder helpers ───────────────────────────────────────────
+  // A folder is identified by `${dim}:${value}` (dim = "instrument" | "type").
+  const folderKey = (dim, value) => `${dim}:${value}`;
+  const folderLabel = (dim, value) => overrides.aliases[folderKey(dim, value)] || value;
+  const isFolderHidden = (dim, value) => overrides.hidden.includes(folderKey(dim, value));
+
+  // Persist overrides optimistically: update local state immediately, then write
+  // the shared app_settings row. On failure, reload the canonical row so local
+  // state never drifts from what other clients see.
+  const persistOverrides = async (next) => {
+    setOverrides(next);
+    try { await saveFolderOverrides(next); }
+    catch (e) { notify("Couldn't save folder change — try again", "danger"); fetchFolderOverrides().then(setOverrides); }
+  };
+  const renameFolder = (dim, value, alias) => {
+    const key = folderKey(dim, value);
+    const aliases = { ...overrides.aliases };
+    const trimmed = (alias || "").trim();
+    if (trimmed && trimmed !== value) aliases[key] = trimmed; else delete aliases[key];
+    persistOverrides({ ...overrides, aliases });
+  };
+  const hideFolder = (dim, value) => {
+    const key = folderKey(dim, value);
+    if (overrides.hidden.includes(key)) return;
+    // Leaving a hidden folder selected would show an empty/odd list — fall back
+    // to "All resources" if the folder being hidden is the current selection.
+    if (selectedFolder.dim === dim && selectedFolder.value === value) setSelectedFolder({ dim: "all", value: null });
+    persistOverrides({ ...overrides, hidden: [...overrides.hidden, key] });
+  };
+  const unhideFolder = (dim, value) => {
+    const key = folderKey(dim, value);
+    persistOverrides({ ...overrides, hidden: overrides.hidden.filter(k => k !== key) });
+  };
   // Resolve student_note origin names only if such a resource exists
   // (none until cluster 4) — avoids extra queries in the common case.
   useEffect(() => {
@@ -268,13 +320,29 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return [...set].sort().map(n => ({ value: n, label: n }));
   }, [resources]);
 
-  const anyResourceFilter = !!(rfInstrument.length || rfType.length || rfSkill.length || rfSchool.length || rfUploadedBy.length || rfSource.length);
-  const clearResourceFilters = () => { setRfInstrument([]); setRfType([]); setRfSkill([]); setRfSchool([]); setRfUploadedBy([]); setRfSource([]); };
+  const anyResourceFilter = !!(rfSkill.length || rfSchool.length || rfUploadedBy.length || rfSource.length);
+  const filterCount = rfSkill.length + rfSchool.length + rfUploadedBy.length + rfSource.length;
+  const clearResourceFilters = () => { setRfSkill([]); setRfSchool([]); setRfUploadedBy([]); setRfSource([]); };
 
-  // ── Filter (all combine with AND; empty filter = no constraint) ─
+  // ── Sidebar folders (auto-derived live from the data) ─────────
+  // One folder per distinct instrument value, one per distinct type/category
+  // value present in the resources. New values appear automatically. Each folder
+  // carries its own resource count (ignores search/filters/other folders).
+  const instrumentFolders = useMemo(() => {
+    const counts = new Map();
+    for (const r of resources) { const v = (r.instrument || "").trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }));
+  }, [resources]);
+  const typeFolders = useMemo(() => {
+    const counts = new Map();
+    for (const r of resources) { const v = (r.category || "").trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }));
+  }, [resources]);
+
+  // ── Filter: folder narrowing + remaining filters + search (AND) ─
   const filteredResources = useMemo(() => resources.filter(r => {
-    if (rfInstrument.length && !rfInstrument.includes(r.instrument))     return false;
-    if (rfType.length       && !rfType.includes(r.category))             return false;
+    if (selectedFolder.dim === "instrument" && r.instrument !== selectedFolder.value) return false;
+    if (selectedFolder.dim === "type"       && r.category   !== selectedFolder.value) return false;
     if (rfSkill.length      && !rfSkill.includes(r.skill_level))         return false;
     if (rfSchool.length     && !rfSchool.includes(r.school_id))          return false;
     if (rfUploadedBy.length && !rfUploadedBy.includes(r.added_by_name))  return false;
@@ -284,7 +352,18 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       if (!(r.label||"").toLowerCase().includes(q) && !(r.description||"").toLowerCase().includes(q)) return false;
     }
     return true;
-  }), [resources, rfInstrument, rfType, rfSkill, rfSchool, rfUploadedBy, rfSource, rSearch]);
+  }), [resources, selectedFolder, rfSkill, rfSchool, rfUploadedBy, rfSource, rSearch]);
+
+  // Keep the detail pane coherent: if the selected row drops out of the list
+  // (folder/filter/search change or deletion), clear the selection.
+  useEffect(() => {
+    if (selectedId && !filteredResources.some(r => r.id === selectedId)) setSelectedId(null);
+  }, [filteredResources, selectedId]);
+
+  const selectedResource = useMemo(() => resources.find(r => r.id === selectedId) || null, [resources, selectedId]);
+  const schoolNameById = useMemo(() => {
+    const m = new Map(); for (const s of (schools || [])) m.set(s.id, s.name); return m;
+  }, [schools]);
 
   // ── Documents CRUD ──────────────────────────────────────────
   const addDocument = () => {
@@ -391,30 +470,6 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       {/* ── RESOURCES ── */}
       {section === "resources" && (
         <div>
-          <Card style={{ marginBottom: 16, padding: 14 }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 160, position: "relative" }}>
-                <input value={rSearch} onChange={e => setRSearch(e.target.value)} placeholder="Search resources…"
-                  style={{ width: "100%", padding: "8px 32px 8px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
-                {rSearch && <button onClick={() => setRSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
-              </div>
-            </div>
-            {/* Filter bar — six multi-selects, AND-combined */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
-              <FilterDropdown label="Instrument"  options={instrumentOptions} selected={rfInstrument} onChange={setRfInstrument} colors={colors} />
-              <FilterDropdown label="Type"        options={typeOptions}       selected={rfType}       onChange={setRfType}       colors={colors} />
-              <FilterDropdown label="Skill level" options={skillOptions}      selected={rfSkill}      onChange={setRfSkill}      colors={colors} />
-              <FilterDropdown label="School"      options={schoolOptions}     selected={rfSchool}     onChange={setRfSchool}     colors={colors} />
-              <FilterDropdown label="Uploaded by" options={uploadedByOptions} selected={rfUploadedBy} onChange={setRfUploadedBy} colors={colors} />
-              <FilterDropdown label="Source"      options={SOURCE_OPTIONS}    selected={rfSource}     onChange={setRfSource}     colors={colors} />
-              {anyResourceFilter && (
-                <button onClick={clearResourceFilters} style={{ padding: "7px 12px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textMuted, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                  <X size={12} /> Clear filters
-                </button>
-              )}
-            </div>
-          </Card>
-
           {resources.length === 0 ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 20px", gap: 12 }}>
               <Library size={40} style={{ color: colors.textMuted, opacity: 0.5 }} />
@@ -423,97 +478,223 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
               <Btn onClick={addResource} style={{ marginTop: 4 }}>+ Add Resource</Btn>
             </div>
           ) : (
-            <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, overflow: "hidden", overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>Name</th>
-                    <th style={thStyle}>Type</th>
-                    <th style={thStyle}>Instrument</th>
-                    <th style={thStyle}>Skill</th>
-                    <th style={thStyle}>Uploaded by</th>
-                    <th style={thStyle}>Date</th>
-                    <th style={thStyle}>Source</th>
-                    <th style={thStyle}>Link</th>
-                    <th style={{ ...thStyle, width: 120 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredResources.map(r => {
+            /* Finder-style three-pane library: folder sidebar / list / detail. */
+            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", gap: 12, alignItems: "start" }}>
+
+              {/* ── LEFT: folder sidebar ── */}
+              <Card style={{ padding: 8, position: "sticky", top: 8 }}>
+                <FolderRow icon={Library} label="All resources" count={resources.length}
+                  selected={selectedFolder.dim === "all"}
+                  onClick={() => setSelectedFolder({ dim: "all", value: null })} colors={colors} />
+
+                {instrumentFolders.length > 0 && <SidebarGroupLabel colors={colors}>By instrument</SidebarGroupLabel>}
+                {instrumentFolders.map(f => (
+                  isFolderHidden("instrument", f.value) ? null : (
+                    <FolderRow key={"i:" + f.value} icon={Folder} count={f.count}
+                      label={folderLabel("instrument", f.value)}
+                      aliased={!!overrides.aliases[folderKey("instrument", f.value)]}
+                      selected={selectedFolder.dim === "instrument" && selectedFolder.value === f.value}
+                      onClick={() => setSelectedFolder({ dim: "instrument", value: f.value })}
+                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "instrument", value: f.value }); }}
+                      renaming={renamingKey === folderKey("instrument", f.value)}
+                      renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+                      onCommitRename={() => { renameFolder("instrument", f.value, renameDraft); setRenamingKey(null); }}
+                      onCancelRename={() => setRenamingKey(null)}
+                      colors={colors} />
+                  )
+                ))}
+
+                {typeFolders.length > 0 && <SidebarGroupLabel colors={colors}>By type</SidebarGroupLabel>}
+                {typeFolders.map(f => (
+                  isFolderHidden("type", f.value) ? null : (
+                    <FolderRow key={"t:" + f.value} icon={Folder} count={f.count}
+                      label={folderLabel("type", f.value)}
+                      aliased={!!overrides.aliases[folderKey("type", f.value)]}
+                      selected={selectedFolder.dim === "type" && selectedFolder.value === f.value}
+                      onClick={() => setSelectedFolder({ dim: "type", value: f.value })}
+                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "type", value: f.value }); }}
+                      renaming={renamingKey === folderKey("type", f.value)}
+                      renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+                      onCommitRename={() => { renameFolder("type", f.value, renameDraft); setRenamingKey(null); }}
+                      onCancelRename={() => setRenamingKey(null)}
+                      colors={colors} />
+                  )
+                ))}
+
+                {/* Show-hidden control + greyed hidden folders with right-click Unhide */}
+                {overrides.hidden.length > 0 && (
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${colors.borderLight}` }}>
+                    <button onClick={() => setShowHidden(h => !h)}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: colors.textMuted, fontFamily: "inherit", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <EyeOff size={12} /> {showHidden ? "Hide hidden folders" : `Show hidden folders (${overrides.hidden.length})`}
+                    </button>
+                    {showHidden && overrides.hidden.map(key => {
+                      const [dim, ...rest] = key.split(":"); const value = rest.join(":");
+                      return (
+                        <FolderRow key={"h:" + key} icon={Folder} dim greyed
+                          label={folderLabel(dim, value)}
+                          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim, value, hidden: true }); }}
+                          colors={colors} />
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+
+              {/* ── MIDDLE: compact resource list ── */}
+              <Card style={{ padding: 0, overflow: "hidden" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", padding: 10, borderBottom: `1px solid ${colors.borderLight}` }}>
+                  <div style={{ flex: 1, minWidth: 120, position: "relative" }}>
+                    <input value={rSearch} onChange={e => setRSearch(e.target.value)} placeholder="Search resources…"
+                      style={{ width: "100%", padding: "7px 30px 7px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                    {rSearch && <button onClick={() => setRSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
+                  </div>
+                  {/* Filters — skill / school / uploaded-by / source tucked behind one control */}
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setShowFilters(o => !o)}
+                      style={{ padding: "7px 11px", border: "1px solid " + (anyResourceFilter ? colors.sidebarHover : colors.inputBorder), borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", background: anyResourceFilter ? colors.blueLight : colors.cardBg, color: anyResourceFilter ? colors.sidebarHover : colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                      <SlidersHorizontal size={13} /> Filters{anyResourceFilter ? ` (${filterCount})` : ""}
+                    </button>
+                    {showFilters && (
+                      <>
+                        <div onMouseDown={() => setShowFilters(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                        <div style={{ position: "absolute", zIndex: 41, top: "calc(100% + 6px)", right: 0, width: 220, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                          <FilterDropdown label="Skill level" options={skillOptions}      selected={rfSkill}      onChange={setRfSkill}      colors={colors} />
+                          <FilterDropdown label="School"      options={schoolOptions}     selected={rfSchool}     onChange={setRfSchool}     colors={colors} />
+                          <FilterDropdown label="Uploaded by" options={uploadedByOptions} selected={rfUploadedBy} onChange={setRfUploadedBy} colors={colors} />
+                          <FilterDropdown label="Source"      options={SOURCE_OPTIONS}    selected={rfSource}     onChange={setRfSource}     colors={colors} />
+                          {anyResourceFilter && (
+                            <button onClick={clearResourceFilters} style={{ padding: "6px 10px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textMuted, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                              <X size={12} /> Clear filters
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ maxHeight: "calc(100vh - 230px)", overflowY: "auto" }}>
+                  {filteredResources.length === 0 ? (
+                    <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No resources match the current view</div>
+                  ) : filteredResources.map(r => {
                     const RowIcon = iconForResourceType(r.category)
                       || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
+                    const isSel = selectedId === r.id;
+                    const subjName = r.source === "student_note" ? resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps) : null;
+                    const sub = [r.instrument, r.category].filter(Boolean).join(" · ") || (subjName ? `from ${subjName}'s notes` : "");
                     return (
-                    <tr key={r.id}
-                      style={{ background: rHovered === r.id ? colors.blueLight : colors.cardBg, borderBottom: "1px solid " + colors.borderLight }}
-                      onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}>
-                      {/* Name (+ origin line for student_note) */}
-                      <td style={{ padding: "8px 12px", fontWeight: 600 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <RowIcon size={16} style={{ flexShrink: 0, color: colors.textMuted }} />
-                          <div>
-                            {r.label || <span style={{ color: colors.textMuted, fontStyle: "italic" }}>—</span>}
-                            {r.source === "student_note" && (() => {
-                              const subjName = resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps);
-                              return subjName ? <div style={{ fontSize: 11, fontWeight: 400, color: colors.textMuted, marginTop: 2 }}>from {subjName}'s notes</div> : null;
-                            })()}
+                      <div key={r.id} onClick={() => setSelectedId(r.id)}
+                        onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg) }}>
+                        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {r.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
                           </div>
+                          {sub && <div style={{ fontSize: 11, color: isSel ? colors.blueLight : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
                         </div>
-                      </td>
-                      {/* Type */}
-                      <td style={{ padding: "8px 12px" }}>
-                        {r.category
-                          ? <span style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.accentLight, color: colors.accentDark }}>{r.category}</span>
-                          : <span style={{ color: colors.textMuted }}>—</span>}
-                      </td>
-                      {/* Instrument */}
-                      <td style={{ padding: "8px 12px", color: colors.textLight, fontSize: 12 }}>{r.instrument || <span style={{ color: colors.textMuted }}>—</span>}</td>
-                      {/* Skill */}
-                      <td style={{ padding: "8px 12px", color: colors.textLight, fontSize: 12 }}>{r.skill_level || <span style={{ color: colors.textMuted }}>—</span>}</td>
-                      {/* Uploaded by */}
-                      <td style={{ padding: "8px 12px", color: colors.textMuted, fontSize: 12 }}>{r.added_by_name || <span style={{ color: colors.textMuted }}>—</span>}</td>
-                      {/* Date */}
-                      <td style={{ padding: "8px 12px", color: colors.textMuted, fontSize: 12, whiteSpace: "nowrap" }}>{r.created_at ? new Date(r.created_at).toLocaleDateString("en-AU") : "—"}</td>
-                      {/* Source */}
-                      <td style={{ padding: "8px 12px" }}>
-                        {r.source === "student_note" ? (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.blueLight, color: colors.sidebarHover, border: "1px solid " + colors.sidebarHover + "30", whiteSpace: "nowrap" }}>
-                            <Sparkles size={11} /> From Student Notes
-                          </span>
-                        ) : (
-                          <span title="Direct upload" style={{ display: "inline-flex", color: colors.textMuted }}><Upload size={13} /></span>
-                        )}
-                      </td>
-                      {/* Link / File */}
-                      <td style={{ padding: "8px 12px", maxWidth: 220 }}>
-                        {r.file_url && r.file_name ? (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.textLight, fontSize: 12 }}>
-                            <FileText size={11} style={{ color: colors.accent }} />
-                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }} title={r.file_name}>{r.file_name}</span>
-                          </span>
-                        ) : r.url ? (
-                          <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: colors.accent, textDecoration: "none", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block", maxWidth: 200 }}>{r.url.replace(/^https?:\/\//, "")}</a>
-                        ) : (
-                          <span style={{ color: colors.textMuted }}>—</span>
-                        )}
-                      </td>
-                      {/* Actions */}
-                      <td style={{ padding: "8px 12px" }}>
-                        <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", alignItems: "center" }}>
-                          {(r.url || r.file_url) && iconBtn(() => setBrowserLink({ url: r.url || r.file_url, title: r.label || r.category }), <Eye size={13} />, colors.textMuted, "View in browser")}
-                          {(r.url || r.file_url) && iconBtn(() => copyLink(r.url || r.file_url), <Copy size={13} />, colors.textMuted, "Copy link")}
-                          {iconBtn(() => openEditResource(r), <Pencil size={13} />, colors.textMuted, "Edit details")}
-                          {iconBtn(() => deleteResource(r.id), <Trash2 size={13} />, colors.danger, "Delete", { border: "1px solid " + colors.danger + "60" })}
-                        </div>
-                      </td>
-                    </tr>
+                        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.sidebarHover }} />}
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
-              {filteredResources.length === 0 && resources.length > 0 && (
-                <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No resources match the current filters</div>
-              )}
+                </div>
+              </Card>
+
+              {/* ── RIGHT: detail panel ── */}
+              <Card style={{ padding: 0, position: "sticky", top: 8, overflow: "hidden" }}>
+                {!selectedResource ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "60px 24px", textAlign: "center", color: colors.textMuted }}>
+                    <Library size={32} style={{ opacity: 0.4 }} />
+                    <div style={{ fontSize: 13 }}>Select a resource to see its details</div>
+                  </div>
+                ) : (() => {
+                  const r = selectedResource;
+                  const link = r.url || r.file_url || "";
+                  const isImg = /\.(png|jpe?g|gif|webp|bmp|svg)(\?|$)/i.test(r.file_url || r.url || r.file_name || "");
+                  const BigIcon = iconForResourceType(r.category) || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
+                  const subjName = r.source === "student_note" ? resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps) : null;
+                  const schoolName = r.school_id ? schoolNameById.get(r.school_id) : "";
+                  const detailRow = (label, value) => (
+                    <div style={{ display: "flex", gap: 10, padding: "7px 0", borderBottom: `1px solid ${colors.borderLight}` }}>
+                      <div style={{ width: 92, flexShrink: 0, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: colors.text }}>{value}</div>
+                    </div>
+                  );
+                  return (
+                    <div style={{ maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
+                      {/* Preview / thumbnail */}
+                      <div style={{ height: 140, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `1px solid ${colors.borderLight}`, overflow: "hidden" }}>
+                        {isImg && (r.file_url || r.url)
+                          ? <img src={r.file_url || r.url} alt={r.label} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                          : <BigIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />}
+                      </div>
+                      <div style={{ padding: 16 }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{r.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
+                        {r.category && <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.accentLight, color: colors.accentDark, marginBottom: 12 }}>{r.category}</span>}
+
+                        <div style={{ marginTop: 6 }}>
+                          {detailRow("Instrument", r.instrument || <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Skill", r.skill_level || <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("School", schoolName || <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Uploaded by", r.added_by_name || <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Date", r.created_at ? new Date(r.created_at).toLocaleDateString("en-AU") : <span style={{ color: colors.textMuted }}>—</span>)}
+                          {detailRow("Source", r.source === "student_note"
+                            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.sidebarHover, fontWeight: 600 }}><Sparkles size={12} /> {subjName ? `From ${subjName}'s notes` : "From Student Notes"}</span>
+                            : <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.textMuted }}><Upload size={12} /> Direct upload</span>)}
+                          {detailRow("Link", r.file_url && r.file_name
+                            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}><FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.file_name}>{r.file_name}</span></span>
+                            : r.url
+                              ? <a href={r.url} target="_blank" rel="noopener noreferrer" style={{ color: colors.accent, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{r.url.replace(/^https?:\/\//, "")}</a>
+                              : <span style={{ color: colors.textMuted }}>—</span>)}
+                          {r.description && detailRow("Notes", r.description)}
+                        </div>
+
+                        {/* Action row — wired to the existing handlers */}
+                        <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
+                          {link && <button onClick={() => setBrowserLink({ url: link, title: r.label || r.category })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> Preview</button>}
+                          {link && <button onClick={() => copyLink(link)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Copy size={13} /> Copy</button>}
+                          <button onClick={() => openEditResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Pencil size={13} /> Edit</button>
+                          <button onClick={() => deleteResource(r.id)} style={{ border: "1px solid " + colors.danger + "60", background: colors.cardBg, color: colors.danger, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Trash2 size={13} /> Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </Card>
             </div>
+          )}
+
+          {/* Folder right-click context menu (overlay closes on outside click) */}
+          {folderMenu && (
+            <>
+              <div onMouseDown={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
+              <div style={{ position: "fixed", zIndex: 9971, top: folderMenu.y, left: folderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
+                {folderMenu.hidden ? (
+                  <button onClick={() => { unhideFolder(folderMenu.dim, folderMenu.value); setFolderMenu(null); }}
+                    style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                    <Eye size={13} /> Unhide
+                  </button>
+                ) : (
+                  <>
+                    <button onClick={() => { setRenamingKey(folderKey(folderMenu.dim, folderMenu.value)); setRenameDraft(folderLabel(folderMenu.dim, folderMenu.value)); setFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Pencil size={13} /> Rename…
+                    </button>
+                    {!!overrides.aliases[folderKey(folderMenu.dim, folderMenu.value)] && (
+                      <button onClick={() => { renameFolder(folderMenu.dim, folderMenu.value, ""); setFolderMenu(null); }}
+                        style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                        <X size={13} /> Reset name
+                      </button>
+                    )}
+                    <button onClick={() => { hideFolder(folderMenu.dim, folderMenu.value); setFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <EyeOff size={13} /> Hide
+                    </button>
+                  </>
+                )}
+              </div>
+            </>
           )}
 
           {/* Add / edit-details modal — the single edit path */}
@@ -800,6 +981,41 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       {browserLink && (
         <LinkBrowser initialUrl={browserLink.url} title={browserLink.title} onClose={() => setBrowserLink(null)} />
       )}
+    </div>
+  );
+}
+
+// ── Sidebar group heading (e.g. "By instrument") ──────────────
+function SidebarGroupLabel({ children, colors }) {
+  return <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, padding: "10px 8px 4px" }}>{children}</div>;
+}
+
+// ── One folder row in the library sidebar ─────────────────────
+// Renders a clickable folder with an optional count. When `renaming` is set it
+// becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
+// `greyed` is used for hidden folders revealed by "Show hidden folders".
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, colors }) {
+  const [hover, setHover] = useState(false);
+  if (renaming) {
+    return (
+      <div style={{ padding: "2px 4px" }}>
+        <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") onCommitRename(); if (e.key === "Escape") onCancelRename(); }}
+          onBlur={onCommitRename}
+          style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+      </div>
+    );
+  }
+  const bg = selected ? colors.sidebarHover : (hover ? colors.blueLight : "transparent");
+  const fg = selected ? colors.white : (greyed ? colors.textMuted : colors.text);
+  return (
+    <div onClick={onClick} onContextMenu={onContextMenu}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      title={aliased ? "Renamed folder (label only)" : undefined}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: "pointer", background: bg, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
+      <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
+      <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
     </div>
   );
 }
