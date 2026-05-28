@@ -184,22 +184,26 @@ export async function fetchResourceTaxonomies() {
 
 // ── Folder overrides (shared sidebar aliases + hidden folders) ──
 //
-// The Resource Library's Finder-style sidebar auto-generates one folder per
-// instrument and one per type from the live data. Admins/teachers can give a
-// folder a display alias (label only — the underlying instrument/type value and
-// the taxonomy lists are untouched) or hide it from the sidebar (reversible).
-// Both are stored in ONE shared app_settings row so every client sees the same
-// overrides. Shape: { aliases: { "instrument:Ukulele": "Uke", ... },
-// hidden: ["type:Equipment", ...] }. Keys are `${dim}:${value}` where dim is
-// "instrument" or "type". No schema change — this reuses app_settings.
+// The Finder-style sidebars (Resources and Documents) auto-generate one folder
+// per metadata value from the live data. Admins/teachers can give a folder a
+// display alias (label only — the underlying value and the taxonomy lists are
+// untouched), hide it (reversible), or save the current view as a named custom
+// folder. All three are stored in ONE shared app_settings row per surface so
+// every client sees the same overrides. Shape:
+//   { aliases: { "instrument:Ukulele": "Uke", ... },
+//     hidden:  ["type:Equipment", ...],
+//     custom:  [{ id, name, filters }] }
+// Folder keys are `${dim}:${value}`. Resources use the key
+// "resource_folder_overrides"; Documents use "document_folder_overrides" — the
+// two never interfere. No schema change — this reuses app_settings.
 const FOLDER_OVERRIDES_KEY = "resource_folder_overrides";
 
 // Coerce a stored value (jsonb object, JSON string, or null) into the canonical
-// { aliases, hidden } shape. Never throws.
+// { aliases, hidden, custom } shape. Never throws.
 function _coerceOverrides(value) {
   let v = value;
   if (typeof v === "string") { try { v = JSON.parse(v); } catch { v = null; } }
-  if (!v || typeof v !== "object" || Array.isArray(v)) return { aliases: {}, hidden: [] };
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { aliases: {}, hidden: [], custom: [] };
   const aliases = {};
   if (v.aliases && typeof v.aliases === "object" && !Array.isArray(v.aliases)) {
     for (const [k, val] of Object.entries(v.aliases)) {
@@ -207,28 +211,37 @@ function _coerceOverrides(value) {
     }
   }
   const hidden = Array.isArray(v.hidden) ? v.hidden.filter(x => typeof x === "string") : [];
-  return { aliases, hidden };
+  const custom = Array.isArray(v.custom)
+    ? v.custom.filter(c => c && typeof c === "object" && typeof c.id === "string" && typeof c.name === "string")
+              .map(c => ({ id: c.id, name: c.name, filters: (c.filters && typeof c.filters === "object") ? c.filters : {} }))
+    : [];
+  return { aliases, hidden, custom };
 }
 
-// Fetch the shared folder overrides. Missing row → empty overrides. Never throws.
-export async function fetchFolderOverrides() {
+// Fetch the shared folder overrides for a surface (defaults to Resources).
+// Missing row → empty overrides. Never throws.
+export async function fetchFolderOverrides(settingsKey = FOLDER_OVERRIDES_KEY) {
   try {
     const { data, error } = await supabase
-      .from("app_settings").select("value").eq("key", FOLDER_OVERRIDES_KEY);
+      .from("app_settings").select("value").eq("key", settingsKey);
     if (error) throw error;
     return _coerceOverrides((data || [])[0]?.value);
   } catch (err) {
     console.warn("[resources] folder overrides load failed:", err?.message);
-    return { aliases: {}, hidden: [] };
+    return { aliases: {}, hidden: [], custom: [] };
   }
 }
 
-// Persist the shared folder overrides (upsert one app_settings row). Returns the
-// cleaned overrides actually written, so the caller can adopt the canonical shape.
-export async function saveFolderOverrides(overrides) {
+// Persist the shared folder overrides for a surface (upsert one app_settings
+// row). Returns the cleaned overrides actually written. Call as
+// saveFolderOverrides(key, overrides); a single-arg call defaults to the
+// Resources key for backward compatibility.
+export async function saveFolderOverrides(settingsKeyOrOverrides, maybeOverrides) {
+  const settingsKey = typeof settingsKeyOrOverrides === "string" ? settingsKeyOrOverrides : FOLDER_OVERRIDES_KEY;
+  const overrides   = typeof settingsKeyOrOverrides === "string" ? maybeOverrides : settingsKeyOrOverrides;
   const clean = _coerceOverrides(overrides);
   const { error } = await supabase
-    .from("app_settings").upsert({ key: FOLDER_OVERRIDES_KEY, value: clean }, { onConflict: "key" });
+    .from("app_settings").upsert({ key: settingsKey, value: clean }, { onConflict: "key" });
   if (error) throw new Error(error.message);
   return clean;
 }

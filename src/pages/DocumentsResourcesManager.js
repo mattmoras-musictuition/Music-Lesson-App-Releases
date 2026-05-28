@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal, Save } from "lucide-react";
+import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
 import { PageTitle, NavButtons, Btn, Card, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -120,9 +120,14 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // the row whose detail shows in the right pane (null = placeholder).
   const [selectedFolder, setSelectedFolder] = useState({ dim: "all", value: null });
   const [selectedId,     setSelectedId]     = useState(null);
-  // Shared sidebar overrides (aliases + hidden folders) from app_settings.
-  const [overrides,  setOverrides]  = useState({ aliases: {}, hidden: [] });
+  // Shared sidebar overrides (aliases + hidden + custom folders) from app_settings.
+  const { overrides, folderKey, folderLabel, isFolderHidden, renameFolder, hideFolder, unhideFolder, addCustom, renameCustom, deleteCustom } = useFolderOverrides("resource_folder_overrides", notify);
   const [showHidden, setShowHidden] = useState(false);
+  // Custom saved views: which one is highlighted, plus the inline name editor
+  // shown when saving the current view.
+  const [activeCustomId, setActiveCustomId] = useState(null);
+  const [savingView,  setSavingView]  = useState(false);
+  const [newViewName, setNewViewName] = useState("");
   // Right-click context menu on a folder: { x, y, dim, value }.
   const [folderMenu, setFolderMenu] = useState(null);
   // Inline rename of a folder alias: the folder key being renamed + draft text.
@@ -267,42 +272,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // Taxonomy lists for the filter bar + edit modal.
   useEffect(() => { fetchResourceTaxonomies().then(setTax); }, []);
-  // Shared folder overrides (aliases + hidden) for the sidebar.
-  useEffect(() => { fetchFolderOverrides().then(setOverrides); }, []);
 
-  // ── Folder helpers ───────────────────────────────────────────
-  // A folder is identified by `${dim}:${value}` (dim = "instrument" | "type").
-  const folderKey = (dim, value) => `${dim}:${value}`;
-  const folderLabel = (dim, value) => overrides.aliases[folderKey(dim, value)] || value;
-  const isFolderHidden = (dim, value) => overrides.hidden.includes(folderKey(dim, value));
-
-  // Persist overrides optimistically: update local state immediately, then write
-  // the shared app_settings row. On failure, reload the canonical row so local
-  // state never drifts from what other clients see.
-  const persistOverrides = async (next) => {
-    setOverrides(next);
-    try { await saveFolderOverrides(next); }
-    catch (e) { notify("Couldn't save folder change — try again", "danger"); fetchFolderOverrides().then(setOverrides); }
-  };
-  const renameFolder = (dim, value, alias) => {
-    const key = folderKey(dim, value);
-    const aliases = { ...overrides.aliases };
-    const trimmed = (alias || "").trim();
-    if (trimmed && trimmed !== value) aliases[key] = trimmed; else delete aliases[key];
-    persistOverrides({ ...overrides, aliases });
-  };
-  const hideFolder = (dim, value) => {
-    const key = folderKey(dim, value);
-    if (overrides.hidden.includes(key)) return;
-    // Leaving a hidden folder selected would show an empty/odd list — fall back
-    // to "All resources" if the folder being hidden is the current selection.
-    if (selectedFolder.dim === dim && selectedFolder.value === value) setSelectedFolder({ dim: "all", value: null });
-    persistOverrides({ ...overrides, hidden: [...overrides.hidden, key] });
-  };
-  const unhideFolder = (dim, value) => {
-    const key = folderKey(dim, value);
-    persistOverrides({ ...overrides, hidden: overrides.hidden.filter(k => k !== key) });
-  };
   // Resolve student_note origin names only if such a resource exists
   // (none until cluster 4) — avoids extra queries in the common case.
   useEffect(() => {
@@ -325,6 +295,45 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const anyResourceFilter = !!(rfSkill.length || rfSchool.length || rfUploadedBy.length || rfSource.length);
   const filterCount = rfSkill.length + rfSchool.length + rfUploadedBy.length + rfSource.length;
   const clearResourceFilters = () => { setRfSkill([]); setRfSchool([]); setRfUploadedBy([]); setRfSource([]); };
+
+  // ── Custom saved views ───────────────────────────────────────
+  // Snapshot of everything that defines the current Resources view: the
+  // selected folder, the four tucked filters, and the search text. Used both
+  // to save a custom folder and to detect divergence from an active one.
+  const currentSnapshot = useMemo(() => ({
+    folder: selectedFolder, skill: rfSkill, school: rfSchool,
+    uploadedBy: rfUploadedBy, source: rfSource, search: rSearch.trim(),
+  }), [selectedFolder, rfSkill, rfSchool, rfUploadedBy, rfSource, rSearch]);
+  // "Save current view" is only meaningful once the view differs from
+  // "All resources" — a folder, a filter, or a search must be active.
+  const viewIsCustomizable = selectedFolder.dim !== "all" || anyResourceFilter || !!rSearch.trim();
+  // Restore a saved custom folder, then highlight it.
+  const applyCustom = (c) => {
+    const f = c.filters || {};
+    setSelectedFolder(f.folder || { dim: "all", value: null });
+    setRfSkill(f.skill || []); setRfSchool(f.school || []);
+    setRfUploadedBy(f.uploadedBy || []); setRfSource(f.source || []);
+    setRSearch(f.search || "");
+    setActiveCustomId(c.id);
+  };
+  const commitSaveView = () => {
+    const name = newViewName.trim();
+    if (name) setActiveCustomId(addCustom(name, currentSnapshot));
+    setSavingView(false); setNewViewName("");
+  };
+  // Drop the active-custom highlight the moment the live view diverges from its
+  // saved snapshot (or the folder is deleted) — avoids wrapping every setter.
+  useEffect(() => {
+    if (!activeCustomId) return;
+    const c = overrides.custom.find(x => x.id === activeCustomId);
+    if (!c || JSON.stringify(c.filters) !== JSON.stringify(currentSnapshot)) setActiveCustomId(null);
+  }, [activeCustomId, overrides.custom, currentSnapshot]);
+  // If the selected auto folder gets hidden elsewhere, fall back to "All".
+  useEffect(() => {
+    if (selectedFolder.dim !== "all" && overrides.hidden.includes(`${selectedFolder.dim}:${selectedFolder.value}`)) {
+      setSelectedFolder({ dim: "all", value: null });
+    }
+  }, [overrides.hidden, selectedFolder]);
 
   // ── Sidebar folders (auto-derived live from the data) ─────────
   // One folder per distinct instrument value, one per distinct type/category
@@ -486,8 +495,37 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
               {/* ── LEFT: folder sidebar ── */}
               <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
                 <FolderRow icon={Library} label="All resources" count={resources.length}
-                  selected={selectedFolder.dim === "all"}
+                  selected={!activeCustomId && selectedFolder.dim === "all"}
                   onClick={() => setSelectedFolder({ dim: "all", value: null })} colors={colors} />
+
+                {/* Custom saved views — "Save current view" plus any saved folders. */}
+                <SidebarGroupLabel colors={colors}>Custom</SidebarGroupLabel>
+                {savingView ? (
+                  <div style={{ padding: "2px 4px" }}>
+                    <input autoFocus value={newViewName} onChange={e => setNewViewName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") commitSaveView(); if (e.key === "Escape") { setSavingView(false); setNewViewName(""); } }}
+                      onBlur={commitSaveView} placeholder="Folder name…"
+                      style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
+                  </div>
+                ) : (
+                  <div onClick={() => { if (viewIsCustomizable) { setNewViewName(""); setSavingView(true); } }}
+                    title={viewIsCustomizable ? "Save the current folder, filters and search as a custom folder" : "Pick a folder, filter or search first"}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: viewIsCustomizable ? "pointer" : "not-allowed", opacity: viewIsCustomizable ? 1 : 0.45, userSelect: "none" }}>
+                    <FolderPlus size={15} style={{ flexShrink: 0, color: colors.textMuted }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>Save current view…</span>
+                  </div>
+                )}
+                {overrides.custom.map(c => (
+                  <FolderRow key={"c:" + c.id} icon={Folder} label={c.name}
+                    selected={activeCustomId === c.id}
+                    onClick={() => applyCustom(c)}
+                    onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, custom: c.id }); }}
+                    renaming={renamingKey === "custom:" + c.id}
+                    renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+                    onCommitRename={() => { renameCustom(c.id, renameDraft); setRenamingKey(null); }}
+                    onCancelRename={() => setRenamingKey(null)}
+                    colors={colors} />
+                ))}
 
                 {instrumentFolders.length > 0 && <SidebarGroupLabel colors={colors}>By instrument</SidebarGroupLabel>}
                 {instrumentFolders.map(f => (
@@ -495,7 +533,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     <FolderRow key={"i:" + f.value} icon={Folder} count={f.count}
                       label={folderLabel("instrument", f.value)}
                       aliased={!!overrides.aliases[folderKey("instrument", f.value)]}
-                      selected={selectedFolder.dim === "instrument" && selectedFolder.value === f.value}
+                      selected={!activeCustomId && selectedFolder.dim === "instrument" && selectedFolder.value === f.value}
                       onClick={() => setSelectedFolder({ dim: "instrument", value: f.value })}
                       onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "instrument", value: f.value }); }}
                       renaming={renamingKey === folderKey("instrument", f.value)}
@@ -512,7 +550,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     <FolderRow key={"t:" + f.value} icon={Folder} count={f.count}
                       label={folderLabel("type", f.value)}
                       aliased={!!overrides.aliases[folderKey("type", f.value)]}
-                      selected={selectedFolder.dim === "type" && selectedFolder.value === f.value}
+                      selected={!activeCustomId && selectedFolder.dim === "type" && selectedFolder.value === f.value}
                       onClick={() => setSelectedFolder({ dim: "type", value: f.value })}
                       onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "type", value: f.value }); }}
                       renaming={renamingKey === folderKey("type", f.value)}
@@ -669,7 +707,18 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             <>
               <div onMouseDown={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
               <div style={{ position: "fixed", zIndex: 9971, top: folderMenu.y, left: folderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
-                {folderMenu.hidden ? (
+                {folderMenu.custom ? (
+                  <>
+                    <button onClick={() => { const c = overrides.custom.find(x => x.id === folderMenu.custom); setRenamingKey("custom:" + folderMenu.custom); setRenameDraft(c?.name || ""); setFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Pencil size={13} /> Rename…
+                    </button>
+                    <button onClick={() => { if (activeCustomId === folderMenu.custom) { setActiveCustomId(null); setSelectedFolder({ dim: "all", value: null }); clearResourceFilters(); setRSearch(""); } deleteCustom(folderMenu.custom); setFolderMenu(null); }}
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.danger, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                      <Trash2 size={13} /> Delete
+                    </button>
+                  </>
+                ) : folderMenu.hidden ? (
                   <button onClick={() => { unhideFolder(folderMenu.dim, folderMenu.value); setFolderMenu(null); }}
                     style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                     <Eye size={13} /> Unhide
@@ -1001,7 +1050,7 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClic
         <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") onCommitRename(); if (e.key === "Escape") onCancelRename(); }}
           onBlur={onCommitRename}
-          style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+          style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
       </div>
     );
   }
@@ -1017,6 +1066,53 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClic
       {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
     </div>
   );
+}
+
+// ── Shared folder-overrides hook ──────────────────────────────
+// One copy of the sidebar-override logic for both surfaces. `settingsKey` is
+// "resource_folder_overrides" or "document_folder_overrides" — the two rows
+// never interfere. Returns the live overrides plus aliasing / hiding / custom-
+// folder operations. Each op persists optimistically and rolls back on error.
+function useFolderOverrides(settingsKey, notify) {
+  const [overrides, setOverrides] = useState({ aliases: {}, hidden: [], custom: [] });
+  useEffect(() => { fetchFolderOverrides(settingsKey).then(setOverrides); }, [settingsKey]);
+  const persist = (next) => {
+    setOverrides(next);
+    saveFolderOverrides(settingsKey, next).catch(() => {
+      notify("Couldn't save folder change — try again", "danger");
+      fetchFolderOverrides(settingsKey).then(setOverrides);
+    });
+  };
+  const folderKey = (dim, value) => `${dim}:${value}`;
+  const folderLabel = (dim, value) => overrides.aliases[folderKey(dim, value)] || value;
+  const isFolderHidden = (dim, value) => overrides.hidden.includes(folderKey(dim, value));
+  const renameFolder = (dim, value, alias) => {
+    const key = folderKey(dim, value);
+    const aliases = { ...overrides.aliases };
+    const trimmed = (alias || "").trim();
+    if (trimmed && trimmed !== value) aliases[key] = trimmed; else delete aliases[key];
+    persist({ ...overrides, aliases });
+  };
+  const hideFolder = (dim, value) => {
+    const key = folderKey(dim, value);
+    if (overrides.hidden.includes(key)) return;
+    persist({ ...overrides, hidden: [...overrides.hidden, key] });
+  };
+  const unhideFolder = (dim, value) =>
+    persist({ ...overrides, hidden: overrides.hidden.filter(k => k !== folderKey(dim, value)) });
+  const addCustom = (name, filters) => {
+    const id = crypto.randomUUID();
+    persist({ ...overrides, custom: [...overrides.custom, { id, name: name.trim(), filters }] });
+    return id;
+  };
+  const renameCustom = (id, name) => {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return;
+    persist({ ...overrides, custom: overrides.custom.map(c => c.id === id ? { ...c, name: trimmed } : c) });
+  };
+  const deleteCustom = (id) =>
+    persist({ ...overrides, custom: overrides.custom.filter(c => c.id !== id) });
+  return { overrides, folderKey, folderLabel, isFolderHidden, renameFolder, hideFolder, unhideFolder, addCustom, renameCustom, deleteCustom };
 }
 
 // ── Portal popover ────────────────────────────────────────────
