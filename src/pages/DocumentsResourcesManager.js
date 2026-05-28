@@ -4,8 +4,9 @@
 // Documents: insurance, WWCC, licensing agreements, policies.
 // ============================================================
 
-import React, { useState, useEffect, useMemo } from "react";
-import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, EyeOff, SlidersHorizontal } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { createPortal } from "react-dom";
+import { Library, FileText, Link, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal, Save } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
 import { PageTitle, NavButtons, Btn, Card, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -111,6 +112,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [rfUploadedBy, setRfUploadedBy] = useState([]);
   const [rfSource,     setRfSource]     = useState([]);
   const [showFilters,  setShowFilters]  = useState(false);
+  const rFiltersBtnRef = useRef(null);
 
   // ── Finder-style library state ───────────────────────────────
   // selectedFolder narrows the middle list: { dim:"all" } shows everything;
@@ -426,7 +428,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // ── Shared styles ───────────────────────────────────────────
   const thStyle = { padding: "10px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#fff", textTransform: "uppercase", letterSpacing: 0.5, background: colors.sidebarHover, whiteSpace: "nowrap" };
-  const inputStyle = { width: "100%", padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" };
+  const inputStyle = { width: "100%", padding: "5px 8px", border: "1px solid " + colors.inputBorder, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text };
   const iconBtn = (onClick, icon, col, title, extra = {}) => (
     <button onClick={onClick} title={title} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: col, borderRadius: 6, padding: "4px 7px", cursor: "pointer", display: "inline-flex", alignItems: "center", ...extra }}>{icon}</button>
   );
@@ -479,10 +481,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             </div>
           ) : (
             /* Finder-style three-pane library: folder sidebar / list / detail. */
-            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", gap: 12, alignItems: "start" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
 
               {/* ── LEFT: folder sidebar ── */}
-              <Card style={{ padding: 8, position: "sticky", top: 8 }}>
+              <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
                 <FolderRow icon={Library} label="All resources" count={resources.length}
                   selected={selectedFolder.dim === "all"}
                   onClick={() => setSelectedFolder({ dim: "all", value: null })} colors={colors} />
@@ -525,7 +527,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                 {overrides.hidden.length > 0 && (
                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${colors.borderLight}` }}>
                     <button onClick={() => setShowHidden(h => !h)}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: colors.textMuted, fontFamily: "inherit", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: colors.textLight, fontFamily: "inherit", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <EyeOff size={12} /> {showHidden ? "Hide hidden folders" : `Show hidden folders (${overrides.hidden.length})`}
                     </button>
                     {showHidden && overrides.hidden.map(key => {
@@ -539,42 +541,39 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     })}
                   </div>
                 )}
-              </Card>
+              </div>
 
               {/* ── MIDDLE: compact resource list ── */}
-              <Card style={{ padding: 0, overflow: "hidden" }}>
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0, borderRight: `1px solid ${colors.borderLight}` }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", padding: 10, borderBottom: `1px solid ${colors.borderLight}` }}>
                   <div style={{ flex: 1, minWidth: 120, position: "relative" }}>
                     <input value={rSearch} onChange={e => setRSearch(e.target.value)} placeholder="Search resources…"
-                      style={{ width: "100%", padding: "7px 30px 7px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                      style={{ width: "100%", padding: "7px 30px 7px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
                     {rSearch && <button onClick={() => setRSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
                   </div>
                   {/* Filters — skill / school / uploaded-by / source tucked behind one control */}
-                  <div style={{ position: "relative" }}>
-                    <button onClick={() => setShowFilters(o => !o)}
-                      style={{ padding: "7px 11px", border: "1px solid " + (anyResourceFilter ? colors.sidebarHover : colors.inputBorder), borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", background: anyResourceFilter ? colors.blueLight : colors.cardBg, color: anyResourceFilter ? colors.sidebarHover : colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+                  <div>
+                    <button ref={rFiltersBtnRef} onClick={() => setShowFilters(o => !o)}
+                      style={{ padding: "7px 11px", border: "1px solid " + (anyResourceFilter ? colors.accent : colors.inputBorder), borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", background: anyResourceFilter ? colors.accentLight : colors.cardBg, color: anyResourceFilter ? colors.accent : colors.textLight, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
                       <SlidersHorizontal size={13} /> Filters{anyResourceFilter ? ` (${filterCount})` : ""}
                     </button>
-                    {showFilters && (
-                      <>
-                        <div onMouseDown={() => setShowFilters(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
-                        <div style={{ position: "absolute", zIndex: 41, top: "calc(100% + 6px)", right: 0, width: 220, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                          <FilterDropdown label="Skill level" options={skillOptions}      selected={rfSkill}      onChange={setRfSkill}      colors={colors} />
-                          <FilterDropdown label="School"      options={schoolOptions}     selected={rfSchool}     onChange={setRfSchool}     colors={colors} />
-                          <FilterDropdown label="Uploaded by" options={uploadedByOptions} selected={rfUploadedBy} onChange={setRfUploadedBy} colors={colors} />
-                          <FilterDropdown label="Source"      options={SOURCE_OPTIONS}    selected={rfSource}     onChange={setRfSource}     colors={colors} />
-                          {anyResourceFilter && (
-                            <button onClick={clearResourceFilters} style={{ padding: "6px 10px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textMuted, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
-                              <X size={12} /> Clear filters
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    )}
+                    <PortalPopover anchorRef={rFiltersBtnRef} open={showFilters} onClose={() => setShowFilters(false)} width={224}>
+                      <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.35)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <FilterDropdown label="Skill level" options={skillOptions}      selected={rfSkill}      onChange={setRfSkill}      colors={colors} />
+                        <FilterDropdown label="School"      options={schoolOptions}     selected={rfSchool}     onChange={setRfSchool}     colors={colors} />
+                        <FilterDropdown label="Uploaded by" options={uploadedByOptions} selected={rfUploadedBy} onChange={setRfUploadedBy} colors={colors} />
+                        <FilterDropdown label="Source"      options={SOURCE_OPTIONS}    selected={rfSource}     onChange={setRfSource}     colors={colors} />
+                        {anyResourceFilter && (
+                          <button onClick={clearResourceFilters} style={{ padding: "6px 10px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textLight, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                            <X size={12} /> Clear filters
+                          </button>
+                        )}
+                      </div>
+                    </PortalPopover>
                   </div>
                 </div>
 
-                <div style={{ maxHeight: "calc(100vh - 230px)", overflowY: "auto" }}>
+                <div style={{ flex: 1 }}>
                   {filteredResources.length === 0 ? (
                     <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No resources match the current view</div>
                   ) : filteredResources.map(r => {
@@ -592,17 +591,17 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                           <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {r.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
                           </div>
-                          {sub && <div style={{ fontSize: 11, color: isSel ? colors.blueLight : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+                          {sub && <div style={{ fontSize: 11, color: isSel ? "rgba(255,255,255,0.8)" : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
                         </div>
-                        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.sidebarHover }} />}
+                        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.accent }} />}
                       </div>
                     );
                   })}
                 </div>
-              </Card>
+              </div>
 
               {/* ── RIGHT: detail panel ── */}
-              <Card style={{ padding: 0, position: "sticky", top: 8, overflow: "hidden" }}>
+              <div style={{ minWidth: 0 }}>
                 {!selectedResource ? (
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "60px 24px", textAlign: "center", color: colors.textMuted }}>
                     <Library size={32} style={{ opacity: 0.4 }} />
@@ -622,7 +621,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     </div>
                   );
                   return (
-                    <div style={{ maxHeight: "calc(100vh - 150px)", overflowY: "auto" }}>
+                    <div>
                       {/* Preview / thumbnail */}
                       <div style={{ height: 140, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `1px solid ${colors.borderLight}`, overflow: "hidden" }}>
                         {isImg && (r.file_url || r.url)
@@ -640,7 +639,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                           {detailRow("Uploaded by", r.added_by_name || <span style={{ color: colors.textMuted }}>—</span>)}
                           {detailRow("Date", r.created_at ? new Date(r.created_at).toLocaleDateString("en-AU") : <span style={{ color: colors.textMuted }}>—</span>)}
                           {detailRow("Source", r.source === "student_note"
-                            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.sidebarHover, fontWeight: 600 }}><Sparkles size={12} /> {subjName ? `From ${subjName}'s notes` : "From Student Notes"}</span>
+                            ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.accent, fontWeight: 600 }}><Sparkles size={12} /> {subjName ? `From ${subjName}'s notes` : "From Student Notes"}</span>
                             : <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: colors.textMuted }}><Upload size={12} /> Direct upload</span>)}
                           {detailRow("Link", r.file_url && r.file_name
                             ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0 }}><FileText size={12} style={{ color: colors.accent, flexShrink: 0 }} /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.file_name}>{r.file_name}</span></span>
@@ -661,7 +660,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     </div>
                   );
                 })()}
-              </Card>
+              </div>
             </div>
           )}
 
@@ -1020,6 +1019,44 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClic
   );
 }
 
+// ── Portal popover ────────────────────────────────────────────
+// Renders its children in a fixed-position layer attached to document.body,
+// anchored under `anchorRef`, so it can never be clipped by an ancestor's
+// overflow:hidden (the unified library container). Re-positions on scroll /
+// resize and is kept inside the viewport. A full-screen overlay closes it on
+// an outside click.
+function PortalPopover({ anchorRef, open, onClose, width = 224, children }) {
+  const [pos, setPos] = useState(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const margin = 8;
+      let left = r.right - width;                       // right-aligned to trigger
+      left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+      const top = Math.min(r.bottom + 6, window.innerHeight - margin);
+      setPos({ top, left });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, anchorRef, width]);
+  if (!open || !pos) return null;
+  return createPortal(
+    <>
+      <div onMouseDown={onClose} style={{ position: "fixed", inset: 0, zIndex: 9990 }} />
+      <div style={{ position: "fixed", zIndex: 9991, top: pos.top, left: pos.left, width }}>{children}</div>
+    </>,
+    document.body
+  );
+}
+
 // ── Multi-select filter dropdown ──────────────────────────────
 // Button + checkbox popover. `options` is [{value, label}]; `selected`
 // is an array of values. Empty selection = no filter.
@@ -1043,10 +1080,10 @@ function FilterDropdown({ label, options, selected, onChange, colors }) {
     <div ref={ref} style={{ position: "relative" }}>
       <button onClick={() => setOpen(o => !o)}
         style={{
-          padding: "7px 10px", border: "1px solid " + (active ? colors.sidebarHover : colors.inputBorder),
+          padding: "7px 10px", border: "1px solid " + (active ? colors.accent : colors.inputBorder),
           borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit",
-          background: active ? colors.blueLight : colors.cardBg,
-          color: active ? colors.sidebarHover : colors.textMuted,
+          background: active ? colors.accentLight : colors.cardBg,
+          color: active ? colors.accent : colors.textLight,
           cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap",
         }}>
         {label}{active ? ` (${count})` : ""} <ChevronDown size={13} />
