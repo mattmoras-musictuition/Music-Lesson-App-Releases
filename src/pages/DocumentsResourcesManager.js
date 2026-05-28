@@ -23,6 +23,7 @@ import {
 // Resources are a shared pool persisted per-row (no whole-list sync).
 import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, resourceFileSharedByUpload, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName, fetchFolderOverrides, saveFolderOverrides } from "../utils/resourcesDB";
 import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
+import ResourcePreview from "../components/ResourcePreview";
 
 // Fixed Source filter options (the `source` column).
 const SOURCE_OPTIONS = [
@@ -717,7 +718,6 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                 ) : (() => {
                   const r = selectedResource;
                   const link = r.url || r.file_url || "";
-                  const isImg = /\.(png|jpe?g|gif|webp|bmp|svg)(\?|$)/i.test(r.file_url || r.url || r.file_name || "");
                   const BigIcon = iconForResourceType(r.category) || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
                   const subjName = r.source === "student_note" ? resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps) : null;
                   const schoolName = r.school_id ? schoolNameById.get(r.school_id) : "";
@@ -730,11 +730,13 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   return (
                     <div>
                       {/* Preview / thumbnail */}
-                      <div style={{ height: 140, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `1px solid ${colors.borderLight}`, overflow: "hidden" }}>
-                        {isImg && (r.file_url || r.url)
-                          ? <img src={r.file_url || r.url} alt={r.label} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-                          : <BigIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />}
-                      </div>
+                      <ResourcePreview
+                        fileUrl={r.file_url || null}
+                        linkUrl={r.url || null}
+                        fileName={r.file_name || null}
+                        title={r.label}
+                        fallbackIcon={BigIcon}
+                      />
                       <div style={{ padding: 16 }}>
                         <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{r.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
                         {r.category && <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.accentLight, color: colors.accentDark, marginBottom: 12 }}>{r.category}</span>}
@@ -1096,9 +1098,14 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   );
                   return (
                     <div>
-                      <div style={{ height: 140, background: colors.bg, display: "flex", alignItems: "center", justifyContent: "center", borderBottom: `1px solid ${colors.borderLight}`, overflow: "hidden" }}>
-                        <BigIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />
-                      </div>
+                      <ResourcePreview
+                        storagePath={d.storage_path || null}
+                        linkUrl={d.url || null}
+                        fileName={d.filename || null}
+                        mime={d.mime_type || null}
+                        title={d.label}
+                        fallbackIcon={BigIcon}
+                      />
                       <div style={{ padding: 16 }}>
                         <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{d.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
                         {d.type && <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: colors.accentLight, color: colors.accentDark, marginBottom: 12 }}>{d.type}</span>}

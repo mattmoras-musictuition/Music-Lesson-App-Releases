@@ -7,19 +7,23 @@
 //   1. image file            → <img>
 //   2. pdf file              → first page rendered to a canvas
 //   3. youtube link          → hqdefault thumbnail
-//   4. other link            → rich Open Graph card  (added in a
-//                              later commit)
-//   5. other link (no OG)    → lightweight favicon + hostname card
+//   4. other link            → rich Open Graph card (hero + text)
+//   5. other link (no hero)  → lightweight favicon + hostname card
 //   6. anything else / fail  → the caller's type icon
 //
-// Image/PDF/YouTube live here; the link branches arrive with the
-// Open Graph work.
+// The image/PDF/YouTube sources are resolved here; web-link metadata
+// comes from the main-process Open Graph fetch via useOpenGraph.
 // ============================================================
 
 import React, { useState, useEffect } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { fileKind, renderPdfFirstPage, youtubeId, youtubeThumb } from "../utils/filePreviewCore";
 import { signedUrlFor } from "../utils/storageHelpers";
+import useOpenGraph from "../hooks/useOpenGraph";
+
+function hostnameOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return null; }
+}
 
 export default function ResourcePreview({
   fileUrl,            // public, directly-renderable file URL (resources)
@@ -31,77 +35,146 @@ export default function ResourcePreview({
   fallbackIcon: FallbackIcon,
   height = 140,
 }) {
-  const { colors } = useTheme();
-
-  // null = still deciding; { type: 'image'|'icon', src? } once resolved.
-  const [state, setState] = useState(null);
+  const { colors, darkMode } = useTheme();
 
   const kind = fileKind({ mime, name: fileName, url: fileUrl || storagePath || linkUrl });
-  const ytId = !kind && linkUrl ? youtubeId(linkUrl) : null;
+  const isFile = kind === "image" || kind === "pdf";
+  const ytId = !isFile && linkUrl ? youtubeId(linkUrl) : null;
+  const isOtherLink = !!linkUrl && !isFile && !ytId;
+
+  // File / YouTube branch — resolves to an <img> source (or icon on failure).
+  // null = still resolving; { type: 'image', src } | { type: 'icon' } once done.
+  const [fileState, setFileState] = useState(null);
+  // Open Graph branch (only meaningful for plain web links).
+  const { data: og, loading: ogLoading } = useOpenGraph(linkUrl, isOtherLink);
+  const [heroError, setHeroError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setState(null);
+    setFileState(null);
+    setHeroError(false);
 
     async function resolve() {
       try {
-        // 1 & 2 — file previews (image / pdf), public or signed-private.
-        if (kind === "image" || kind === "pdf") {
+        if (isFile) {
           let src = fileUrl || (linkUrl && !storagePath ? linkUrl : null);
           if (!src && storagePath) src = await signedUrlFor(storagePath);
-          if (!src) { if (!cancelled) setState({ type: "icon" }); return; }
+          if (!src) { if (!cancelled) setFileState({ type: "icon" }); return; }
           if (kind === "image") {
-            if (!cancelled) setState({ type: "image", src });
+            if (!cancelled) setFileState({ type: "image", src });
           } else {
             const dataUrl = await renderPdfFirstPage(src);
-            if (!cancelled) setState({ type: "image", src: dataUrl });
+            if (!cancelled) setFileState({ type: "image", src: dataUrl });
           }
           return;
         }
-        // 3 — YouTube thumbnail.
         if (ytId) {
-          if (!cancelled) setState({ type: "image", src: youtubeThumb(ytId) });
+          if (!cancelled) setFileState({ type: "image", src: youtubeThumb(ytId) });
           return;
         }
-        // 4/5 — other links: Open Graph branch is wired in a later commit.
-        if (!cancelled) setState({ type: "icon" });
+        // Plain web links are handled by the Open Graph branch below.
+        if (!cancelled) setFileState({ type: "icon" });
       } catch {
-        if (!cancelled) setState({ type: "icon" });
+        if (!cancelled) setFileState({ type: "icon" });
       }
     }
     resolve();
     return () => { cancelled = true; };
-  }, [kind, ytId, fileUrl, storagePath, linkUrl]);
+  }, [isFile, kind, ytId, fileUrl, storagePath, linkUrl]);
 
   const frame = {
     height,
     background: colors.bg,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
     borderBottom: `1px solid ${colors.borderLight}`,
     overflow: "hidden",
   };
+  const centered = { ...frame, display: "flex", alignItems: "center", justifyContent: "center" };
 
-  const icon = FallbackIcon
+  const iconNode = FallbackIcon
     ? <FallbackIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />
     : null;
+  const iconFrame = <div style={centered}>{iconNode}</div>;
 
-  // Loading: keep the frame at full height so nothing shifts on resolve.
-  if (state === null) return <div style={frame} />;
+  // ── File / YouTube image branch ───────────────────────────────
+  if (isFile || ytId) {
+    if (fileState === null) return <div style={centered} />; // loading; height held
+    if (fileState.type === "image") {
+      return (
+        <div style={centered}>
+          <img
+            src={fileState.src}
+            alt={title || ""}
+            onError={() => setFileState({ type: "icon" })}
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", display: "block" }}
+          />
+        </div>
+      );
+    }
+    return iconFrame;
+  }
 
-  if (state.type === "image") {
+  // ── Web-link branch (Open Graph) ──────────────────────────────
+  if (isOtherLink) {
+    const host = og?.hostname || hostnameOf(linkUrl);
+    if (!host) return iconFrame; // unparseable URL → final icon fallback
+
+    if (ogLoading) {
+      // Skeleton mirrors the rich-card shape so loaded state doesn't shift.
+      const bar = (w) => <div style={{ height: 9, width: w, borderRadius: 4, background: darkMode ? "#333a48" : "#e4e7ec" }} />;
+      return (
+        <div style={{ ...frame, display: "flex" }}>
+          <div style={{ width: height, height: "100%", flexShrink: 0, background: darkMode ? "#2a3140" : "#eef0f3" }} />
+          <div style={{ flex: 1, minWidth: 0, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 9 }}>
+            {bar("80%")}{bar("60%")}{bar("40%")}
+          </div>
+        </div>
+      );
+    }
+
+    // Rich card when we have a hero image that actually loads.
+    if (og?.image && !heroError) {
+      return (
+        <div style={{ ...frame, display: "flex" }}>
+          <img
+            src={og.image}
+            alt=""
+            onError={() => setHeroError(true)}
+            style={{ width: height, height: "100%", objectFit: "cover", flexShrink: 0, display: "block" }}
+          />
+          <div style={{ flex: 1, minWidth: 0, padding: "10px 14px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+              {og.title || host}
+            </div>
+            {og.description && (
+              <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {og.description}
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: colors.textMuted, minWidth: 0 }}>
+              {og.favicon && <img src={og.favicon} alt="" style={{ width: 14, height: 14, borderRadius: 3, flexShrink: 0 }} onError={(e) => { e.target.style.display = "none"; }} />}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{host}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Lightweight fallback card — favicon + hostname + subtitle.
+    const favicon = og?.favicon || `https://www.google.com/s2/favicons?domain=${host}&sz=64`;
     return (
-      <div style={frame}>
+      <div style={{ ...centered, flexDirection: "column", gap: 8, padding: "0 16px", textAlign: "center" }}>
         <img
-          src={state.src}
-          alt={title || ""}
-          onError={() => setState({ type: "icon" })}
-          style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", display: "block" }}
+          src={favicon}
+          alt=""
+          onError={(e) => { e.target.style.visibility = "hidden"; }}
+          style={{ width: 32, height: 32, borderRadius: 6 }}
         />
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{host}</div>
+        <div style={{ fontSize: 11, color: colors.textMuted }}>External link</div>
       </div>
     );
   }
 
-  return <div style={frame}>{icon}</div>;
+  // ── Final fallback — type icon ────────────────────────────────
+  return iconFrame;
 }
