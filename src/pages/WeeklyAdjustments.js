@@ -3176,8 +3176,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(instruments_colors.Band)}>Add band session</div>
                           {schoolBands.map(band => (
                             <button key={band.id} onClick={() => handleAddBandSession(band)} style={subBtnStyle}
-                              onMouseEnter={e => e.currentTarget.style.background = instruments_colors.Band + "18"}
-                              onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                              onMouseEnter={e => {
+                                e.currentTarget.style.background = instruments_colors.Band + "18";
+                                // Reuse the grid band card's hover popover so
+                                // same-song bands can be told apart by member
+                                // identity. Synthetic band-shaped lesson →
+                                // buildPopoverInfo handles the isBandSession
+                                // branch and produces the "Members" list.
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const info = buildPopoverInfo({ isBandSession: true, bandName: band.name, members: band.members || [] });
+                                setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band });
+                              }}
+                              onMouseLeave={e => {
+                                e.currentTarget.style.background = "none";
+                                setHoverPopover(null);
+                              }}>
                               <span style={{ fontWeight: 600 }}>{band.name || "TBC"}</span>
                               <span style={{ fontSize: 11, color: colors.textMuted }}>{(band.members || []).length} members</span>
                             </button>
