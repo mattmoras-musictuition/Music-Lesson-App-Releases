@@ -154,7 +154,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [constraintWarnings, setConstraintWarnings] = useState({});
   const [expandedWarnings, setExpandedWarnings] = useState(new Set());
   const [hoverPopover, setHoverPopover] = useState(null); // { info, rect, color }
-  useEffect(() => { if (onWarningsChange) onWarningsChange(constraintWarnings, ackedConstraints); }, [constraintWarnings, ackedConstraints]);
+  // NOTE: the onWarningsChange emit lives lower down (after visibleWarnings is
+  // derived) so the value pushed to App.js is the past-dated-GATED warning set,
+  // keeping the sidebar nav badge in agreement with the cards / banner / Dashboard.
   const [contextMenu, setContextMenu] = useState(null);
   // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
   // Default empty = all days hidden. Session-scoped (not persisted).
@@ -596,6 +598,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const isLocked = isPastWeek && !editUnlocked;
   const storageKey = `${weekKey}|${selectedSchool}`;
   const weeklyData = weeklyTimetables[storageKey] || null;
+
+  // v2.9.12 SINGLE GATED SOURCE OF TRUTH for warning DISPLAY.
+  // Filters the raw constraintWarnings store down to only the lessons whose
+  // warnings should still show (own date today-or-later, and every relational
+  // partner today-or-later) using the SAME predicate the per-card render uses.
+  // Every display surface — per-card, the conflicts banner, and (via the emit
+  // effect below) the App.js sidebar nav badge — reads from this, so they all
+  // agree. Ack state, the constraint checker, and the warning strings are
+  // untouched; this is purely a display filter.
+  const visibleWarnings = useMemo(() => {
+    const out = {};
+    const lessons = weeklyData?.lessons || [];
+    for (const id of Object.keys(constraintWarnings)) {
+      const lesson = lessons.find(l => l.id === id);
+      if (isConstraintVisibleForLesson(lesson, lessons, weeklyTodayStr, weekDateMap, currentSchool)) {
+        out[id] = constraintWarnings[id];
+      }
+    }
+    return out;
+  }, [constraintWarnings, weeklyData, weeklyTodayStr, weekDateMap, currentSchool]);
+
+  // Emit the GATED set up to App.js so the sidebar nav badge counts only what's
+  // visible. App.js applies its own acknowledged-filter on top of this.
+  useEffect(() => { if (onWarningsChange) onWarningsChange(visibleWarnings, ackedConstraints); }, [visibleWarnings, ackedConstraints]);
 
   // Archived students are hidden from the grid — their slot becomes free.
   // Cluster 8a: when a (school, day) has 2+ active lanes, also restrict the
@@ -4246,13 +4272,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
           {!isHolidayWeek && weeklyData && !isLocked && (
             <ConflictBanner
-              constraintWarnings={constraintWarnings}
+              constraintWarnings={visibleWarnings}
               ackedConstraints={ackedConstraints}
               lessons={weeklyData.lessons || []}
               students={students}
               onAckAll={() => setAckedConstraints(prev => {
                 const next = new Set(prev);
-                Object.keys(constraintWarnings).forEach(id => next.add(id));
+                // Only acknowledge what's actually shown in the banner (the gated
+                // set); past-dated warnings aren't displayed, so leave their ack
+                // state alone.
+                Object.keys(visibleWarnings).forEach(id => next.add(id));
                 return next;
               })}
             />
@@ -4961,12 +4990,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   </div>
                                 )}
                                 {!dayGhostsVisible[`${weekKey}_${day}`] && cellLessons.map((l, li) => {
-                                  // v2.9.12 past-dated display gate: a past lesson (or a future
-                                  // lesson whose relational partner is past) shows no warnings —
-                                  // past lessons can't be retroactively fixed. Ack state untouched.
-                                  const cWarnings = isConstraintVisibleForLesson(l, weeklyData?.lessons, weeklyTodayStr, weekDateMap, currentSchool)
-                                    ? (constraintWarnings[l.id] || [])
-                                    : [];
+                                  // v2.9.12 past-dated display gate: read from the single gated
+                                  // source of truth (visibleWarnings) so the card, the conflicts
+                                  // banner, the sidebar badge and the Dashboard count all agree.
+                                  // Past lessons (or future lessons with a past relational partner)
+                                  // simply have no entry here. Ack state untouched.
+                                  const cWarnings = visibleWarnings[l.id] || [];
                                   // ── Band session card ──
                                   if (l.isBandSession) {
                                     const bandMembers = (l.members || []);
