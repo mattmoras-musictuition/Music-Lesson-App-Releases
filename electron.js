@@ -2,6 +2,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen, session, syste
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const http = require("http");
+const { load: loadHtml } = require("cheerio");
 const { autoUpdater } = require("electron-updater");
 const isDev = process.env.NODE_ENV === "development" || process.env.ELECTRON_DEV === "1";
 
@@ -1079,6 +1081,77 @@ ipcMain.handle("anthropic-fetch", async (_e, { url, method, headers, body }) => 
       req.end();
     } catch(e) { resolve({ ok: false, status: 0, text: e.message }); }
   });
+});
+
+// ── Open Graph preview fetch ───────────────────────────────────────────────
+// The renderer can't fetch arbitrary URLs (CORS), so the detail-panel link
+// preview asks main to fetch + parse the page. GETs the URL (http/https) with
+// a 5s timeout, follows redirects, bails on non-HTML, and extracts OG/Twitter
+// metadata via cheerio. Returns { title, image, description, hostname,
+// favicon } (hostname/favicon always set on success) or null on any failure.
+ipcMain.handle("fetch-open-graph", async (_e, { url }) => {
+  function get(target, redirectsLeft) {
+    return new Promise((resolve) => {
+      let urlObj;
+      try { urlObj = new URL(target); } catch { resolve(null); return; }
+      if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") { resolve(null); return; }
+      const lib = urlObj.protocol === "https:" ? https : http;
+      const req = lib.request({
+        hostname: urlObj.hostname,
+        port: urlObj.port || undefined,
+        path: (urlObj.pathname || "/") + (urlObj.search || ""),
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml",
+        },
+      }, (res) => {
+        const status = res.statusCode || 0;
+        if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          let next;
+          try { next = new URL(res.headers.location, urlObj).toString(); } catch { resolve(null); return; }
+          resolve(get(next, redirectsLeft - 1));
+          return;
+        }
+        if (status < 200 || status >= 400) { res.resume(); resolve(null); return; }
+        if (!(res.headers["content-type"] || "").toLowerCase().includes("text/html")) { res.resume(); resolve(null); return; }
+        let data = "";
+        let bytes = 0;
+        res.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > 1_000_000) { req.destroy(); return; } // cap ~1MB; only <head> matters
+          data += chunk;
+        });
+        res.on("end", () => resolve({ html: data, finalUrl: urlObj.toString() }));
+      });
+      req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+      req.on("error", () => resolve(null));
+      req.end();
+    });
+  }
+
+  try {
+    const result = await get(url, 5);
+    if (!result || !result.html) return null;
+    const $ = loadHtml(result.html);
+    const base = new URL(result.finalUrl);
+    const abs = (u) => { if (!u) return null; try { return new URL(u, base).toString(); } catch { return null; } };
+    const meta = (...sels) => {
+      for (const s of sels) {
+        const v = ($(s).attr("content") || "").trim();
+        if (v) return v;
+      }
+      return null;
+    };
+    const title = meta('meta[property="og:title"]', 'meta[name="og:title"]') || ($("title").first().text().trim() || null);
+    const image = abs(meta('meta[property="og:image"]', 'meta[name="twitter:image"]', 'meta[property="twitter:image"]'));
+    const description = meta('meta[property="og:description"]', 'meta[name="og:description"]', 'meta[name="description"]');
+    const favicon = abs($('link[rel="icon"]').attr("href") || $('link[rel="shortcut icon"]').attr("href")) || `${base.protocol}//${base.host}/favicon.ico`;
+    return { title, image, description, hostname: base.hostname, favicon };
+  } catch {
+    return null;
+  }
 });
 
 // ── Anthropic Streaming API proxy ──────────────────────────────────────────

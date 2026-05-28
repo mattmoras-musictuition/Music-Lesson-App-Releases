@@ -111,6 +111,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   newsletterCheck: (url) =>
     ipcRenderer.invoke("newsletter-check", { url }),
 
+  // Fetch + parse a URL's Open Graph metadata for link previews (main-side
+  // fetch avoids the renderer's CORS restriction on arbitrary URLs)
+  fetchOpenGraph: (url) =>
+    ipcRenderer.invoke("fetch-open-graph", { url }),
+
   // ── Anthropic API proxy (routes through main to avoid CORS in file:// builds)
   anthropicFetch: (url, method, headers, body) =>
     ipcRenderer.invoke("anthropic-fetch", { url, method, headers, body }),
