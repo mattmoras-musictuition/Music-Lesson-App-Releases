@@ -3825,7 +3825,7 @@ export default function MusicTimetableApp() {
     }
 
     // ── Groups — only when relevant ──
-    if (groups.length > 0 && (ctx.groups || ["groups-bands", "weekly", "timetable"].includes(currentPage))) {
+    if (groups.length > 0 && (ctx.groups || ["students", "weekly", "timetable"].includes(currentPage))) {
       lines.push("## Groups");
       groups.forEach(g => {
         const school = schools.find(s => s.id === g.schoolId)?.name || "";
@@ -3840,7 +3840,7 @@ export default function MusicTimetableApp() {
     }
 
     // ── Bands — only when relevant ──
-    if (bands && bands.length > 0 && (ctx.groups || ["groups-bands"].includes(currentPage))) {
+    if (bands && bands.length > 0 && (ctx.groups || ["bands"].includes(currentPage))) {
       lines.push("## Bands");
       bands.forEach(b => {
         const school = schools.find(s => s.id === b.schoolId)?.name || "";
@@ -6263,7 +6263,7 @@ export default function MusicTimetableApp() {
 
         <div style={{ padding: "28px 36px", maxWidth: 1200 }}>
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} onImportFromMtt={handleImportFromMtt} onJumpToWeekly={handleJumpToWeekly} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
+          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} onImportFromMtt={handleImportFromMtt} onJumpToWeekly={handleJumpToWeekly} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onViewGroups={() => { setStudentsTabRequest("groups"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

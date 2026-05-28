@@ -409,7 +409,7 @@ export function generateMasterTimetable(schools, students, teachers, enrolments,
       // Disambiguate: zero enrolments vs group-only — different remediation paths.
       const reason = allInsts.length === 0
         ? "No instruments — set one in student details"
-        : "Group-only enrolment — manage via Groups & Bands";
+        : "Group-only enrolment — manage via Students › Groups";
       unscheduled.push({ student, reason });
       continue;
     }

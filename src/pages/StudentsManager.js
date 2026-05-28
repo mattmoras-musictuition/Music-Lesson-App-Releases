@@ -1173,7 +1173,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
 
                 {activeFormEnrolments.map(e => (
                   e.isGroup ? (
-                    // Group enrolment — read-only; editing lives in Groups & Bands
+                    // Group enrolment — read-only; editing lives in the Groups view
                     <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", marginBottom: 6, background: colors.bg, borderRadius: 8, border: `1px solid ${colors.border}` }}>
                       <Tag color={getInstColor(e.instrument, true)}>
                         <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span>{e.instrument}
@@ -1181,10 +1181,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       <span style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>Group enrolment</span>
                       {!isArchived && (
                         <button
-                          // TODO: wire focusGroupId navigation — post-Commit-2b
-                          onClick={() => notify("Edit group enrolments via Groups & Bands", "info")}
+                          onClick={() => notify("Edit group enrolments via Students › Groups", "info")}
                           style={{ marginLeft: "auto", border: "none", background: "none", color: colors.textMuted, fontSize: 12, cursor: "pointer", textDecoration: "underline", fontFamily: "inherit" }}>
-                          Edit via Groups & Bands
+                          Edit via Groups
                         </button>
                       )}
                     </div>
