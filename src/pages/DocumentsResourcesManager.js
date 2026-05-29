@@ -531,7 +531,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
         )}
         {subs.map(f => (
-          <FolderRow key={f.id} icon={Folder} label={f.name} tinted showChevron lightSelect
+          <FolderRow key={f.id} icon={Folder} label={f.name} showChevron lightSelect
             selected={folderPath[columnIndex + 1] === f.id}
             onClick={() => openSubfolder(columnIndex, f.id)}
             onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
@@ -784,22 +784,9 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   selected={folderPath.length === 0 && !searchActive} lightSelect
                   onClick={goAllResources} colors={colors} />
 
-                {/* + New folder (top-level) */}
-                {newFolderParent === null ? (
-                  <FolderNameInput value={newFolderName} setValue={setNewFolderName}
-                    onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
-                ) : (
-                  <div onClick={() => { setNewFolderName(""); setNewFolderParent(null); }}
-                    title="Create a new top-level folder"
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: "pointer", userSelect: "none" }}>
-                    <FolderPlus size={15} style={{ flexShrink: 0, color: colors.textMuted }} />
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>New folder…</span>
-                  </div>
-                )}
-
                 {/* Top-level folders only — drilling happens in the columns. */}
                 {topLevelFolders.map(f => (
-                  <FolderRow key={f.id} icon={Folder} label={f.name} tinted lightSelect
+                  <FolderRow key={f.id} icon={Folder} label={f.name} lightSelect
                     selected={folderPath[0] === f.id}
                     onClick={() => selectTopFolder(f.id)}
                     onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
@@ -813,6 +800,19 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     onDrop={(e) => handleFolderDrop(e, f.id)}
                     colors={colors} />
                 ))}
+
+                {/* + New folder (top-level) — at the bottom of the list */}
+                {newFolderParent === null ? (
+                  <FolderNameInput value={newFolderName} setValue={setNewFolderName}
+                    onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
+                ) : (
+                  <div onClick={() => { setNewFolderName(""); setNewFolderParent(null); }}
+                    title="Create a new top-level folder"
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: "pointer", userSelect: "none" }}>
+                    <FolderPlus size={15} style={{ flexShrink: 0, color: colors.textMuted }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>New folder…</span>
+                  </div>
+                )}
               </div>
 
               {/* ── MIDDLE: search/filters + flat list OR Miller columns ── */}
