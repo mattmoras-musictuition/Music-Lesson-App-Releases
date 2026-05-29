@@ -18,6 +18,19 @@
 
 import { supabase } from "../supabaseClient";
 
+// Turn a Supabase error into a thrown Error that carries the FULL detail
+// (message + code + details + hint) so a swallowed failure can never again
+// look like "nothing happened". Logs the raw error object too — the console
+// keeps the structured original; the thrown message surfaces in the toast.
+function _fail(where, error) {
+  console.error(`[resourceFoldersDB] ${where} failed`, error);
+  const bits = [error?.message, error?.details, error?.hint].filter(Boolean);
+  const msg = bits.join(" — ") || "Unknown database error";
+  const e = new Error(error?.code ? `${msg} (${error.code})` : msg);
+  e.supabase = error;
+  throw e;
+}
+
 // auth.uid() for the logged-in admin — set on created_by / added_by.
 // Best-effort: a null uid lets the DB column default (which is also
 // auth.uid()) take over, so a transient session read never blocks a write.
@@ -41,7 +54,7 @@ export async function listSharedFolders() {
     .eq("scope", "shared")
     .order("position", { ascending: true })
     .order("name", { ascending: true });
-  if (error) throw new Error(error.message);
+  if (error) _fail("listSharedFolders", error);
   return (data || []).map(f => ({
     id: f.id,
     name: f.name || "",
@@ -66,7 +79,7 @@ export async function createSharedFolder(name, parentId = null) {
     })
     .select("id, name, parent_id, position")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) _fail("createSharedFolder", error);
   return data;
 }
 
@@ -76,7 +89,7 @@ export async function renameFolder(id, name) {
     .from("resource_folders")
     .update({ name: (name || "").trim() })
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) _fail("renameFolder", error);
 }
 
 // Delete a folder. ON DELETE CASCADE removes its subfolders and every
@@ -87,7 +100,7 @@ export async function deleteFolder(id) {
     .from("resource_folders")
     .delete()
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) _fail("deleteFolder", error);
 }
 
 // Resource ids filed DIRECTLY in this folder (non-recursive).
@@ -98,7 +111,7 @@ export async function listFolderItemResourceIds(folderId) {
     .select("resource_id")
     .eq("folder_id", folderId)
     .order("position", { ascending: true });
-  if (error) throw new Error(error.message);
+  if (error) _fail("listFolderItemResourceIds", error);
   return (data || []).map(r => r.resource_id);
 }
 
@@ -113,7 +126,7 @@ export async function addResourceToFolder(folderId, resourceId) {
       { folder_id: folderId, resource_id: resourceId, position: 0, added_by },
       { onConflict: "folder_id,resource_id", ignoreDuplicates: true }
     );
-  if (error) throw new Error(error.message);
+  if (error) _fail("addResourceToFolder", error);
 }
 
 // Remove a resource from one folder (the resource stays in the library
@@ -124,7 +137,7 @@ export async function removeResourceFromFolder(folderId, resourceId) {
     .delete()
     .eq("folder_id", folderId)
     .eq("resource_id", resourceId);
-  if (error) throw new Error(error.message);
+  if (error) _fail("removeResourceFromFolder", error);
 }
 
 // Realtime: fire `cb` on any change to the shared folder tree. One channel

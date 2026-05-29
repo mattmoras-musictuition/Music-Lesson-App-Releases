@@ -6,10 +6,10 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { Library, FileText, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, ChevronRight, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
+import { Library, FileText, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Eye, Upload, Loader, ChevronDown, ChevronRight, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
-import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
+import { PageTitle, NavButtons, Btn, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 // Session 96: storage helpers — resources-public + documents-private buckets.
 // uploadToBucket handles the upload and returns a storagePath (+ publicUrl
@@ -304,8 +304,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // ── Shared folder tree: load + keep live ─────────────────────
   const reloadFolders = useCallback(() => {
-    listSharedFolders().then(setFolders).catch(() => {});
-  }, []);
+    listSharedFolders().then(setFolders).catch((e) => {
+      console.error("listSharedFolders failed", e);
+      notify("Couldn't load folders: " + (e?.message || "unknown error"), "danger");
+    });
+  }, [notify]);
   useEffect(() => {
     reloadFolders();
     const unsub = subscribeSharedFolders(reloadFolders);
@@ -315,8 +318,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // Resources filed DIRECTLY in the selected folder (non-recursive).
   const reloadFolderItems = useCallback(() => {
     if (!selectedFolderId) { setFolderItemIds([]); return; }
-    listFolderItemResourceIds(selectedFolderId).then(setFolderItemIds).catch(() => {});
-  }, [selectedFolderId]);
+    listFolderItemResourceIds(selectedFolderId).then(setFolderItemIds).catch((e) => {
+      console.error("listFolderItemResourceIds failed", e);
+      notify("Couldn't load this folder's contents: " + (e?.message || "unknown error"), "danger");
+    });
+  }, [selectedFolderId, notify]);
   useEffect(() => { reloadFolderItems(); }, [reloadFolderItems]);
   useEffect(() => {
     const unsub = subscribeFolderItems(reloadFolderItems);
@@ -360,21 +366,21 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     const parent = newFolderParent;
     setNewFolderParent(undefined); setNewFolderName("");
     if (!name || parent === undefined) return;
-    try { await createSharedFolder(name, parent || null); reloadFolders(); }
-    catch { notify("Couldn't create folder — try again", "danger"); }
+    try { await createSharedFolder(name, parent || null); reloadFolders(); notify("Folder created"); }
+    catch (e) { console.error("createSharedFolder failed", e); notify("Couldn't create folder: " + (e?.message || "unknown error"), "danger"); }
   };
   const commitRenameFolder = async (id) => {
     const name = renameDraft.trim(); setRenamingId(null);
     if (!name || name === folderById.get(id)?.name) return;
     try { await renameSharedFolder(id, name); reloadFolders(); }
-    catch { notify("Couldn't rename folder — try again", "danger"); }
+    catch (e) { console.error("renameFolder failed", e); notify("Couldn't rename folder: " + (e?.message || "unknown error"), "danger"); }
   };
   const removeFolder = async (id) => {
     const f = folderById.get(id);
     if (!window.confirm(`Delete "${f?.name || "this folder"}"? This removes the folder, its subfolders, and everything filed in them. The resources themselves stay in the library.`)) return;
     if (isSelfOrDescendant(selectedFolderId, id)) setSelectedFolderId(null);
-    try { await deleteSharedFolder(id); reloadFolders(); }
-    catch { notify("Couldn't delete folder — try again", "danger"); }
+    try { await deleteSharedFolder(id); reloadFolders(); reloadFolderItems(); notify("Folder deleted"); }
+    catch (e) { console.error("deleteFolder failed", e); notify("Couldn't delete folder: " + (e?.message || "unknown error"), "danger"); }
   };
 
   // ── Filing (file a resource into / out of a folder) ──────────
@@ -383,9 +389,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     if (!r) return;
     try {
       await addResourceToFolder(folderId, r.id);
+      reloadFolders();
       if (folderId === selectedFolderId) reloadFolderItems();
       notify("Added to folder");
-    } catch { notify("Couldn't add to folder — try again", "danger"); }
+    } catch (e) { console.error("addResourceToFolder failed", e); notify("Couldn't add to folder: " + (e?.message || "unknown error"), "danger"); }
   };
   const removeResourceFromCurrentFolder = async (resourceId) => {
     if (!selectedFolderId) return;
@@ -393,7 +400,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       await removeResourceFromFolder(selectedFolderId, resourceId);
       reloadFolderItems();
       notify("Removed from folder");
-    } catch { notify("Couldn't remove from folder — try again", "danger"); }
+    } catch (e) { console.error("removeResourceFromFolder failed", e); notify("Couldn't remove from folder: " + (e?.message || "unknown error"), "danger"); }
   };
 
   // Recursively render the shared folder tree (indented by depth). An inline
@@ -814,7 +821,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
                         {/* Action row — wired to the existing handlers */}
                         <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
-                          {link && <button onClick={() => setBrowserLink({ url: link, title: r.label || r.category })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> Preview</button>}
+                          {link && <button onClick={() => setBrowserLink({ url: link, title: r.label || r.category })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> Open</button>}
                           {link && <button onClick={() => copyLink(link)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Copy size={13} /> Copy</button>}
                           <button onClick={() => setFilingResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><FolderPlus size={13} /> Add to folder…</button>
                           {selectedFolderId && folderItemIds.includes(r.id) && <button onClick={() => removeResourceFromCurrentFolder(r.id)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><X size={13} /> Remove from this folder</button>}
