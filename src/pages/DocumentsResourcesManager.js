@@ -141,6 +141,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // Filing: the resource being filed (folder-picker modal) + the row menu.
   const [filingResource,  setFilingResource]  = useState(null);
   const [resourceMenu,    setResourceMenu]    = useState(null); // { x, y, id }
+  // Sidebar expand/collapse — we track the COLLAPSED folder ids (default is
+  // expanded, so an empty set = everything open). In-memory only; resets on
+  // relaunch. Ancestors of the selected folder are always force-expanded so
+  // the current selection can never be hidden.
+  const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
 
   // ── Documents state ─────────────────────────────────────────
   // Mirrors the Resources Finder: add/edit happens in a modal and the old
@@ -360,6 +365,36 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return false;
   }, [folderById]);
 
+  // ── Sidebar expand/collapse ──────────────────────────────────
+  // The strict ancestors of the selected folder (not the folder itself). These
+  // are always shown expanded so the selection stays visible even if the user
+  // had collapsed one of them earlier.
+  const ancestorsOfSelected = useMemo(() => {
+    const s = new Set(); const guard = new Set();
+    let cur = selectedFolderId ? (folderById.get(selectedFolderId)?.parent_id || null) : null;
+    while (cur && !guard.has(cur)) { guard.add(cur); s.add(cur); cur = folderById.get(cur)?.parent_id || null; }
+    return s;
+  }, [selectedFolderId, folderById]);
+  // A folder's children are shown when it isn't collapsed OR it's an ancestor
+  // of the current selection (force-open).
+  const isExpanded = useCallback(
+    (id) => ancestorsOfSelected.has(id) || !collapsedFolders.has(id),
+    [ancestorsOfSelected, collapsedFolders]
+  );
+  const toggleExpand = useCallback((id) => {
+    setCollapsedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const expandFolder = useCallback((id) => {
+    setCollapsedFolders(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev); next.delete(id); return next;
+    });
+  }, []);
+
   // ── Folder mutations ─────────────────────────────────────────
   const commitNewFolder = async () => {
     const name = newFolderName.trim();
@@ -412,24 +447,33 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // Recursively render the shared folder tree (indented by depth). An inline
   // name input appears in place when creating a subfolder of a node.
-  const renderFolderTree = (parentId, depth) => childrenOf(parentId).map(f => (
-    <React.Fragment key={f.id}>
-      <FolderRow icon={Folder} label={f.name} indent={depth}
-        selected={selectedFolderId === f.id}
-        onClick={() => setSelectedFolderId(f.id)}
-        onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
-        renaming={renamingId === f.id}
-        renameDraft={renameDraft} setRenameDraft={setRenameDraft}
-        onCommitRename={() => commitRenameFolder(f.id)}
-        onCancelRename={() => setRenamingId(null)}
-        colors={colors} />
-      {newFolderParent === f.id && (
-        <FolderNameInput depth={depth + 1} value={newFolderName} setValue={setNewFolderName}
-          onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
-      )}
-      {renderFolderTree(f.id, depth + 1)}
-    </React.Fragment>
-  ));
+  const renderFolderTree = (parentId, depth) => childrenOf(parentId).map(f => {
+    const hasChildren = childrenOf(f.id).length > 0;
+    const expanded = hasChildren && isExpanded(f.id);
+    // Show the new-subfolder input even when collapsed (creating one expands it).
+    const showChildren = expanded || newFolderParent === f.id;
+    return (
+      <React.Fragment key={f.id}>
+        <FolderRow icon={Folder} label={f.name} indent={depth}
+          selected={selectedFolderId === f.id}
+          hasChildren={hasChildren} expanded={expanded}
+          onToggleExpand={() => toggleExpand(f.id)}
+          onDoubleClick={() => { if (hasChildren) toggleExpand(f.id); }}
+          onClick={() => setSelectedFolderId(f.id)}
+          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
+          renaming={renamingId === f.id}
+          renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+          onCommitRename={() => commitRenameFolder(f.id)}
+          onCancelRename={() => setRenamingId(null)}
+          colors={colors} />
+        {newFolderParent === f.id && (
+          <FolderNameInput depth={depth + 1} value={newFolderName} setValue={setNewFolderName}
+            onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
+        )}
+        {showChildren && renderFolderTree(f.id, depth + 1)}
+      </React.Fragment>
+    );
+  });
 
   // Resolve student_note origin names only if such a resource exists
   // (none until cluster 4) — avoids extra queries in the common case.
@@ -848,7 +892,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             <>
               <div onMouseDown={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
               <div style={{ position: "fixed", zIndex: 9971, top: folderMenu.y, left: folderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
-                <button onClick={() => { setNewFolderName(""); setSelectedFolderId(folderMenu.id); setNewFolderParent(folderMenu.id); setFolderMenu(null); }}
+                <button onClick={() => { setNewFolderName(""); setSelectedFolderId(folderMenu.id); expandFolder(folderMenu.id); setNewFolderParent(folderMenu.id); setFolderMenu(null); }}
                   style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                   <FolderPlus size={13} /> New subfolder…
                 </button>
@@ -1366,7 +1410,7 @@ function SidebarGroupLabel({ children, colors }) {
 // Renders a clickable folder with an optional count. When `renaming` is set it
 // becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
 // `greyed` is used for hidden folders revealed by "Show hidden folders".
-function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, colors }) {
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, colors }) {
   const [hover, setHover] = useState(false);
   if (renaming) {
     return (
@@ -1380,11 +1424,24 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent
   }
   const bg = selected ? colors.sidebarHover : (hover ? colors.blueLight : "transparent");
   const fg = selected ? colors.white : (greyed ? colors.textMuted : colors.text);
+  // The disclosure slot only renders for tree rows that opt in via onToggleExpand
+  // (the Resources folder tree). Without it the layout is byte-for-byte the old
+  // one, so the Documents-side rows are unaffected.
+  const disclosure = onToggleExpand ? (
+    hasChildren ? (
+      <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+        title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse folder" : "Expand folder"}
+        style={{ flexShrink: 0, width: 16, height: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "none", padding: 0, cursor: "pointer", color: selected ? colors.white : colors.textMuted }}>
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+    ) : <span style={{ flexShrink: 0, width: 16 }} />
+  ) : null;
   return (
-    <div onClick={onClick} onContextMenu={onContextMenu}
+    <div onClick={onClick} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       title={aliased ? "Renamed folder (label only)" : undefined}
       style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: bg, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
+      {disclosure}
       <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
       <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
