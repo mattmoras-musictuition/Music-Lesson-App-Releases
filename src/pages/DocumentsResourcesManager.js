@@ -4,9 +4,9 @@
 // Documents: insurance, WWCC, licensing agreements, policies.
 // ============================================================
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { Library, FileText, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
+import { Library, FileText, Plus, X, Check, Pencil, Trash2, Copy, AlertTriangle, Clock, Building2, Guitar, Eye, Upload, Download as DownloadIcon, Loader, ChevronDown, ChevronRight, Sparkles, Folder, FolderPlus, EyeOff, SlidersHorizontal } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -22,6 +22,9 @@ import {
 } from "../utils/storageHelpers";
 // Resources are a shared pool persisted per-row (no whole-list sync).
 import { insertResource as insertResourceRow, updateResource as updateResourceRow, deleteResource as deleteResourceRow, resourceFileSharedByUpload, fetchResourceTaxonomies, loadSubjectNameMaps, resolveSubjectName, fetchFolderOverrides, saveFolderOverrides } from "../utils/resourcesDB";
+// Resources-side real, nestable SHARED folder tree (replaces the old smart
+// folders). Documents keep their smart folders via useFolderOverrides below.
+import { listSharedFolders, createSharedFolder, renameFolder as renameSharedFolder, deleteFolder as deleteSharedFolder, listFolderItemResourceIds, addResourceToFolder, removeResourceFromFolder, subscribeSharedFolders, subscribeFolderItems } from "../utils/resourceFoldersDB";
 import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
 import ResourcePreview from "../components/ResourcePreview";
 
@@ -105,9 +108,12 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // Subject-name maps, loaded lazily only when a student_note resource exists.
   const [subjectMaps, setSubjectMaps] = useState(null);
 
-  // Remaining filters (instrument + type now live in the sidebar). Each is a
-  // multi-select; empty array = no constraint. Combine with AND. Tucked behind
-  // the compact "Filters" control so the three-pane view stays calm.
+  // All six filter dimensions now live in the tucked "Filters" control
+  // (instrument + type moved off the sidebar). Each is a multi-select; empty
+  // array = no constraint. Combined with AND, applied on top of the active
+  // folder / All-resources view.
+  const [rfInstrument, setRfInstrument] = useState([]);
+  const [rfType,       setRfType]       = useState([]);
   const [rfSkill,      setRfSkill]      = useState([]);
   const [rfSchool,     setRfSchool]     = useState([]);
   const [rfUploadedBy, setRfUploadedBy] = useState([]);
@@ -115,25 +121,26 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [showFilters,  setShowFilters]  = useState(false);
   const rFiltersBtnRef = useRef(null);
 
-  // ── Finder-style library state ───────────────────────────────
-  // selectedFolder narrows the middle list: { dim:"all" } shows everything;
-  // { dim:"instrument"|"type", value } narrows to that folder. selectedId is
-  // the row whose detail shows in the right pane (null = placeholder).
-  const [selectedFolder, setSelectedFolder] = useState({ dim: "all", value: null });
-  const [selectedId,     setSelectedId]     = useState(null);
-  // Shared sidebar overrides (aliases + hidden + custom folders) from app_settings.
-  const { overrides, folderKey, folderLabel, isFolderHidden, renameFolder, hideFolder, unhideFolder, addCustom, renameCustom, deleteCustom } = useFolderOverrides("resource_folder_overrides:admin", notify);
-  const [showHidden, setShowHidden] = useState(false);
-  // Custom saved views: which one is highlighted, plus the inline name editor
-  // shown when saving the current view.
-  const [activeCustomId, setActiveCustomId] = useState(null);
-  const [savingView,  setSavingView]  = useState(false);
-  const [newViewName, setNewViewName] = useState("");
-  // Right-click context menu on a folder: { x, y, dim, value }.
-  const [folderMenu, setFolderMenu] = useState(null);
-  // Inline rename of a folder alias: the folder key being renamed + draft text.
-  const [renamingKey, setRenamingKey] = useState(null);
-  const [renameDraft, setRenameDraft] = useState("");
+  // ── Finder-style library state (real, nestable SHARED folder tree) ──
+  // selectedFolderId === null shows the whole library ("All resources");
+  // a folder id narrows the middle list to that folder's direct subfolders +
+  // the resources filed directly into it. selectedId is the row whose detail
+  // shows in the right pane (null = placeholder).
+  const [selectedFolderId, setSelectedFolderId] = useState(null);
+  const [selectedId,       setSelectedId]       = useState(null);
+  // The shared folder tree (flat rows with parent_id) + the resource ids filed
+  // directly in the selected folder. Both kept live via realtime.
+  const [folders,       setFolders]       = useState([]);
+  const [folderItemIds, setFolderItemIds] = useState([]);
+  // Folder right-click menu { x, y, id } + inline rename / create editors.
+  const [folderMenu,      setFolderMenu]      = useState(null);
+  const [renamingId,      setRenamingId]      = useState(null); // folder id being renamed
+  const [renameDraft,     setRenameDraft]     = useState("");
+  const [newFolderParent, setNewFolderParent] = useState(undefined); // undefined=idle, null=new root, id=new subfolder
+  const [newFolderName,   setNewFolderName]   = useState("");
+  // Filing: the resource being filed (folder-picker modal) + the row menu.
+  const [filingResource,  setFilingResource]  = useState(null);
+  const [resourceMenu,    setResourceMenu]    = useState(null); // { x, y, id }
 
   // ── Documents state ─────────────────────────────────────────
   // Mirrors the Resources Finder: add/edit happens in a modal and the old
@@ -295,6 +302,121 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // Taxonomy lists for the filter bar + edit modal.
   useEffect(() => { fetchResourceTaxonomies().then(setTax); }, []);
 
+  // ── Shared folder tree: load + keep live ─────────────────────
+  const reloadFolders = useCallback(() => {
+    listSharedFolders().then(setFolders).catch(() => {});
+  }, []);
+  useEffect(() => {
+    reloadFolders();
+    const unsub = subscribeSharedFolders(reloadFolders);
+    return unsub;
+  }, [reloadFolders]);
+
+  // Resources filed DIRECTLY in the selected folder (non-recursive).
+  const reloadFolderItems = useCallback(() => {
+    if (!selectedFolderId) { setFolderItemIds([]); return; }
+    listFolderItemResourceIds(selectedFolderId).then(setFolderItemIds).catch(() => {});
+  }, [selectedFolderId]);
+  useEffect(() => { reloadFolderItems(); }, [reloadFolderItems]);
+  useEffect(() => {
+    const unsub = subscribeFolderItems(reloadFolderItems);
+    return unsub;
+  }, [reloadFolderItems]);
+
+  // ── Folder tree helpers (shape the flat rows into a tree) ─────
+  const folderById = useMemo(() => {
+    const m = new Map(); for (const f of folders) m.set(f.id, f); return m;
+  }, [folders]);
+  const foldersByParent = useMemo(() => {
+    const m = new Map();
+    for (const f of folders) {
+      const k = f.parent_id || "__root__";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(f);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => (a.position - b.position) || a.name.localeCompare(b.name));
+    return m;
+  }, [folders]);
+  const childrenOf = useCallback((pid) => foldersByParent.get(pid || "__root__") || [], [foldersByParent]);
+  // Root→selected path for the breadcrumb (guards against any cycle).
+  const breadcrumb = useMemo(() => {
+    const path = []; const guard = new Set();
+    let cur = selectedFolderId ? folderById.get(selectedFolderId) : null;
+    while (cur && !guard.has(cur.id)) { guard.add(cur.id); path.unshift(cur); cur = cur.parent_id ? folderById.get(cur.parent_id) : null; }
+    return path;
+  }, [selectedFolderId, folderById]);
+  // True when `nodeId` is `ancestorId` or sits beneath it — used to reset the
+  // selection to "All resources" when the selected folder (or an ancestor) is
+  // deleted out from under it.
+  const isSelfOrDescendant = useCallback((nodeId, ancestorId) => {
+    let cur = nodeId; const guard = new Set();
+    while (cur && !guard.has(cur)) { if (cur === ancestorId) return true; guard.add(cur); cur = folderById.get(cur)?.parent_id || null; }
+    return false;
+  }, [folderById]);
+
+  // ── Folder mutations ─────────────────────────────────────────
+  const commitNewFolder = async () => {
+    const name = newFolderName.trim();
+    const parent = newFolderParent;
+    setNewFolderParent(undefined); setNewFolderName("");
+    if (!name || parent === undefined) return;
+    try { await createSharedFolder(name, parent || null); reloadFolders(); }
+    catch { notify("Couldn't create folder — try again", "danger"); }
+  };
+  const commitRenameFolder = async (id) => {
+    const name = renameDraft.trim(); setRenamingId(null);
+    if (!name || name === folderById.get(id)?.name) return;
+    try { await renameSharedFolder(id, name); reloadFolders(); }
+    catch { notify("Couldn't rename folder — try again", "danger"); }
+  };
+  const removeFolder = async (id) => {
+    const f = folderById.get(id);
+    if (!window.confirm(`Delete "${f?.name || "this folder"}"? This removes the folder, its subfolders, and everything filed in them. The resources themselves stay in the library.`)) return;
+    if (isSelfOrDescendant(selectedFolderId, id)) setSelectedFolderId(null);
+    try { await deleteSharedFolder(id); reloadFolders(); }
+    catch { notify("Couldn't delete folder — try again", "danger"); }
+  };
+
+  // ── Filing (file a resource into / out of a folder) ──────────
+  const fileResourceInto = async (folderId) => {
+    const r = filingResource; setFilingResource(null);
+    if (!r) return;
+    try {
+      await addResourceToFolder(folderId, r.id);
+      if (folderId === selectedFolderId) reloadFolderItems();
+      notify("Added to folder");
+    } catch { notify("Couldn't add to folder — try again", "danger"); }
+  };
+  const removeResourceFromCurrentFolder = async (resourceId) => {
+    if (!selectedFolderId) return;
+    try {
+      await removeResourceFromFolder(selectedFolderId, resourceId);
+      reloadFolderItems();
+      notify("Removed from folder");
+    } catch { notify("Couldn't remove from folder — try again", "danger"); }
+  };
+
+  // Recursively render the shared folder tree (indented by depth). An inline
+  // name input appears in place when creating a subfolder of a node.
+  const renderFolderTree = (parentId, depth) => childrenOf(parentId).map(f => (
+    <React.Fragment key={f.id}>
+      <FolderRow icon={Folder} label={f.name} indent={depth}
+        selected={selectedFolderId === f.id}
+        onClick={() => setSelectedFolderId(f.id)}
+        onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
+        renaming={renamingId === f.id}
+        renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+        onCommitRename={() => commitRenameFolder(f.id)}
+        onCancelRename={() => setRenamingId(null)}
+        colors={colors} />
+      {newFolderParent === f.id && (
+        <FolderNameInput depth={depth + 1} value={newFolderName} setValue={setNewFolderName}
+          onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
+      )}
+      {renderFolderTree(f.id, depth + 1)}
+    </React.Fragment>
+  ));
+
   // Resolve student_note origin names only if such a resource exists
   // (none until cluster 4) — avoids extra queries in the common case.
   useEffect(() => {
@@ -314,78 +436,43 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return [...set].sort().map(n => ({ value: n, label: n }));
   }, [resources]);
 
-  const anyResourceFilter = !!(rfSkill.length || rfSchool.length || rfUploadedBy.length || rfSource.length);
-  const filterCount = rfSkill.length + rfSchool.length + rfUploadedBy.length + rfSource.length;
-  const clearResourceFilters = () => { setRfSkill([]); setRfSchool([]); setRfUploadedBy([]); setRfSource([]); };
+  const anyResourceFilter = !!(rfInstrument.length || rfType.length || rfSkill.length || rfSchool.length || rfUploadedBy.length || rfSource.length);
+  const filterCount = rfInstrument.length + rfType.length + rfSkill.length + rfSchool.length + rfUploadedBy.length + rfSource.length;
+  const clearResourceFilters = () => { setRfInstrument([]); setRfType([]); setRfSkill([]); setRfSchool([]); setRfUploadedBy([]); setRfSource([]); };
 
-  // ── Custom saved views ───────────────────────────────────────
-  // Snapshot of everything that defines the current Resources view: the
-  // selected folder, the four tucked filters, and the search text. Used both
-  // to save a custom folder and to detect divergence from an active one.
-  const currentSnapshot = useMemo(() => ({
-    folder: selectedFolder, skill: rfSkill, school: rfSchool,
-    uploadedBy: rfUploadedBy, source: rfSource, search: rSearch.trim(),
-  }), [selectedFolder, rfSkill, rfSchool, rfUploadedBy, rfSource, rSearch]);
-  // "Save current view" is only meaningful once the view differs from
-  // "All resources" — a folder, a filter, or a search must be active.
-  const viewIsCustomizable = selectedFolder.dim !== "all" || anyResourceFilter || !!rSearch.trim();
-  // Restore a saved custom folder, then highlight it.
-  const applyCustom = (c) => {
-    const f = c.filters || {};
-    setSelectedFolder(f.folder || { dim: "all", value: null });
-    setRfSkill(f.skill || []); setRfSchool(f.school || []);
-    setRfUploadedBy(f.uploadedBy || []); setRfSource(f.source || []);
-    setRSearch(f.search || "");
-    setActiveCustomId(c.id);
-  };
-  const commitSaveView = () => {
-    const name = newViewName.trim();
-    if (name) setActiveCustomId(addCustom(name, currentSnapshot));
-    setSavingView(false); setNewViewName("");
-  };
-  // Drop the active-custom highlight the moment the live view diverges from its
-  // saved snapshot (or the folder is deleted) — avoids wrapping every setter.
-  useEffect(() => {
-    if (!activeCustomId) return;
-    const c = overrides.custom.find(x => x.id === activeCustomId);
-    if (!c || JSON.stringify(c.filters) !== JSON.stringify(currentSnapshot)) setActiveCustomId(null);
-  }, [activeCustomId, overrides.custom, currentSnapshot]);
-  // If the selected auto folder gets hidden elsewhere, fall back to "All".
-  useEffect(() => {
-    if (selectedFolder.dim !== "all" && overrides.hidden.includes(`${selectedFolder.dim}:${selectedFolder.value}`)) {
-      setSelectedFolder({ dim: "all", value: null });
-    }
-  }, [overrides.hidden, selectedFolder]);
-
-  // ── Sidebar folders (auto-derived live from the data) ─────────
-  // One folder per distinct instrument value, one per distinct type/category
-  // value present in the resources. New values appear automatically. Each folder
-  // carries its own resource count (ignores search/filters/other folders).
-  const instrumentFolders = useMemo(() => {
-    const counts = new Map();
-    for (const r of resources) { const v = (r.instrument || "").trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
-    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }));
-  }, [resources]);
-  const typeFolders = useMemo(() => {
-    const counts = new Map();
-    for (const r of resources) { const v = (r.category || "").trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); }
-    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, count }));
-  }, [resources]);
-
-  // ── Filter: folder narrowing + remaining filters + search (AND) ─
-  const filteredResources = useMemo(() => resources.filter(r => {
-    if (selectedFolder.dim === "instrument" && r.instrument !== selectedFolder.value) return false;
-    if (selectedFolder.dim === "type"       && r.category   !== selectedFolder.value) return false;
+  // ── Filter: folder scope + the six filters + search ───────────
+  // All six filters (instrument, type, skill, school, uploaded-by, source)
+  // combine with AND and apply on top of the active view.
+  const searchActive = !!rSearch.trim();
+  const matchesFilters = useCallback((r) => {
+    if (rfInstrument.length && !rfInstrument.includes(r.instrument))     return false;
+    if (rfType.length       && !rfType.includes(r.category))             return false;
     if (rfSkill.length      && !rfSkill.includes(r.skill_level))         return false;
     if (rfSchool.length     && !rfSchool.includes(r.school_id))          return false;
     if (rfUploadedBy.length && !rfUploadedBy.includes(r.added_by_name))  return false;
     if (rfSource.length     && !rfSource.includes(r.source || "direct")) return false;
-    if (rSearch.trim()) {
-      const q = rSearch.trim().toLowerCase();
-      if (!(r.label||"").toLowerCase().includes(q) && !(r.description||"").toLowerCase().includes(q)) return false;
-    }
     return true;
-  }), [resources, selectedFolder, rfSkill, rfSchool, rfUploadedBy, rfSource, rSearch]);
+  }, [rfInstrument, rfType, rfSkill, rfSchool, rfUploadedBy, rfSource]);
+
+  const filteredResources = useMemo(() => {
+    const q = rSearch.trim().toLowerCase();
+    const bySearch = (r) => !q || (r.label||"").toLowerCase().includes(q) || (r.description||"").toLowerCase().includes(q);
+    // Free-text search is GLOBAL — it ignores the current folder and matches
+    // the whole library (filters still apply on top).
+    if (searchActive) return resources.filter(r => matchesFilters(r) && bySearch(r));
+    // "All resources" — the whole library.
+    if (!selectedFolderId) return resources.filter(matchesFilters);
+    // A folder — only the resources filed DIRECTLY into it (non-recursive).
+    const idSet = new Set(folderItemIds);
+    return resources.filter(r => idSet.has(r.id) && matchesFilters(r));
+  }, [resources, searchActive, rSearch, selectedFolderId, folderItemIds, matchesFilters]);
+
+  // Direct subfolders shown above the resource list — only when inside a
+  // folder and not running a global search.
+  const visibleSubfolders = useMemo(
+    () => (searchActive || !selectedFolderId) ? [] : childrenOf(selectedFolderId),
+    [searchActive, selectedFolderId, childrenOf]
+  );
 
   // Keep the detail pane coherent: if the selected row drops out of the list
   // (folder/filter/search change or deletion), clear the selection.
@@ -562,93 +649,27 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             /* Finder-style three-pane library: folder sidebar / list / detail. */
             <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
 
-              {/* ── LEFT: folder sidebar ── */}
+              {/* ── LEFT: folder sidebar (real, nestable shared tree) ── */}
               <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
                 <FolderRow icon={Library} label="All resources" count={resources.length}
-                  selected={!activeCustomId && selectedFolder.dim === "all"}
-                  onClick={() => setSelectedFolder({ dim: "all", value: null })} colors={colors} />
+                  selected={!selectedFolderId}
+                  onClick={() => setSelectedFolderId(null)} colors={colors} />
 
-                {/* Custom saved views — "Save current view" plus any saved folders. */}
-                <SidebarGroupLabel colors={colors}>Custom</SidebarGroupLabel>
-                {savingView ? (
-                  <div style={{ padding: "2px 4px" }}>
-                    <input autoFocus value={newViewName} onChange={e => setNewViewName(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") commitSaveView(); if (e.key === "Escape") { setSavingView(false); setNewViewName(""); } }}
-                      onBlur={commitSaveView} placeholder="Folder name…"
-                      style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
-                  </div>
+                {/* + New folder (top-level) */}
+                {newFolderParent === null ? (
+                  <FolderNameInput value={newFolderName} setValue={setNewFolderName}
+                    onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
                 ) : (
-                  <div onClick={() => { if (viewIsCustomizable) { setNewViewName(""); setSavingView(true); } }}
-                    title={viewIsCustomizable ? "Save the current folder, filters and search as a custom folder" : "Pick a folder, filter or search first"}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: viewIsCustomizable ? "pointer" : "not-allowed", opacity: viewIsCustomizable ? 1 : 0.45, userSelect: "none" }}>
+                  <div onClick={() => { setNewFolderName(""); setNewFolderParent(null); }}
+                    title="Create a new top-level folder"
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: "pointer", userSelect: "none" }}>
                     <FolderPlus size={15} style={{ flexShrink: 0, color: colors.textMuted }} />
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>Save current view…</span>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 500, color: colors.text }}>New folder…</span>
                   </div>
                 )}
-                {overrides.custom.map(c => (
-                  <FolderRow key={"c:" + c.id} icon={Folder} label={c.name}
-                    selected={activeCustomId === c.id}
-                    onClick={() => applyCustom(c)}
-                    onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, custom: c.id }); }}
-                    renaming={renamingKey === "custom:" + c.id}
-                    renameDraft={renameDraft} setRenameDraft={setRenameDraft}
-                    onCommitRename={() => { renameCustom(c.id, renameDraft); setRenamingKey(null); }}
-                    onCancelRename={() => setRenamingKey(null)}
-                    colors={colors} />
-                ))}
 
-                {instrumentFolders.length > 0 && <SidebarGroupLabel colors={colors}>By instrument</SidebarGroupLabel>}
-                {instrumentFolders.map(f => (
-                  isFolderHidden("instrument", f.value) ? null : (
-                    <FolderRow key={"i:" + f.value} icon={Folder} count={f.count}
-                      label={folderLabel("instrument", f.value)}
-                      aliased={!!overrides.aliases[folderKey("instrument", f.value)]}
-                      selected={!activeCustomId && selectedFolder.dim === "instrument" && selectedFolder.value === f.value}
-                      onClick={() => setSelectedFolder({ dim: "instrument", value: f.value })}
-                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "instrument", value: f.value }); }}
-                      renaming={renamingKey === folderKey("instrument", f.value)}
-                      renameDraft={renameDraft} setRenameDraft={setRenameDraft}
-                      onCommitRename={() => { renameFolder("instrument", f.value, renameDraft); setRenamingKey(null); }}
-                      onCancelRename={() => setRenamingKey(null)}
-                      colors={colors} />
-                  )
-                ))}
-
-                {typeFolders.length > 0 && <SidebarGroupLabel colors={colors}>By type</SidebarGroupLabel>}
-                {typeFolders.map(f => (
-                  isFolderHidden("type", f.value) ? null : (
-                    <FolderRow key={"t:" + f.value} icon={Folder} count={f.count}
-                      label={folderLabel("type", f.value)}
-                      aliased={!!overrides.aliases[folderKey("type", f.value)]}
-                      selected={!activeCustomId && selectedFolder.dim === "type" && selectedFolder.value === f.value}
-                      onClick={() => setSelectedFolder({ dim: "type", value: f.value })}
-                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim: "type", value: f.value }); }}
-                      renaming={renamingKey === folderKey("type", f.value)}
-                      renameDraft={renameDraft} setRenameDraft={setRenameDraft}
-                      onCommitRename={() => { renameFolder("type", f.value, renameDraft); setRenamingKey(null); }}
-                      onCancelRename={() => setRenamingKey(null)}
-                      colors={colors} />
-                  )
-                ))}
-
-                {/* Show-hidden control + greyed hidden folders with right-click Unhide */}
-                {overrides.hidden.length > 0 && (
-                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${colors.borderLight}` }}>
-                    <button onClick={() => setShowHidden(h => !h)}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: colors.textLight, fontFamily: "inherit", padding: "4px 8px", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <EyeOff size={12} /> {showHidden ? "Hide hidden folders" : `Show hidden folders (${overrides.hidden.length})`}
-                    </button>
-                    {showHidden && overrides.hidden.map(key => {
-                      const [dim, ...rest] = key.split(":"); const value = rest.join(":");
-                      return (
-                        <FolderRow key={"h:" + key} icon={Folder} dim greyed
-                          label={folderLabel(dim, value)}
-                          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, dim, value, hidden: true }); }}
-                          colors={colors} />
-                      );
-                    })}
-                  </div>
-                )}
+                {/* The shared folder tree */}
+                {renderFolderTree(null, 0)}
               </div>
 
               {/* ── MIDDLE: compact resource list ── */}
@@ -667,6 +688,8 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     </button>
                     <PortalPopover anchorRef={rFiltersBtnRef} open={showFilters} onClose={() => setShowFilters(false)} width={224}>
                       <div style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.35)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <FilterDropdown label="Instrument"  options={instrumentOptions} selected={rfInstrument} onChange={setRfInstrument} colors={colors} />
+                        <FilterDropdown label="Type"        options={typeOptions}       selected={rfType}       onChange={setRfType}       colors={colors} />
                         <FilterDropdown label="Skill level" options={skillOptions}      selected={rfSkill}      onChange={setRfSkill}      colors={colors} />
                         <FilterDropdown label="School"      options={schoolOptions}     selected={rfSchool}     onChange={setRfSchool}     colors={colors} />
                         <FilterDropdown label="Uploaded by" options={uploadedByOptions} selected={rfUploadedBy} onChange={setRfUploadedBy} colors={colors} />
@@ -681,9 +704,39 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   </div>
                 </div>
 
+                {/* Breadcrumb — depth/navigation. Root is just "All resources". */}
+                {!searchActive && breadcrumb.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2, padding: "8px 12px", borderBottom: `1px solid ${colors.borderLight}` }}>
+                    <button onClick={() => setSelectedFolderId(null)}
+                      style={{ border: "none", background: "none", cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "2px 4px" }}>All resources</button>
+                    {breadcrumb.map((f, i) => {
+                      const last = i === breadcrumb.length - 1;
+                      return (
+                        <React.Fragment key={f.id}>
+                          <ChevronRight size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
+                          <button onClick={() => { if (!last) setSelectedFolderId(f.id); }} disabled={last}
+                            style={{ border: "none", background: "none", cursor: last ? "default" : "pointer", color: last ? colors.text : colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: last ? 700 : 600, padding: "2px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>{f.name}</button>
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                )}
+
                 <div style={{ flex: 1 }}>
-                  {filteredResources.length === 0 ? (
-                    <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No resources match the current view</div>
+                  {/* Direct subfolders (click to descend) */}
+                  {visibleSubfolders.map(f => (
+                    <div key={"sf:" + f.id} onClick={() => setSelectedFolderId(f.id)}
+                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
+                      onMouseEnter={() => setRHovered("sf:" + f.id)} onMouseLeave={() => setRHovered(null)}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: rHovered === ("sf:" + f.id) ? colors.blueLight : colors.cardBg }}>
+                      <Folder size={17} style={{ flexShrink: 0, color: colors.textMuted }} />
+                      <div style={{ minWidth: 0, flex: 1, fontSize: 13, fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                      <ChevronRight size={14} style={{ flexShrink: 0, color: colors.textMuted }} />
+                    </div>
+                  ))}
+
+                  {filteredResources.length === 0 && visibleSubfolders.length === 0 ? (
+                    <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>{selectedFolderId && !searchActive ? "This folder is empty" : "No resources match the current view"}</div>
                   ) : filteredResources.map(r => {
                     const RowIcon = iconForResourceType(r.category)
                       || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
@@ -692,6 +745,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     const sub = [r.instrument, r.category].filter(Boolean).join(" · ") || (subjName ? `from ${subjName}'s notes` : "");
                     return (
                       <div key={r.id} onClick={() => setSelectedId(r.id)}
+                        onContextMenu={(e) => { e.preventDefault(); setResourceMenu({ x: e.clientX, y: e.clientY, id: r.id }); }}
                         onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
                         style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg) }}>
                         <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
@@ -762,6 +816,8 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                         <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
                           {link && <button onClick={() => setBrowserLink({ url: link, title: r.label || r.category })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> Preview</button>}
                           {link && <button onClick={() => copyLink(link)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Copy size={13} /> Copy</button>}
+                          <button onClick={() => setFilingResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><FolderPlus size={13} /> Add to folder…</button>
+                          {selectedFolderId && folderItemIds.includes(r.id) && <button onClick={() => removeResourceFromCurrentFolder(r.id)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><X size={13} /> Remove from this folder</button>}
                           <button onClick={() => openEditResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Pencil size={13} /> Edit</button>
                           <button onClick={() => deleteResource(r.id)} style={{ border: "1px solid " + colors.danger + "60", background: colors.cardBg, color: colors.danger, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Trash2 size={13} /> Delete</button>
                         </div>
@@ -773,47 +829,64 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             </div>
           )}
 
-          {/* Folder right-click context menu (overlay closes on outside click) */}
+          {/* Folder right-click context menu — New subfolder / Rename / Delete */}
           {folderMenu && (
             <>
               <div onMouseDown={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
               <div style={{ position: "fixed", zIndex: 9971, top: folderMenu.y, left: folderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
-                {folderMenu.custom ? (
-                  <>
-                    <button onClick={() => { const c = overrides.custom.find(x => x.id === folderMenu.custom); setRenamingKey("custom:" + folderMenu.custom); setRenameDraft(c?.name || ""); setFolderMenu(null); }}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                      <Pencil size={13} /> Rename…
-                    </button>
-                    <button onClick={() => { if (activeCustomId === folderMenu.custom) { setActiveCustomId(null); setSelectedFolder({ dim: "all", value: null }); clearResourceFilters(); setRSearch(""); } deleteCustom(folderMenu.custom); setFolderMenu(null); }}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.danger, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                      <Trash2 size={13} /> Delete
-                    </button>
-                  </>
-                ) : folderMenu.hidden ? (
-                  <button onClick={() => { unhideFolder(folderMenu.dim, folderMenu.value); setFolderMenu(null); }}
+                <button onClick={() => { setNewFolderName(""); setSelectedFolderId(folderMenu.id); setNewFolderParent(folderMenu.id); setFolderMenu(null); }}
+                  style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <FolderPlus size={13} /> New subfolder…
+                </button>
+                <button onClick={() => { setRenamingId(folderMenu.id); setRenameDraft(folderById.get(folderMenu.id)?.name || ""); setFolderMenu(null); }}
+                  style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Pencil size={13} /> Rename…
+                </button>
+                <button onClick={() => { const id = folderMenu.id; setFolderMenu(null); removeFolder(id); }}
+                  style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.danger, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Trash2 size={13} /> Delete
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Resource right-click menu — Add to folder… / Remove from this folder */}
+          {resourceMenu && (
+            <>
+              <div onMouseDown={() => setResourceMenu(null)} onContextMenu={(e) => { e.preventDefault(); setResourceMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
+              <div style={{ position: "fixed", zIndex: 9971, top: resourceMenu.y, left: resourceMenu.x, minWidth: 180, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
+                <button onClick={() => { const r = resources.find(x => x.id === resourceMenu.id); setResourceMenu(null); if (r) setFilingResource(r); }}
+                  style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  <FolderPlus size={13} /> Add to folder…
+                </button>
+                {selectedFolderId && folderItemIds.includes(resourceMenu.id) && (
+                  <button onClick={() => { const id = resourceMenu.id; setResourceMenu(null); removeResourceFromCurrentFolder(id); }}
                     style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                    <Eye size={13} /> Unhide
+                    <X size={13} /> Remove from this folder
                   </button>
-                ) : (
-                  <>
-                    <button onClick={() => { setRenamingKey(folderKey(folderMenu.dim, folderMenu.value)); setRenameDraft(folderLabel(folderMenu.dim, folderMenu.value)); setFolderMenu(null); }}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                      <Pencil size={13} /> Rename…
-                    </button>
-                    {!!overrides.aliases[folderKey(folderMenu.dim, folderMenu.value)] && (
-                      <button onClick={() => { renameFolder(folderMenu.dim, folderMenu.value, ""); setFolderMenu(null); }}
-                        style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                        <X size={13} /> Reset name
-                      </button>
-                    )}
-                    <button onClick={() => { hideFolder(folderMenu.dim, folderMenu.value); setFolderMenu(null); }}
-                      style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                      <EyeOff size={13} /> Hide
-                    </button>
-                  </>
                 )}
               </div>
             </>
+          )}
+
+          {/* Folder picker — file the chosen resource into a shared folder */}
+          {filingResource && (
+            <div onMouseDown={() => setFilingResource(null)} style={{ position: "fixed", inset: 0, zIndex: 9980, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div onMouseDown={e => e.stopPropagation()} style={{ background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 12, padding: 16, width: 360, maxWidth: "100%", maxHeight: "80vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: colors.text, marginBottom: 4, display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <FolderPlus size={14} /> Add to folder
+                </div>
+                <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{filingResource.label || "Untitled"}</div>
+                {folders.length === 0 ? (
+                  <div style={{ fontSize: 13, color: colors.textMuted, fontStyle: "italic", padding: "8px 4px" }}>No folders yet — create one in the sidebar first.</div>
+                ) : (
+                  <FolderPicker childrenOf={childrenOf} onPick={fileResourceInto} colors={colors} />
+                )}
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+                  <button onClick={() => setFilingResource(null)} style={{ padding: "7px 14px", border: "1px solid " + colors.border, borderRadius: 8, background: colors.cardBg, color: colors.textMuted, fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Add / edit-details modal — the single edit path */}
@@ -1279,11 +1352,11 @@ function SidebarGroupLabel({ children, colors }) {
 // Renders a clickable folder with an optional count. When `renaming` is set it
 // becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
 // `greyed` is used for hidden folders revealed by "Show hidden folders".
-function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, colors }) {
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, colors }) {
   const [hover, setHover] = useState(false);
   if (renaming) {
     return (
-      <div style={{ padding: "2px 4px" }}>
+      <div style={{ padding: "2px 4px", paddingLeft: 8 + indent * 14 }}>
         <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") onCommitRename(); if (e.key === "Escape") onCancelRename(); }}
           onBlur={onCommitRename}
@@ -1297,12 +1370,45 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, onClic
     <div onClick={onClick} onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       title={aliased ? "Renamed folder (label only)" : undefined}
-      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 7, cursor: "pointer", background: bg, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: bg, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
       <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
       <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
     </div>
   );
+}
+
+// ── Inline folder-name input (new root folder / new subfolder) ─
+// Commits on Enter or blur, cancels on Escape. Indented to sit under its
+// parent in the tree.
+function FolderNameInput({ depth = 0, value, setValue, onCommit, onCancel, colors }) {
+  return (
+    <div style={{ padding: "2px 4px", paddingLeft: 8 + depth * 14 }}>
+      <input autoFocus value={value} onChange={e => setValue(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter") onCommit(); if (e.key === "Escape") onCancel(); }}
+        onBlur={onCommit} placeholder="Folder name…"
+        style={{ width: "100%", padding: "5px 8px", border: "1px solid " + colors.accent, borderRadius: 6, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
+    </div>
+  );
+}
+
+// ── Folder picker (the "Add to folder…" tree of buttons) ───────
+// Renders the shared tree as indented, clickable rows. Picking a folder
+// files the in-flight resource there.
+function FolderPicker({ childrenOf, onPick, colors }) {
+  const render = (parentId, depth) => childrenOf(parentId).map(f => (
+    <React.Fragment key={f.id}>
+      <button onClick={() => onPick(f.id)}
+        style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 8px", paddingLeft: 8 + depth * 16, borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}
+        onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
+        onMouseLeave={e => e.currentTarget.style.background = "none"}>
+        <Folder size={14} style={{ flexShrink: 0, color: colors.textMuted }} />
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+      </button>
+      {render(f.id, depth + 1)}
+    </React.Fragment>
+  ));
+  return <div>{render(null, 0)}</div>;
 }
 
 // ── Shared folder-overrides hook ──────────────────────────────
