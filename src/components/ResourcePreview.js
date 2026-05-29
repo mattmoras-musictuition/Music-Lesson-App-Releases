@@ -83,6 +83,9 @@ export default function ResourcePreview({
     return () => { cancelled = true; };
   }, [isFile, kind, ytId, fileUrl, storagePath, linkUrl]);
 
+  // Media frame — backs image/PDF/YouTube/icon previews. surfaceBg lets the
+  // caller use a dark surface so covers/artwork pop (Documents passes nothing,
+  // so it stays on the page background).
   const frame = {
     height,
     background: surfaceBg || colors.bg,
@@ -90,6 +93,10 @@ export default function ResourcePreview({
     overflow: "hidden",
   };
   const centered = { ...frame, display: "flex", alignItems: "center", justifyContent: "center" };
+  // Link (Open Graph) cards keep the page surface regardless of surfaceBg so
+  // their dark text stays legible — a dark media backing would wash them out.
+  const linkFrame = { ...frame, background: colors.bg };
+  const linkCentered = { ...linkFrame, display: "flex", alignItems: "center", justifyContent: "center" };
 
   const iconNode = FallbackIcon
     ? <FallbackIcon size={48} style={{ color: colors.textMuted, opacity: 0.7 }} />
@@ -123,7 +130,7 @@ export default function ResourcePreview({
       // Skeleton mirrors the rich-card shape so loaded state doesn't shift.
       const bar = (w) => <div style={{ height: 9, width: w, borderRadius: 4, background: darkMode ? "#333a48" : "#e4e7ec" }} />;
       return (
-        <div style={{ ...frame, display: "flex" }}>
+        <div style={{ ...linkFrame, display: "flex" }}>
           <div style={{ width: height, height: "100%", flexShrink: 0, background: darkMode ? "#2a3140" : "#eef0f3" }} />
           <div style={{ flex: 1, minWidth: 0, padding: "12px 14px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 9 }}>
             {bar("80%")}{bar("60%")}{bar("40%")}
@@ -135,7 +142,7 @@ export default function ResourcePreview({
     // Rich card when we have a hero image that actually loads.
     if (og?.image && !heroError) {
       return (
-        <div style={{ ...frame, display: "flex" }}>
+        <div style={{ ...linkFrame, display: "flex" }}>
           <img
             src={og.image}
             alt=""
@@ -163,7 +170,7 @@ export default function ResourcePreview({
     // Lightweight fallback card — favicon + hostname + subtitle.
     const favicon = og?.favicon || `https://www.google.com/s2/favicons?domain=${host}&sz=64`;
     return (
-      <div style={{ ...centered, flexDirection: "column", gap: 8, padding: "0 16px", textAlign: "center" }}>
+      <div style={{ ...linkCentered, flexDirection: "column", gap: 8, padding: "0 16px", textAlign: "center" }}>
         <img
           src={favicon}
           alt=""
