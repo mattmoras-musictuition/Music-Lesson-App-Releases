@@ -503,15 +503,15 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
         onContextMenu={(e) => { e.preventDefault(); setResourceMenu({ x: e.clientX, y: e.clientY, id: r.id, from: fromFolderId }); }}
         onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
         title="Drag onto a folder to file it there"
-        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg), opacity: dragResourceId === r.id ? 0.5 : 1 }}>
-        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
+        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: (isSel || rHovered === r.id) ? colors.blueLight : colors.cardBg, boxShadow: isSel ? `inset 3px 0 0 0 ${colors.accent}` : "none", opacity: dragResourceId === r.id ? 0.5 : 1 }}>
+        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.accent : colors.textMuted }} />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {r.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
+          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}
           </div>
-          {sub && <div style={{ fontSize: 11, color: isSel ? "rgba(255,255,255,0.8)" : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+          {sub && <div style={{ fontSize: 11, color: colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
         </div>
-        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.accent }} />}
+        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: colors.accent }} />}
       </div>
     );
   };
@@ -531,7 +531,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
         )}
         {subs.map(f => (
-          <FolderRow key={f.id} icon={Folder} label={f.name} tinted showChevron
+          <FolderRow key={f.id} icon={Folder} label={f.name} tinted showChevron lightSelect
             selected={folderPath[columnIndex + 1] === f.id}
             onClick={() => openSubfolder(columnIndex, f.id)}
             onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
@@ -776,12 +776,12 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             </div>
           ) : (
             /* Finder-style three-pane library: folder sidebar / list / detail. */
-            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
+            <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 420px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
 
               {/* ── LEFT: folder sidebar (TOP-LEVEL folders only) ── */}
               <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
                 <FolderRow icon={Library} label="All resources" count={resources.length}
-                  selected={folderPath.length === 0 && !searchActive}
+                  selected={folderPath.length === 0 && !searchActive} lightSelect
                   onClick={goAllResources} colors={colors} />
 
                 {/* + New folder (top-level) */}
@@ -799,7 +799,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
                 {/* Top-level folders only — drilling happens in the columns. */}
                 {topLevelFolders.map(f => (
-                  <FolderRow key={f.id} icon={Folder} label={f.name} tinted
+                  <FolderRow key={f.id} icon={Folder} label={f.name} tinted lightSelect
                     selected={folderPath[0] === f.id}
                     onClick={() => selectTopFolder(f.id)}
                     onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
@@ -901,14 +901,16 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   );
                   return (
                     <div>
-                      {/* Preview / thumbnail — on its own recessed surface */}
+                      {/* Preview / thumbnail — large, on a dark navy surface so
+                          covers/artwork pop (Resources side only via surfaceBg). */}
                       <ResourcePreview
                         fileUrl={r.file_url || null}
                         linkUrl={r.url || null}
                         fileName={r.file_name || null}
                         title={r.label}
                         fallbackIcon={BigIcon}
-                        surfaceBg={colors.tagBg}
+                        height={230}
+                        surfaceBg={colors.sidebar}
                       />
                       <div style={{ padding: 16 }}>
                         <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{r.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
@@ -1471,7 +1473,7 @@ function SidebarGroupLabel({ children, colors }) {
 // Renders a clickable folder with an optional count. When `renaming` is set it
 // becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
 // `greyed` is used for hidden folders revealed by "Show hidden folders".
-function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted, showChevron, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, droppable, dropActive, onDragOver, onDragLeave, onDrop, colors }) {
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted, showChevron, lightSelect, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, droppable, dropActive, onDragOver, onDragLeave, onDrop, colors }) {
   const [hover, setHover] = useState(false);
   if (renaming) {
     return (
@@ -1484,9 +1486,21 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted
     );
   }
   // Folder rows carry a subtle accent tint (when `tinted`) so they read clearly
-  // as folders vs resource rows; selection and hover still take precedence.
-  const bg = selected ? colors.sidebarHover : (hover ? colors.blueLight : (tinted ? colors.accentLight : "transparent"));
-  const fg = selected ? colors.white : (greyed ? colors.textMuted : colors.text);
+  // as folders vs resource rows. Selection has two looks:
+  //   • lightSelect (Resources side): NO heavy navy fill — a soft tint + a thin
+  //     accent bar down the left edge + semibold, so an active folder reads as
+  //     distinct from base-tinted folders while staying light. Text stays dark.
+  //   • default (Documents side, unchanged): the solid navy fill + white text.
+  const lightSel = lightSelect && selected;
+  const bg = lightSelect
+    ? ((selected || hover) ? colors.blueLight : (tinted ? colors.accentLight : "transparent"))
+    : (selected ? colors.sidebarHover : (hover ? colors.blueLight : (tinted ? colors.accentLight : "transparent")));
+  const onNavy = selected && !lightSelect;       // white-on-navy only in the default look
+  const fg = onNavy ? colors.white : (greyed ? colors.textMuted : colors.text);
+  const iconColor = onNavy ? colors.white : (lightSel ? colors.accent : colors.textMuted);
+  // Left-edge accent bar (active path) + drop ring, both as inset shadows so the
+  // row never shifts. The drop ring wins while dragging.
+  const boxShadow = dropActive ? `inset 0 0 0 2px ${colors.accent}` : (lightSel ? `inset 3px 0 0 0 ${colors.accent}` : "none");
   // The disclosure slot only renders for tree rows that opt in via onToggleExpand
   // (the Resources folder tree). Without it the layout is byte-for-byte the old
   // one, so the Documents-side rows are unaffected.
@@ -1494,7 +1508,7 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted
     hasChildren ? (
       <button onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
         title={expanded ? "Collapse" : "Expand"} aria-label={expanded ? "Collapse folder" : "Expand folder"}
-        style={{ flexShrink: 0, width: 16, height: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "none", padding: 0, cursor: "pointer", color: selected ? colors.white : colors.textMuted }}>
+        style={{ flexShrink: 0, width: 16, height: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", border: "none", background: "none", padding: 0, cursor: "pointer", color: onNavy ? colors.white : colors.textMuted }}>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
       </button>
     ) : <span style={{ flexShrink: 0, width: 16 }} />
@@ -1506,12 +1520,12 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted
       onDragLeave={droppable ? onDragLeave : undefined}
       onDrop={droppable ? onDrop : undefined}
       title={aliased ? "Renamed folder (label only)" : undefined}
-      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: dropActive ? colors.accentLight : bg, boxShadow: dropActive ? `inset 0 0 0 2px ${colors.accent}` : "none", opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: dropActive ? colors.accentLight : bg, boxShadow, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
       {disclosure}
-      <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
+      <Icon size={15} style={{ flexShrink: 0, color: iconColor }} />
       <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-      {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
-      {showChevron && <ChevronRight size={14} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />}
+      {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: onNavy ? colors.white : colors.textMuted, opacity: onNavy ? 0.85 : 1 }}>{count}</span>}
+      {showChevron && <ChevronRight size={14} style={{ flexShrink: 0, color: onNavy ? colors.white : colors.textMuted }} />}
     </div>
   );
 }
