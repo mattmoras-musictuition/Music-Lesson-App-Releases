@@ -121,17 +121,22 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [showFilters,  setShowFilters]  = useState(false);
   const rFiltersBtnRef = useRef(null);
 
-  // ── Finder-style library state (real, nestable SHARED folder tree) ──
-  // selectedFolderId === null shows the whole library ("All resources");
-  // a folder id narrows the middle list to that folder's direct subfolders +
-  // the resources filed directly into it. selectedId is the row whose detail
-  // shows in the right pane (null = placeholder).
-  const [selectedFolderId, setSelectedFolderId] = useState(null);
-  const [selectedId,       setSelectedId]       = useState(null);
+  // ── Miller/Finder column-browser state (real, nestable SHARED tree) ──
+  // The sidebar lists "All resources" + the TOP-LEVEL folders only. Selecting a
+  // top-level folder roots the column browser; clicking a subfolder in a column
+  // opens its contents as a new column to the right. folderPath is that drill
+  // path of folder ids (folderPath[0] = the rooted top-level folder); empty =
+  // the flat "All resources" view. selectedId is the row whose detail shows in
+  // the right pane; selectedFromFolder is which folder it was opened from (so
+  // "Remove from this folder" targets the right folder).
+  const [folderPath,        setFolderPath]        = useState([]);
+  const [selectedId,        setSelectedId]        = useState(null);
+  const [selectedFromFolder, setSelectedFromFolder] = useState(null);
   // The shared folder tree (flat rows with parent_id) + the resource ids filed
-  // directly in the selected folder. Both kept live via realtime.
-  const [folders,       setFolders]       = useState([]);
-  const [folderItemIds, setFolderItemIds] = useState([]);
+  // directly in each opened folder, keyed by folder id. Both kept live via
+  // realtime.
+  const [folders,     setFolders]     = useState([]);
+  const [folderItems, setFolderItems] = useState({}); // { [folderId]: resourceId[] }
   // Folder right-click menu { x, y, id } + inline rename / create editors.
   const [folderMenu,      setFolderMenu]      = useState(null);
   const [renamingId,      setRenamingId]      = useState(null); // folder id being renamed
@@ -140,16 +145,12 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [newFolderName,   setNewFolderName]   = useState("");
   // Filing: the resource being filed (folder-picker modal) + the row menu.
   const [filingResource,  setFilingResource]  = useState(null);
-  const [resourceMenu,    setResourceMenu]    = useState(null); // { x, y, id }
-  // Sidebar expand/collapse — we track the COLLAPSED folder ids (default is
-  // expanded, so an empty set = everything open). In-memory only; resets on
-  // relaunch. Ancestors of the selected folder are always force-expanded so
-  // the current selection can never be hidden.
-  const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
+  const [resourceMenu,    setResourceMenu]    = useState(null); // { x, y, id, from }
 
   // Drag-and-drop filing: the resource id being dragged + the folder currently
-  // highlighted as the drop target. A ~0.6s hover over a collapsed folder
-  // auto-expands it (tracked by ref so the timer survives re-renders).
+  // highlighted as the drop target. A ~0.6s hover over a folder during a drag
+  // opens its column so the user can drill while dragging (tracked by ref so
+  // the timer survives re-renders).
   const [dragResourceId, setDragResourceId] = useState(null);
   const [dropFolderId,   setDropFolderId]   = useState(null);
   const dragExpandTimer  = useRef(null);
@@ -328,19 +329,24 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return unsub;
   }, [reloadFolders]);
 
-  // Resources filed DIRECTLY in the selected folder (non-recursive).
-  const reloadFolderItems = useCallback(() => {
-    if (!selectedFolderId) { setFolderItemIds([]); return; }
-    listFolderItemResourceIds(selectedFolderId).then(setFolderItemIds).catch((e) => {
+  // Resources filed DIRECTLY in one folder (non-recursive), cached by folder id
+  // so each open column has its own list.
+  const reloadFolderItemsFor = useCallback((folderId) => {
+    if (!folderId) return;
+    listFolderItemResourceIds(folderId).then((ids) => {
+      setFolderItems(prev => ({ ...prev, [folderId]: ids }));
+    }).catch((e) => {
       console.error("listFolderItemResourceIds failed", e);
       notify("Couldn't load this folder's contents: " + (e?.message || "unknown error"), "danger");
     });
-  }, [selectedFolderId, notify]);
-  useEffect(() => { reloadFolderItems(); }, [reloadFolderItems]);
-  useEffect(() => {
-    const unsub = subscribeFolderItems(reloadFolderItems);
-    return unsub;
-  }, [reloadFolderItems]);
+  }, [notify]);
+  // Refresh every folder currently shown as a column. Used on path change, on
+  // realtime item changes, and after a filing mutation.
+  const reloadPathItems = useCallback(() => {
+    folderPath.forEach(id => reloadFolderItemsFor(id));
+  }, [folderPath, reloadFolderItemsFor]);
+  useEffect(() => { reloadPathItems(); }, [reloadPathItems]);
+  useEffect(() => subscribeFolderItems(reloadPathItems), [reloadPathItems]);
 
   // ── Folder tree helpers (shape the flat rows into a tree) ─────
   const folderById = useMemo(() => {
@@ -357,59 +363,30 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return m;
   }, [folders]);
   const childrenOf = useCallback((pid) => foldersByParent.get(pid || "__root__") || [], [foldersByParent]);
-  // Root→selected path for the breadcrumb (guards against any cycle).
-  const breadcrumb = useMemo(() => {
-    const path = []; const guard = new Set();
-    let cur = selectedFolderId ? folderById.get(selectedFolderId) : null;
-    while (cur && !guard.has(cur.id)) { guard.add(cur.id); path.unshift(cur); cur = cur.parent_id ? folderById.get(cur.parent_id) : null; }
-    return path;
-  }, [selectedFolderId, folderById]);
-  // True when `nodeId` is `ancestorId` or sits beneath it — used to reset the
-  // selection to "All resources" when the selected folder (or an ancestor) is
-  // deleted out from under it.
-  const isSelfOrDescendant = useCallback((nodeId, ancestorId) => {
-    let cur = nodeId; const guard = new Set();
-    while (cur && !guard.has(cur)) { if (cur === ancestorId) return true; guard.add(cur); cur = folderById.get(cur)?.parent_id || null; }
-    return false;
+  const topLevelFolders = useMemo(() => childrenOf(null), [childrenOf]);
+  // The breadcrumb is exactly the drill path resolved to folder rows.
+  const breadcrumb = useMemo(
+    () => folderPath.map(id => folderById.get(id)).filter(Boolean),
+    [folderPath, folderById]
+  );
+  // Root→folder id path (top-level ancestor first), guarding against cycles —
+  // used to open an arbitrary folder's column directly.
+  const pathTo = useCallback((id) => {
+    const p = []; const guard = new Set();
+    let cur = folderById.get(id);
+    while (cur && !guard.has(cur.id)) { guard.add(cur.id); p.unshift(cur.id); cur = cur.parent_id ? folderById.get(cur.parent_id) : null; }
+    return p;
   }, [folderById]);
 
-  // ── Sidebar expand/collapse ──────────────────────────────────
-  // The strict ancestors of the selected folder (not the folder itself). These
-  // are always shown expanded so the selection stays visible even if the user
-  // had collapsed one of them earlier.
-  const ancestorsOfSelected = useMemo(() => {
-    const s = new Set(); const guard = new Set();
-    let cur = selectedFolderId ? (folderById.get(selectedFolderId)?.parent_id || null) : null;
-    while (cur && !guard.has(cur)) { guard.add(cur); s.add(cur); cur = folderById.get(cur)?.parent_id || null; }
-    return s;
-  }, [selectedFolderId, folderById]);
-  // A folder's children are shown when it isn't collapsed OR it's an ancestor
-  // of the current selection (force-open).
-  const isExpanded = useCallback(
-    (id) => ancestorsOfSelected.has(id) || !collapsedFolders.has(id),
-    [ancestorsOfSelected, collapsedFolders]
-  );
-  // Toggle a folder open/closed. We decide collapse-vs-expand from the VISIBLE
-  // state (isExpanded), not raw collapsedFolders membership, so a force-open
-  // folder still collapses on click. Collapsing a folder that contains the
-  // current selection would otherwise be undone instantly by the force-expand
-  // rule, so in that case we move the selection up to the folder being
-  // collapsed (its contents + breadcrumb follow); its own ancestors stay open.
-  const toggleExpand = useCallback((id) => {
-    const collapsing = isExpanded(id);
-    if (collapsing && isSelfOrDescendant(selectedFolderId, id)) setSelectedFolderId(id);
-    setCollapsedFolders(prev => {
-      const next = new Set(prev);
-      if (collapsing) next.add(id); else next.delete(id);
-      return next;
-    });
-  }, [isExpanded, isSelfOrDescendant, selectedFolderId]);
-  const expandFolder = useCallback((id) => {
-    setCollapsedFolders(prev => {
-      if (!prev.has(id)) return prev;
-      const next = new Set(prev); next.delete(id); return next;
-    });
-  }, []);
+  // ── Column navigation ────────────────────────────────────────
+  const goAllResources  = () => { setFolderPath([]); setSelectedId(null); setSelectedFromFolder(null); };
+  const selectTopFolder = (id) => { setFolderPath([id]); };
+  // Click a subfolder in column `columnIndex`: keep that column + its ancestors,
+  // drop anything deeper, and open the clicked folder as the new last column.
+  const openSubfolder   = (columnIndex, childId) => setFolderPath(prev => [...prev.slice(0, columnIndex + 1), childId]);
+  // Open an arbitrary folder's full column path (used by context-menu actions and
+  // drag-hover-to-open).
+  const openFolderColumn = useCallback((id) => { const p = pathTo(id); if (p.length) setFolderPath(p); }, [pathTo]);
 
   // ── Folder mutations ─────────────────────────────────────────
   const commitNewFolder = async () => {
@@ -436,8 +413,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const removeFolder = async (id) => {
     const f = folderById.get(id);
     if (!window.confirm(`Delete "${f?.name || "this folder"}"? This removes the folder, its subfolders, and everything filed in them. The resources themselves stay in the library.`)) return;
-    if (isSelfOrDescendant(selectedFolderId, id)) setSelectedFolderId(null);
-    try { await deleteSharedFolder(id); reloadFolders(); reloadFolderItems(); notify("Folder deleted"); }
+    // If the deleted folder is open in the column path, collapse the columns back
+    // to just before it (cascade removes its subfolders too).
+    setFolderPath(prev => { const idx = prev.indexOf(id); return idx === -1 ? prev : prev.slice(0, idx); });
+    if (selectedFromFolder === id) { setSelectedId(null); setSelectedFromFolder(null); }
+    try { await deleteSharedFolder(id); reloadFolders(); notify("Folder deleted"); }
     catch (e) { console.error("deleteFolder failed", e); notify("Couldn't delete folder: " + (e?.message || "unknown error"), "danger"); }
   };
 
@@ -448,20 +428,21 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     try {
       await addResourceToFolder(folderId, r.id);
       reloadFolders();
-      if (folderId === selectedFolderId) reloadFolderItems();
+      reloadFolderItemsFor(folderId);
       notify("Added to folder");
     } catch (e) { console.error("addResourceToFolder failed", e); notify("Couldn't add to folder: " + (e?.message || "unknown error"), "danger"); }
   };
-  const removeResourceFromCurrentFolder = async (resourceId) => {
-    if (!selectedFolderId) return;
+  const removeResourceFrom = async (folderId, resourceId) => {
+    if (!folderId) return;
     try {
-      await removeResourceFromFolder(selectedFolderId, resourceId);
-      reloadFolderItems();
+      await removeResourceFromFolder(folderId, resourceId);
+      reloadFolderItemsFor(folderId);
       notify("Removed from folder");
     } catch (e) { console.error("removeResourceFromFolder failed", e); notify("Couldn't remove from folder: " + (e?.message || "unknown error"), "danger"); }
   };
 
-  // ── Drag-and-drop filing (drag a list row onto a sidebar folder) ──
+  // ── Drag-and-drop filing (drag a resource onto a folder) ─────
+  // Drop targets are the SIDEBAR top-level folders AND the COLUMN folder rows.
   // ADD, never move: the resource keeps every folder it's already in. Mirrors
   // fileResourceInto's refresh-on-success; the data layer no-ops on PK conflict.
   const clearDragExpand = () => {
@@ -478,14 +459,12 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     e.preventDefault();                       // required to allow a drop
     e.dataTransfer.dropEffect = "copy";       // copy cursor reinforces add-not-move
     if (dropFolderId !== folderId) setDropFolderId(folderId);
-    // Arm the auto-expand once per folder entry: a brief hold over a collapsed
-    // folder with children opens it so its subfolders become drop targets.
+    // Nice-to-have: a brief hold over a folder during a drag opens its column so
+    // the user can drill deeper while dragging. Armed once per folder entry.
     if (dragExpandTarget.current !== folderId) {
       clearDragExpand();
       dragExpandTarget.current = folderId;
-      if (childrenOf(folderId).length > 0 && !isExpanded(folderId)) {
-        dragExpandTimer.current = setTimeout(() => { expandFolder(folderId); }, 600);
-      }
+      dragExpandTimer.current = setTimeout(() => { openFolderColumn(folderId); }, 600);
     }
   };
   const handleFolderDragLeave = (folderId) => {
@@ -502,44 +481,75 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     try {
       await addResourceToFolder(folderId, resourceId);   // ADD (multi-membership)
       reloadFolders();
-      if (folderId === selectedFolderId) reloadFolderItems();
+      reloadFolderItemsFor(folderId);
       notify("Added to folder");
     } catch (err) { console.error("addResourceToFolder failed", err); notify("Couldn't add to folder: " + (err?.message || "unknown error"), "danger"); }
   };
 
-  // Recursively render the shared folder tree (indented by depth). An inline
-  // name input appears in place when creating a subfolder of a node.
-  const renderFolderTree = (parentId, depth) => childrenOf(parentId).map(f => {
-    const hasChildren = childrenOf(f.id).length > 0;
-    const expanded = hasChildren && isExpanded(f.id);
-    // Show the new-subfolder input even when collapsed (creating one expands it).
-    const showChildren = expanded || newFolderParent === f.id;
+  // ── Row renderers (shared by the sidebar, columns, and flat list) ──
+  // One resource row. `fromFolderId` is the folder whose column it's shown in
+  // (null in the flat All-resources list) so the detail panel / context menu can
+  // offer "Remove from this folder" against the right folder.
+  const resourceRow = (r, fromFolderId) => {
+    const RowIcon = iconForResourceType(r.category) || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
+    const isSel = selectedId === r.id;
+    const subjName = r.source === "student_note" ? resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps) : null;
+    const sub = [r.instrument, r.category].filter(Boolean).join(" · ") || (subjName ? `from ${subjName}'s notes` : "");
     return (
-      <React.Fragment key={f.id}>
-        <FolderRow icon={Folder} label={f.name} indent={depth}
-          selected={selectedFolderId === f.id}
-          hasChildren={hasChildren} expanded={expanded}
-          onToggleExpand={() => toggleExpand(f.id)}
-          onDoubleClick={() => { if (hasChildren) toggleExpand(f.id); }}
-          onClick={() => setSelectedFolderId(f.id)}
-          onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
-          renaming={renamingId === f.id}
-          renameDraft={renameDraft} setRenameDraft={setRenameDraft}
-          onCommitRename={() => commitRenameFolder(f.id)}
-          onCancelRename={() => setRenamingId(null)}
-          droppable dropActive={dropFolderId === f.id}
-          onDragOver={(e) => handleFolderDragOver(e, f.id)}
-          onDragLeave={() => handleFolderDragLeave(f.id)}
-          onDrop={(e) => handleFolderDrop(e, f.id)}
-          colors={colors} />
-        {newFolderParent === f.id && (
-          <FolderNameInput depth={depth + 1} value={newFolderName} setValue={setNewFolderName}
+      <div key={r.id} onClick={() => { setSelectedId(r.id); setSelectedFromFolder(fromFolderId); }}
+        draggable
+        onDragStart={(e) => handleResourceDragStart(e, r.id)}
+        onDragEnd={handleResourceDragEnd}
+        onContextMenu={(e) => { e.preventDefault(); setResourceMenu({ x: e.clientX, y: e.clientY, id: r.id, from: fromFolderId }); }}
+        onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
+        title="Drag onto a folder to file it there"
+        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg), opacity: dragResourceId === r.id ? 0.5 : 1 }}>
+        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
+          </div>
+          {sub && <div style={{ fontSize: 11, color: isSel ? "rgba(255,255,255,0.8)" : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
+        </div>
+        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.accent }} />}
+      </div>
+    );
+  };
+
+  // One Miller column: the direct subfolders + the resources filed directly in
+  // `folderId` (filtered by the active six filters). Subfolders open a column to
+  // the right; resources fill the detail panel.
+  const renderColumn = (folderId, columnIndex) => {
+    const subs = childrenOf(folderId);
+    const itemIds = new Set(folderItems[folderId] || []);
+    const items = resources.filter(r => itemIds.has(r.id) && matchesFilters(r));
+    const empty = subs.length === 0 && items.length === 0 && newFolderParent !== folderId;
+    return (
+      <div key={folderId} style={{ flex: "0 0 240px", maxWidth: 240, height: "100%", overflowY: "auto", borderRight: `1px solid ${colors.borderLight}` }}>
+        {newFolderParent === folderId && (
+          <FolderNameInput value={newFolderName} setValue={setNewFolderName}
             onCommit={commitNewFolder} onCancel={() => { setNewFolderParent(undefined); setNewFolderName(""); }} colors={colors} />
         )}
-        {showChildren && renderFolderTree(f.id, depth + 1)}
-      </React.Fragment>
+        {subs.map(f => (
+          <FolderRow key={f.id} icon={Folder} label={f.name} tinted showChevron
+            selected={folderPath[columnIndex + 1] === f.id}
+            onClick={() => openSubfolder(columnIndex, f.id)}
+            onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
+            renaming={renamingId === f.id}
+            renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+            onCommitRename={() => commitRenameFolder(f.id)}
+            onCancelRename={() => setRenamingId(null)}
+            droppable dropActive={dropFolderId === f.id}
+            onDragOver={(e) => handleFolderDragOver(e, f.id)}
+            onDragLeave={() => handleFolderDragLeave(f.id)}
+            onDrop={(e) => handleFolderDrop(e, f.id)}
+            colors={colors} />
+        ))}
+        {items.map(r => resourceRow(r, folderId))}
+        {empty && <div style={{ padding: "20px 14px", textAlign: "center", color: colors.textMuted, fontSize: 12, fontStyle: "italic" }}>Empty folder</div>}
+      </div>
     );
-  });
+  };
 
   // Resolve student_note origin names only if such a resource exists
   // (none until cluster 4) — avoids extra queries in the common case.
@@ -578,31 +588,26 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     return true;
   }, [rfInstrument, rfType, rfSkill, rfSchool, rfUploadedBy, rfSource]);
 
-  const filteredResources = useMemo(() => {
+  // The FLAT list — used for "All resources" and for global search (both ignore
+  // the column path). Folder columns compute their own lists in renderColumn.
+  const flatList = useMemo(() => {
     const q = rSearch.trim().toLowerCase();
     const bySearch = (r) => !q || (r.label||"").toLowerCase().includes(q) || (r.description||"").toLowerCase().includes(q);
     // Free-text search is GLOBAL — it ignores the current folder and matches
     // the whole library (filters still apply on top).
     if (searchActive) return resources.filter(r => matchesFilters(r) && bySearch(r));
-    // "All resources" — the whole library.
-    if (!selectedFolderId) return resources.filter(matchesFilters);
-    // A folder — only the resources filed DIRECTLY into it (non-recursive).
-    const idSet = new Set(folderItemIds);
-    return resources.filter(r => idSet.has(r.id) && matchesFilters(r));
-  }, [resources, searchActive, rSearch, selectedFolderId, folderItemIds, matchesFilters]);
+    return resources.filter(matchesFilters); // "All resources"
+  }, [resources, searchActive, rSearch, matchesFilters]);
 
-  // Direct subfolders shown above the resource list — only when inside a
-  // folder and not running a global search.
-  const visibleSubfolders = useMemo(
-    () => (searchActive || !selectedFolderId) ? [] : childrenOf(selectedFolderId),
-    [searchActive, selectedFolderId, childrenOf]
-  );
+  // Show the flat list when searching or at the "All resources" root; otherwise
+  // the column browser is active.
+  const showFlatList = searchActive || folderPath.length === 0;
 
-  // Keep the detail pane coherent: if the selected row drops out of the list
-  // (folder/filter/search change or deletion), clear the selection.
+  // Keep the detail pane coherent: clear the selection only if the resource was
+  // actually deleted (navigating columns must NOT clear it).
   useEffect(() => {
-    if (selectedId && !filteredResources.some(r => r.id === selectedId)) setSelectedId(null);
-  }, [filteredResources, selectedId]);
+    if (selectedId && !resources.some(r => r.id === selectedId)) { setSelectedId(null); setSelectedFromFolder(null); }
+  }, [resources, selectedId]);
 
   const selectedResource = useMemo(() => resources.find(r => r.id === selectedId) || null, [resources, selectedId]);
   const schoolNameById = useMemo(() => {
@@ -773,11 +778,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             /* Finder-style three-pane library: folder sidebar / list / detail. */
             <div style={{ display: "grid", gridTemplateColumns: "224px minmax(0, 1fr) 332px", alignItems: "stretch", border: `1px solid ${colors.border}`, borderRadius: 12, overflow: "hidden", background: colors.cardBg }}>
 
-              {/* ── LEFT: folder sidebar (real, nestable shared tree) ── */}
+              {/* ── LEFT: folder sidebar (TOP-LEVEL folders only) ── */}
               <div style={{ padding: 8, borderRight: `1px solid ${colors.borderLight}` }}>
                 <FolderRow icon={Library} label="All resources" count={resources.length}
-                  selected={!selectedFolderId}
-                  onClick={() => setSelectedFolderId(null)} colors={colors} />
+                  selected={folderPath.length === 0 && !searchActive}
+                  onClick={goAllResources} colors={colors} />
 
                 {/* + New folder (top-level) */}
                 {newFolderParent === null ? (
@@ -792,11 +797,25 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   </div>
                 )}
 
-                {/* The shared folder tree */}
-                {renderFolderTree(null, 0)}
+                {/* Top-level folders only — drilling happens in the columns. */}
+                {topLevelFolders.map(f => (
+                  <FolderRow key={f.id} icon={Folder} label={f.name} tinted
+                    selected={folderPath[0] === f.id}
+                    onClick={() => selectTopFolder(f.id)}
+                    onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
+                    renaming={renamingId === f.id}
+                    renameDraft={renameDraft} setRenameDraft={setRenameDraft}
+                    onCommitRename={() => commitRenameFolder(f.id)}
+                    onCancelRename={() => setRenamingId(null)}
+                    droppable dropActive={dropFolderId === f.id}
+                    onDragOver={(e) => handleFolderDragOver(e, f.id)}
+                    onDragLeave={() => handleFolderDragLeave(f.id)}
+                    onDrop={(e) => handleFolderDrop(e, f.id)}
+                    colors={colors} />
+                ))}
               </div>
 
-              {/* ── MIDDLE: compact resource list ── */}
+              {/* ── MIDDLE: search/filters + flat list OR Miller columns ── */}
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0, borderRight: `1px solid ${colors.borderLight}` }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", padding: 10, borderBottom: `1px solid ${colors.borderLight}` }}>
                   <div style={{ flex: 1, minWidth: 120, position: "relative" }}>
@@ -804,7 +823,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                       style={{ width: "100%", padding: "7px 30px 7px 12px", border: "1px solid " + colors.inputBorder, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.inputBg, color: colors.text }} />
                     {rSearch && <button onClick={() => setRSearch("")} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", border: "none", background: "none", color: colors.textMuted, cursor: "pointer", display: "inline-flex", alignItems: "center" }}><X size={14} /></button>}
                   </div>
-                  {/* Filters — skill / school / uploaded-by / source tucked behind one control */}
+                  {/* Filters — all six dimensions tucked behind one control */}
                   <div>
                     <button ref={rFiltersBtnRef} onClick={() => setShowFilters(o => !o)}
                       style={{ padding: "7px 11px", border: "1px solid " + (anyResourceFilter ? colors.accent : colors.inputBorder), borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", background: anyResourceFilter ? colors.accentLight : colors.cardBg, color: anyResourceFilter ? colors.accent : colors.textLight, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
@@ -828,66 +847,37 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   </div>
                 </div>
 
-                {/* Breadcrumb — depth/navigation. Root is just "All resources". */}
-                {!searchActive && breadcrumb.length > 0 && (
-                  <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2, padding: "8px 12px", borderBottom: `1px solid ${colors.borderLight}` }}>
-                    <button onClick={() => setSelectedFolderId(null)}
-                      style={{ border: "none", background: "none", cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "2px 4px" }}>All resources</button>
-                    {breadcrumb.map((f, i) => {
-                      const last = i === breadcrumb.length - 1;
-                      return (
-                        <React.Fragment key={f.id}>
-                          <ChevronRight size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
-                          <button onClick={() => { if (!last) setSelectedFolderId(f.id); }} disabled={last}
-                            style={{ border: "none", background: "none", cursor: last ? "default" : "pointer", color: last ? colors.text : colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: last ? 700 : 600, padding: "2px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>{f.name}</button>
-                        </React.Fragment>
-                      );
-                    })}
+                {showFlatList ? (
+                  /* Flat list — "All resources" or global search results. */
+                  <div style={{ flex: 1 }}>
+                    {flatList.length === 0 ? (
+                      <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>No resources match the current view</div>
+                    ) : flatList.map(r => resourceRow(r, null))}
                   </div>
-                )}
-
-                <div style={{ flex: 1 }}>
-                  {/* Direct subfolders (click to descend) */}
-                  {visibleSubfolders.map(f => (
-                    <div key={"sf:" + f.id} onClick={() => setSelectedFolderId(f.id)}
-                      onContextMenu={(e) => { e.preventDefault(); setFolderMenu({ x: e.clientX, y: e.clientY, id: f.id }); }}
-                      onMouseEnter={() => setRHovered("sf:" + f.id)} onMouseLeave={() => setRHovered(null)}
-                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: rHovered === ("sf:" + f.id) ? colors.blueLight : colors.cardBg }}>
-                      <Folder size={17} style={{ flexShrink: 0, color: colors.textMuted }} />
-                      <div style={{ minWidth: 0, flex: 1, fontSize: 13, fontWeight: 600, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                      <ChevronRight size={14} style={{ flexShrink: 0, color: colors.textMuted }} />
+                ) : (
+                  <>
+                    {/* Breadcrumb — click a segment to collapse columns to that level. */}
+                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 2, padding: "8px 12px", borderBottom: `1px solid ${colors.borderLight}` }}>
+                      <button onClick={goAllResources}
+                        style={{ border: "none", background: "none", cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: 600, padding: "2px 4px" }}>All resources</button>
+                      {breadcrumb.map((f, i) => {
+                        const last = i === breadcrumb.length - 1;
+                        return (
+                          <React.Fragment key={f.id}>
+                            <ChevronRight size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
+                            <button onClick={() => { if (!last) setFolderPath(folderPath.slice(0, i + 1)); }} disabled={last}
+                              style={{ border: "none", background: "none", cursor: last ? "default" : "pointer", color: last ? colors.text : colors.textLight, fontFamily: "inherit", fontSize: 12, fontWeight: last ? 700 : 600, padding: "2px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}>{f.name}</button>
+                          </React.Fragment>
+                        );
+                      })}
                     </div>
-                  ))}
 
-                  {filteredResources.length === 0 && visibleSubfolders.length === 0 ? (
-                    <div style={{ padding: "32px 20px", textAlign: "center", color: colors.textMuted, fontSize: 13, fontStyle: "italic" }}>{selectedFolderId && !searchActive ? "This folder is empty" : "No resources match the current view"}</div>
-                  ) : filteredResources.map(r => {
-                    const RowIcon = iconForResourceType(r.category)
-                      || iconForFileName({ fileName: r.file_name, url: r.file_url || r.url });
-                    const isSel = selectedId === r.id;
-                    const subjName = r.source === "student_note" ? resolveSubjectName(r.source_subject_type, r.source_subject_id, subjectMaps) : null;
-                    const sub = [r.instrument, r.category].filter(Boolean).join(" · ") || (subjName ? `from ${subjName}'s notes` : "");
-                    return (
-                      <div key={r.id} onClick={() => setSelectedId(r.id)}
-                        draggable
-                        onDragStart={(e) => handleResourceDragStart(e, r.id)}
-                        onDragEnd={handleResourceDragEnd}
-                        onContextMenu={(e) => { e.preventDefault(); setResourceMenu({ x: e.clientX, y: e.clientY, id: r.id }); }}
-                        onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
-                        title="Drag onto a folder to file it there"
-                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg), opacity: dragResourceId === r.id ? 0.5 : 1 }}>
-                        <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {r.label || <span style={{ fontStyle: "italic", color: isSel ? colors.white : colors.textMuted }}>Untitled</span>}
-                          </div>
-                          {sub && <div style={{ fontSize: 11, color: isSel ? "rgba(255,255,255,0.8)" : colors.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>}
-                        </div>
-                        {r.source === "student_note" && <Sparkles size={12} style={{ flexShrink: 0, color: isSel ? colors.white : colors.accent }} />}
-                      </div>
-                    );
-                  })}
-                </div>
+                    {/* Miller columns — horizontal scroll; the detail panel stays fixed. */}
+                    <div style={{ flex: 1, display: "flex", overflowX: "auto", height: 460 }}>
+                      {folderPath.map((fid, i) => renderColumn(fid, i))}
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* ── RIGHT: detail panel ── */}
@@ -911,13 +901,14 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   );
                   return (
                     <div>
-                      {/* Preview / thumbnail */}
+                      {/* Preview / thumbnail — on its own recessed surface */}
                       <ResourcePreview
                         fileUrl={r.file_url || null}
                         linkUrl={r.url || null}
                         fileName={r.file_name || null}
                         title={r.label}
                         fallbackIcon={BigIcon}
+                        surfaceBg={colors.tagBg}
                       />
                       <div style={{ padding: 16 }}>
                         <div style={{ fontSize: 16, fontWeight: 700, color: colors.text, marginBottom: 6 }}>{r.label || <span style={{ fontStyle: "italic", color: colors.textMuted }}>Untitled</span>}</div>
@@ -945,7 +936,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                           {link && <button onClick={() => setBrowserLink({ url: link, title: r.label || r.category })} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Eye size={13} /> Open</button>}
                           {link && <button onClick={() => copyLink(link)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Copy size={13} /> Copy</button>}
                           <button onClick={() => setFilingResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><FolderPlus size={13} /> Add to folder…</button>
-                          {selectedFolderId && folderItemIds.includes(r.id) && <button onClick={() => removeResourceFromCurrentFolder(r.id)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><X size={13} /> Remove from this folder</button>}
+                          {selectedFromFolder && (folderItems[selectedFromFolder] || []).includes(r.id) && <button onClick={() => removeResourceFrom(selectedFromFolder, r.id)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><X size={13} /> Remove from this folder</button>}
                           <button onClick={() => openEditResource(r)} style={{ border: "1px solid " + colors.border, background: colors.cardBg, color: colors.text, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Pencil size={13} /> Edit</button>
                           <button onClick={() => deleteResource(r.id)} style={{ border: "1px solid " + colors.danger + "60", background: colors.cardBg, color: colors.danger, borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}><Trash2 size={13} /> Delete</button>
                         </div>
@@ -962,7 +953,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             <>
               <div onMouseDown={() => setFolderMenu(null)} onContextMenu={(e) => { e.preventDefault(); setFolderMenu(null); }} style={{ position: "fixed", inset: 0, zIndex: 9970 }} />
               <div style={{ position: "fixed", zIndex: 9971, top: folderMenu.y, left: folderMenu.x, minWidth: 160, background: colors.cardBg, border: "1px solid " + colors.border, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.22)", padding: 4 }}>
-                <button onClick={() => { setNewFolderName(""); setSelectedFolderId(folderMenu.id); expandFolder(folderMenu.id); setNewFolderParent(folderMenu.id); setFolderMenu(null); }}
+                <button onClick={() => { setNewFolderName(""); openFolderColumn(folderMenu.id); setNewFolderParent(folderMenu.id); setFolderMenu(null); }}
                   style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                   <FolderPlus size={13} /> New subfolder…
                 </button>
@@ -987,8 +978,8 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                   <FolderPlus size={13} /> Add to folder…
                 </button>
-                {selectedFolderId && folderItemIds.includes(resourceMenu.id) && (
-                  <button onClick={() => { const id = resourceMenu.id; setResourceMenu(null); removeResourceFromCurrentFolder(id); }}
+                {resourceMenu.from && (folderItems[resourceMenu.from] || []).includes(resourceMenu.id) && (
+                  <button onClick={() => { const { id, from } = resourceMenu; setResourceMenu(null); removeResourceFrom(from, id); }}
                     style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: colors.text, fontFamily: "inherit", padding: "7px 10px", borderRadius: 6, display: "flex", alignItems: "center", gap: 8 }}>
                     <X size={13} /> Remove from this folder
                   </button>
@@ -1480,7 +1471,7 @@ function SidebarGroupLabel({ children, colors }) {
 // Renders a clickable folder with an optional count. When `renaming` is set it
 // becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
 // `greyed` is used for hidden folders revealed by "Show hidden folders".
-function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, droppable, dropActive, onDragOver, onDragLeave, onDrop, colors }) {
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, tinted, showChevron, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, droppable, dropActive, onDragOver, onDragLeave, onDrop, colors }) {
   const [hover, setHover] = useState(false);
   if (renaming) {
     return (
@@ -1492,7 +1483,9 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent
       </div>
     );
   }
-  const bg = selected ? colors.sidebarHover : (hover ? colors.blueLight : "transparent");
+  // Folder rows carry a subtle accent tint (when `tinted`) so they read clearly
+  // as folders vs resource rows; selection and hover still take precedence.
+  const bg = selected ? colors.sidebarHover : (hover ? colors.blueLight : (tinted ? colors.accentLight : "transparent"));
   const fg = selected ? colors.white : (greyed ? colors.textMuted : colors.text);
   // The disclosure slot only renders for tree rows that opt in via onToggleExpand
   // (the Resources folder tree). Without it the layout is byte-for-byte the old
@@ -1518,6 +1511,7 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent
       <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
       <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
       {typeof count === "number" && <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: selected ? colors.white : colors.textMuted, opacity: selected ? 0.85 : 1 }}>{count}</span>}
+      {showChevron && <ChevronRight size={14} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />}
     </div>
   );
 }
