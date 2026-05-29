@@ -381,13 +381,21 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     (id) => ancestorsOfSelected.has(id) || !collapsedFolders.has(id),
     [ancestorsOfSelected, collapsedFolders]
   );
+  // Toggle a folder open/closed. We decide collapse-vs-expand from the VISIBLE
+  // state (isExpanded), not raw collapsedFolders membership, so a force-open
+  // folder still collapses on click. Collapsing a folder that contains the
+  // current selection would otherwise be undone instantly by the force-expand
+  // rule, so in that case we move the selection up to the folder being
+  // collapsed (its contents + breadcrumb follow); its own ancestors stay open.
   const toggleExpand = useCallback((id) => {
+    const collapsing = isExpanded(id);
+    if (collapsing && isSelfOrDescendant(selectedFolderId, id)) setSelectedFolderId(id);
     setCollapsedFolders(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (collapsing) next.add(id); else next.delete(id);
       return next;
     });
-  }, []);
+  }, [isExpanded, isSelfOrDescendant, selectedFolderId]);
   const expandFolder = useCallback((id) => {
     setCollapsedFolders(prev => {
       if (!prev.has(id)) return prev;
