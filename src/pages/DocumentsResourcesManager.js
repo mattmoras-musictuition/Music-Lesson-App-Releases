@@ -147,6 +147,14 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   // the current selection can never be hidden.
   const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
 
+  // Drag-and-drop filing: the resource id being dragged + the folder currently
+  // highlighted as the drop target. A ~0.6s hover over a collapsed folder
+  // auto-expands it (tracked by ref so the timer survives re-renders).
+  const [dragResourceId, setDragResourceId] = useState(null);
+  const [dropFolderId,   setDropFolderId]   = useState(null);
+  const dragExpandTimer  = useRef(null);
+  const dragExpandTarget = useRef(null);
+
   // ── Documents state ─────────────────────────────────────────
   // Mirrors the Resources Finder: add/edit happens in a modal and the old
   // table is replaced by a three-pane folder / list / detail view.
@@ -453,6 +461,52 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
     } catch (e) { console.error("removeResourceFromFolder failed", e); notify("Couldn't remove from folder: " + (e?.message || "unknown error"), "danger"); }
   };
 
+  // ── Drag-and-drop filing (drag a list row onto a sidebar folder) ──
+  // ADD, never move: the resource keeps every folder it's already in. Mirrors
+  // fileResourceInto's refresh-on-success; the data layer no-ops on PK conflict.
+  const clearDragExpand = () => {
+    if (dragExpandTimer.current) { clearTimeout(dragExpandTimer.current); dragExpandTimer.current = null; }
+    dragExpandTarget.current = null;
+  };
+  const handleResourceDragStart = (e, resourceId) => {
+    e.dataTransfer.setData("text/resource-id", resourceId);
+    e.dataTransfer.effectAllowed = "copy";
+    setDragResourceId(resourceId);
+  };
+  const handleResourceDragEnd = () => { setDragResourceId(null); setDropFolderId(null); clearDragExpand(); };
+  const handleFolderDragOver = (e, folderId) => {
+    e.preventDefault();                       // required to allow a drop
+    e.dataTransfer.dropEffect = "copy";       // copy cursor reinforces add-not-move
+    if (dropFolderId !== folderId) setDropFolderId(folderId);
+    // Arm the auto-expand once per folder entry: a brief hold over a collapsed
+    // folder with children opens it so its subfolders become drop targets.
+    if (dragExpandTarget.current !== folderId) {
+      clearDragExpand();
+      dragExpandTarget.current = folderId;
+      if (childrenOf(folderId).length > 0 && !isExpanded(folderId)) {
+        dragExpandTimer.current = setTimeout(() => { expandFolder(folderId); }, 600);
+      }
+    }
+  };
+  const handleFolderDragLeave = (folderId) => {
+    if (dragExpandTarget.current === folderId) clearDragExpand();
+    setDropFolderId(prev => (prev === folderId ? null : prev));
+  };
+  const handleFolderDrop = async (e, folderId) => {
+    e.preventDefault();
+    clearDragExpand();
+    setDropFolderId(null);
+    const resourceId = e.dataTransfer.getData("text/resource-id") || dragResourceId;
+    setDragResourceId(null);
+    if (!resourceId || !folderId) return;
+    try {
+      await addResourceToFolder(folderId, resourceId);   // ADD (multi-membership)
+      reloadFolders();
+      if (folderId === selectedFolderId) reloadFolderItems();
+      notify("Added to folder");
+    } catch (err) { console.error("addResourceToFolder failed", err); notify("Couldn't add to folder: " + (err?.message || "unknown error"), "danger"); }
+  };
+
   // Recursively render the shared folder tree (indented by depth). An inline
   // name input appears in place when creating a subfolder of a node.
   const renderFolderTree = (parentId, depth) => childrenOf(parentId).map(f => {
@@ -473,6 +527,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
           renameDraft={renameDraft} setRenameDraft={setRenameDraft}
           onCommitRename={() => commitRenameFolder(f.id)}
           onCancelRename={() => setRenamingId(null)}
+          droppable dropActive={dropFolderId === f.id}
+          onDragOver={(e) => handleFolderDragOver(e, f.id)}
+          onDragLeave={() => handleFolderDragLeave(f.id)}
+          onDrop={(e) => handleFolderDrop(e, f.id)}
           colors={colors} />
         {newFolderParent === f.id && (
           <FolderNameInput depth={depth + 1} value={newFolderName} setValue={setNewFolderName}
@@ -811,9 +869,13 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                     const sub = [r.instrument, r.category].filter(Boolean).join(" · ") || (subjName ? `from ${subjName}'s notes` : "");
                     return (
                       <div key={r.id} onClick={() => setSelectedId(r.id)}
+                        draggable
+                        onDragStart={(e) => handleResourceDragStart(e, r.id)}
+                        onDragEnd={handleResourceDragEnd}
                         onContextMenu={(e) => { e.preventDefault(); setResourceMenu({ x: e.clientX, y: e.clientY, id: r.id }); }}
                         onMouseEnter={() => setRHovered(r.id)} onMouseLeave={() => setRHovered(null)}
-                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg) }}>
+                        title="Drag onto a folder to file it there"
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: "1px solid " + colors.borderLight, background: isSel ? colors.sidebarHover : (rHovered === r.id ? colors.blueLight : colors.cardBg), opacity: dragResourceId === r.id ? 0.5 : 1 }}>
                         <RowIcon size={17} style={{ flexShrink: 0, color: isSel ? colors.white : colors.textMuted }} />
                         <div style={{ minWidth: 0, flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? colors.white : colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1418,7 +1480,7 @@ function SidebarGroupLabel({ children, colors }) {
 // Renders a clickable folder with an optional count. When `renaming` is set it
 // becomes an inline alias editor (commit on Enter/blur, cancel on Escape).
 // `greyed` is used for hidden folders revealed by "Show hidden folders".
-function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, colors }) {
+function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent = 0, onClick, onDoubleClick, onContextMenu, renaming, renameDraft, setRenameDraft, onCommitRename, onCancelRename, hasChildren, expanded, onToggleExpand, droppable, dropActive, onDragOver, onDragLeave, onDrop, colors }) {
   const [hover, setHover] = useState(false);
   if (renaming) {
     return (
@@ -1447,8 +1509,11 @@ function FolderRow({ icon: Icon, label, count, selected, greyed, aliased, indent
   return (
     <div onClick={onClick} onDoubleClick={onDoubleClick} onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      onDragOver={droppable ? onDragOver : undefined}
+      onDragLeave={droppable ? onDragLeave : undefined}
+      onDrop={droppable ? onDrop : undefined}
       title={aliased ? "Renamed folder (label only)" : undefined}
-      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: bg, opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", paddingLeft: 8 + indent * 14, borderRadius: 7, cursor: "pointer", background: dropActive ? colors.accentLight : bg, boxShadow: dropActive ? `inset 0 0 0 2px ${colors.accent}` : "none", opacity: greyed ? 0.55 : 1, userSelect: "none" }}>
       {disclosure}
       <Icon size={15} style={{ flexShrink: 0, color: selected ? colors.white : colors.textMuted }} />
       <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, color: fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
