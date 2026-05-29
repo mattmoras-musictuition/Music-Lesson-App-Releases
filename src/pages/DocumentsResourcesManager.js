@@ -371,9 +371,16 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   };
   const commitRenameFolder = async (id) => {
     const name = renameDraft.trim(); setRenamingId(null);
-    if (!name || name === folderById.get(id)?.name) return;
+    const current = folderById.get(id);
+    if (!name || !current || name === current.name) return;
+    // Optimistic, name-ONLY update: spread the existing row so parent_id and
+    // position are preserved exactly. The sidebar tree is built from parent_id,
+    // so updating the label this way keeps the folder at its true depth without
+    // depending on the refetch round-trip. reloadFolders() then reconciles with
+    // the server (and the catch refetches to roll back if the write failed).
+    setFolders(prev => prev.map(f => (f.id === id ? { ...f, name } : f)));
     try { await renameSharedFolder(id, name); reloadFolders(); }
-    catch (e) { console.error("renameFolder failed", e); notify("Couldn't rename folder: " + (e?.message || "unknown error"), "danger"); }
+    catch (e) { console.error("renameFolder failed", e); notify("Couldn't rename folder: " + (e?.message || "unknown error"), "danger"); reloadFolders(); }
   };
   const removeFolder = async (id) => {
     const f = folderById.get(id);
