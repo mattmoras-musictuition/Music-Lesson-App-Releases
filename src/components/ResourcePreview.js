@@ -34,6 +34,7 @@ export default function ResourcePreview({
   title,              // alt text / accessibility
   fallbackIcon: FallbackIcon,
   height = 140,
+  surfaceBg,          // optional preview-area background; defaults to page bg
 }) {
   const { colors, darkMode } = useTheme();
 
@@ -84,7 +85,7 @@ export default function ResourcePreview({
 
   const frame = {
     height,
-    background: colors.bg,
+    background: surfaceBg || colors.bg,
     borderBottom: `1px solid ${colors.borderLight}`,
     overflow: "hidden",
   };
