@@ -253,6 +253,33 @@ export function isCatchupCompleted(catchup, now) {
 }
 
 /**
+ * Spec 3 cluster 8 — the single "caught up" overlay predicate.
+ *
+ * A cell reads as "caught up" (blue tick) when its underlying entry is a
+ * missed, makeup-eligible, not-yet-formally-made-up lesson whose banking
+ * catch-up's scheduled slot time has already passed. This is a pure
+ * render/derive-time classification — the WTT entry is never mutated and
+ * still carries madeUp:false.
+ *
+ * Both the tally cell renderer AND the summary-tile aggregation MUST call
+ * this one helper so the grid and the tiles can never diverge (duplicating
+ * the predicate inline is what caused the original Made-Up/Makeup-Owed
+ * mismatch).
+ *
+ * @param {object|null} entry  A tally entry/shim carrying status,
+ *                             makeupEligible, madeUp, enrolmentId, weekKey.
+ * @param {Map<string,Catchup>} bankingIndex  From buildBankingIndex(catchups).
+ * @param {Date} [now]  Injectable clock, forwarded to isCatchupCompleted.
+ * @returns {boolean}
+ */
+export function isCaughtUpCell(entry, bankingIndex, now) {
+  if (!entry || entry.status !== "missed" || !entry.makeupEligible || entry.madeUp) return false;
+  if (!bankingIndex || entry.enrolmentId == null || entry.weekKey == null) return false;
+  const catchup = bankingIndex.get(`${entry.enrolmentId}|${entry.weekKey}`) || null;
+  return !!(catchup && isCatchupCompleted(catchup, now));
+}
+
+/**
  * Spec 3 cluster 8 — human-readable completion label for tooltips.
  * Returns e.g. "Thursday 23 April, 10:00" given a catchup row;
  * "" when catchup data is malformed.

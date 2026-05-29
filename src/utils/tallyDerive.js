@@ -74,12 +74,13 @@ export function deriveTallyCell({ enrolment, week, wttEntry }) {
 // Synthesize a tally-entry-shaped object from a WTT entry + cell state,
 // to feed today's TallyView render code unmodified (the entryMap shim).
 // Returns null when the cell should render as blank (no shim entry needed).
-function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKey }) {
+function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKey, enrolmentId }) {
   // Inactive stub for cells outside enrolment range.
   // Renders as the grey "—" dash via CellIcon's status === "removed" branch.
   if (state === "inactive") {
     return {
       lessonKey,
+      enrolmentId,
       weekKey, weekLabel, weekNum,
       status: "removed",
       reason: "inactive",
@@ -105,6 +106,7 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKe
     // Identity
     id: wttEntry.id,
     lessonKey,
+    enrolmentId,
     lessonId: wttEntry.id,
 
     // Subject
@@ -267,6 +269,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
         weekLabel: week.label,
         weekNum: week.weekNum,
         lessonKey,
+        enrolmentId: e.id,
       });
       if (shimEntry) {
         pendingShimEntries.push([`${lessonKey}|${week.weekKey}`, shimEntry]);
@@ -398,6 +401,7 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
         weekLabel: week.label,
         weekNum: week.weekNum,
         lessonKey,
+        enrolmentId: e.id,
       });
       if (shimEntry) entryMap[`${lessonKey}|${week.weekKey}`] = shimEntry;
     }

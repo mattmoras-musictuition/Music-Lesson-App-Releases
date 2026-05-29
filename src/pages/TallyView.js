@@ -9,7 +9,7 @@ import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getPare
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
-import { buildBankingIndex, isCatchupCompleted, formatCatchupCompletionLabel } from "../data/catchupsDerive";
+import { buildBankingIndex, isCaughtUpCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -130,6 +130,11 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     return map;
   }, [catchups, enrolments, termWeeks]);
 
+  // Spec 3 cluster 8 — banking index for blue-tick "caught up" render.
+  // Declared above the summary stats so the tile aggregation and the cell
+  // renderer share one bankingIndex + one isCaughtUpCell predicate.
+  const bankingIndex = useMemo(() => buildBankingIndex(catchups || []), [catchups]);
+
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────
   const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
   const stats = useMemo(() => {
@@ -140,10 +145,13 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     const totalCells = lessonRows.length * termWeekCount - removed;
     const completed = visibleEntries.filter(e => e.status === "completed").length;
     const missed = visibleEntries.filter(e => e.status === "missed").length;
-    const makeupOwed = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp).length;
-    const madeUp = visibleEntries.filter(e => e.madeUp).length;
+    // Spec 3 cluster 8 — a caught-up overlay cell (banking catch-up whose slot
+    // has passed) reads as "Made Up", not "Makeup Owed". Same isCaughtUpCell
+    // predicate the grid renderer uses, so tiles and grid never diverge.
+    const makeupOwed = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && !isCaughtUpCell(e, bankingIndex)).length;
+    const madeUp = visibleEntries.filter(e => e.madeUp || isCaughtUpCell(e, bankingIndex)).length;
     return { totalCells, completed, missed, makeupOwed, madeUp, unmarked: totalCells - completed - missed };
-  }, [entryMap, lessonRows, termWeeks, termWeekKeys]);
+  }, [entryMap, lessonRows, termWeeks, termWeekKeys, bankingIndex]);
 
   // Private-students panel stats — mirrors the main grid's `stats` shape
   // but scoped to privateLessonRows + privateEntryMap.
@@ -303,9 +311,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     flatRows.forEach((r, i) => m.set(r.lessonKey, i));
     return m;
   }, [flatRows]);
-
-  // Spec 3 cluster 8 — banking index for blue-tick "caught up" render.
-  const bankingIndex = useMemo(() => buildBankingIndex(catchups || []), [catchups]);
 
   // ── Cell render ─────────────────────────────────────────────
   const CellIcon = ({ entry, isFuture, caughtUp }) => {
@@ -588,7 +593,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             { icon: <span style={{ width: 11, height: 11, borderRadius: "50%", border: "1.5px solid #9CA3AF", display: "inline-block" }} />, color: "#9CA3AF", label: "Unmarked" },
             { icon: <Check size={13} />, color: colors.success, label: "Completed" },
             { icon: <span style={{ width: 10, height: 10, borderRadius: "50%", background: colors.accent, display: "inline-block" }} />, color: colors.accent, label: "Makeup owed" },
-            { icon: <RotateCcw size={12} />, color: colors.sidebarActive, label: "Caught up" },
+            { icon: <RotateCcw size={12} />, color: colors.sidebarActive, label: "Made up" },
+            { icon: <Check size={13} />, color: colors.blue600, label: "Caught up" },
             { icon: <X size={13} />, color: colors.danger, label: "No catch-up" },
             { icon: <span style={{ fontSize: 13, lineHeight: 1, color: "#D1D5DB", fontWeight: 700 }}>—</span>, color: "#D1D5DB", label: "Inactive" },
           ].map(l => (
@@ -724,14 +730,18 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                           // Spec 3 cluster 8 — banking-eligible catchup whose
                           // (weekKey + day + 18:00) has passed flips the cell
                           // from "catch-up owed" (orange dot) to "caught up"
-                          // (blue tick). Render-time derive only.
+                          // (blue tick). Render-time derive only. caughtUp uses
+                          // the shared isCaughtUpCell predicate — the same one
+                          // the "Made Up" summary tile counts — so grid and
+                          // tiles never diverge. bankingCatchup is kept for the
+                          // tooltip's completion-date label.
                           const bankingCatchup = (
                             displayEntry?.status === "missed"
                             && displayEntry.makeupEligible
                             && !displayEntry.madeUp
                             && lesson.enrolmentId
                           ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
-                          const caughtUp = !!(bankingCatchup && isCatchupCompleted(bankingCatchup));
+                          const caughtUp = isCaughtUpCell(displayEntry, bankingIndex);
 
                           return (
                             <td key={w.weekKey}
