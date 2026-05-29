@@ -20,17 +20,49 @@ function loadPdfjs() {
   return pdfjsPromise;
 }
 
+// Session-lifetime cache of rendered first-page data URLs, keyed by scale+url.
+// Stores the in-flight Promise so concurrent/duplicate requests dedupe and a
+// re-selected resource renders instantly. A rejected render is evicted so a
+// transient failure can be retried.
+const firstPageCache = new Map();
+
 // Render page 1 of a PDF to an offscreen canvas, return a data URL.
-export async function renderPdfFirstPage(url, { scale = 0.6 } = {}) {
+//
+// PERF: pass the URL straight to pdf.js with disableAutoFetch so it pulls only
+// the bytes needed for page 1 via HTTP range requests instead of downloading the
+// whole file first (a large PDF previously took ~8-10s). Range/streaming stay on
+// (the defaults); if the storage host doesn't honour range requests pdf.js falls
+// back to a full download on its own, so behaviour degrades gracefully.
+export function renderPdfFirstPage(url, { scale = 0.6 } = {}) {
+  if (!url) return Promise.reject(new Error("renderPdfFirstPage: no url"));
+  const key = `${scale}:${url}`;
+  const cached = firstPageCache.get(key);
+  if (cached) return cached;
+  const p = _renderPdfFirstPage(url, scale).catch((err) => {
+    firstPageCache.delete(key);
+    throw err;
+  });
+  firstPageCache.set(key, p);
+  return p;
+}
+
+async function _renderPdfFirstPage(url, scale) {
   const pdfjs = await loadPdfjs();
-  const pdf = await pdfjs.getDocument(url).promise;
-  const page = await pdf.getPage(1);
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement("canvas");
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-  return canvas.toDataURL();
+  const loadingTask = pdfjs.getDocument({ url, disableAutoFetch: true });
+  const pdf = await loadingTask.promise;
+  try {
+    const page = await pdf.getPage(1);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    return canvas.toDataURL();
+  } finally {
+    // We only ever need page 1 — free the worker doc (and cancel any pending
+    // range fetches) once it's rendered.
+    try { pdf.destroy(); } catch { /* ignore */ }
+  }
 }
 
 // Classify a file as 'image' | 'pdf' | null, by mime if present, else

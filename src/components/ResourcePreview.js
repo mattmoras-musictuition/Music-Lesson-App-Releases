@@ -16,6 +16,7 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
+import { Loader } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { fileKind, renderPdfFirstPage, youtubeId, youtubeThumb } from "../utils/filePreviewCore";
 import { signedUrlFor } from "../utils/storageHelpers";
@@ -105,7 +106,15 @@ export default function ResourcePreview({
 
   // ── File / YouTube image branch ───────────────────────────────
   if (isFile || ytId) {
-    if (fileState === null) return <div style={centered} />; // loading; height held
+    // Loading — a spinner on the held-height surface so a slow render (e.g. a
+    // large PDF's first page) reads as "working", not frozen. Self-contained
+    // keyframe so it spins wherever ResourcePreview is used (admin + teacher).
+    if (fileState === null) return (
+      <div style={centered}>
+        <style>{"@keyframes rp-spin{to{transform:rotate(360deg)}}"}</style>
+        <Loader size={22} style={{ color: colors.textMuted, opacity: 0.8, animation: "rp-spin 0.8s linear infinite" }} />
+      </div>
+    );
     if (fileState.type === "image") {
       return (
         <div style={centered}>
