@@ -122,7 +122,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [selectedFolder, setSelectedFolder] = useState({ dim: "all", value: null });
   const [selectedId,     setSelectedId]     = useState(null);
   // Shared sidebar overrides (aliases + hidden + custom folders) from app_settings.
-  const { overrides, folderKey, folderLabel, isFolderHidden, renameFolder, hideFolder, unhideFolder, addCustom, renameCustom, deleteCustom } = useFolderOverrides("resource_folder_overrides", notify);
+  const { overrides, folderKey, folderLabel, isFolderHidden, renameFolder, hideFolder, unhideFolder, addCustom, renameCustom, deleteCustom } = useFolderOverrides("resource_folder_overrides:admin", notify);
   const [showHidden, setShowHidden] = useState(false);
   // Custom saved views: which one is highlighted, plus the inline name editor
   // shown when saving the current view.
@@ -155,7 +155,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // Documents folder overrides — a SEPARATE app_settings key from Resources,
   // so the two surfaces never interfere.
-  const { overrides: dOverrides, folderKey: dFolderKey, folderLabel: dFolderLabelFn, isFolderHidden: dIsFolderHidden, renameFolder: dRenameFolder, hideFolder: dHideFolder, unhideFolder: dUnhideFolder, addCustom: dAddCustom, renameCustom: dRenameCustom, deleteCustom: dDeleteCustom } = useFolderOverrides("document_folder_overrides", notify);
+  const { overrides: dOverrides, folderKey: dFolderKey, folderLabel: dFolderLabelFn, isFolderHidden: dIsFolderHidden, renameFolder: dRenameFolder, hideFolder: dHideFolder, unhideFolder: dUnhideFolder, addCustom: dAddCustom, renameCustom: dRenameCustom, deleteCustom: dDeleteCustom } = useFolderOverrides("document_folder_overrides:admin", notify);
   const [dShowHidden,     setDShowHidden]     = useState(false);
   const [dFolderMenu,     setDFolderMenu]     = useState(null);
   const [dRenamingKey,    setDRenamingKey]    = useState(null);
