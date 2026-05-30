@@ -47,8 +47,9 @@ function fromRow(row) {
     hasAccount:     row.has_account     || false,
     sortOrder:      row.sort_order      ?? null,
     lastSeen:       row.last_seen       || null,
-    // Derive schools from availability (same as TeachersManager saveTeacher does)
-    schools: [...new Set(availability.map(a => a.schoolId).filter(Boolean))],
+    // teacher.schools (membership) is now derived from teacher_coverage lanes,
+    // not from availability — left unpopulated here. See Dashboard email
+    // attribution, which reads lane membership directly.
   };
 }
 

@@ -431,7 +431,9 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
     if (!form.name.trim()) { notify("Teacher name required", "warning"); return; }
     if (!form.instruments[0]?.name) { notify("At least one instrument required", "warning"); return; }
     if (form.availability.length === 0) { notify("Add at least one availability entry", "warning"); return; }
-    const saved = { ...form, schools: [...new Set(form.availability.map(a => a.schoolId).filter(Boolean))] };
+    // teacher.schools (membership) now derives from teacher_coverage lanes,
+    // not availability — no longer stamped here.
+    const saved = { ...form };
     if (editing === "new") setTeachers(prev => [...prev, saved]);
     else setTeachers(prev => prev.map(t => t.id === saved.id ? saved : t));
     setForm(null); setEditing(null);

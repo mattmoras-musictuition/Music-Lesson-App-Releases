@@ -473,21 +473,6 @@ const ACTION_TOOLS = [
           description: "List of instrument names this teacher can teach",
           items: { type: "string", description: "Instrument name (e.g. 'Piano', 'Guitar')" },
         },
-        availability: {
-          type: "array",
-          description: "Days and schools this teacher is available at",
-          items: {
-            type: "object",
-            properties: {
-              schoolId:   { type: "string", description: "School ID from the schools list" },
-              schoolName: { type: "string", description: "School name (for confirmation)" },
-              day:        { type: "string", description: "Day of the week (e.g. 'Monday')" },
-              start:      { type: "string", description: "Availability start time (e.g. '9:00')" },
-              end:        { type: "string", description: "Availability end time (e.g. '15:30')" },
-            },
-            required: ["schoolId", "day"],
-          },
-        },
       },
       required: ["name"],
     },
@@ -506,20 +491,6 @@ const ACTION_TOOLS = [
           type: "array",
           description: "Replacement instruments list — replaces the entire list. Omit to leave unchanged.",
           items: { type: "string", description: "Instrument name" },
-        },
-        availability: {
-          type: "array",
-          description: "Replacement availability list — replaces the entire list. Omit to leave unchanged.",
-          items: {
-            type: "object",
-            properties: {
-              schoolId: { type: "string", description: "School ID" },
-              day:      { type: "string", description: "Day of the week" },
-              start:    { type: "string", description: "Availability start time" },
-              end:      { type: "string", description: "Availability end time" },
-            },
-            required: ["schoolId", "day"],
-          },
         },
       },
       required: ["teacherId", "teacherName"],
@@ -3359,50 +3330,36 @@ export default function MusicTimetableApp() {
 
       // ── add_teacher ──────────────────────────────────────────────────────
       if (name === "add_teacher") {
-        const { name: teacherName, email, instruments, availability } = input;
+        const { name: teacherName, email, instruments } = input;
         const newTeacher = {
           id: uid(),
           name: teacherName,
           email: email || "",
           instruments: (instruments || []).map(i => typeof i === "string" ? { name: i } : i),
-          availability: (availability || []).map(a => ({
-            schoolId: a.schoolId,
-            day: a.day,
-            start: a.start || "9:00",
-            end: a.end || "15:30",
-          })),
+          // School membership now derives from teacher_coverage lanes — an
+          // AI-created teacher correctly has no schools until placed on a lane.
+          availability: [],
           createdAt: new Date().toISOString(),
         };
         setTeachers(prev => [...prev, newTeacher]);
         const instStr = (instruments || []).join(", ") || "none set";
-        const availStr = (availability || []).map(a => {
-          const sn = schools.find(s => s.id === a.schoolId)?.name || a.schoolId;
-          return `${a.day} @ ${sn}`;
-        }).join(", ") || "none set";
         notify(`Added teacher: ${teacherName}`, "success");
-        return `Done — created teacher: ${teacherName}${email ? ` <${email}>` : ""}. Instruments: ${instStr}. Availability: ${availStr}.`;
+        return `Done — created teacher: ${teacherName}${email ? ` <${email}>` : ""}. Instruments: ${instStr}. Place them on a school/day lane to set where they teach.`;
       }
 
       // ── edit_teacher ─────────────────────────────────────────────────────
       if (name === "edit_teacher") {
-        const { teacherId, teacherName, name: newName, email, instruments, availability } = input;
+        const { teacherId, teacherName, name: newName, email, instruments } = input;
         const idx = teachers.findIndex(t => t.id === teacherId);
         if (idx === -1) return `No teacher found with ID ${teacherId} — nothing changed.`;
         const patch = {};
         if (newName      !== undefined) patch.name         = newName;
         if (email        !== undefined) patch.email        = email;
         if (instruments  !== undefined) patch.instruments  = instruments.map(i => typeof i === "string" ? { name: i } : i);
-        if (availability !== undefined) patch.availability = availability.map(a => ({
-          schoolId: a.schoolId,
-          day: a.day,
-          start: a.start || "9:00",
-          end: a.end || "15:30",
-        }));
         if (Object.keys(patch).length === 0) return `No fields provided — nothing changed for ${teacherName}.`;
         setTeachers(prev => prev.map((t, i) => i !== idx ? t : { ...t, ...patch }));
         const changes = Object.entries(patch).map(([k, v]) => {
           if (k === "instruments") return `instruments → ${v.map(i => i.name).join(", ")}`;
-          if (k === "availability") return `availability → ${v.map(a => { const sn = schools.find(s => s.id === a.schoolId)?.name || a.schoolId; return `${a.day} @ ${sn}`; }).join(", ")}`;
           return `${k} → ${v}`;
         }).join(", ");
         notify(`Updated teacher: ${teacherName}`, "success");
@@ -4125,8 +4082,8 @@ export default function MusicTimetableApp() {
     lines.push("- edit_student: Update any field on an existing student — name, school, class, instruments, parent contact, notes, or status (active/pending only). Only include fields you want to change. Teacher assignment cannot be set here — it is derived from the student's lane on the master timetable. Do NOT use status to archive — use archive_student instead.");
     lines.push("- archive_student: Archive a student who has left or is no longer active. They disappear from all active views (timetable, tally, student list) but their record is preserved and restorable. Use this instead of edit_student when a student is leaving.");
     lines.push("- restore_student: Restore a previously archived student back to pending status so they reappear in the student list.");
-    lines.push("- add_teacher: Create a new teacher record. Include name, email, instruments (list of instrument name strings), and availability (array of {schoolId, day, start, end} for each day they teach). Use school IDs from the schools list above.");
-    lines.push("- edit_teacher: Update any field on a teacher — name, email, instruments, or availability. Providing instruments or availability replaces the entire list for that field.");
+    lines.push("- add_teacher: Create a new teacher record. Include name, email, and instruments (list of instrument name strings). Where a teacher teaches (school/day) is set by placing them on a coverage lane, not here.");
+    lines.push("- edit_teacher: Update fields on a teacher — name, email, or instruments. Providing instruments replaces the entire instruments list.");
     lines.push("- schedule_wtt_lesson: Add a one-off lesson directly to the weekly timetable for a specific week. Does NOT affect the master timetable. Required fields: studentId, teacherId, schoolId, weekOf, day, start, end, instrument. Use for catch-ups, trials, or any extra lesson outside the regular schedule.");
     lines.push("");
     lines.push("Action rules:");

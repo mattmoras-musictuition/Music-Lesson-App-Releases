@@ -7,7 +7,7 @@
 import { timeToMin, groupDisplayName } from "../utils/helpers";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
-import { getCardTeacherId } from "../utils/teacherCoverageDB";
+import { getCardTeacherId, findLaneId } from "../utils/teacherCoverageDB";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 
 // ── classMatchesInterruption ──────────────────────────────────────────────────
@@ -169,9 +169,11 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
   for (const t of teachers) teacherSched[t.id] = [];
 
   const isTeacherFree = (teacherId, day, slotStart, slotEnd) => {
-    const avail = teachers.find(t => t.id === teacherId)?.availability.find(a => a.schoolId === school.id && a.day === day);
-    if (!avail) return false;
-    if (timeToMin(slotStart) < timeToMin(avail.start) || timeToMin(slotEnd) > timeToMin(avail.end)) return false;
+    // Eligibility: teacher must have an active teacher_coverage lane at this
+    // (school, day). Availability time-window gating dropped — lanes are the
+    // source of truth; school slot times + the booking-overlap check below
+    // are sufficient.
+    if (!findLaneId(teacherCoverage, school.id, day, teacherId)) return false;
     return !teacherSched[teacherId]?.some(s => timeToMin(s.start) < timeToMin(slotEnd) && timeToMin(slotStart) < timeToMin(s.end));
   };
 

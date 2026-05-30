@@ -116,7 +116,9 @@ export function parseTeacherCSV(csvData, schools) {
       id: uid(),
       name: name.trim(),
       instruments,
-      schools: teacherSchools,
+      // teacher.schools (membership) now derives from teacher_coverage lanes,
+      // not availability — not stamped on import. teacherSchools still drives
+      // the availability rows built above.
       availability,
       notes: row.notes || row.Notes || ""
     });

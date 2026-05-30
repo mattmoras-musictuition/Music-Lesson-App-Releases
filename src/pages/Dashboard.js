@@ -347,9 +347,9 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     // Which teachers are at which schools on this day
     const teacherSchools = [];
     for (const teacher of teachers) {
-      const dayAvails = teacher.availability.filter(a => a.day === wd.day);
-      for (const avail of dayAvails) {
-        const school = schools.find(s => s.id === avail.schoolId);
+      const dayLanes = teacherCoverage.filter(l => l.teacherId === teacher.id && l.day === wd.day && l.status === "active");
+      for (const lane of dayLanes) {
+        const school = schools.find(s => s.id === lane.schoolId);
         if (school) {
           const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
           const lessonCount = dayLessons.length;
@@ -358,7 +358,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
             firstLesson = dayLessons.reduce((a, b) => (a.start < b.start ? a : b));
             lastLesson = dayLessons.reduce((a, b) => (a.end > b.end ? a : b));
           }
-          teacherSchools.push({ teacher, school, start: avail.start, end: avail.end, lessonCount, firstLesson, lastLesson });
+          teacherSchools.push({ teacher, school, lessonCount, firstLesson, lastLesson });
         }
       }
     }
@@ -385,7 +385,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
       if (!s.notes || !s.notes.trim()) return false;
       const school = schools.find(sc => sc.id === s.schoolId);
       if (!school) return false;
-      return teachers.some(t => t.availability.some(a => a.schoolId === school.id && a.day === wd.day));
+      return teacherCoverage.some(l => l.schoolId === school.id && l.day === wd.day && l.status === "active");
     });
 
     // Pending/trial students
@@ -2317,8 +2317,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           });
           const dayTeacherSchools = [];
           for (const teacher of teachers) {
-            for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
-              const school = schools.find(s => s.id === avail.schoolId);
+            for (const lane of teacherCoverage.filter(l => l.teacherId === teacher.id && l.day === wd.day && l.status === "active")) {
+              const school = schools.find(s => s.id === lane.schoolId);
               if (school) {
                 const wttKey = `${rowMondayStr}|${school.id}`;
                 const wttEntry = weeklyTimetables[wttKey];
@@ -2499,8 +2499,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             });
             const teacherSchoolsData = [];
             for (const teacher of teachers) {
-              for (const avail of teacher.availability.filter(a => a.day === wd.day)) {
-                const school = schools.find(s => s.id === avail.schoolId);
+              for (const lane of teacherCoverage.filter(l => l.teacherId === teacher.id && l.day === wd.day && l.status === "active")) {
+                const school = schools.find(s => s.id === lane.schoolId);
                 if (school) {
                   const wttKey = `${rowMondayStr}|${school.id}`;
                   const wttEntry = weeklyTimetables[wttKey];
@@ -3215,13 +3215,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                   if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && toAddrs.includes(p.email.toLowerCase())))) return true;
                   // Any recipient is a school contact
                   if (contacts.some(c => c.schoolId === schoolId && c.email && toAddrs.includes(c.email.toLowerCase()))) return true;
-                  // Any recipient is a teacher with availability at this school
-                  if (teachers.some(t => t.email && toAddrs.includes(t.email.toLowerCase()) && t.availability.some(a => a.schoolId === schoolId))) return true;
+                  // Any recipient is a teacher with an active lane at this school
+                  if (teachers.some(t => t.email && toAddrs.includes(t.email.toLowerCase()) && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
                 } else {
                   if (school.senderEmail) { const toAddr = (e.deliveredTo || e.to || "").toLowerCase(); if (toAddr.includes(school.senderEmail.toLowerCase())) return true; }
                   if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && p.email.toLowerCase() === fromAddr2))) return true;
                   if (contacts.some(c => c.schoolId === schoolId && c.email && c.email.toLowerCase() === fromAddr2)) return true;
-                  if (teachers.some(t => t.email && t.email.toLowerCase() === fromAddr2 && t.availability.some(a => a.schoolId === schoolId))) return true;
+                  if (teachers.some(t => t.email && t.email.toLowerCase() === fromAddr2 && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
                 }
               }
               return false;
