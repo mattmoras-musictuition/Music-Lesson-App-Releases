@@ -141,7 +141,7 @@ export function GroupsManager({ groups, setGroups, students, enrolments, schools
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Teacher</label>
             <select value={form.teacherId || ""} onChange={e => setForm(p => ({ ...p, teacherId: e.target.value }))} style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
               <option value="">Select teacher...</option>
-              {teachers.filter(t => t.availability.some(a => a.schoolId === form.schoolId)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
             </select>
           </div>
 

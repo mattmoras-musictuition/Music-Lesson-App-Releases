@@ -2569,7 +2569,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   if (!originalTeacher) return null;
                   const existingOverride = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === targetLane.id);
                   const overrideTeacher = existingOverride ? teachers.find(t => t.id === existingOverride.overrideTeacherId) : null;
-                  const availTeachers = teachers.filter(t => t.id !== originalTeacher.id && t.availability && t.availability.some(a => a.schoolId === selectedSchool));
+                  const availTeachers = teachers.filter(t => t.id !== originalTeacher.id);
                   if (availTeachers.length === 0 && !existingOverride) return null;
                   const isOpen = dayHeaderSubmenu?.type === "substitute";
                   const triggerLabel = existingOverride && overrideTeacher ? `Substitute: ${overrideTeacher.name.split(" ")[0]}` : "Set substitute";

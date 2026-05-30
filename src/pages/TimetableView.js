@@ -491,23 +491,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           if (match) {} // specialist shown as purple tag, not a red warning
         }
       }
-      // Teacher availability and double-booking for groups
+      // Teacher double-booking for groups
       const school = schools.find(s => s.id === lesson.schoolId);
       const lessonResolvedTid = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
       const teacher = teachers.find(t => t.id === lessonResolvedTid);
       if (teacher && school) {
-        // Day/school availability "not available" warning retired — an active
-        // lane on a (school, day) is the source of truth that the teacher is
-        // staffed there. The outside-hours time-window check still applies
-        // when an availability row exists for this day.
-        const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (dayAvail) {
-          const slotStart = timeToMin(slot.start);
-          const slotEnd = timeToMin(slot.end);
-          if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
-            warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-          }
-        }
         {
           const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === lessonResolvedTid && l.day === newDay && l.start === slot.start);
           if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
@@ -555,7 +543,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       warnings.push(`Preferred day${hints.preferredDays.length > 1 ? "s" : ""}: ${hints.preferredDays.join(", ")}`);
     }
 
-    // Check teacher availability
+    // Check teacher assignment and double-booking
     const _liveTeacherUnassigned = isLessonUnassigned(lesson, (allStudents || students), enrolments, teacherCoverage);
     if (_liveTeacherUnassigned) {
       warnings.push("No teacher assigned — assign a teacher in student details");
@@ -563,16 +551,6 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       // Lane-first via getLiveTeacherId; legacy fallback chain (instrument enrolment → stamped) lives in the helper.
       const _liveTeacherId = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
       const teacher = teachers.find(t => t.id === _liveTeacherId);
-      if (teacher) {
-        // Day/school availability "not available" warning retired — an active
-        // lane on a (school, day) is the source of truth that the teacher is
-        // staffed there. The outside-hours time-window check still applies
-        // when an availability row exists for this day.
-        const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (dayAvail && (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end))) {
-          warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-        }
-      }
       // Check teacher double-booking (another lesson at the same time)
       {
         const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === _liveTeacherId && l.day === newDay && l.start === slot.start);

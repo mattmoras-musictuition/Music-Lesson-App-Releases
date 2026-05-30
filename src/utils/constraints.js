@@ -174,17 +174,6 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
     if (teacher && school) {
-      // Day/school availability "not available" warning retired — an active
-      // lane on a (school, day) is the source of truth that the teacher is
-      // staffed there. The outside-hours time-window check still applies when
-      // an availability row exists for this day.
-      const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-      if (dayAvail) {
-        const slotStart = timeToMin(slot.start), slotEnd = timeToMin(slot.end);
-        if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
-          warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-        }
-      }
       const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
       if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
     }
@@ -219,25 +208,13 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
         warnings.push(`${memberName} already has a lesson on ${newDay} (${memberLesson.isGroup ? memberLesson.groupName || "Group" : memberLesson.instrument})`);
       }
     }
-    // Teacher availability and double-booking for groups
+    // Teacher double-booking for groups
     const school = schools.find(s => s.id === lesson.schoolId);
     // Cluster 12a: stamped lesson.teacherId fallback removed; lane / live-group only.
     const liveGroup = groups?.find(g => g.id === lesson.groupId);
     const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
     if (teacher && school) {
-      // Day/school availability "not available" warning retired — an active
-      // lane on a (school, day) is the source of truth that the teacher is
-      // staffed there. The outside-hours time-window check still applies when
-      // an availability row exists for this day.
-      const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-      if (dayAvail) {
-        const slotStart = timeToMin(slot.start);
-        const slotEnd = timeToMin(slot.end);
-        if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
-          warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
-        }
-      }
       const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
       if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
     }
@@ -298,12 +275,6 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
   const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
   if (teacher) {
-    // Day/school availability "not available" warning retired — an active lane
-    // on a (school, day) is the source of truth that the teacher is staffed
-    // there. The outside-hours time-window check still applies when an
-    // availability row exists for this day.
-    const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-    if (dayAvail && (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end))) warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
     // Teacher double-booking: another lesson at the same time with the same teacher
     const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));

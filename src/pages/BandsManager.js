@@ -110,7 +110,7 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
               <label style={labelStyle}>Teacher</label>
               <select style={inputStyle} value={form.teacherId} onChange={e => setForm(p => ({ ...p, teacherId: e.target.value }))}>
                 <option value="">Select teacher…</option>
-                {teachers.filter(t => !form.schoolId || t.availability.some(a => a.schoolId === form.schoolId)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
             <div>
