@@ -87,12 +87,34 @@ export async function loadResourcesFromSupabase() {
 
 // Insert one resource row; returns the mapped, DB-canonical row.
 export async function insertResource(resource) {
+  // `resources.user_id` is NOT NULL with no default and the INSERT RLS is
+  // WITH CHECK (auth.uid() = user_id) with no admin INSERT policy — so every
+  // inserted row MUST stamp user_id = the current auth user or the insert is
+  // rejected (NOT NULL violation / RLS) and surfaces as a generic save error.
+  // The Student-Notes publish path supplies user_id explicitly; the admin
+  // Resource Library callers (Add-resource modal, Dashboard) do not, so stamp
+  // it here from the live session — mirroring teachersDB.toRow. An explicitly
+  // supplied user_id is preserved.
+  let toInsert = resource;
+  if (toInsert.user_id === undefined || toInsert.user_id === null) {
+    const { data: { user } = {} } = await supabase.auth.getUser();
+    if (user?.id) toInsert = { ...toInsert, user_id: user.id };
+  }
   const { data, error } = await supabase
     .from("resources")
-    .insert(resourceToRow(resource))
+    .insert(resourceToRow(toInsert))
     .select("*")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) {
+    // Surface the underlying Supabase/PostgREST error (the wrapper below
+    // flattens it to message-only) so the real cause — RLS code 42501, a
+    // NOT NULL violation, etc. — is visible in the console for diagnosis.
+    console.error("[resources insert] failed:", {
+      message: error.message, code: error.code,
+      details: error.details, hint: error.hint, status: error.status,
+    });
+    throw new Error(error.message);
+  }
   return rowToResource(data);
 }
 
