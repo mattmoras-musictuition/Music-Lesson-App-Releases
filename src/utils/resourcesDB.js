@@ -46,7 +46,10 @@ function resourceToRow(r) {
   const row = {
     id:                  r.id,
     label:               r.label       || null,
-    url:                 r.url         || null,
+    // resources.url is `text NOT NULL` (see [resources insert] failure: a file
+    // resource sends no link, so url would be null and violate the constraint).
+    // Coerce to '' when absent — '' means "no link". A real URL passes through.
+    url:                 r.url         ?? "",
     // resources.category is `text NOT NULL DEFAULT ''` (see studentNotesDB
     // publish path) — '' means "no type". Preserve a string verbatim (incl.
     // '') rather than coercing '' → null, which would violate the NOT NULL
@@ -54,8 +57,11 @@ function resourceToRow(r) {
     // Non-string/undefined falls back to '' so the column is never null.
     category:            typeof r.category === "string" ? r.category : (r.category ?? ""),
     description:         r.description || null,
-    file_url:            r.file_url    || null,
-    file_name:           r.file_name   || null,
+    // file_url / file_name are the file-resource payload columns (null on a link
+    // resource). Coerce to '' when absent — symmetric with url above so neither
+    // payload shape can send null into a NOT NULL column. '' means "no file".
+    file_url:            r.file_url    ?? "",
+    file_name:           r.file_name   ?? "",
     added_by_teacher_id: r.added_by_teacher_id || null,
     added_by_name:       r.added_by_name       || null,
     instrument:          r.instrument          || null,
