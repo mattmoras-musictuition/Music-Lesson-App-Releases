@@ -174,10 +174,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
     if (teacher && school) {
+      // Day/school availability "not available" warning retired — an active
+      // lane on a (school, day) is the source of truth that the teacher is
+      // staffed there. The outside-hours time-window check still applies when
+      // an availability row exists for this day.
       const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-      if (!dayAvail) {
-        warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-      } else {
+      if (dayAvail) {
         const slotStart = timeToMin(slot.start), slotEnd = timeToMin(slot.end);
         if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
           warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
@@ -224,10 +226,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
     if (teacher && school) {
+      // Day/school availability "not available" warning retired — an active
+      // lane on a (school, day) is the source of truth that the teacher is
+      // staffed there. The outside-hours time-window check still applies when
+      // an availability row exists for this day.
       const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-      if (!dayAvail) {
-        warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-      } else {
+      if (dayAvail) {
         const slotStart = timeToMin(slot.start);
         const slotEnd = timeToMin(slot.end);
         if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
@@ -294,9 +298,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
   const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
   if (teacher) {
+    // Day/school availability "not available" warning retired — an active lane
+    // on a (school, day) is the source of truth that the teacher is staffed
+    // there. The outside-hours time-window check still applies when an
+    // availability row exists for this day.
     const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-    if (!dayAvail) warnings.push(`${teacher.name} not available on ${newDay}`);
-    else if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
+    if (dayAvail && (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end))) warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
     // Teacher double-booking: another lesson at the same time with the same teacher
     const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));

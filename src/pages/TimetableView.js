@@ -494,10 +494,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       const lessonResolvedTid = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
       const teacher = teachers.find(t => t.id === lessonResolvedTid);
       if (teacher && school) {
+        // Day/school availability "not available" warning retired — an active
+        // lane on a (school, day) is the source of truth that the teacher is
+        // staffed there. The outside-hours time-window check still applies
+        // when an availability row exists for this day.
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (!dayAvail) {
-          warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-        } else {
+        if (dayAvail) {
           const slotStart = timeToMin(slot.start);
           const slotEnd = timeToMin(slot.end);
           if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
@@ -560,10 +562,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       const _liveTeacherId = getLiveTeacherId(lesson, allStudents || students, enrolments, teacherCoverage);
       const teacher = teachers.find(t => t.id === _liveTeacherId);
       if (teacher) {
+        // Day/school availability "not available" warning retired — an active
+        // lane on a (school, day) is the source of truth that the teacher is
+        // staffed there. The outside-hours time-window check still applies
+        // when an availability row exists for this day.
         const dayAvail = teacher.availability.find(a => a.schoolId === school.id && a.day === newDay);
-        if (!dayAvail) {
-          warnings.push(`${teacher.name} not available at ${school.name} on ${newDay}`);
-        } else if (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end)) {
+        if (dayAvail && (slotStart < timeToMin(dayAvail.start) || slotEnd > timeToMin(dayAvail.end))) {
           warnings.push(`Outside ${teacher.name}'s hours (${dayAvail.start}–${dayAvail.end})`);
         }
       }
