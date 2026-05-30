@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect } from "react";
 import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil } from "lucide-react";
-import { DAYS, INSTRUMENTS } from "../constants";
+import { INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor } from "../utils/helpers";
 import { parseTeacherCSV } from "../data/parsers";
@@ -417,12 +417,9 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   };
 
   const editTeacher = (t) => {
-    let avail = t.availability.map(a => ({ ...a }));
-    if (avail.length > 0 && !avail[0].schoolId && t.schools && t.schools.length > 0) {
-      const migrated = [];
-      for (const schoolId of t.schools) for (const a of avail) migrated.push({ schoolId, day: a.day, start: a.start, end: a.end });
-      avail = migrated;
-    }
+    // Availability is no longer editable (editor retired); the array is cloned
+    // through unchanged so toRow keeps persisting the now-dormant column.
+    const avail = t.availability.map(a => ({ ...a }));
     setForm({ ...t, personalEmail: t.personalEmail || "", hourlyRate: t.hourlyRate || "", instruments: t.instruments.map(i => ({ name: i.name })), availability: avail, teacherBreaks: (t.teacherBreaks || []).map(b => ({ ...b })), color: t.color || "", hasAccount: t.hasAccount || false });
     setEditing(t.id);
   };
@@ -430,9 +427,9 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   const saveTeacher = () => {
     if (!form.name.trim()) { notify("Teacher name required", "warning"); return; }
     if (!form.instruments[0]?.name) { notify("At least one instrument required", "warning"); return; }
-    if (form.availability.length === 0) { notify("Add at least one availability entry", "warning"); return; }
-    // teacher.schools (membership) now derives from teacher_coverage lanes,
-    // not availability — no longer stamped here.
+    // No availability requirement — the editor is retired and membership/eligibility
+    // now derive from teacher_coverage lanes. The dormant availability array on
+    // form is carried through unchanged for toRow.
     const saved = { ...form };
     if (editing === "new") setTeachers(prev => [...prev, saved]);
     else setTeachers(prev => prev.map(t => t.id === saved.id ? saved : t));
@@ -467,24 +464,15 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
     }
   };
 
-  const addAvailRow = () => setForm(prev => ({ ...prev, availability: [...prev.availability, { schoolId: schools.length === 1 ? schools[0].id : "", day: "Monday", start: "09:00", end: "15:30" }] }));
-  const updateAvailRow = (idx, key, val) => setForm(prev => ({ ...prev, availability: prev.availability.map((a, i) => i === idx ? { ...a, [key]: val } : a) }));
-  const removeAvailRow = (idx) => setForm(prev => ({ ...prev, availability: prev.availability.filter((_, i) => i !== idx) }));
-  const duplicateAvailRow = (idx) => setForm(prev => { const row = { ...prev.availability[idx] }; return { ...prev, availability: [...prev.availability.slice(0, idx + 1), row, ...prev.availability.slice(idx + 1)] }; });
-
   const addInstrument = () => setForm(prev => ({ ...prev, instruments: [...prev.instruments, { name: "" }] }));
   const updateInstrument = (idx, key, val) => setForm(prev => { const insts = [...prev.instruments]; insts[idx] = { ...insts[idx], [key]: val }; return { ...prev, instruments: insts }; });
 
-  const rowStyle = { display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", background: colors.bg, borderRadius: 8 };
   const sectionHeader = (label, action) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: colors.sidebarHover, borderRadius: 6, padding: "7px 12px", marginBottom: 8 }}>
       <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</span>
       {action}
     </div>
   );
-  const headerCell = (w, label) => <div style={{ width: w, fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>;
-  const inputSel = { width: "100%", padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" };
-  const inputTime = { width: 100, padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" };
   const iconBtn = (onClick, icon, color, title) => (
     <button onClick={onClick} title={title} style={{ border: "none", background: "none", color, cursor: "pointer", padding: 2, display: "inline-flex", alignItems: "center" }}>{icon}</button>
   );
@@ -568,36 +556,6 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
             ))}
           </div>
 
-          <div style={{ marginBottom: 14 }}>
-            {sectionHeader("Availability",
-              <Btn variant="ghost" onClick={addAvailRow} style={{ fontSize: 12, color: "#fff", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                <Plus size={12} /> Add Row
-              </Btn>
-            )}
-            {form.availability.length === 0 ? (
-              <div style={{ padding: 16, textAlign: "center", color: colors.textMuted, fontSize: 13, background: colors.bg, borderRadius: 8, border: `1px dashed ${colors.border}` }}>No availability set. Click "+ Add Row" to specify which schools &amp; days this teacher is available.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", paddingBottom: 4 }}>
-                  {headerCell("auto", "School")}{headerCell("auto", "Day")}{headerCell(100, "Start")}{headerCell(100, "End")}<div style={{ width: 56 }}></div>
-                </div>
-                {form.availability.map((row, i) => (
-                  <div key={i} style={rowStyle}>
-                    <div style={{ flex: 2 }}><select value={row.schoolId || ""} onChange={e => updateAvailRow(i, "schoolId", e.target.value)} style={inputSel}><option value="">Select school...</option>{schools.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-                    <div style={{ flex: 1 }}><select value={row.day} onChange={e => updateAvailRow(i, "day", e.target.value)} style={inputSel}>{DAYS.map(d => <option key={d} value={d}>{d}</option>)}</select></div>
-                    <input type="time" value={row.start} onChange={e => updateAvailRow(i, "start", e.target.value)} style={inputTime} />
-                    <input type="time" value={row.end} onChange={e => updateAvailRow(i, "end", e.target.value)} style={inputTime} />
-                    <div style={{ display: "flex", gap: 2, width: 56, alignItems: "center" }}>
-                      {iconBtn(() => duplicateAvailRow(i), <Copy size={13} />, colors.textMuted, "Duplicate row")}
-                      {iconBtn(() => removeAvailRow(i), <X size={14} />, colors.danger, "Remove row")}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {form.availability.length > 0 && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>Tip: Use the copy button to duplicate a row, then change the day or school.</div>}
-          </div>
-
           {/* Invoice history — only shown when editing an existing teacher */}
           {editing !== "new" && (
             <TeacherInvoiceSection teacherId={form.id} colors={colors} notify={notify} />
@@ -675,21 +633,6 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
                 <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4 }}>
                   {t.instruments.map((inst, i) => <Tag key={i} color={getInstColor(inst.name)}>{inst.name}</Tag>)}
                 </div>
-                <div style={{ fontSize: 12, color: colors.textLight, marginTop: 6 }}>
-                  {(() => {
-                    const bySchool = {};
-                    for (const a of t.availability) {
-                      const sc = schools.find(s => s.id === a.schoolId);
-                      const sName = sc?.name || "Unknown";
-                      if (!bySchool[sName]) bySchool[sName] = { days: [], color: sc?.color || null };
-                      bySchool[sName].days.push(a.day.slice(0, 3));
-                    }
-                    if (Object.keys(bySchool).length === 0) return "No availability set";
-                    return Object.entries(bySchool).map(([school, { days, color }], i) => (
-                      <span key={school}>{i > 0 && " · "}<span style={{ color: color || colors.textLight, fontWeight: color ? 600 : 400 }}>{school}</span>{`: ${[...new Set(days)].join(", ")}`}</span>
-                    ));
-                  })()}
-                </div>
                 {(t.teacherBreaks || []).length > 0 && (
                   <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, display: "inline-flex", alignItems: "center", gap: 5 }}>
                     <Coffee size={12} />
@@ -752,17 +695,9 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
       {teacherCtxMenu && onAddMemory && (() => {
         const t = teacherCtxMenu.teacher;
         const instrs = (t.instruments || []).map(i => i.name).join(", ");
-        const bySchool = {};
-        for (const a of (t.availability || [])) {
-          const sName = schools.find(s => s.id === a.schoolId)?.name || "Unknown";
-          if (!bySchool[sName]) bySchool[sName] = [];
-          bySchool[sName].push(a.day.slice(0, 3));
-        }
-        const availStr = Object.entries(bySchool).map(([school, days]) => `${school}: ${[...new Set(days)].join(", ")}`).join("; ");
         const memText = [
           `Teacher: ${t.name}`,
           instrs && `instruments: ${instrs}`,
-          availStr && `availability: ${availStr}`,
           t.notes && `note: ${t.notes.trim()}`,
         ].filter(Boolean).join(" — ");
         const menuY = teacherCtxMenu.y + 44 > window.innerHeight ? teacherCtxMenu.y - 44 : teacherCtxMenu.y;
