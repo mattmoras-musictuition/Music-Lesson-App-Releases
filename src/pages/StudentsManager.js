@@ -12,7 +12,7 @@ import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/
 import { parseStudentCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, PAGE_COLORS } from "../components/ui/SharedUI";
 
-export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, groupsView, groupsCount = 0, onAddGroup, focusGroupId, initialTabRequest, onClearTabRequest }) {
+export function StudentsManager({ students, setStudents, enrolments, setEnrolments, schools, teachers, specialists, timetable, teacherCoverage = [], notify, focusStudentId, onClearFocus, returnPage, onReturn, resetKey, viewState, setViewState, newStudentPrefill, onClearNewStudentPrefill, addParentPrefill, onClearAddParentPrefill, goBack, goForward, historyCursor, pageHistory, onAddMemory, onArchiveStudent, onDeleteStudent, onEndEnrolment, groupsView, groupsCount = 0, onAddGroup, focusGroupId, initialTabRequest, onClearTabRequest, waitingListSlot }) {
   const { colors } = useTheme();
 
   // Individuals | Groups segmented toggle — local to this page, not persisted.
@@ -1397,16 +1397,20 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
         Students
       </PageTitle>
 
-      {/* Individuals | Groups segmented toggle — between header band and body */}
-      <div style={{ display: "inline-flex", border: "2px solid " + colors.sidebarActive, borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
-        {[{ id: "individuals", label: "Individuals" }, { id: "groups", label: "Groups" }].map(t => (
+      {/* Individuals | Groups | Waiting List segmented toggle — between header
+          band and body. Three equal-width, centre-aligned segments. */}
+      <div style={{ display: "flex", width: 390, border: "2px solid " + colors.sidebarActive, borderRadius: 10, overflow: "hidden", marginBottom: 16 }}>
+        {[{ id: "individuals", label: "Individuals" }, { id: "groups", label: "Groups" }, { id: "pending", label: "Waiting List" }].map(t => (
           <button key={t.id} onClick={() => setStudentTab(t.id)}
-            style={{ width: 130, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: studentTab === t.id ? colors.sidebarActive : "transparent", color: studentTab === t.id ? colors.accent : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
+            style={{ flex: 1, textAlign: "center", padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", fontWeight: 600, background: studentTab === t.id ? colors.sidebarActive : "transparent", color: studentTab === t.id ? colors.accent : colors.textMuted, transition: "background 0.15s, color 0.15s" }}>
             {t.label}
           </button>
         ))}
       </div>
 
+      {/* Waiting List tab renders the existing PendingManager (embedded) wired
+          from App.js — its full controls/logic are reused, not duplicated. */}
+      {studentTab === "pending" && waitingListSlot}
       {studentTab === "groups" && groupsView}
       {studentTab === "individuals" && (<>{/* ── Individuals side: existing Students table ── */}
 

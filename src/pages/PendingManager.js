@@ -10,7 +10,11 @@ import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos, g
 import { Tag, PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 
-export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory }) {
+// `embedded` (Waiting List folded into the Students page as a third toggle tab):
+// when true, the component's own sticky PageTitle banner is suppressed — the
+// host Students page already shows the banner + the toggle. All controls,
+// actions, and logic are otherwise identical to the standalone page.
+export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory, embedded = false }) {
   const { colors } = useTheme();
   const pendingStudents = students.filter(s => s.status === "pending" || s.status === "trial");
   const [manualSched, setManualSched] = useState({});
@@ -111,10 +115,12 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
 
   return (
     <div>
-      <PageTitle subtitle={`${pendingStudents.length} student${pendingStudents.length !== 1 ? "s" : ""} waiting`} pageColor={PAGE_COLORS.pending}
-        navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />} action={null}>
-        Waiting List
-      </PageTitle>
+      {!embedded && (
+        <PageTitle subtitle={`${pendingStudents.length} student${pendingStudents.length !== 1 ? "s" : ""} waiting`} pageColor={PAGE_COLORS.pending}
+          navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />} action={null}>
+          Waiting List
+        </PageTitle>
+      )}
 
       {pendingStudents.length > 0 && !timetable && (
         <div style={{ marginBottom: 16, padding: 14, background: "#FEF3C7", border: "1px solid #F59E0B40", borderRadius: 10 }}>
