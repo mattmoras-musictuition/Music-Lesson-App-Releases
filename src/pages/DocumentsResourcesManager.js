@@ -740,17 +740,13 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
       <PageTitle
         subtitle={section === "resources" ? `${resources.length} resource${resources.length !== 1 ? "s" : ""}` : `${documents.length} document${documents.length !== 1 ? "s" : ""}`}
         pageColor={PAGE_COLORS.resources}
-        action={section === "resources"
-          ? <Btn onClick={addResource} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Plus size={13} /> Add Resource</Btn>
-          : section === "documents"
-          ? <Btn onClick={addDocument} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Plus size={13} /> Add Document</Btn>
-          : null}
         navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}>
         <span>Documents &amp; Resources</span>
       </PageTitle>
 
-      {/* Section toggle */}
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 16, gap: 8 }}>
+      {/* Section toggle + Add button on one row. The gold Add button sits just to
+          the right of the toggle (~12px gap) and stretches to match its height. */}
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 16, gap: 12 }}>
         <div style={{ display: "flex", gap: 0, background: colors.bg, border: "2px solid " + colors.sidebarHover, borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
           {[
             { id: "resources", label: "Resources", icon: <Library size={13} /> },
@@ -762,6 +758,11 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
             </button>
           ))}
         </div>
+        {section === "resources"
+          ? <Btn onClick={addResource} style={{ alignSelf: "stretch", height: "auto", marginTop: 0, display: "inline-flex", alignItems: "center", gap: 4 }}><Plus size={13} /> Add Resource</Btn>
+          : section === "documents"
+          ? <Btn onClick={addDocument} style={{ alignSelf: "stretch", height: "auto", marginTop: 0, display: "inline-flex", alignItems: "center", gap: 4 }}><Plus size={13} /> Add Document</Btn>
+          : null}
       </div>
 
       {/* ── RESOURCES ── */}
