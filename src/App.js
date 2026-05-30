@@ -40,7 +40,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher } from "./utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
@@ -6550,6 +6550,69 @@ export default function MusicTimetableApp() {
               unscheduled: (prev || { unscheduled: [] }).unscheduled,
             }));
             setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: "active" } : s));
+          }} onAllocatePlace={(studentId, instrument, kind, armedLane) => {
+            // "Allocate to [teacher]" click-to-place: drop the student into the
+            // armed lane's earliest open, policy-allowed class slot.
+            if (!armedLane) return;
+            const student = students.find(s => s.id === studentId);
+            if (!student) return;
+            const school = schools.find(s => s.id === armedLane.schoolId);
+            if (!school) return;
+            const studentInsts = instrumentsFromEnrolments(student.id, enrolments);
+            const inst = studentInsts.find(i => i.name === instrument) || studentInsts[0];
+            if (!inst) return;
+            const day = armedLane.day;
+            // Build specialist lookup (schoolId|className|day → [{start,end,subject}] in minutes).
+            const specLookup = {};
+            for (const sp of (specialists || [])) {
+              const k = `${sp.schoolId}|${sp.className}|${sp.day}`;
+              (specLookup[k] = specLookup[k] || []).push({ start: timeToMin(sp.start), end: timeToMin(sp.end), subject: sp.subject });
+            }
+            const found = findAllocateSlot({
+              school, armedLaneId: armedLane.laneId, day,
+              studentClassName: student.className || "",
+              studentId: student.id,
+              timetableLessons: (timetable?.lessons || []),
+              specLookup, specialistPolicy: school.specialistPolicy,
+            });
+            if (!found) {
+              notify(`No free slot for ${student.name} with ${armedLane.teacherName} on ${day}.`, "warning");
+              return;
+            }
+            const { slot, isClash, subject } = found;
+            const lesson = {
+              id: uid(), studentId: student.id, studentName: student.name,
+              bucket_id: armedLane.laneId,
+              schoolId: school.id, schoolName: school.name,
+              day, slotId: slot.id, slotName: slot.name,
+              start: slot.start, end: slot.end,
+              instrument: inst.name, duringSpecialist: isClash ? subject : false,
+              enrolmentId: enrolmentIdFor(student.id, inst.name, enrolments)
+            };
+            // Snapshot undo per placement (mirror onPlacePending).
+            pendingPlaceUndoStack.current.push({
+              seq: ++ttPageActionSeq.current,
+              timetable: JSON.parse(JSON.stringify(timetable)),
+              students: JSON.parse(JSON.stringify(students)),
+              enrolments: JSON.parse(JSON.stringify(enrolments)),
+              groups: JSON.parse(JSON.stringify(groups)),
+            });
+            pendingPlaceRedoStack.current = [];
+            if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
+            if (kind === "pending") {
+              setTimetableRaw(prev => ({
+                ...(prev || { unscheduled: [] }),
+                lessons: [...((prev || { lessons: [] }).lessons), lesson],
+                unscheduled: (prev || { unscheduled: [] }).unscheduled,
+              }));
+              setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: "active" } : s));
+            } else {
+              setTimetable(prev => ({
+                ...prev,
+                lessons: [...prev.lessons, lesson],
+                unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrument))
+              }));
+            }
           }} onUndo={undoTimetablePage} onRedo={redoTimetablePage} undoCount={ttPageUndoCount()} redoCount={ttPageRedoCount()} onDismissUnscheduled={(studentId, instrument) => {
               setTimetable(prev => ({
                 ...prev,

@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useRef } from "react";
-import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Calendar, Send } from "lucide-react";
+import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Calendar, Send, Crosshair } from "lucide-react";
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
@@ -29,7 +29,7 @@ function buildPreferredDisplayName(name) {
 
 
 
-export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onAllocatePlace, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const viewMode = viewState.viewMode;
@@ -48,6 +48,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const [confirmClearSchool, setConfirmClearSchool] = useState(false);
   const [confirmRegenerateSchool, setConfirmRegenerateSchool] = useState(false);
   const [dragOver, setDragOver] = useState(null);
+  // Allocate-to-lane (click-to-place) mode. When set, clicking a tray card drops
+  // the student into this lane's earliest open, non-clashing slot.
+  // Shape: { schoolId, day, laneId, teacherId, teacherName } | null
+  const [armedLane, setArmedLane] = useState(null);
   const gridScrollRef = useRef(null);
   const savedGridScroll = useRef({});
   savedGridScroll.current = sharedTimetableScroll?.gridScroll || viewState.gridScroll || {};
@@ -979,6 +983,60 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {mkMttEmailRow("Parents", allParentEmails, parentRows, "parents", colors.accent)}
                 {mkMttEmailRow("Class Teachers", allTeacherEmails, teacherRows, "teachers", colors.sidebarActive)}
                 {mkMttEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
+                {/* Allocate-to-lane — arm a day's teacher lane for click-to-place */}
+                {(() => {
+                  const allocLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  if (allocLanes.length === 0) return null;
+                  const arm = (lane) => {
+                    const t = teachers.find(tt => tt.id === lane.teacherId);
+                    setArmedLane({ schoolId: selectedSchool, day, laneId: lane.id, teacherId: lane.teacherId, teacherName: t?.name || "Teacher" });
+                    setContextMenu(null); setMttDayHeaderSubmenu(null);
+                  };
+                  if (allocLanes.length === 1) {
+                    const t = teachers.find(tt => tt.id === allocLanes[0].teacherId);
+                    return (
+                      <>
+                        <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                        <button onClick={() => arm(allocLanes[0])}
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}
+                          onMouseEnter={hov} onMouseLeave={unhov}>
+                          <Crosshair size={13} /> Allocate to {t?.name?.split(" ")[0] || "teacher"}
+                        </button>
+                      </>
+                    );
+                  }
+                  const isOpen = mttDayHeaderSubmenu?.type === "allocate";
+                  return (
+                    <>
+                      <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
+                      <div style={{ position: "relative" }}>
+                        {isOpen && (
+                          <div ref={mttDayHeaderSubRef}
+                            style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+                            {allocLanes.map(lane => {
+                              const t = teachers.find(tt => tt.id === lane.teacherId);
+                              return (
+                                <button key={lane.id} onClick={() => arm(lane)}
+                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
+                                  onMouseEnter={hov} onMouseLeave={unhov}>
+                                  {t?.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
+                                  Allocate to {t?.name?.split(" ")[0] || "teacher"}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <button
+                          onMouseEnter={e => { hov(e); if (!isOpen) setMttDayHeaderSubmenu({ type: "allocate", y: e.currentTarget.getBoundingClientRect().top }); }}
+                          onMouseLeave={unhov}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Crosshair size={13} /> Allocate to…</span>
+                          <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
                 {/* Spec 2 cluster 9b — Manage Staff (MTT side; Add + Remove combined) */}
                 {(() => {
                   const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
@@ -1397,6 +1455,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             ) : (
               <Btn variant="secondary" onClick={() => setConfirmRegenerate(true)} title="Reschedule" style={{ color: colors.sidebarActive, border: "none" }}><RefreshCw size={13} /></Btn>
             )}
+            {armedLane && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#CCFBF1", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
+                <span style={{ fontSize: 12, color: "#0F766E", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5 }}><Crosshair size={12} /> Allocating to {armedLane.teacherName?.split(" ")[0]}</span>
+                <Btn variant="primary" onClick={() => setArmedLane(null)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#0D9488", color: "#fff", border: "none" }}>Done</Btn>
+              </div>
+            )}
             {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)"><Undo2 size={13} /></Btn>}
             {onRedo && <Btn variant="secondary" onClick={onRedo} disabled={!redoCount} style={{ opacity: redoCount ? 1 : 0.4 }} title="Redo (Cmd+Shift+Z)"><Redo2 size={13} /></Btn>}
           </>}
@@ -1543,12 +1607,18 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, null, null, viewedLanes)?.teacher;
                   const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
                   const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
+                  const isArmed = !!armedLane && armedLane.schoolId === selectedSchool && armedLane.day === d;
                   return (
                     <div key={d}
                       onClick={e => { e.stopPropagation(); setMttSelectedDays(prev => { const next = new Set(prev); if (next.has(d)) next.delete(d); else next.add(d); return next; }); }}
                       onContextMenu={e => { e.preventDefault(); setMttEmailSubmenu(null); setMttEmailLevel2(null); setMttDayHeaderSubmenu(null); setContextMenu({ x: e.clientX, y: e.clientY, isDayHeader: true, isMtt: true, day: d, schoolId: selectedSchool }); }}
-                      style={{ background: daySelected ? colors.accent : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}>
+                      style={{ background: isArmed ? "#0D9488" : daySelected ? colors.accent : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s", boxShadow: isArmed ? "inset 0 0 0 3px #5EEAD4" : undefined }}>
                       <span>{d}</span>
+                      {isArmed && (
+                        <div style={{ marginTop: 4, fontSize: 9, fontWeight: 700, lineHeight: 1.2, display: "flex", alignItems: "center", justifyContent: "center", gap: 3 }}>
+                          <Crosshair size={9} /> Allocating to {armedLane.teacherName?.split(" ")[0]}
+                        </div>
+                      )}
                       {dayLanes.length >= 2 && (
                         <div style={{ display: "flex", justifyContent: "flex-start", gap: 3, marginTop: 4 }}>
                           {dayLanes.map(lane => {
@@ -1916,10 +1986,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       onDragStart={e => { e.dataTransfer.setData("text/plain", `unsched:${u.student.id}:${_uInstName}`); e.dataTransfer.effectAllowed = "move"; setDraggingId(`unsched:${i}`); }}
                       onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
                       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, isUnschedCard: true, studentId: u.student.id, instrument: _uInstName, studentName: u.student.name }); }}
+                      onClick={() => { if (armedLane && armedLane.schoolId === selectedSchool && onAllocatePlace) onAllocatePlace(u.student.id, _uInstName, "unsched", armedLane); }}
                       style={{
                         padding: "6px 10px", background: colors.cardBg, borderRadius: 8, fontSize: 12,
                         border: `1px solid ${colors.danger}40`, borderLeft: `3px solid ${colors.danger}`,
-                        cursor: "grab", opacity: draggingId === `unsched:${i}` ? 0.4 : 1,
+                        cursor: armedLane ? "copy" : "grab", opacity: draggingId === `unsched:${i}` ? 0.4 : 1,
                         transition: "opacity 0.15s", maxWidth: 280
                       }}>
                       <div style={{ fontWeight: 600 }}>{u.student.name} — {_uInstName + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</div>
@@ -1984,10 +2055,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <div key={row.student.id + row.instrument} draggable
                         onDragStart={e => { e.dataTransfer.setData("text/plain", dragId); e.dataTransfer.effectAllowed = "move"; setDraggingId(dragId); }}
                         onDragEnd={() => { setDraggingId(null); setDragOver(null); }}
+                        onClick={() => { if (armedLane && armedLane.schoolId === selectedSchool && onAllocatePlace) onAllocatePlace(row.student.id, row.instrument, "pending", armedLane); }}
                         style={{
                           padding: "6px 10px", background: colors.cardBg, borderRadius: 8, fontSize: 12,
                           border: `1px solid ${PENDING_PURPLE}40`, borderLeft: `3px solid ${instColor}`,
-                          cursor: "grab", opacity: draggingId === dragId ? 0.4 : 1,
+                          cursor: armedLane ? "copy" : "grab", opacity: draggingId === dragId ? 0.4 : 1,
                           transition: "opacity 0.15s", minWidth: 140, maxWidth: 240
                         }}>
                         <div style={{ fontWeight: 600, color: colors.text }}>{row.student.name}</div>

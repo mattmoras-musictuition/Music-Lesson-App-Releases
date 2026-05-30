@@ -458,3 +458,45 @@ export function getBreaksForSchool(school, teachers, lessons, teacherCoverage) {
   }
   return breaks;
 }
+
+// ── Allocate-to-lane slot finder ─────────────────────────────
+// Pure helper for the master-timetable "Allocate to [teacher]" click-to-place
+// flow. Given an armed lane + a student, returns the earliest open, policy-
+// allowed class slot, or null when none fits.
+//   school            — school object (reads school.slots; only type==="class" bookable)
+//   armedLaneId       — bucket_id of the armed lane
+//   day               — the armed day name
+//   studentClassName  — student's className (for specialist-clash lookup)
+//   studentId         — used to detect the student's own lesson already at a slot
+//   timetableLessons  — current timetable.lessons array
+//   specLookup        — { `${schoolId}|${className}|${day}`: [{start,end,subject}] }, times in minutes
+//   specialistPolicy  — "no" (HARD) | "yes" | "prefer-not" (SOFT)
+// Returns { slot, isClash, subject } | null.
+//   HARD ("no"):  earliest available non-clash slot, else null.
+//   SOFT (other): earliest available non-clash slot, else earliest available clash slot, else null.
+export function findAllocateSlot({ school, armedLaneId, day, studentClassName, studentId, timetableLessons, specLookup, specialistPolicy }) {
+  if (!school || !Array.isArray(school.slots)) return null;
+  const lessons = timetableLessons || [];
+  const classSlots = school.slots
+    .filter(s => s.type === "class")
+    .sort((a, b) => timeToMin(a.start) - timeToMin(b.start));
+  const specs = (studentClassName && specLookup) ? (specLookup[`${school.id}|${studentClassName}|${day}`] || []) : [];
+  let firstClash = null;
+  for (const slot of classSlots) {
+    // Unavailable: this lane already has a lesson at this start, or the student
+    // already has a lesson at this start on this day (self-clash).
+    const laneOccupied = lessons.some(l => l.bucket_id === armedLaneId && l.day === day && l.start === slot.start);
+    if (laneOccupied) continue;
+    const selfClash = lessons.some(l => l.studentId === studentId && l.day === day && l.start === slot.start);
+    if (selfClash) continue;
+    const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
+    const spMatch = specs.find(sp => sStart < sp.end && sEnd > sp.start);
+    if (!spMatch) return { slot, isClash: false, subject: false };
+    // Clash slot — only usable on soft policy, and only as a last resort.
+    if (specialistPolicy !== "no" && !firstClash) {
+      firstClash = { slot, isClash: true, subject: spMatch.subject || true };
+    }
+  }
+  if (specialistPolicy !== "no" && firstClash) return firstClash;
+  return null;
+}
