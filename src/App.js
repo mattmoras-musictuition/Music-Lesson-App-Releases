@@ -6189,11 +6189,11 @@ export default function MusicTimetableApp() {
               pendingPlaceRedoStack.current = [];
               if (pendingPlaceUndoStack.current.length > 50) pendingPlaceUndoStack.current.shift();
             }
-            setTimetable(prev => ({
+            setTimetable(prev => prev ? ({
               ...prev,
               lessons: [...prev.lessons, lesson],
               unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrumentName))
-            }));
+            }) : ({ lessons: [lesson], unscheduled: [] }));
           }} onPlacePending={(data, day, time) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
             // Pending placements still snapshot unconditionally (preserving pre-10b
@@ -6312,11 +6312,11 @@ export default function MusicTimetableApp() {
               }));
               setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: "active" } : s));
             } else {
-              setTimetable(prev => ({
+              setTimetable(prev => prev ? ({
                 ...prev,
                 lessons: [...prev.lessons, lesson],
                 unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrument))
-              }));
+              }) : ({ lessons: [lesson], unscheduled: [] }));
             }
           }} onUndo={undoTimetablePage} onRedo={redoTimetablePage} undoCount={ttPageUndoCount()} redoCount={ttPageRedoCount()} onDismissUnscheduled={(studentId, instrument) => {
               setTimetable(prev => ({
