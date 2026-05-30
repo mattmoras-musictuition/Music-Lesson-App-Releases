@@ -52,6 +52,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   // the student into this lane's earliest open, non-clashing slot.
   // Shape: { schoolId, day, laneId, teacherId, teacherName } | null
   const [armedLane, setArmedLane] = useState(null);
+  // Cluster 2 — instrument filter for the allocate trays (empty array = show all).
+  const [selectedInstruments, setSelectedInstruments] = useState([]);
   const gridScrollRef = useRef(null);
   const savedGridScroll = useRef({});
   savedGridScroll.current = sharedTimetableScroll?.gridScroll || viewState.gridScroll || {};
@@ -836,6 +838,34 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
 
   const allSchoolUnscheduled = [...schoolUnscheduled, ...derivedUnscheduled];
 
+  // ── Cluster 2 — instrument filter for the allocate trays ──────
+  // schoolPending lifted here so both the filter bar and the waiting-list tray
+  // share one derivation (the pending tray below references this).
+  const schoolPending = (pendingStudents || [])
+    .filter(s => s.schoolId === selectedSchool)
+    .flatMap(s => {
+      const insts = instrumentsFromEnrolments(s.id, enrolments);
+      // Placeholder row when student has no enrolments — preserves prior fallback
+      // behaviour so instrument-less pending students still appear in the waiting list.
+      const items = insts.length > 0 ? insts : [{ name: "", isGroup: false }];
+      return items
+        .filter(inst => !inst.isGroup)
+        .filter(inst => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === s.id && l.instrument === inst.name)))
+        .map(inst => ({ student: s, instrument: inst.name }));
+    });
+  const _unschedInstName = (u) => u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name;
+  // Distinct instruments present across BOTH trays — the chip options.
+  const trayInstrumentOptions = [...new Set([
+    ...allSchoolUnscheduled.map(_unschedInstName),
+    ...schoolPending.map(p => p.instrument),
+  ].filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const _instMatches = (name) => selectedInstruments.length === 0 || selectedInstruments.includes(name);
+  const filteredUnscheduled = allSchoolUnscheduled.filter(u => _instMatches(_unschedInstName(u)));
+  const filteredPending = schoolPending.filter(p => _instMatches(p.instrument));
+  // Auto-select set on arm (in the menu's arm() handler) and reset on Done — done
+  // imperatively rather than via useEffect because the tray derivations above sit
+  // after this component's `timetable` early-return (a hook here would be conditional).
+
   const currentSchool = schools.find(s => s.id === selectedSchool);
   // ── Drag overlay: precomputed per-slot warnings + specialist tags ──
 
@@ -990,6 +1020,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const arm = (lane) => {
                     const t = teachers.find(tt => tt.id === lane.teacherId);
                     setArmedLane({ schoolId: selectedSchool, day, laneId: lane.id, teacherId: lane.teacherId, teacherName: t?.name || "Teacher" });
+                    // Cluster 2 — auto-select the armed teacher's instruments that are present in the trays.
+                    setSelectedInstruments((t?.instruments || []).map(i => i.name).filter(n => n && trayInstrumentOptions.includes(n)));
                     setContextMenu(null); setMttDayHeaderSubmenu(null);
                   };
                   if (allocLanes.length === 1) {
@@ -1458,7 +1490,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             {armedLane && (
               <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#CCFBF1", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: "#0F766E", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5 }}><Crosshair size={12} /> Allocating to {armedLane.teacherName?.split(" ")[0]}</span>
-                <Btn variant="primary" onClick={() => setArmedLane(null)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#0D9488", color: "#fff", border: "none" }}>Done</Btn>
+                <Btn variant="primary" onClick={() => { setArmedLane(null); setSelectedInstruments([]); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#0D9488", color: "#fff", border: "none" }}>Done</Btn>
               </div>
             )}
             {onUndo && <Btn variant="secondary" onClick={onUndo} disabled={!undoCount} style={{ opacity: undoCount ? 1 : 0.4 }} title="Undo (Cmd+Z)"><Undo2 size={13} /></Btn>}
@@ -1950,8 +1982,35 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             );
           })()}
 
+          {/* Cluster 2 — instrument filter for the allocate trays */}
+          {trayInstrumentOptions.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 20 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, marginRight: 2 }}>Instrument:</span>
+              {trayInstrumentOptions.map(name => {
+                const active = selectedInstruments.includes(name);
+                return (
+                  <button key={name}
+                    onClick={() => setSelectedInstruments(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name])}
+                    style={{
+                      padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer",
+                      border: `1px solid ${active ? colors.sidebarActive : colors.border}`,
+                      background: active ? colors.sidebarActive : colors.cardBg,
+                      color: active ? "#fff" : colors.textMuted, transition: "background 0.12s, color 0.12s"
+                    }}>
+                    {name}
+                  </button>
+                );
+              })}
+              {selectedInstruments.length > 0 && (
+                <button onClick={() => setSelectedInstruments([])}
+                  style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: `1px solid ${colors.border}`, background: "none", color: colors.textMuted }}>
+                  All
+                </button>
+              )}
+            </div>
+          )}
           {/* Unscheduled + Pending — side by side row */}
-          <div style={{ display: "flex", gap: 12, marginTop: 20, alignItems: "stretch" }}>
+          <div style={{ display: "flex", gap: 12, marginTop: 10, alignItems: "stretch" }}>
 
           {/* Unscheduled area — always visible, accepts drops from grid */}
           {(() => {
@@ -1979,7 +2038,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 </div>
                 {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to place it, or use Place</div>}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
-                  {allSchoolUnscheduled.map((u, i) => {
+                  {filteredUnscheduled.map((u, i) => {
                     const _uInstName = u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name;
                     return (
                     <div key={i} draggable
@@ -2011,20 +2070,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const PENDING_PURPLE = darkMode ? "#A78BFA" : "#5B21B6";
             const PENDING_PURPLE_LIGHT = darkMode ? "rgba(91,33,182,0.15)" : "#EDE9F6";
             const PENDING_PURPLE_BORDER = darkMode ? "#7C3AED60" : "#C4B5FD";
-            const schoolPending = (pendingStudents || [])
-              .filter(s => s.schoolId === selectedSchool)
-              .flatMap(s => {
-                const insts = instrumentsFromEnrolments(s.id, enrolments);
-                // Placeholder row when student has no enrolments — preserves prior fallback
-                // behaviour so instrument-less pending students still appear in the waiting list.
-                const items = insts.length > 0 ? insts : [{ name: "", isGroup: false }];
-                return items
-                  .filter(inst => !inst.isGroup)
-                  .filter(inst => !(timetable && timetable.lessons && timetable.lessons.some(l => l.studentId === s.id && l.instrument === inst.name)))
-                  // Session 3 / C2 — pending cards no longer carry teacher info.
-                  // No MTT placement exists by definition; surface omitted.
-                  .map(inst => ({ student: s, instrument: inst.name }));
-              });
+            // schoolPending is lifted to the component body (Cluster 2 instrument filter).
             const hasItems = schoolPending.length > 0;
             return (
               <Card style={{ flex: "1 1 0", minWidth: 0, marginTop: 0,
@@ -2048,7 +2094,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 </div>
                 {hasItems && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 10 }}>Drag a card into the timetable grid to schedule and activate the student</div>}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8, minHeight: hasItems ? undefined : 36 }}>
-                  {schoolPending.map((row, i) => {
+                  {filteredPending.map((row, i) => {
                     const dragId = `pending:${row.student.id}:${row.instrument}`;
                     const instColor = getInstColor(row.instrument, false);
                     return (
