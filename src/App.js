@@ -3501,13 +3501,16 @@ export default function MusicTimetableApp() {
     lines.push("## Teachers");
     teachers.forEach(t => {
       const instrs = (t.instruments || []).map(i => i.name || i).filter(Boolean).join(", ");
-      const avail = (t.availability || []).map(a => {
-        const schoolName = schools.find(s => s.id === a.schoolId)?.name || a.schoolId;
-        return `${a.day} @ ${schoolName}`;
-      }).join(", ");
+      // Where a teacher teaches now derives from active teacher_coverage lanes.
+      const teaches = teacherCoverage
+        .filter(l => l.teacherId === t.id && l.status === "active")
+        .map(l => {
+          const schoolName = schools.find(s => s.id === l.schoolId)?.name || l.schoolId;
+          return `${l.day} @ ${schoolName}`;
+        }).join(", ");
       lines.push(`Teacher: ${t.name} (id: ${t.id})${t.email ? ` <${t.email}>` : ""}`);
       if (instrs) lines.push(`  Instruments: ${instrs}`);
-      if (avail) lines.push(`  Teaches: ${avail}`);
+      if (teaches) lines.push(`  Teaches: ${teaches}`);
     });
     lines.push("");
 
@@ -4310,8 +4313,10 @@ export default function MusicTimetableApp() {
     const teacher = teachers.find(t => t.id === group.teacherId);
     if (!school || !teacher) { notify("School or teacher not found", "warning"); return null; }
 
-    const teacherAvail = teacher.availability.filter(a => a.schoolId === school.id);
-    if (teacherAvail.length === 0) { return { success: false, reason: `${teacher.name} not available at ${school.name}` }; }
+    // Eligibility is gated per (school, day) by active teacher_coverage lanes
+    // below (manual path: findLaneId returns a "no covering lane" error; auto
+    // path: per-day findLaneId + the lane-based fallthrough reason). No
+    // school-level availability pre-gate needed.
 
     const schoolLessons = timetable.lessons.filter(l => l.schoolId === school.id);
     const classSlots = school.slots.filter(s => s.type === "class");
@@ -4360,16 +4365,15 @@ export default function MusicTimetableApp() {
     // so the fallthrough error distinguishes "no slot" from "no lane".
     let anyLaneFound = false;
 
-    // Try each day the teacher is available
+    // Try each day the teacher has a covering lane at this school
     for (const day of school.days) {
-      const dayAvail = teacherAvail.find(a => a.day === day);
-      if (!dayAvail) continue;
-      // Spec 2 cluster 4c — skip days without a covering lane.
+      // Spec 2 cluster 4c — skip days without a covering lane. The lane is the
+      // source of truth for (school, day) eligibility; the availability
+      // time-window bound is dropped (no lane equivalent — class slots and
+      // break/booking checks below are sufficient).
       const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
       if (!bucketId) continue;
       anyLaneFound = true;
-      const availStart = timeToMin(dayAvail.start);
-      const availEnd = timeToMin(dayAvail.end);
 
       // Get all teacher lessons on this day at this school
       const teacherDayLessons = timetable.lessons.filter(l =>
@@ -4378,9 +4382,6 @@ export default function MusicTimetableApp() {
 
       // Try each class-time slot (not before/after school)
       for (const slot of classSlots) {
-        const slotStart = timeToMin(slot.start);
-        const slotEnd = timeToMin(slot.end);
-        if (slotStart < availStart || slotEnd > availEnd) continue;
         if (isDuringBreak(day, slot.start, slot.end)) continue;
 
         // Check if teacher is free at this slot
@@ -4396,9 +4397,6 @@ export default function MusicTimetableApp() {
           let canShuffle = false;
           for (const altSlot of classSlots) {
             if (altSlot.start === slot.start) continue;
-            const altStart = timeToMin(altSlot.start);
-            const altEnd = timeToMin(altSlot.end);
-            if (altStart < availStart || altEnd > availEnd) continue;
             if (isDuringBreak(day, altSlot.start, altSlot.end)) continue;
             // Check no other lesson by this teacher at the alt time
             if (teacherDayLessons.some(l => l.start === altSlot.start && l.id !== teacherBusy.id)) continue;

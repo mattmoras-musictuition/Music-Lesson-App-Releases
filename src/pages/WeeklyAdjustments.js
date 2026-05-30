@@ -1192,7 +1192,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
 
-        const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
+        const teacherList = teachers.filter(t => teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === selectedSchool && l.status === "active")).map(t => t.name).join(", ");
         const schoolGroups = groups.filter(g => g.schoolId === selectedSchool && g.status === "scheduled");
         const groupList = schoolGroups.length > 0 ? schoolGroups.map(g => `${g.name} (${g.instrument}, ${g.day || "various"})`).join("\n") : "(none)";
 
@@ -1440,7 +1440,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const schoolStudents = students.filter(s => s.schoolId === selectedSchool && s.status === "active");
         const studentList = schoolStudents.map(s => `${s.name} (${s.className}, ${instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join("+")})`).join("\n");
         const classNames = [...new Set(schoolStudents.map(s => s.className))].join(", ");
-        const teacherList = teachers.filter(t => t.availability.some(a => a.schoolId === selectedSchool)).map(t => t.name).join(", ");
+        const teacherList = teachers.filter(t => teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === selectedSchool && l.status === "active")).map(t => t.name).join(", ");
         const schoolGroups2 = groups.filter(g => g.schoolId === selectedSchool && g.status === "scheduled");
         const groupList2 = schoolGroups2.length > 0 ? schoolGroups2.map(g => `${g.name} (${g.instrument}, ${g.day || "various"})`).join("\n") : "(none)";
         const todayDay = melbourneDayName();
