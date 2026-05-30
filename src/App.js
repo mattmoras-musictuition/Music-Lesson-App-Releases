@@ -46,10 +46,8 @@ import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } fro
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
-import { parseSpecialistNotes, parseStudentNotes } from "./utils/claudeNotes";
 
 // ── Data generators ─────────────────────────────────────────
-import { generateMasterTimetable, compactTimetable, scheduleReadyGroups } from "./data/timetableGenerator";
 import { printMasterTimetable } from "./data/weeklyTimetableGenerator";
 import { runSmokeTests } from "./data/smokeTests";
 
@@ -4233,212 +4231,6 @@ export default function MusicTimetableApp() {
   const [noUpdateFlash, setNoUpdateFlash] = useState(false); // briefly show "No new updates"
   const [clockTime, setClockTime] = useState(() => { const n = melbourneNow(); const h = n.getHours(); const h12 = h % 12 || 12; return h12 + ":" + String(n.getMinutes()).padStart(2, "0"); });
 
-  const handleGenerateTimetable = async () => {
-    if (schools.length === 0) { notify("Add at least one school first", "warning"); return; }
-    const allSchedulable = students.filter(s => s.status === "active");
-    if (allSchedulable.length === 0) { notify("Add at least one active student first", "warning"); return; }
-    if (teachers.length === 0) { notify("Add at least one teacher first", "warning"); return; }
-
-    // Data validation warnings
-    // Session 3 / C6: "X students without assigned teacher" warning dropped —
-    // no meaningful equivalent in the lane-derived model. Per-slot feasibility
-    // is the generator's compatibility gate's job at scheduling time.
-    const warnings = [];
-    const noInstrument = allSchedulable.filter(s => instrumentsFromEnrolments(s.id, enrolments).length === 0);
-    if (noInstrument.length > 0) warnings.push(`${noInstrument.length} student${noInstrument.length > 1 ? "s" : ""} without instruments: ${noInstrument.slice(0, 5).map(s => s.name).join(", ")}${noInstrument.length > 5 ? "..." : ""}`);
-    const noSlots = schools.filter(s => !s.slots || s.slots.length === 0);
-    if (noSlots.length > 0) warnings.push(`${noSlots.length} school${noSlots.length > 1 ? "s" : ""} without time slots: ${noSlots.map(s => s.name).join(", ")}`);
-    const noAvail = teachers.filter(t => !t.availability || t.availability.length === 0);
-    if (noAvail.length > 0) warnings.push(`${noAvail.length} teacher${noAvail.length > 1 ? "s" : ""} without availability: ${noAvail.map(t => t.name).join(", ")}`);
-    if (warnings.length > 0) {
-      notify("⚠ " + warnings.join(" · "), "warning");
-    }
-
-    try {
-
-    // Check if any active students have notes that need AI parsing
-    const studentsWithNotes = allSchedulable.filter(s => s.notes && s.notes.trim());
-    const specialistsWithNotes = specialists.filter(s => s.notes && s.notes.trim());
-    let enrichedStudents = [...students];
-    let enrichedSpecialists = specialists;
-
-    if (studentsWithNotes.length > 0 || specialistsWithNotes.length > 0) {
-      try {
-        enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
-        enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
-      } catch (err) {
-        console.error("Note parsing error:", err);
-        notify("⚠ Note parsing skipped: " + err.message, "warning");
-      }
-    }
-
-    // Schedule eligible groups FIRST (equal priority — they compete for slots before individuals)
-    // Eligible = any group with enough members, regardless of status
-    const eligibleGroups = groups.filter(g => (g.studentIds || []).length >= g.minSize && g.status !== "scheduled");
-    const groupLessons = eligibleGroups.length > 0
-      ? scheduleReadyGroups(eligibleGroups.map(g => ({ ...g, status: "ready" })), [], schools, students, teachers, enrichedSpecialists, teacherCoverage)
-      : { scheduled: [], failed: [] };
-
-    // Generate individual lessons around the group lessons
-    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
-      existingLessons: groupLessons.scheduled,
-      teacherCoverage
-    });
-    result.unscheduled = [...result.unscheduled, ...groupLessons.failed];
-
-
-    // Update group statuses
-    const scheduledGroupIds = new Set(groupLessons.scheduled.map(l => l.groupId));
-    if (scheduledGroupIds.size > 0) {
-      setGroups(prev => prev.map(g => scheduledGroupIds.has(g.id) ? { ...g, status: "scheduled" } : g));
-    }
-
-    compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
-    // Post-compaction double-booking check
-    for (let i = result.lessons.length - 1; i >= 0; i--) {
-      const l = result.lessons[i];
-      const lTid = getCardTeacherId(l, teacherCoverage);
-      const conflict = result.lessons.find((o, j) => {
-        if (j >= i) return false;
-        const oTid = getCardTeacherId(o, teacherCoverage);
-        return lTid && oTid && oTid === lTid && o.day === l.day &&
-          timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
-      });
-      if (conflict) {
-        const conflictTeacherName = teachers.find(t => t.id === lTid)?.name || "(unknown)";
-        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${conflictTeacherName} on ${l.day} at ${l.start}` });
-        result.lessons.splice(i, 1);
-      }
-    }
-    // Seed masterBreaks from teacher-level break settings only.
-    // School-level breaks (school.teacherBreaks) are rendered as spanning rows — not cards.
-    const seededBreaks = [];
-    for (const school of schools) {
-      const schoolSlotTimes = (school.slots || []).map(s => s.start);
-      // School-wide break time ranges — mark those slot times so we can exclude them
-      const schoolBreakTimes = new Set();
-      for (const b of (school.teacherBreaks || [])) {
-        const bStart = timeToMin(b.start), bEnd = timeToMin(b.end);
-        for (const t of schoolSlotTimes) {
-          if (timeToMin(t) >= bStart && timeToMin(t) < bEnd) schoolBreakTimes.add(t);
-        }
-      }
-      // Recess/lunch slot types also count as school-level breaks
-      for (const s of (school.slots || [])) {
-        if (s.type === "recess" || s.type === "lunch") schoolBreakTimes.add(s.start);
-      }
-      // Teacher-level breaks → per-day draggable cards
-      for (const teacher of teachers) {
-        for (const tb of (teacher.teacherBreaks || [])) {
-          if (tb.schoolId !== school.id) continue;
-          const bDay = tb.day || null;
-          const bStart = timeToMin(tb.start), bEnd = timeToMin(tb.end);
-          const days = bDay ? [bDay] : DAYS;
-          for (const d of days) {
-            for (const t of schoolSlotTimes) {
-              if (schoolBreakTimes.has(t)) continue; // school break — skip, shown as row
-              const tMin = timeToMin(t);
-              if (tMin >= bStart && tMin < bEnd) {
-                seededBreaks.push({ id: uid(), schoolId: school.id, day: d, time: t });
-              }
-            }
-          }
-        }
-      }
-    }
-    // Deduplicate by schoolId+day+time
-    const seen = new Set();
-    const dedupedBreaks = seededBreaks.filter(b => {
-      const k = `${b.schoolId}|${b.day}|${b.time}`;
-      if (seen.has(k)) return false;
-      seen.add(k); return true;
-    });
-    setMasterBreaks(dedupedBreaks);
-    setTimetable({ ...result, lessons: stampEnrolmentIds(result.lessons, enrolments) });
-    const groupsSched = groupLessons.scheduled.length;
-    let msg = `Timetable scheduled: ${result.lessons.length} lessons scheduled, ${result.unscheduled.length} unscheduled`;
-    if (groupsSched > 0) msg += ` (incl. ${groupsSched} group${groupsSched !== 1 ? "s" : ""})`;
-    notify(msg);
-    setPage("timetable");
-    } catch (genErr) {
-      notify(`Generation error: ${genErr.message}`, "danger");
-    }
-  };
-
-  const handleGenerateSchool = async (schoolId) => {
-    const schoolName = schools.find(s => s.id === schoolId)?.name || "school";
-    const schoolStudents = students.filter(s => s.status === "active" && s.schoolId === schoolId);
-    if (schoolStudents.length === 0) { notify(`No active students at ${schoolName}`, "warning"); return; }
-
-    // Keep lessons from other schools (drop old group lessons at this school — will re-schedule)
-    const otherLessons = timetable ? timetable.lessons.filter(l => l.schoolId !== schoolId) : [];
-    const otherUnscheduled = timetable ? timetable.unscheduled.filter(u => u.student.schoolId !== schoolId) : [];
-
-    // AI note parsing for this school's students only
-    let enrichedStudents = [...students];
-    let enrichedSpecialists = specialists;
-    const studentsWithNotes = schoolStudents.filter(s => s.notes && s.notes.trim());
-    const specialistsWithNotes = specialists.filter(s => s.notes && s.notes.trim() && s.schoolId === schoolId);
-
-    if (studentsWithNotes.length > 0 || specialistsWithNotes.length > 0) {
-      try {
-        enrichedSpecialists = await parseSpecialistNotes(specialists, specialistsWithNotes, recordUsage);
-        enrichedStudents    = await parseStudentNotes(students, studentsWithNotes, enrichedSpecialists, schools, recordUsage);
-      } catch (err) {
-        console.error("Note parsing error:", err);
-      }
-    }
-
-    // Schedule eligible groups at this school FIRST (equal priority)
-    const eligibleSchoolGroups = groups.filter(g =>
-      g.schoolId === schoolId && (g.studentIds || []).length >= g.minSize && g.status !== "scheduled"
-    );
-    const prevScheduledGroups = groups.filter(g => g.status === "scheduled" && g.schoolId === schoolId);
-    const allGroupsToSchedule = [...eligibleSchoolGroups, ...prevScheduledGroups];
-    const tempGroupsForSched = allGroupsToSchedule.map(g => ({ ...g, status: "ready" }));
-    const groupLessons = tempGroupsForSched.length > 0
-      ? scheduleReadyGroups(tempGroupsForSched, otherLessons, schools, students, teachers, enrichedSpecialists, teacherCoverage)
-      : { scheduled: [], failed: [] };
-
-    const result = generateMasterTimetable(schools, enrichedStudents, teachers, enrolments, enrichedSpecialists, {
-      existingLessons: [...otherLessons, ...groupLessons.scheduled],
-      targetSchoolId: schoolId,
-      teacherCoverage
-    });
-    result.unscheduled = [...otherUnscheduled, ...result.unscheduled.filter(u => u.student.schoolId === schoolId), ...groupLessons.failed];
-
-    // Promote pending students that got scheduled
-    // Update group statuses
-    const scheduledGroupIds = new Set(groupLessons.scheduled.map(l => l.groupId));
-    const revertedGroupIds = prevScheduledGroups.filter(g => !scheduledGroupIds.has(g.id)).map(g => g.id);
-    setGroups(prev => prev.map(g => {
-      if (scheduledGroupIds.has(g.id)) return { ...g, status: "scheduled" };
-      if (revertedGroupIds.includes(g.id)) return { ...g, status: "forming" };
-      return g;
-    }));
-
-    compactTimetable(result, schools, students, teachers, enrolments, specialists, teacherCoverage);
-    for (let i = result.lessons.length - 1; i >= 0; i--) {
-      const l = result.lessons[i];
-      const lTid = getCardTeacherId(l, teacherCoverage);
-      const conflict = result.lessons.find((o, j) => {
-        if (j >= i) return false;
-        const oTid = getCardTeacherId(o, teacherCoverage);
-        return lTid && oTid && oTid === lTid && o.day === l.day &&
-          timeToMin(o.start) < timeToMin(l.end) && timeToMin(l.start) < timeToMin(o.end);
-      });
-      if (conflict) {
-        const conflictTeacherName = teachers.find(t => t.id === lTid)?.name || "(unknown)";
-        result.unscheduled.push({ student: students.find(s => s.id === l.studentId) || { id: l.studentId, name: l.studentName, schoolId: l.schoolId }, instrument: l.instrument, reason: `Double-booking: ${conflictTeacherName} on ${l.day} at ${l.start}` });
-        result.lessons.splice(i, 1);
-      }
-    }
-    setTimetable({ ...result, lessons: stampEnrolmentIds(result.lessons, enrolments) });
-    const newCount = result.lessons.length - otherLessons.length;
-    const newUnsched = result.unscheduled.filter(u => (u.student?.schoolId || u.schoolId) === schoolId).length;
-    notify(`${schoolName}: ${newCount} lessons scheduled${newUnsched > 0 ? `, ${newUnsched} unscheduled` : ""}`);
-  };
-
   const handleClearSchool = (schoolId) => {
     if (!timetable) return;
     const schoolName = schools.find(s => s.id === schoolId)?.name || "school";
@@ -4774,53 +4566,11 @@ export default function MusicTimetableApp() {
       // Keep student as pending — they are scheduled but still on the waiting list until explicitly activated
       return;
     }
-    const schoolId = schoolIdOrStudentId;
-    const existingLessons = timetable ? [...timetable.lessons] : [];
-    const existingUnscheduled = timetable ? [...timetable.unscheduled] : [];
-
-    let pendingToSchedule = students.filter(s => s.status === "pending" || s.status === "trial");
-    if (schoolId) pendingToSchedule = pendingToSchedule.filter(s => s.schoolId === schoolId);
-
-    if (pendingToSchedule.length === 0) {
-      notify("No pending students to schedule", "warning");
-      return;
-    }
-
-    const tempStudents = pendingToSchedule.map(s => ({ ...s, status: "active" }));
-    const result = generateMasterTimetable(
-      schools, tempStudents, teachers, enrolments, specialists,
-      { existingLessons, targetSchoolId: schoolId || null, teacherCoverage }
-    );
-    const newLessons = result.lessons.filter(l => !existingLessons.some(el => el.id === l.id));
-    const newUnscheduled = result.unscheduled;
-    const scheduledStudentIds = new Set(newLessons.map(l => l.studentId));
-
-    if (scheduledStudentIds.size > 0) {
-      setStudents(prev => prev.map(s =>
-        scheduledStudentIds.has(s.id) ? { ...s, status: "active" } : s
-      ));
-    }
-
-    const mergedLessons = [...existingLessons, ...newLessons];
-    const keptUnscheduled = schoolId
-      ? existingUnscheduled.filter(u => u.student.schoolId !== schoolId)
-      : [];
-    const mergedResult = {
-      lessons: mergedLessons,
-      unscheduled: [...keptUnscheduled, ...newUnscheduled]
-    };
-    compactTimetable(mergedResult, schools, students, teachers, enrolments, specialists, teacherCoverage);
-    setTimetable({ ...mergedResult, lessons: stampEnrolmentIds(mergedResult.lessons, enrolments) });
-
-    const sched = newLessons.length;
-    const unsched = newUnscheduled.length;
-    if (sched > 0 && unsched > 0) {
-      notify(`Scheduled ${sched} lesson${sched !== 1 ? "s" : ""}. Could not fit: ${unsched} student${unsched !== 1 ? "s" : ""}.`);
-    } else if (sched > 0) {
-      notify(`Scheduled ${sched} lesson${sched !== 1 ? "s" : ""} into existing timetable!`);
-    } else {
-      notify(`Could not fit any pending students.`, "warning");
-    }
+    // Bulk auto-place (no day/time given) retired with the master auto-scheduler.
+    // Pending students are now placed individually via the right-click "Add pending"
+    // flow above, which always supplies a day + time. This guard keeps the handler
+    // safe if ever invoked without an explicit slot.
+    notify("Pick a slot to place a pending student", "warning");
   };
 
   // Manual scheduling: place a pending/trial student at a specific day/time
@@ -6322,7 +6072,7 @@ export default function MusicTimetableApp() {
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} />}
           {page === "pending" && <PendingManager students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("pending"); setPage("students"); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "bands" && <BandsManager bands={bands} setBands={setBands} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
-          {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onGenerate={handleGenerateTimetable} onGenerateSchool={handleGenerateSchool} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
+          {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
             // Q1=α MTT cross-teacher: modal confirms enrolment update; on confirm
             // push undo + setEnrolments/setGroups + commit. Same-teacher moves

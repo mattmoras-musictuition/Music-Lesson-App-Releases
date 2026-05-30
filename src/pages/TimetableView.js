@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useRef } from "react";
-import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Calendar, Send, Crosshair } from "lucide-react";
+import { Printer, Trash2, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Crosshair } from "lucide-react";
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
@@ -29,7 +29,7 @@ function buildPreferredDisplayName(name) {
 
 
 
-export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onGenerate, onGenerateSchool, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onAllocatePlace, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onAllocatePlace, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const viewMode = viewState.viewMode;
@@ -42,11 +42,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const setViewMode = (v) => setViewState(prev => ({ ...prev, viewMode: v }));
   const setFilterTeacher = (v) => setViewState(prev => ({ ...prev, filterTeacher: v }));
   const [confirmClear, setConfirmClear] = useState(false);
-  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
-  const [confirmGenerateEmpty, setConfirmGenerateEmpty] = useState(false);
-  const [isScheduling, setIsScheduling] = useState(false);
   const [confirmClearSchool, setConfirmClearSchool] = useState(false);
-  const [confirmRegenerateSchool, setConfirmRegenerateSchool] = useState(false);
   const [dragOver, setDragOver] = useState(null);
   // Allocate-to-lane (click-to-place) mode. When set, clicking a tray card drops
   // the student into this lane's earliest open, non-clashing slot.
@@ -731,56 +727,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     }
   }, [timetable, schools]);
 
-  if (!timetable) {
-    return (
-      <div>
-        <PageTitle subtitle="Schedule a master timetable to view it here" pageColor={PAGE_COLORS.timetable}>Master Timetable</PageTitle>
-        <div style={{ textAlign: "center", padding: "60px 20px", color: colors.textMuted }}>
-          <div style={{ marginBottom: 16, opacity: 0.5, display: "flex", justifyContent: "center" }}><Calendar size={48} /></div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: colors.textLight, marginBottom: 8 }}>No master timetable scheduled yet</div>
-          <div style={{ fontSize: 14, marginBottom: 24, maxWidth: 400, margin: "0 auto 24px" }}>Set up your schools, students, and teachers, then hit Schedule Full Term.</div>
-          {isScheduling ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: colors.textLight }}>
-              <div style={{ width: 36, height: 36, border: `3px solid ${colors.accentLight}`, borderTopColor: colors.accent, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-              <div style={{ fontSize: 13, fontWeight: 500 }}>Scheduling… this may take a moment</div>
-            </div>
-          ) : confirmGenerateEmpty ? (
-            <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, border: `2px solid ${colors.accent}`, borderRadius: 10, padding: "12px 16px", minWidth: 200 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Schedule Full Term?</div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <Btn onClick={() => { setConfirmGenerateEmpty(false); setIsScheduling(true); if (onGenerate) onGenerate(); }} style={{ flex: 1, justifyContent: "center" }}>Yes</Btn>
-                <Btn variant="secondary" onClick={() => setConfirmGenerateEmpty(false)} style={{ flex: 1, justifyContent: "center" }}>No</Btn>
-              </div>
-            </div>
-          ) : (
-            <>
-              <Btn onClick={() => setConfirmGenerateEmpty(true)}>Schedule Full Term</Btn>
-              {(() => {
-                const issues = [];
-                if (schools.length === 0) issues.push("No schools set up");
-                else if (schools.every(s => !s.slots || s.slots.length === 0)) issues.push("No time slots defined on any school");
-                const active = (allStudents || students).filter(s => s.status === "active");
-                if (active.length === 0) {
-                  const pending = (allStudents || students).filter(s => s.status === "pending" || s.status === "trial");
-                  if (pending.length > 0) issues.push(`${pending.length} student${pending.length !== 1 ? "s" : ""} on waiting list — set status to Active first`);
-                  else issues.push("No active students");
-                }
-                if (teachers.length === 0) issues.push("No teachers set up");
-                if (issues.length === 0) return null;
-                return (
-                  <div style={{ marginTop: 12, fontSize: 12, color: colors.warning, maxWidth: 340, margin: "12px auto 0" }}>
-                    {issues.map((issue, i) => <div key={i} style={{ display: "flex", alignItems: "center", gap: 5 }}><AlertTriangle size={12} /> {issue}</div>)}
-                  </div>
-                );
-              })()}
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  const { lessons, unscheduled } = timetable;
+  // Empty/cleared master renders the normal grid (no auto-generate prompt) so the
+  // allocate-to-lane flow stays usable; the body below is already null-guarded.
+  const { lessons, unscheduled } = timetable || { lessons: [], unscheduled: [] };
   const allStu = allStudents || students;
 
   // Filter out lessons where the live student record is archived — slot becomes available
@@ -1478,15 +1427,6 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             ) : (
               <Btn variant="danger" onClick={() => setConfirmClear(true)} title="Clear all" style={{ border: "none" }}><Trash2 size={13} /></Btn>
             )}
-            {confirmRegenerate ? (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.purpleLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
-                <span style={{ fontSize: 12, color: "#5B3F7A", fontWeight: 500 }}>Reschedule all?</span>
-                <Btn variant="primary" onClick={() => { onGenerate(); setConfirmRegenerate(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#5B3F7A", color: "#fff", border: "none" }}>Yes</Btn>
-                <Btn variant="secondary" onClick={() => setConfirmRegenerate(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
-              </div>
-            ) : (
-              <Btn variant="secondary" onClick={() => setConfirmRegenerate(true)} title="Reschedule" style={{ color: colors.sidebarActive, border: "none" }}><RefreshCw size={13} /></Btn>
-            )}
             {armedLane && (
               <div style={{ display: "flex", gap: 6, alignItems: "center", background: "#CCFBF1", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: "#0F766E", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5 }}><Crosshair size={12} /> Allocating to {armedLane.teacherName?.split(" ")[0]}</span>
@@ -1615,15 +1555,6 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   </div>
                 ) : (
                   <Btn variant="danger" onClick={() => setConfirmClearSchool(true)} title="Clear this school" style={{ border: "none" }}><Trash2 size={13} /></Btn>
-                )}
-                {confirmRegenerateSchool ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", background: colors.purpleLight, borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
-                    <span style={{ fontSize: 12, color: "#5B3F7A", fontWeight: 500, whiteSpace: "nowrap" }}>Reschedule?</span>
-                    <Btn variant="primary" onClick={() => { onGenerateSchool(selectedSchool); setConfirmRegenerateSchool(false); }} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: "#5B3F7A", color: "#fff", border: "none" }}>Yes</Btn>
-                    <Btn variant="secondary" onClick={() => setConfirmRegenerateSchool(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
-                  </div>
-                ) : (
-                  <Btn variant="secondary" onClick={() => setConfirmRegenerateSchool(true)} title="Reschedule this school" style={{ color: "#5B3F7A", border: "none" }}><RefreshCw size={13} /></Btn>
                 )}
               </div>
             </div>

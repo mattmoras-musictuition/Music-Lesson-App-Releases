@@ -5,17 +5,13 @@
 // ============================================================
 
 import { timeToMin, getSchoolAcronym } from "../utils/helpers";
-import { migrateData, defaultSlots } from "../utils/backup";
-import { generateMasterTimetable } from "./timetableGenerator";
+import { migrateData } from "../utils/backup";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
   const assert = (label, actual, expected) => {
     const pass = JSON.stringify(actual) === JSON.stringify(expected);
     results.push({ label, pass, actual, expected });
-  };
-  const assertTruthy = (label, val) => {
-    results.push({ label, pass: !!val, actual: val, expected: "truthy" });
   };
 
   // timeToMin roundtrip
@@ -33,22 +29,6 @@ export function runSmokeTests(logErrorFn) {
   assert("migrate student notes default", migrated.notes, "");
   assert("migrate student status default", migrated.status, "active");
   assert("migrate student instruments preserved", migrated.instruments[0].name, "Piano");
-
-  // generateMasterTimetable basic smoke — one school, one student, one teacher
-  try {
-    const school = { id: "s1", name: "Test School", classNames: ["3A"], slots: defaultSlots() };
-    const student = { id: "st1", name: "Alice", schoolId: "s1", className: "3A", status: "active",
-      instruments: [{ name: "Piano", duration: 30 }], outsideClassOnly: false, availableBefore: false, availableAfter: false,
-      outsideClassPreferred: false, avoidTimes: [], preferredTimes: [], notes: "" };
-    const teacher = { id: "t1", name: "Teacher A",
-      availability: [{ schoolId: "s1", days: ["Monday","Tuesday","Wednesday","Thursday","Friday"] }],
-      instruments: ["Piano"] };
-    const result = generateMasterTimetable([school], [student], [teacher]);
-    assertTruthy("generateMasterTimetable returns result", result);
-    assertTruthy("generateMasterTimetable has lessons array", Array.isArray(result.lessons));
-  } catch(e) {
-    results.push({ label: "generateMasterTimetable smoke", pass: false, actual: e.message, expected: "no error" });
-  }
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
