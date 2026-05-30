@@ -45,7 +45,9 @@ function rowToResource(row) {
 function resourceToRow(r) {
   const row = {
     id:                  r.id,
-    label:               r.label       || null,
+    // resources.label is `text NOT NULL DEFAULT ''`. Normally set (the Name),
+    // but guard it to '' so a blank/absent name can never send null.
+    label:               r.label       ?? "",
     // resources.url is `text NOT NULL` (see [resources insert] failure: a file
     // resource sends no link, so url would be null and violate the constraint).
     // Coerce to '' when absent — '' means "no link". A real URL passes through.
@@ -56,7 +58,10 @@ function resourceToRow(r) {
     // constraint when the Student-Notes publish path writes a no-type row.
     // Non-string/undefined falls back to '' so the column is never null.
     category:            typeof r.category === "string" ? r.category : (r.category ?? ""),
-    description:         r.description || null,
+    // resources.description is `text NOT NULL DEFAULT ''` — a blank description
+    // was sent as null and violated the constraint (23502). Coerce to '' when
+    // absent; '' means "no description". Real text passes through.
+    description:         r.description ?? "",
     // file_url / file_name are the file-resource payload columns (null on a link
     // resource). Coerce to '' when absent — symmetric with url above so neither
     // payload shape can send null into a NOT NULL column. '' means "no file".
@@ -67,7 +72,10 @@ function resourceToRow(r) {
     instrument:          r.instrument          || null,
     skill_level:         r.skill_level         || null,
     school_id:           r.school_id           || null,
-    source:              r.source              || null,
+    // resources.source is `text NOT NULL DEFAULT 'direct'` and is a taxonomy
+    // field — '' is not a valid value, so default to 'direct' (an admin direct
+    // upload) when absent. A supplied source (e.g. 'student_note') passes through.
+    source:              r.source              || "direct",
     source_subject_type: r.source_subject_type || null,
     source_subject_id:   r.source_subject_id   || null,
   };
