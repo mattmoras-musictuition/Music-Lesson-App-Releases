@@ -358,7 +358,24 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
     }
   }
 
-  return { lessons: placed, missed };
+  // Durability post-pass (Change-3) — frozen-teacher stamp.
+  // Run ONCE after placed/missed are fully built (incl. swap pairs), rather than
+  // threaded through each placement branch (CC step-2 found per-branch stamping
+  // risky). Stamp every NON-band entry with the teacher resolved live RIGHT NOW
+  // (getCardTeacherId with the inputs in scope — laneOverrides/weekKey aren't,
+  // matching the live calls above; the per-week override still wins at read
+  // time). Once this week ages into the past, the read resolver prefers this
+  // frozenTeacherId, so a later staff-day change can't re-break the locked
+  // teacher. Inert for current/future weeks (the resolver only prefers the stamp
+  // when the week is past) → no behavioural change until the week is finished.
+  // Band sessions and entries with no resolvable teacher are left unstamped.
+  const stampFrozen = (entry) => {
+    if (entry.isBandSession) return entry;
+    const tid = getCardTeacherId(entry, teacherCoverage);
+    return tid ? { ...entry, frozenTeacherId: tid } : entry;
+  };
+
+  return { lessons: placed.map(stampFrozen), missed: missed.map(stampFrozen) };
 }
 
 // ── Print functions ───────────────────────────────────────────────────────────
