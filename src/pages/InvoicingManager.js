@@ -1072,47 +1072,33 @@ export function InvoicingManager({
   // ── Create blank invoices (no auto-calculation — Matt fills in manually) ──
   const doCreateBlank = () => {
     if (!selTerm) { notify("Select a term first", "warning"); return; }
-    let active = students.filter(s => s.status !== "archived");
-    if (scopeType === "school" && scopeSchoolId) active = active.filter(s => s.schoolId === scopeSchoolId);
-    if (scopeType === "parent" && scopeParentKey) active = active.filter(s => _parentKey(s) === scopeParentKey);
-    const byParent = {};
-    for (const s of active) {
-      const key = _parentKey(s);
-      if (!byParent[key]) byParent[key] = { parentName: _parentName(s) || s.name, parentEmail: _parentEmail(s) };
+    // Part B: create EXACTLY ONE blank draft, APPENDED alongside any existing
+    // invoices (never replacing). In parent scope pre-assign the selected
+    // parent; otherwise leave it unassigned for the card's parent selector.
+    // parentName/parentEmail come from allParents, whose values are themselves
+    // derived via _parentName/_parentEmail in _allParents.
+    let parentName = "";
+    let parentEmail = "";
+    if (scopeType === "parent" && scopeParentKey) {
+      const p = allParents.find(pp => pp.key === scopeParentKey);
+      parentName  = p?.name  || "";
+      parentEmail = p?.email || "";
     }
-    if (!Object.keys(byParent).length) { notify("No matching students found", "warning"); return; }
-    let num = settings.nextInvoiceNumber;
-    const newInvs = Object.values(byParent).map(pd => ({
-      id: uid(), parentName: pd.parentName, parentEmail: pd.parentEmail,
-      invoiceNumber: num++, invoiceDate, dueDate,
+    const newInv = {
+      id: uid(), parentName, parentEmail,
+      invoiceNumber: settings.nextInvoiceNumber, invoiceDate, dueDate,
       termLabel: selTerm.label, paidAt: null,
       lines: [{ id: uid(), type: "custom", description: "", qty: 1, rate: 0, subtotal: 0, studentName: "" }],
       total: 0, status: "draft", createdAt: new Date().toISOString(),
-    }));
-    // Session 95: same sent-preservation logic as doGenerate. See that
-    // block for the full reasoning.
-    const affectedKeys = new Set(newInvs.map(i => (i.parentEmail || i.parentName).toLowerCase().trim()));
-    const sentParentKeys = new Set(
-      invoices
-        .filter(inv => inv.status === "sent")
-        .map(inv => (inv.parentEmail || inv.parentName).toLowerCase().trim())
-    );
-    const blankSkipped = newInvs.filter(inv => sentParentKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim()));
-    const blankToAdd = newInvs.filter(inv => !sentParentKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim()));
-    setInvoices(prev => {
-      const unchanged = prev.filter(inv =>
-        inv.status === "sent" ||
-        !affectedKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim())
-      );
-      return [...unchanged, ...blankToAdd];
-    });
-    if (scopeType === "all") { const s = { ...settings, nextInvoiceNumber: num }; setSettings(s); saveSettings(s); }
+    };
+    // ADDITIVE — append only; no affectedKeys delete-merge, so nothing existing
+    // is ever removed (sent or draft). Counter bumps only for "all" scope, as
+    // the previous implementation did.
+    setInvoices(prev => [...prev, newInv]);
+    if (scopeType === "all") { const s = { ...settings, nextInvoiceNumber: settings.nextInvoiceNumber + 1 }; setSettings(s); saveSettings(s); }
     setConfirmRegen(false);
     setView("invoices");
-    const blankMsg = blankSkipped.length > 0
-      ? `Created ${blankToAdd.length} blank invoice${blankToAdd.length !== 1 ? "s" : ""} — add line items manually. Skipped ${blankSkipped.length} parent${blankSkipped.length !== 1 ? "s" : ""} with existing sent invoice${blankSkipped.length !== 1 ? "s" : ""}.`
-      : `Created ${newInvs.length} blank invoice${newInvs.length !== 1 ? "s" : ""} — add line items manually`;
-    notify(blankMsg);
+    notify("Created 1 blank invoice — add line items manually");
   };
 
   const handleGenerate = () => {
@@ -1674,6 +1660,21 @@ export function InvoicingManager({
         {open && (
           <div style={{ borderTop: `1px solid ${colors.borderLight}` }}>
             <div style={{ padding: "9px 18px", background: colors.blueLight, borderBottom: `1px solid ${colors.border}`, display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
+              {!isSent && (
+                <label style={{ fontSize: 12, color: colors.textMuted, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Parent:
+                  <select
+                    value={allParents.find(p => p.key === _parentKey({ parentEmail: inv.parentEmail, parentName: inv.parentName }))?.key || ""}
+                    onChange={e => {
+                      const p = allParents.find(pp => pp.key === e.target.value);
+                      updInv(inv.id, i => ({ ...i, parentName: p?.name || "", parentEmail: p?.email || "" }));
+                    }}
+                    style={{ ...inp, padding: "4px 8px", fontSize: 12, fontWeight: 600, color: colors.text }}>
+                    <option value="">(unassigned)</option>
+                    {allParents.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
+                  </select>
+                </label>
+              )}
               <label style={{ fontSize: 12, color: colors.textMuted, display: "inline-flex", alignItems: "center", gap: 6 }}>
                 Invoice date:
                 <input type="date" value={inv.invoiceDate || ""}
