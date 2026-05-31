@@ -21,7 +21,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, isPastWeek } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -4670,6 +4670,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const isConfirmingThis = confirmingDay === dayDateStr;
                         const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
                         const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
+                        // Frozen header teacher (2.12.0 batch, follow-up to d770d34): on a PAST
+                        // week the lesson cards show the locked historical teacher, so the day
+                        // header must match. Derive it from the frozenTeacherId stamped on this
+                        // column's non-band lessons (most common, in case a column mixes ids);
+                        // ignore band sessions and unstamped lessons. Empty/band-only days and
+                        // current/future weeks fall back to the live laneTeacher unchanged. This
+                        // is header-only — the shared getDayLaneTeacher (catch-up path) is untouched.
+                        let headerTeacher = laneTeacher;
+                        if (isPastWeek(weekKey)) {
+                          const counts = {};
+                          let frozenId = null, frozenN = 0;
+                          for (const l of (weeklyData?.lessons || [])) {
+                            if (l.day !== d || l.isBandSession || !l.frozenTeacherId) continue;
+                            counts[l.frozenTeacherId] = (counts[l.frozenTeacherId] || 0) + 1;
+                            if (counts[l.frozenTeacherId] > frozenN) { frozenN = counts[l.frozenTeacherId]; frozenId = l.frozenTeacherId; }
+                          }
+                          if (frozenId) {
+                            const frozenT = teachers.find(t => t.id === frozenId);
+                            if (frozenT) headerTeacher = frozenT;
+                          }
+                        }
                         const dayLanes = getDayLanes(teacherCoverage, selectedSchool, d, temporaryLanes, weekKey);
                         const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
                         // Header label "Mon 4 May" — reuses precomputed dayDateStr.
@@ -4679,7 +4700,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           : d;
                         return (
                           <div key={d}
-                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : (laneTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
+                            style={{ background: daySelected ? colors.accent : blocked ? "#7F1D1D" : (headerTeacher?.color || colors.sidebarHover), color: "#fff", padding: "12px 8px", fontSize: 13, fontWeight: 600, textAlign: "center", position: "sticky", top: 0, zIndex: 10, cursor: "pointer", userSelect: "none", transition: "background 0.15s" }}
                             onClick={e => {
                               e.stopPropagation();
                               const dayLessonIds = (weeklyData?.lessons || []).filter(l => l.day === d).map(l => l.id);
