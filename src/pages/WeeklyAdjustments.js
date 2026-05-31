@@ -375,10 +375,29 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       );
     }
 
+    // Band-session submenu band-row hover → open as a cascading side flyout
+    // beside the submenu panel (mirrors the submenu's own right/left flip)
+    // instead of overlapping it. Scoped to the band hover: it is the only
+    // caller that sets hoverPopover.flyoutPanel, so all other student/group
+    // card hovers keep the default below/above-row positioning.
+    const flyoutPanel = hoverPopover.flyoutPanel;
+    let posStyle;
+    if (flyoutPanel) {
+      const CARD_W = 240, GAP = 6, M = 8;
+      const estH = 70 + ((info?.bandMembers?.length || 0) * 16);
+      let fLeft = flyoutPanel.right + GAP;                                              // default: right of panel
+      if (fLeft + CARD_W > window.innerWidth) fLeft = flyoutPanel.left - GAP - CARD_W;  // flip to left of panel
+      fLeft = Math.max(M, fLeft);
+      let fTop = Math.min(rect.top, window.innerHeight - M - estH);                     // align to row top, clamp bottom
+      fTop = Math.max(M, fTop);                                                         // never above viewport top
+      posStyle = { left: fLeft, top: fTop };
+    } else {
+      posStyle = { left: popLeft, [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos };
+    }
+
     return (
       <div style={{
-        position: "fixed", left: popLeft,
-        [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+        position: "fixed", ...posStyle,
         zIndex: 10050, background: colors.cardBg, borderRadius: 10,
         boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
         padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
@@ -3244,7 +3263,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 // branch and produces the "Members" list.
                                 const rect = e.currentTarget.getBoundingClientRect();
                                 const info = buildPopoverInfo({ isBandSession: true, bandName: band.name, members: band.members || [] });
-                                setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band });
+                                // flyoutPanel = the band-list submenu panel's rect, so the info
+                                // card cascades beside the panel rather than overlapping it.
+                                const flyoutPanel = subMenuRef.current ? subMenuRef.current.getBoundingClientRect() : null;
+                                setHoverPopover({ type: "student", info, rect, color: instruments_colors.Band, flyoutPanel });
                               }}
                               onMouseLeave={e => {
                                 e.currentTarget.style.background = "none";
