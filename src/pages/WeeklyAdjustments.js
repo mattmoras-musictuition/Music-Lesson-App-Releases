@@ -362,7 +362,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         <div style={{
           position: "fixed", left: popLeft,
           [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
-          zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+          zIndex: 10050, background: colors.cardBg, borderRadius: 10,
           boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
           padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
         }}>
@@ -379,7 +379,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       <div style={{
         position: "fixed", left: popLeft,
         [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
-        zIndex: 2000, background: colors.cardBg, borderRadius: 10,
+        zIndex: 10050, background: colors.cardBg, borderRadius: 10,
         boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
         padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
       }}>
