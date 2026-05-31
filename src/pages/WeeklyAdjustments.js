@@ -28,7 +28,7 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -597,7 +597,34 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const isPastWeek = weekOffset < 0;
   const isLocked = isPastWeek && !editUnlocked;
   const storageKey = `${weekKey}|${selectedSchool}`;
-  const weeklyData = weeklyTimetables[storageKey] || null;
+  const weeklyDataRaw = weeklyTimetables[storageKey] || null;
+  // Cross-view constraint-ack hydration (in-memory, non-destructive).
+  // New weeks stamp originId (the MTT row id) at import. Existing/legacy weeks
+  // and generator-path lessons may lack it, so best-effort backfill originId by
+  // matching each WTT lesson to a UNIQUE current MTT lesson on a stable
+  // composite (day + start + student identity) that is independent of id. This
+  // lets the WTT honour a standing Master-timetable acknowledgement. Band
+  // sessions are excluded; an ambiguous/no match leaves originId undefined (no
+  // regression — the warning shows exactly as today). NOT written back to the
+  // stored weeklyTimetables; this only augments the in-memory view object.
+  const weeklyData = useMemo(() => {
+    if (!weeklyDataRaw) return null;
+    const mtt = (timetable?.lessons || []).filter(m => !m.isBandSession);
+    const lessons = (weeklyDataRaw.lessons || []).map(l => {
+      if (l.isBandSession || l.originId) return l;
+      const cands = mtt.filter(m =>
+        m.day === l.day && m.start === l.start && (
+          l.isGroup
+            ? (l.groupId && m.groupId === l.groupId)
+            : (l.enrolmentId && m.enrolmentId)
+              ? m.enrolmentId === l.enrolmentId
+              : (m.studentId === l.studentId && m.instrument === l.instrument)
+        )
+      );
+      return cands.length === 1 ? { ...l, originId: cands[0].id } : l;
+    });
+    return { ...weeklyDataRaw, lessons };
+  }, [weeklyDataRaw, timetable]);
 
   // v2.9.12 SINGLE GATED SOURCE OF TRUTH for warning DISPLAY.
   // Filters the raw constraintWarnings store down to only the lessons whose
@@ -612,12 +639,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const lessons = weeklyData?.lessons || [];
     for (const id of Object.keys(constraintWarnings)) {
       const lesson = lessons.find(l => l.id === id);
+      // Standing Master-timetable acknowledgement suppresses the warning on
+      // every week's WTT (banner + nav/Dashboard count via the emit below).
+      if (lesson && lesson.originId && ttAckedConstraints.has(lesson.originId)) continue;
       if (isConstraintVisibleForLesson(lesson, lessons, weeklyTodayStr, weekDateMap, currentSchool)) {
         out[id] = constraintWarnings[id];
       }
     }
     return out;
-  }, [constraintWarnings, weeklyData, weeklyTodayStr, weekDateMap, currentSchool]);
+  }, [constraintWarnings, weeklyData, weeklyTodayStr, weekDateMap, currentSchool, ttAckedConstraints]);
 
   // Emit the GATED set up to App.js so the sidebar nav badge counts only what's
   // visible. App.js applies its own acknowledged-filter on top of this.
@@ -1418,7 +1448,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     for (const school of schools) {
       const sk = weekDates[0].date + "|" + school.id;
       const mttLessons = timetable.lessons.filter(l => l.schoolId === school.id);
-      const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), weekDate: weekDateMap[l.day], adjusted: false }));
+      const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
       setWeeklyTimetables(prev => ({
         ...prev,
         [sk]: { lessons: importedLessons, missed: [], generatedAt: new Date().toISOString() }
@@ -5091,7 +5121,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     );
                                   }
                                   // ── Regular lesson card ──
-                                  const hasConstraintIssue = cWarnings.length > 0 && !ackedConstraints.has(l.id);
+                                  const hasConstraintIssue = cWarnings.length > 0 && !ackedConstraints.has(l.id) && !(l.originId && ttAckedConstraints.has(l.originId));
                                   const constraintAcked = cWarnings.length > 0 && ackedConstraints.has(l.id);
                                   const showRed = hasConstraintIssue;
                                   const hasAckedWarning = constraintAcked;
