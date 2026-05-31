@@ -851,10 +851,25 @@ export function InvoicingManager({
           return true;
         });
 
-        // 1. Read current Supabase state (id-only, cheap). Read errors do not
-        //    abort the upsert — they only suppress the delete pass below.
+        // Guard A — empty-set guard. Nothing legitimate can be synced from an
+        // empty validated sent list, and an empty/partial load must never reach
+        // the delete pass (a near-empty sent set wiped the whole table and all
+        // recorded payments on 2026-05-31). Return before any upsert or delete.
+        if (validSent.length === 0) {
+          console.warn("[invoices] sync skipped: 0 valid sent invoices loaded (guard against wiping table from empty/partial state)");
+          return;
+        }
+
+        // Circuit-breaker cap for the delete pass (Guard C). Normal churn is
+        // 0–1 deletes; anything above this is treated as a bug, not a sync.
+        const SAFE_DELETE_CAP = 10;
+
+        // 1. Read current Supabase state. Payment columns are read so the delete
+        //    pass can protect rows with recorded payments (Guard B); parent_name
+        //    is read only for the kept-rows warning. None of these are written.
+        //    Read errors do not abort the upsert — they only suppress the delete.
         const { data: existing, error: selErr } = await supabase
-          .from("invoices").select("id");
+          .from("invoices").select("id, parent_name, amount_received, is_cash_payment, received_at");
 
         // 2. Upsert validated sent invoices (10 admin-owned columns only)
         let upsertedCount = 0;
@@ -883,9 +898,31 @@ export function InvoicingManager({
         if (selErr) {
           console.warn("[invoices] skipped delete pass — existing-id read failed:", selErr?.message || selErr);
         } else {
-          const existingIds = new Set((existing || []).map(r => r.id));
-          const toDelete = [...existingIds].filter(id => !sentIdSet.has(id));
-          if (toDelete.length > 0) {
+          // Delete-candidate set = existing rows whose id is no longer sent.
+          const candidates = (existing || []).filter(r => !sentIdSet.has(r.id));
+
+          // Guard B — never delete a row carrying a recorded payment. Keep any
+          // candidate with amount_received > 0, is_cash_payment === true, or a
+          // non-null received_at, and warn so it can be removed manually.
+          const hasPayment = (r) =>
+            Number(r.amount_received) > 0 ||
+            r.is_cash_payment === true ||
+            r.received_at != null;
+          const kept = candidates.filter(hasPayment);
+          if (kept.length > 0) {
+            console.warn(
+              `[invoices] delete pass: kept ${kept.length} row(s) with recorded payments that are no longer in the sent set (not deleting; remove manually if intended)`,
+              kept.map(r => ({ id: r.id, parent_name: r.parent_name }))
+            );
+          }
+          const toDelete = candidates.filter(r => !hasPayment(r)).map(r => r.id);
+
+          // Guard C — circuit breaker. If the no-payment delete count exceeds the
+          // safety cap, skip the delete entirely and warn (likely an empty/partial
+          // load slipping past Guard A, or a bulk-unmark bug). Otherwise delete.
+          if (toDelete.length > SAFE_DELETE_CAP) {
+            console.warn(`[invoices] delete pass SKIPPED: ${toDelete.length} no-payment rows would be deleted (exceeds safety cap of ${SAFE_DELETE_CAP}); leaving them in place — remove manually if intended`);
+          } else if (toDelete.length > 0) {
             const { error: delErr } = await supabase
               .from("invoices").delete().in("id", toDelete);
             if (delErr) throw delErr;
