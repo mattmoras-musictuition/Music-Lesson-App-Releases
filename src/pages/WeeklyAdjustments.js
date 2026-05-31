@@ -28,6 +28,128 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
+// Shared hover info card (student / group / band). For the band-session
+// submenu flyout (flyoutPanel set) it measures its OWN rendered height with
+// useLayoutEffect and shifts up so the bottom never clips the viewport — each
+// member renders on two lines, so a fixed estimate under-clips. The horizontal
+// right/left flip stays deterministic. All other hovers pass a fixed
+// fallbackStyle and skip measuring entirely. useLayoutEffect runs before paint,
+// so the corrected top is the FIRST thing painted (no one-frame flicker).
+function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyle }) {
+  const ref = React.useRef(null);
+  const M = 8, CARD_W = 240, GAP = 6;
+  const [measuredTop, setMeasuredTop] = React.useState(null);
+  const [scrollMax, setScrollMax] = React.useState(null);
+
+  // Horizontal position is deterministic — right of the panel, flip left if it
+  // would overflow the viewport (mirrors the submenu's own right/left flip).
+  let fLeft = 0;
+  if (flyoutPanel) {
+    fLeft = flyoutPanel.right + GAP;
+    if (fLeft + CARD_W > window.innerWidth) fLeft = flyoutPanel.left - GAP - CARD_W;
+    fLeft = Math.max(M, fLeft);
+  }
+
+  React.useLayoutEffect(() => {
+    if (!flyoutPanel || !ref.current) { setMeasuredTop(null); setScrollMax(null); return; }
+    const H = ref.current.offsetHeight;
+    const vh = window.innerHeight;
+    if (H > vh - 2 * M) {
+      // Hard backstop: card taller than the viewport — pin to top and cap height
+      // so it can never run off-screen (rare; needs many members).
+      setMeasuredTop(M);
+      setScrollMax(vh - 2 * M);
+    } else {
+      // Align to the hovered row's top, then shift UP so the bottom stays on
+      // screen; never let the top go above the viewport.
+      setMeasuredTop(Math.max(M, Math.min(rectTop, vh - M - H)));
+      setScrollMax(null);
+    }
+  }, [flyoutPanel, rectTop, info]);
+
+  const posStyle = flyoutPanel
+    ? {
+        left: fLeft,
+        top: measuredTop != null ? measuredTop : Math.max(M, rectTop),
+        ...(scrollMax != null ? { maxHeight: scrollMax, overflowY: "auto" } : {}),
+      }
+    : fallbackStyle;
+
+  return (
+    <div ref={ref} style={{
+      position: "fixed", ...posStyle,
+      zIndex: 10050, background: colors.cardBg, borderRadius: 10,
+      boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
+      padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4, lineHeight: 1.3 }}>
+        {info.title}
+      </div>
+      <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
+        {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
+      </div>
+      {info.time && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>}
+      {!info.groupMembers.length && (
+        <>
+          {(info.className || info.classTeacher) && (
+            <div style={{ fontSize: 11, color: colors.textLight }}>
+              Class: {info.className || ""}{info.classTeacher ? `${info.className ? " - " : ""}${info.classTeacher}` : ""}
+            </div>
+          )}
+          {info.parentName && (
+            <div style={{ fontSize: 11, color: colors.textLight }}>Parent: {info.parentName}</div>
+          )}
+          {info.bands.length > 0 && (
+            <div style={{ fontSize: 11, color: colors.textLight }}>
+              Band: {info.bands.join(", ")}
+            </div>
+          )}
+        </>
+      )}
+      {info.groupMembers.length > 0 && (
+        <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+            Members
+          </div>
+          {info.groupMembers.map((m, i) => (
+            <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.groupMembers.length - 1 ? 4 : 0 }}>
+              <div style={{ fontWeight: 600 }}>{m.name}</div>
+              {(m.className || m.classTeacher) && (
+                <div style={{ color: colors.textMuted }}>
+                  Class: {m.className || ""}{m.classTeacher ? `${m.className ? " - " : ""}${m.classTeacher}` : ""}
+                </div>
+              )}
+              {m.parentName && (
+                <div style={{ color: colors.textMuted }}>Parent: {m.parentName}</div>
+              )}
+              {m.bands.length > 0 && (
+                <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {info.bandMembers.length > 0 && (
+        <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+            Members
+          </div>
+          {info.bandMembers.map((m, i) => (
+            <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.bandMembers.length - 1 ? 4 : 0 }}>
+              <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
+              {m.className && (
+                <div style={{ color: colors.textMuted }}>
+                  Class: {m.className}{m.classTeacher ? ` – ${m.classTeacher}` : ""}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
@@ -375,98 +497,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       );
     }
 
-    // Band-session submenu band-row hover → open as a cascading side flyout
-    // beside the submenu panel (mirrors the submenu's own right/left flip)
-    // instead of overlapping it. Scoped to the band hover: it is the only
-    // caller that sets hoverPopover.flyoutPanel, so all other student/group
-    // card hovers keep the default below/above-row positioning.
-    const flyoutPanel = hoverPopover.flyoutPanel;
-    let posStyle;
-    if (flyoutPanel) {
-      const CARD_W = 240, GAP = 6, M = 8;
-      const estH = 70 + ((info?.bandMembers?.length || 0) * 16);
-      let fLeft = flyoutPanel.right + GAP;                                              // default: right of panel
-      if (fLeft + CARD_W > window.innerWidth) fLeft = flyoutPanel.left - GAP - CARD_W;  // flip to left of panel
-      fLeft = Math.max(M, fLeft);
-      let fTop = Math.min(rect.top, window.innerHeight - M - estH);                     // align to row top, clamp bottom
-      fTop = Math.max(M, fTop);                                                         // never above viewport top
-      posStyle = { left: fLeft, top: fTop };
-    } else {
-      posStyle = { left: popLeft, [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos };
-    }
-
+    // Band-session submenu band-row hover → cascading side flyout that measures
+    // its own height (HoverInfoCard) so it never clips. All other hovers pass a
+    // fixed fallbackStyle (below/above-row) and the card skips measuring.
     return (
-      <div style={{
-        position: "fixed", ...posStyle,
-        zIndex: 10050, background: colors.cardBg, borderRadius: 10,
-        boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
-        padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",
-      }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4, lineHeight: 1.3 }}>
-          {info.title}
-        </div>
-        <div style={{ fontSize: 11, color: colors.textLight, marginBottom: 2 }}>
-          {info.instrument}{info.teacher ? ` · ${info.teacher}` : ""}
-        </div>
-        {info.time && <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>{info.time}</div>}
-        {!info.groupMembers.length && (
-          <>
-            {(info.className || info.classTeacher) && (
-              <div style={{ fontSize: 11, color: colors.textLight }}>
-                Class: {info.className || ""}{info.classTeacher ? `${info.className ? " - " : ""}${info.classTeacher}` : ""}
-              </div>
-            )}
-            {info.parentName && (
-              <div style={{ fontSize: 11, color: colors.textLight }}>Parent: {info.parentName}</div>
-            )}
-            {info.bands.length > 0 && (
-              <div style={{ fontSize: 11, color: colors.textLight }}>
-                Band: {info.bands.join(", ")}
-              </div>
-            )}
-          </>
-        )}
-        {info.groupMembers.length > 0 && (
-          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
-              Members
-            </div>
-            {info.groupMembers.map((m, i) => (
-              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.groupMembers.length - 1 ? 4 : 0 }}>
-                <div style={{ fontWeight: 600 }}>{m.name}</div>
-                {(m.className || m.classTeacher) && (
-                  <div style={{ color: colors.textMuted }}>
-                    Class: {m.className || ""}{m.classTeacher ? `${m.className ? " - " : ""}${m.classTeacher}` : ""}
-                  </div>
-                )}
-                {m.parentName && (
-                  <div style={{ color: colors.textMuted }}>Parent: {m.parentName}</div>
-                )}
-                {m.bands.length > 0 && (
-                  <div style={{ color: colors.textMuted }}>Band: {m.bands.join(", ")}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {info.bandMembers.length > 0 && (
-          <div style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
-              Members
-            </div>
-            {info.bandMembers.map((m, i) => (
-              <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.bandMembers.length - 1 ? 4 : 0 }}>
-                <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
-                {m.className && (
-                  <div style={{ color: colors.textMuted }}>
-                    Class: {m.className}{m.classTeacher ? ` – ${m.classTeacher}` : ""}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <HoverInfoCard
+        colors={colors}
+        color={color}
+        info={info}
+        flyoutPanel={hoverPopover.flyoutPanel || null}
+        rectTop={rect.top}
+        fallbackStyle={{ left: popLeft, [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos }}
+      />
     );
   };
 
