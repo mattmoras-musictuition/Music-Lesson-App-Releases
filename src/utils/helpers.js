@@ -94,6 +94,15 @@ export const _getMondayOf = (dt) => {
   return m;
 };
 
+// True when weekKey (a Monday-anchored "YYYY-MM-DD" string) is earlier than the
+// current working week's Monday — i.e. a finished week. Co-located here with its
+// dependencies (getCurrentWeekMonday + toLocalDateStr) so consumers import it from
+// helpers and never re-create the teacherCoverageDB↔helpers circular edge. "Past"
+// matches the rest of the app, including the weekend roll-forward. ISO date strings
+// compare lexicographically in chronological order, so a plain string < is correct.
+// Empty/falsy weekKey is treated as not-past (live resolution).
+export const isPastWeek = (weekKey) => !!weekKey && weekKey < toLocalDateStr(getCurrentWeekMonday());
+
 export const timeToMin = (t) => {
   if (!t) return 0;
   const [h, m] = t.split(":").map(Number);

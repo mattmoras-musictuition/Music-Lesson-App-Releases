@@ -28,7 +28,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
-import { uid, getCurrentWeekMonday, toLocalDateStr } from "./helpers";
+import { uid, isPastWeek } from "./helpers";
 
 // ── Shape converter ──────────────────────────────────────────
 
@@ -125,17 +125,6 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
          l.status === "active"
   );
   return lane ? lane.id : null;
-}
-
-// True when weekKey (a Monday-anchored "YYYY-MM-DD" string) is earlier than the
-// current working week's Monday — i.e. a finished week. Uses the app's existing
-// week-key utilities (getCurrentWeekMonday + toLocalDateStr) so "past" matches
-// the rest of the app, including the weekend roll-forward. ISO date strings
-// compare lexicographically in chronological order, so a plain string < is
-// correct. Empty/falsy weekKey is treated as not-past (live resolution).
-export function isPastWeek(weekKey) {
-  if (!weekKey) return false;
-  return weekKey < toLocalDateStr(getCurrentWeekMonday());
 }
 
 /**

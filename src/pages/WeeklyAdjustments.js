@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
 import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym } from "../utils/helpers";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, isPastWeek as isWeekKeyPast, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries, findOpenCatchups, getOpenCatchupRows } from "../utils/tallyDerive";
@@ -21,7 +21,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, isPastWeek } from "../utils/teacherCoverageDB";
+import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -4678,7 +4678,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         // current/future weeks fall back to the live laneTeacher unchanged. This
                         // is header-only — the shared getDayLaneTeacher (catch-up path) is untouched.
                         let headerTeacher = laneTeacher;
-                        if (isPastWeek(weekKey)) {
+                        if (isWeekKeyPast(weekKey)) {
                           const counts = {};
                           let frozenId = null, frozenN = 0;
                           for (const l of (weeklyData?.lessons || [])) {
