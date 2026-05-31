@@ -1003,6 +1003,72 @@ export function InvoicingManager({
     notify(msg);
   };
 
+  // ── Create a supplementary invoice (Part A — specific-parent scope only) ──
+  // Bills ONLY the selected parent's children who are NOT already invoiced this
+  // term (any status, including sent), and APPENDS the result as a new draft
+  // alongside the existing invoice. Purely additive: it deliberately does NOT
+  // run the affectedKeys delete-and-reinsert merge that doGenerate uses, and
+  // does NOT apply the sent-parent skip — a supplementary draft for a not-yet-
+  // invoiced child must be allowed even when the parent has a sent invoice. It
+  // touches nothing existing, so there is no double-billing of covered kids.
+  const doCreateSupplementary = () => {
+    if (!selTerm) { notify("Select a term first", "warning"); return; }
+    if (scopeType !== "parent" || !scopeParentKey) return;
+
+    const parentLabel = allParents.find(p => p.key === scopeParentKey)?.name || "this parent";
+
+    // Normalized (trim+lowercase) set of student names already invoiced this
+    // term — ANY status. Mirrors the uninvoiced-banner coverage logic but
+    // normalized on both sides to avoid case/whitespace mismatches.
+    const norm = s => (s || "").toLowerCase().trim();
+    const coveredNames = new Set();
+    for (const inv of invoices) {
+      if (inv.termLabel !== selTerm.label) continue;
+      for (const line of (inv.lines || [])) {
+        if (line.studentName) coveredNames.add(norm(line.studentName));
+      }
+    }
+
+    // Build the parent's fully-computed invoice (same args handleGenerate uses).
+    const { invoices: builtInvs } = buildInvoices({
+      students, enrolments, groups, timetable, weeklyTimetables, catchups,
+      schools, rates, interruptions, termInfo: selTerm,
+      invoiceDate, dueDate, startNum: settings.nextInvoiceNumber,
+      scopeType, scopeSchoolId, scopeParentKey,
+    });
+
+    if (!builtInvs.length) { notify("Nothing to invoice for this parent."); setConfirmRegen(false); return; }
+
+    // Keep only lines for children not already covered, then recompute the total.
+    const template = builtInvs[0];
+    const lines = (template.lines || []).filter(l => !coveredNames.has(norm(l.studentName)));
+    if (!lines.length) {
+      notify(`All of ${parentLabel}'s children are already invoiced this term.`);
+      setConfirmRegen(false);
+      return;
+    }
+    const total = lines.reduce((s, l) => s + (l.subtotal || 0), 0);
+
+    // Template keeps parentName/parentEmail/schoolName/dates so formatting matches.
+    const newInv = {
+      ...template,
+      id: uid(),
+      invoiceNumber: settings.nextInvoiceNumber,
+      lines,
+      total,
+      status: "draft",
+      createdAt: new Date().toISOString(),
+    };
+
+    // ADDITIVE — append only; never replace. Mirrors doGenerate's parent-scope
+    // persistence (setInvoices only; the invoice counter is bumped solely for
+    // "all" scope, which this path never is).
+    setInvoices(prev => [...prev, newInv]);
+    setConfirmRegen(false);
+    setView("invoices");
+    notify(`Created a new invoice for ${parentLabel} — ${lines.length} line${lines.length !== 1 ? "s" : ""} not yet invoiced this term.`);
+  };
+
   // ── Create blank invoices (no auto-calculation — Matt fills in manually) ──
   const doCreateBlank = () => {
     if (!selTerm) { notify("Select a term first", "warning"); return; }
@@ -1482,11 +1548,24 @@ export function InvoicingManager({
         {confirmRegen ? (
           <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "14px 18px", background: colors.amberLight, borderRadius: 10, border: `1px solid ${colors.amber}40` }}>
             <AlertTriangle size={16} style={{ color: colors.amber, flexShrink: 0 }}/>
-            <span style={{ fontSize: 13, color: colors.amberDark, flex: 1 }}>
-              This will replace existing draft{scopeType === "all" ? "s" : ""} for the affected parent{scopeType !== "parent" ? "s" : ""}. Continue?
-            </span>
-            <Btn variant="danger" onClick={doGenerate}>Regenerate</Btn>
-            <Btn variant="secondary" onClick={() => setConfirmRegen(false)}>Cancel</Btn>
+            {scopeType === "parent" ? (
+              <>
+                <span style={{ fontSize: 13, color: colors.amberDark, flex: 1 }}>
+                  {allParents.find(p => p.key === scopeParentKey)?.name || "This parent"} already has an invoice this term. Replace it, or create a new invoice covering only the children not yet invoiced?
+                </span>
+                <Btn variant="danger" onClick={doGenerate}>Replace</Btn>
+                <Btn variant="primary" onClick={doCreateSupplementary}>Create new</Btn>
+                <Btn variant="secondary" onClick={() => setConfirmRegen(false)}>Cancel</Btn>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 13, color: colors.amberDark, flex: 1 }}>
+                  This will replace existing draft{scopeType === "all" ? "s" : ""} for the affected parent{scopeType !== "parent" ? "s" : ""}. Continue?
+                </span>
+                <Btn variant="danger" onClick={doGenerate}>Regenerate</Btn>
+                <Btn variant="secondary" onClick={() => setConfirmRegen(false)}>Cancel</Btn>
+              </>
+            )}
           </div>
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
