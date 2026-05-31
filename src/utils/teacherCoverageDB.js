@@ -28,7 +28,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
-import { uid } from "./helpers";
+import { uid, getCurrentWeekMonday, toLocalDateStr } from "./helpers";
 
 // ── Shape converter ──────────────────────────────────────────
 
@@ -127,6 +127,17 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
   return lane ? lane.id : null;
 }
 
+// True when weekKey (a Monday-anchored "YYYY-MM-DD" string) is earlier than the
+// current working week's Monday — i.e. a finished week. Uses the app's existing
+// week-key utilities (getCurrentWeekMonday + toLocalDateStr) so "past" matches
+// the rest of the app, including the weekend roll-forward. ISO date strings
+// compare lexicographically in chronological order, so a plain string < is
+// correct. Empty/falsy weekKey is treated as not-past (live resolution).
+export function isPastWeek(weekKey) {
+  if (!weekKey) return false;
+  return weekKey < toLocalDateStr(getCurrentWeekMonday());
+}
+
 /**
  * Read-side teacher resolution.
  *
@@ -148,9 +159,29 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
  *
  * laneOverrides + weekKey default to null so MTT callers (no week context)
  * keep the cluster 5a behaviour unchanged for resolved cards.
+ *
+ * Frozen-teacher preference (2.12.0 batch) — for PAST weeks ONLY:
+ *   Finished weeks must stop recomputing their teacher from today's lanes (a
+ *   staff day-change otherwise reaches backwards and "unassigns" past lessons).
+ *   Precedence for a past week: (1) a per-week override on THIS lesson's lane
+ *   still wins — a recorded cover must keep showing the substitute; (2) else the
+ *   lesson's stamped frozenTeacherId (the locked historical teacher) is used;
+ *   (3) else fall through to the live lane logic below. Current/future weeks and
+ *   weekKey-less (MTT) callers skip this block and resolve live as before, so
+ *   they keep following the current setup until they age into the past.
  */
 export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, weekKey = null) {
   if (!Array.isArray(teacherCoverage)) return null;
+
+  // Frozen-teacher preference — past weeks only (see doc comment above).
+  if (weekKey && isPastWeek(weekKey)) {
+    if (lesson?.bucket_id && Array.isArray(laneOverrides)) {
+      const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lesson.bucket_id);
+      if (override?.overrideTeacherId) return override.overrideTeacherId; // (1) cover wins
+    }
+    if (lesson?.frozenTeacherId) return lesson.frozenTeacherId;            // (2) locked teacher
+    // (3) no override, no stamp (e.g. unstamped band session) → fall through to live.
+  }
 
   // Phase 1 — bucket_id direct resolution.
   if (lesson?.bucket_id) {
