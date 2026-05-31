@@ -1106,6 +1106,20 @@ export function InvoicingManager({
     notify(`Created a new invoice for ${parentLabel} — ${lines.length} line${lines.length !== 1 ? "s" : ""} not yet invoiced this term.`);
   };
 
+  // Resolve a parent's school name from a parentKey the SAME way buildInvoices
+  // resolves a per-line schoolName (student.schoolId → schools[].name). Used to
+  // stamp blank custom lines so they file under the right school folder instead
+  // of always landing in Private. Returns the first non-empty across the
+  // parent's active students; "" if none have a school (private → stays Private).
+  const _parentSchoolName = (parentKey) => {
+    for (const s of students.filter(st => st.status !== "archived")) {
+      if (_parentKey(s) !== parentKey) continue;
+      const name = schools.find(sc => sc.id === s.schoolId)?.name || "";
+      if (name) return name;
+    }
+    return "";
+  };
+
   // ── Create blank invoices (no auto-calculation — Matt fills in manually) ──
   const doCreateBlank = () => {
     if (!selTerm) { notify("Select a term first", "warning"); return; }
@@ -1116,16 +1130,20 @@ export function InvoicingManager({
     // derived via _parentName/_parentEmail in _allParents.
     let parentName = "";
     let parentEmail = "";
+    let schoolName = "";
     if (scopeType === "parent" && scopeParentKey) {
       const p = allParents.find(pp => pp.key === scopeParentKey);
       parentName  = p?.name  || "";
       parentEmail = p?.email || "";
+      // Stamp the parent's school so the blank files under that folder (and
+      // syncs with the right school_name); "" keeps a private parent in Private.
+      schoolName  = _parentSchoolName(scopeParentKey);
     }
     const newInv = {
       id: uid(), parentName, parentEmail,
       invoiceNumber: settings.nextInvoiceNumber, invoiceDate, dueDate,
       termLabel: selTerm.label, paidAt: null,
-      lines: [{ id: uid(), type: "custom", description: "", qty: 1, rate: 0, subtotal: 0, studentName: "" }],
+      lines: [{ id: uid(), type: "custom", description: "", qty: 1, rate: 0, subtotal: 0, studentName: "", schoolName }],
       total: 0, status: "draft", createdAt: new Date().toISOString(),
     };
     // ADDITIVE — append only; no affectedKeys delete-merge, so nothing existing
@@ -1704,7 +1722,16 @@ export function InvoicingManager({
                     value={allParents.find(p => p.key === _parentKey({ parentEmail: inv.parentEmail, parentName: inv.parentName }))?.key || ""}
                     onChange={e => {
                       const p = allParents.find(pp => pp.key === e.target.value);
-                      updInv(inv.id, i => ({ ...i, parentName: p?.name || "", parentEmail: p?.email || "" }));
+                      // Re-file by stamping the parent's school onto CUSTOM lines
+                      // only — lesson/adjustment lines keep their intrinsic
+                      // school. "(unassigned)" → "" sends the blank back to Private.
+                      const sName = p ? _parentSchoolName(p.key) : "";
+                      updInv(inv.id, i => ({
+                        ...i,
+                        parentName: p?.name || "",
+                        parentEmail: p?.email || "",
+                        lines: i.lines.map(l => l.type === "custom" ? { ...l, schoolName: sName } : l),
+                      }));
                     }}
                     style={{ ...inp, padding: "4px 8px", fontSize: 12, fontWeight: 600, color: colors.text }}>
                     <option value="">(unassigned)</option>
