@@ -687,6 +687,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return { ...weeklyDataRaw, lessons };
   }, [weeklyDataRaw, timetable]);
 
+  // Bug-2: cross-school candidate pool for the teacher-double-booking check.
+  // All schools' lessons for the active week, concatenated once here (not
+  // per-card). A school whose week isn't generated yet simply contributes
+  // nothing (|| []). Only the teacher-clash branch in checkConstraints reads
+  // this; every other constraint stays single-school. Mirrors how the
+  // Dashboard warning chips already aggregate across schools.
+  const crossSchoolLessons = useMemo(
+    () => (schools || []).flatMap(s => weeklyTimetables[`${weekKey}|${s.id}`]?.lessons || []),
+    [schools, weeklyTimetables, weekKey]
+  );
+
   // v2.9.12 SINGLE GATED SOURCE OF TRUTH for warning DISPLAY.
   // Filters the raw constraintWarnings store down to only the lessons whose
   // warnings should still show (own date today-or-later, and every relational
@@ -1040,7 +1051,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           if (updated[l.id]) { delete updated[l.id]; changed = true; }
           continue;
         }
-        const recomputed = checkConstraints(l, l.day, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+        const recomputed = checkConstraints(l, l.day, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
         const existing = prev[l.id];
         const same = existing
           ? recomputed.length === existing.length && recomputed.every((w, i) => w === existing[i])
@@ -1262,7 +1273,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Check constraints for the newly placed band session
     const bSlot = (currentSchool?.slots || []).find(s => s.start === time);
     if (bSlot) {
-      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -1839,7 +1850,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const simulatedLessons = currentLessons.map(l =>
         l.id === lessonId ? { ...l, day: newDay, start: newTime, end: slot.end, slotId: slot.id } : l
       );
-      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
       setConstraintWarnings(prev => {
         const next = { ...prev };
         if (warnings.length > 0) next[lessonId] = warnings;
@@ -1852,7 +1863,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           const wlSchool = schools.find(s => s.id === wl.schoolId);
           const wlSlot = wlSchool?.slots.find(s => s.start === wl.start);
           if (!wlSlot) continue;
-          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
           if (recomputed.length > 0) next[warnId] = recomputed;
           else delete next[warnId];
         }
@@ -1900,7 +1911,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return { ...prev, [storageKey]: { ...entry, lessons: [...entry.lessons, rescuedLesson], missed: newMissed } };
     });
     // Run constraint checks — same warning/expand logic as handleWeeklyMoveLesson
-    const warnings = checkConstraints(rescuedLesson, newDay, slot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+    const warnings = checkConstraints(rescuedLesson, newDay, slot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
     setConstraintWarnings(prev => {
       const next = { ...prev };
       if (warnings.length > 0) next[rescuedLesson.id] = warnings;
@@ -1966,7 +1977,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ...prev,
         [storageKey]: { ...existingData, lessons, catchupStaged: (existingData.catchupStaged || []).filter(c => c.id !== stagedId) }
       }));
-      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -3111,7 +3122,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === contextMenu.time) || { start: contextMenu.time, end: contextMenu.time };
-                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3188,7 +3199,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3366,7 +3377,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                               setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                               const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
                               if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                               setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                             }} style={subBtnStyle}
@@ -4966,7 +4977,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       }
                                       const sl = (currentSchool.slots || []).find(s => s.start === time);
                                       if (dl && sl) {
-                                        const raw = checkConstraints(dl, day, sl, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
+                                        const raw = checkConstraints(dl, day, sl, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {

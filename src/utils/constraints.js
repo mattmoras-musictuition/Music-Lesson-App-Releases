@@ -10,7 +10,7 @@
 import { hasMissedEntry } from "./tallyDerive";
 import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
-import { getLiveTeacherId, isLessonUnassigned, timeToMin } from "./helpers";
+import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
 
 // ============================================================
 // v2.9.9 relational-constraint group acknowledge.
@@ -153,8 +153,29 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     weekKey, selectedSchool, currentSchool, weeklyTimetables,
     teacherCoverage, laneOverrides, students, enrolments, teachers,
     schools, bands, groups, weekDateMap, weekInterruptions,
-    specLookupRef, timetable, temporaryLanes = [],
+    specLookupRef, timetable, temporaryLanes = [], crossSchoolLessons,
   } = ctx;
+
+  // Bug-2: same-teacher time-overlap clash detection. The teacher-double-booking
+  // branches (solo/group/band) search this cross-school pool when supplied,
+  // falling back to the single-school list otherwise so non-WTT callers are
+  // unchanged. Time-overlap predicate (Matt's option 1): a same-teacher booking
+  // at another school on the same day at a NON-overlapping time must NOT warn.
+  // The exact-start clause is kept (catches freshly-added zero-duration cards);
+  // the range clause adds true overlap across differing per-school slot grids.
+  const teacherClash = (pool, conflictTeacherId, validatedLesson) =>
+    (crossSchoolLessons || pool).find(l =>
+      l.id !== validatedLesson.id &&
+      getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === conflictTeacherId &&
+      l.day === newDay &&
+      (l.start === slot.start ||
+        (timeToMin(l.start) < timeToMin(slot.end) && timeToMin(l.end) > timeToMin(slot.start)))
+    );
+
+  // Cross-school clash wording: name the other school + the conflict's time.
+  // Same-school conflicts keep each branch's existing message untouched.
+  const crossSchoolMsg = (teacherName, conflict) =>
+    `${teacherName} also teaching at ${schools.find(s => s.id === conflict.schoolId)?.name || conflict.schoolName || "another school"} at ${to12h(conflict.start)}`;
 
   if (lesson.isBandSession) {
     const warnings = [];
@@ -174,8 +195,8 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || liveBand?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
     if (teacher && school) {
-      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
-      if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
+      const conflict = teacherClash(lessonsToCheck, effectiveBandTeacherId, lesson);
+      if (conflict) warnings.push(conflict.schoolId !== lesson.schoolId ? crossSchoolMsg(teacher.name, conflict) : `${teacher.name} is double-booked at this time`);
     }
     const targetDate = weekDateMap[newDay];
     if (targetDate) {
@@ -215,8 +236,8 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || liveGroup?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
     if (teacher && school) {
-      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
-      if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
+      const conflict = teacherClash(lessonsToCheck, effectiveGroupTeacherId, lesson);
+      if (conflict) warnings.push(conflict.schoolId !== lesson.schoolId ? crossSchoolMsg(teacher.name, conflict) : `${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
     }
     // Interruption check for groups
     const targetDate = weekDateMap[newDay];
@@ -278,8 +299,8 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     // Teacher double-booking: another lesson at the same time with the same teacher
     const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
-    const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === liveTeacherId && l.day === newDay && l.start === slot.start);
-    if (conflict1) warnings.push(`${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
+    const conflict1 = teacherClash(lessonsToCheck1, liveTeacherId, lesson);
+    if (conflict1) warnings.push(conflict1.schoolId !== lesson.schoolId ? crossSchoolMsg(teacher.name, conflict1) : `${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
   }
 
   // Multi-lesson students: must have lessons on different days
