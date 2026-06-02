@@ -413,7 +413,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       title: "",
       instrument: lesson.instrument || "",
       // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
-      teacher: getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey),
+      teacher: getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes),
       time: `${toTimeLabel(lesson.start)}${lesson.end ? " – " + toTimeLabel(lesson.end) : ""}`,
       parentName: null,
       className: null,
@@ -1040,7 +1040,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           if (updated[l.id]) { delete updated[l.id]; changed = true; }
           continue;
         }
-        const recomputed = checkConstraints(l, l.day, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+        const recomputed = checkConstraints(l, l.day, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
         const existing = prev[l.id];
         const same = existing
           ? recomputed.length === existing.length && recomputed.every((w, i) => w === existing[i])
@@ -1172,7 +1172,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const teacherIds = [...new Set(
         (weeklyData?.lessons || [])
           .filter(l => l.day === dayName)
-          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey))
+          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes))
           .filter(Boolean)
       )];
       if (teacherIds.length === 0) {
@@ -1262,7 +1262,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Check constraints for the newly placed band session
     const bSlot = (currentSchool?.slots || []).find(s => s.start === time);
     if (bSlot) {
-      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+      const bWarnings = checkConstraints(bandLesson, day, bSlot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -1310,7 +1310,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 lessonMatch: (lesson) => {
                   // Teacher match — cluster 12a: lane-resolved name (override-aware).
                   if (h.targetTeacherName) {
-                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey) || "").toLowerCase();
+                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || "").toLowerCase();
                     const hTeacher = h.targetTeacherName.toLowerCase();
                     if (!tName.includes(hTeacher) && !hTeacher.includes(tName.split(" ")[0])) return false;
                   }
@@ -1559,7 +1559,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 lessonMatch: (lesson) => {
                   // Teacher match — cluster 12a: lane-resolved name (override-aware).
                   if (h.targetTeacherName) {
-                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey) || "").toLowerCase();
+                    const tName = (getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || "").toLowerCase();
                     const hTeacher = h.targetTeacherName.toLowerCase();
                     if (!tName.includes(hTeacher) && !hTeacher.includes(tName.split(" ")[0])) return false;
                   }
@@ -1839,7 +1839,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const simulatedLessons = currentLessons.map(l =>
         l.id === lessonId ? { ...l, day: newDay, start: newTime, end: slot.end, slotId: slot.id } : l
       );
-      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+      const warnings = checkConstraints(lesson, newDay, slot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
       setConstraintWarnings(prev => {
         const next = { ...prev };
         if (warnings.length > 0) next[lessonId] = warnings;
@@ -1852,7 +1852,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           const wlSchool = schools.find(s => s.id === wl.schoolId);
           const wlSlot = wlSchool?.slots.find(s => s.start === wl.start);
           if (!wlSlot) continue;
-          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+          const recomputed = checkConstraints(wl, wl.day, wlSlot, simulatedLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
           if (recomputed.length > 0) next[warnId] = recomputed;
           else delete next[warnId];
         }
@@ -1900,7 +1900,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return { ...prev, [storageKey]: { ...entry, lessons: [...entry.lessons, rescuedLesson], missed: newMissed } };
     });
     // Run constraint checks — same warning/expand logic as handleWeeklyMoveLesson
-    const warnings = checkConstraints(rescuedLesson, newDay, slot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+    const warnings = checkConstraints(rescuedLesson, newDay, slot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
     setConstraintWarnings(prev => {
       const next = { ...prev };
       if (warnings.length > 0) next[rescuedLesson.id] = warnings;
@@ -1966,7 +1966,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         ...prev,
         [storageKey]: { ...existingData, lessons, catchupStaged: (existingData.catchupStaged || []).filter(c => c.id !== stagedId) }
       }));
-      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+      const bWarnings = checkConstraints(bandLesson, newDay, slot, lessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
       if (bWarnings.length > 0) {
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
@@ -2504,7 +2504,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const staffEmailSet = new Set();
             const staffRows = [];
             dayLessons.forEach(l => {
-              const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+              const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
               const t = teachers.find(x => x.id === tid);
               if (!t) return;
               // Add BOTH the app email and the personal email as recipients;
@@ -3111,7 +3111,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === contextMenu.time) || { start: contextMenu.time, end: contextMenu.time };
-                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+                  const cuWarnings = checkConstraints(newLesson, contextMenu.day, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3188,7 +3188,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                   setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                   const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+                  const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
@@ -3366,7 +3366,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
                               setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
                               const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
                               if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                               setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
                             }} style={subBtnStyle}
@@ -3698,7 +3698,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const _wttSt = !contextMenu.isGroup && students.find(s => s.id === contextMenu.studentId);
                   const _wttSchoolSender = schools.find(s => s.id === (selectedSchool || _wttLesson?.schoolId || _wttSt?.schoolId))?.senderEmail || "";
                   // Cluster 12a: helper handles null lesson — drop the redundant ternary.
-                  const _wttResolvedTid = getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+                  const _wttResolvedTid = getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                   const lessonTeacher = _wttResolvedTid ? teachers.find(t => t.id === _wttResolvedTid) : null;
                   const lessonTeacherEmail = lessonTeacher?.email || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
@@ -3934,7 +3934,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const staffMap = {}; // email -> { name, color }
                   selLessons.forEach(l => {
                     // Cluster 12a: lane-resolved teacher only; stamped fallbacks gone.
-                    const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+                    const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                     const t = teachers.find(x => x.id === tid);
                     if (!t) return;
                     // Add BOTH app + personal email; skip blanks (no empty recipient).
@@ -4086,7 +4086,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const lesson = (weeklyData?.lessons || []).find(l => l.id === contextMenu.lessonId);
                   if (!lesson) return null;
                   const schoolName = schools.find(s => s.id === (lesson.schoolId || selectedSchool))?.name || "";
-                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey))?.name || "";
+                  const teacherName = teachers.find(t => t.id === getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes))?.name || "";
                   const memText = `${lesson.isGroup ? (lesson.studentNames?.join(", ") || "Group") : lesson.studentName} — ${lesson.instrument} — ${lesson.day} ${lesson.start}${schoolName ? ` at ${schoolName}` : ""}${teacherName ? ` — teacher: ${teacherName}` : ""}`;
                   return (
                     <>
@@ -4966,7 +4966,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       }
                                       const sl = (currentSchool.slots || []).find(s => s.start === time);
                                       if (dl && sl) {
-                                        const raw = checkConstraints(dl, day, sl, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable });
+                                        const raw = checkConstraints(dl, day, sl, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes });
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {
@@ -5053,7 +5053,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     // can be stale when the day's lane has shifted (e.g. fill-in
                                     // teacher); deriving from teacherCoverage + laneOverrides keeps
                                     // the actuals card consistent with the admin view.
-                                    const _gtn = getLiveTeacherName(g, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey);
+                                    const _gtn = getLiveTeacherName(g, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                                     const teacherFirst = _gtn ? _gtn.split(" ")[0] : "";
                                     return (
                                       <div
@@ -5174,7 +5174,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
-                                        {(() => { const tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
+                                        {(() => { const tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (
                                           <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
@@ -5266,7 +5266,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     {/* Cluster 12a: _swapTeacherId branch + _overrideActive purple-text both removed.
                                         Lane resolution carries the substitute-divergence signal at the column level
                                         via clusters 6c/7/8 (cluster 11 was retired as over-engineering). */}
-                                    {(() => { const _tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey); const _unassigned = isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {(() => { const _tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); const _unassigned = isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
                                     {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                                     {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
                                     {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}

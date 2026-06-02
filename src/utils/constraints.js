@@ -153,7 +153,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     weekKey, selectedSchool, currentSchool, weeklyTimetables,
     teacherCoverage, laneOverrides, students, enrolments, teachers,
     schools, bands, groups, weekDateMap, weekInterruptions,
-    specLookupRef, timetable,
+    specLookupRef, timetable, temporaryLanes = [],
   } = ctx;
 
   if (lesson.isBandSession) {
@@ -171,10 +171,10 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const school = schools.find(s => s.id === lesson.schoolId);
     const liveBand = bands?.find(b => b.id === lesson.bandId);
     // Cluster 12a: stamped lesson.teacherId fallback removed.
-    const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveBand?.teacherId;
+    const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || liveBand?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
     if (teacher && school) {
-      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
+      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === effectiveBandTeacherId && l.day === newDay && l.start === slot.start);
       if (conflict) warnings.push(`${teacher.name} is double-booked at this time`);
     }
     const targetDate = weekDateMap[newDay];
@@ -212,10 +212,10 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const school = schools.find(s => s.id === lesson.schoolId);
     // Cluster 12a: stamped lesson.teacherId fallback removed; lane / live-group only.
     const liveGroup = groups?.find(g => g.id === lesson.groupId);
-    const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey) || liveGroup?.teacherId;
+    const effectiveGroupTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || liveGroup?.teacherId;
     const teacher = teachers.find(t => t.id === effectiveGroupTeacherId);
     if (teacher && school) {
-      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
+      const conflict = lessonsToCheck.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === effectiveGroupTeacherId && l.day === newDay && l.start === slot.start);
       if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
     }
     // Interruption check for groups
@@ -267,18 +267,18 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   }
   if (hints.avoidDays && hints.avoidDays.includes(newDay)) warnings.push(`Student should avoid ${newDay}`);
   if (hints.preferredDays && hints.preferredDays.length > 0 && !hints.preferredDays.includes(newDay)) warnings.push(`Preferred day${hints.preferredDays.length > 1 ? "s" : ""}: ${hints.preferredDays.join(", ")}`);
-  const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+  const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   if (_wttUnassigned) {
     warnings.push("No teacher assigned — assign a teacher in student details");
   }
   // Lane-first via getLiveTeacherId; fallback chain (instrument enrolment → stamped) lives in the helper.
-  const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey);
+  const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   const teacher = _wttUnassigned ? null : teachers.find(t => t.id === liveTeacherId);
   if (teacher) {
     // Teacher double-booking: another lesson at the same time with the same teacher
     const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
-    const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey) === liveTeacherId && l.day === newDay && l.start === slot.start);
+    const conflict1 = lessonsToCheck1.find(l => l.id !== lesson.id && getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === liveTeacherId && l.day === newDay && l.start === slot.start);
     if (conflict1) warnings.push(`${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
   }
 

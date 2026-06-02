@@ -149,6 +149,13 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
  * laneOverrides + weekKey default to null so MTT callers (no week context)
  * keep the cluster 5a behaviour unchanged for resolved cards.
  *
+ * Temporary-lanes resolver sweep: a trailing `temporaryLanes` arg lets the
+ * per-card resolver see week-specific temp lanes the same way getDayLanes /
+ * getDayLaneTeacher already do. Phase 1 falls back to a temp lane whose id ===
+ * bucket_id (and whose weekKey matches); Phase 2's day-lane fallback unions
+ * temp lanes via getDayLanes. Defaults to [] so MTT/week-less callers are
+ * unaffected — temp lanes are only consulted when a weekKey is supplied.
+ *
  * Frozen-teacher preference (2.12.0 batch) — for PAST weeks ONLY:
  *   Finished weeks must stop recomputing their teacher from today's lanes (a
  *   staff day-change otherwise reaches backwards and "unassigns" past lessons).
@@ -159,7 +166,7 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
  *   weekKey-less (MTT) callers skip this block and resolve live as before, so
  *   they keep following the current setup until they age into the past.
  */
-export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, weekKey = null) {
+export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, weekKey = null, temporaryLanes = []) {
   if (!Array.isArray(teacherCoverage)) return null;
 
   // Frozen-teacher preference — past weeks only (see doc comment above).
@@ -180,15 +187,19 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
     }
     const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
     if (lane?.teacherId) return lane.teacherId;
+    // Temp lane carrying this bucket_id — week-specific, so only when weekKey
+    // matches. Searched only after the permanent set misses (same union order
+    // as getDayLanes: permanent first, temp as fallback).
+    if (Array.isArray(temporaryLanes) && weekKey) {
+      const tempLane = temporaryLanes.find(t => t.id === lesson.bucket_id && t.weekKey === weekKey);
+      if (tempLane?.teacherId) return tempLane.teacherId;
+    }
   }
 
-  // Phase 2 — day-lane fallback for legacy/orphan cards.
+  // Phase 2 — day-lane fallback for legacy/orphan cards. Union permanent +
+  // temp lanes via getDayLanes so a temp-lane-only day still resolves a teacher.
   if (lesson?.schoolId && lesson?.day) {
-    const dayLane = teacherCoverage.find(
-      l => l.schoolId === lesson.schoolId &&
-           l.day === lesson.day &&
-           l.status === "active"
-    );
+    const dayLane = getDayLanes(teacherCoverage, lesson.schoolId, lesson.day, temporaryLanes, weekKey)[0];
     if (dayLane) {
       if (Array.isArray(laneOverrides) && weekKey) {
         const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === dayLane.id);

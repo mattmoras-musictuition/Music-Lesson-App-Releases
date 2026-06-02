@@ -187,9 +187,9 @@ export const bandDisplayName = (lesson, members) =>
 // removed. Lane resolution via getCardTeacherId is the sole source. Unused
 // students/enrolments params retained for caller-signature stability.
 // eslint-disable-next-line no-unused-vars
-export const getLiveTeacherName = (lesson, _students, teachers, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+export const getLiveTeacherName = (lesson, _students, teachers, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null, temporaryLanes = []) => {
   if (!lesson) return "";
-  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
+  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   if (laneTid) {
     const t = teachers.find(x => x.id === laneTid);
     if (t?.name) return t.name;
@@ -200,18 +200,18 @@ export const getLiveTeacherName = (lesson, _students, teachers, _enrolments, tea
 // Returns the live teacher ID for a lesson, derived from current lane data.
 // Session 3 / C7: Path-B fallback removed; lane-only.
 // eslint-disable-next-line no-unused-vars
-export const getLiveTeacherId = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+export const getLiveTeacherId = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null, temporaryLanes = []) => {
   if (!lesson) return null;
-  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
+  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   return laneTid || null;
 };
 
 // Returns true if the lesson has no lane-resolved teacher and isn't a group.
 // Session 3 / C7: Path-B fallback removed; lane-only.
 // eslint-disable-next-line no-unused-vars
-export const isLessonUnassigned = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null) => {
+export const isLessonUnassigned = (lesson, _students, _enrolments, teacherCoverage, laneOverrides = null, weekKey = null, temporaryLanes = []) => {
   if (!lesson) return false;
-  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey);
+  const laneTid = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   if (laneTid) return false;
   if (lesson.isGroup || lesson.isBandSession) return false;
   return true;
