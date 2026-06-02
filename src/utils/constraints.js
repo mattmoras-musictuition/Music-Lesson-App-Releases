@@ -13,6 +13,28 @@ import { getCardTeacherId } from "./teacherCoverageDB";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
 
 // ============================================================
+// Teacher double-booking — shared single source of truth (bug-2 + MTT parity).
+// Both this file's WTT checker and the MTT shadow checker in TimetableView.js
+// MUST resolve the same time-overlap predicate and emit the same cross-school
+// wording. Keep these two exported helpers as the only definition — do not
+// inline a second copy in either checker.
+// ============================================================
+
+// Time-overlap predicate (Matt's option 1): the exact-start clause catches
+// freshly-added zero-duration cards; the range clause adds true overlap across
+// schools whose slot grids differ. A same-teacher booking at a NON-overlapping
+// time must NOT match.
+export function lessonTimeOverlaps(lesson, slot) {
+  return lesson.start === slot.start ||
+    (timeToMin(lesson.start) < timeToMin(slot.end) && timeToMin(lesson.end) > timeToMin(slot.start));
+}
+
+// Cross-school clash wording — names the other school + the conflict's time.
+export function crossSchoolClashMsg(teacherName, conflict, schools) {
+  return `${teacherName} also teaching at ${(schools || []).find(s => s.id === conflict.schoolId)?.name || conflict.schoolName || "another school"} at ${to12h(conflict.start)}`;
+}
+
+// ============================================================
 // v2.9.9 relational-constraint group acknowledge.
 // Single source of truth for the two RELATIONAL (paired) constraint
 // detections. Both checkConstraints (which pushes a warning string) and
@@ -168,14 +190,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
       l.id !== validatedLesson.id &&
       getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === conflictTeacherId &&
       l.day === newDay &&
-      (l.start === slot.start ||
-        (timeToMin(l.start) < timeToMin(slot.end) && timeToMin(l.end) > timeToMin(slot.start)))
+      lessonTimeOverlaps(l, slot)
     );
 
   // Cross-school clash wording: name the other school + the conflict's time.
   // Same-school conflicts keep each branch's existing message untouched.
-  const crossSchoolMsg = (teacherName, conflict) =>
-    `${teacherName} also teaching at ${schools.find(s => s.id === conflict.schoolId)?.name || conflict.schoolName || "another school"} at ${to12h(conflict.start)}`;
+  const crossSchoolMsg = (teacherName, conflict) => crossSchoolClashMsg(teacherName, conflict, schools);
 
   if (lesson.isBandSession) {
     const warnings = [];

@@ -15,7 +15,7 @@ import { generateWeeklyTimetable, buildWeeklyAIPrompt, printMasterTimetable, pri
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { ExportDialog } from "../components/ExportDialog";
-import { getRelationalPartnerIds } from "../utils/constraints";
+import { getRelationalPartnerIds, lessonTimeOverlaps, crossSchoolClashMsg } from "../utils/constraints";
 
 // "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
 function buildPreferredDisplayName(name) {
@@ -497,8 +497,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       const teacher = teachers.find(t => t.id === lessonResolvedTid);
       if (teacher && school) {
         {
-          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === lessonResolvedTid && l.day === newDay && l.start === slot.start);
-          if (conflict) warnings.push(`${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
+          // lessonList is the full all-schools master, so this already spans
+          // schools; the predicate + cross-school wording mirror constraints.js.
+          const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === lessonResolvedTid && l.day === newDay && lessonTimeOverlaps(l, slot));
+          if (conflict) warnings.push(conflict.schoolId !== lesson.schoolId ? crossSchoolClashMsg(teacher.name, conflict, schools) : `${teacher.name} already has ${conflict.isGroup ? conflict.groupName || "Group" : conflict.studentName} at this time`);
         }
       }
       return warnings;
@@ -553,8 +555,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       const teacher = teachers.find(t => t.id === _liveTeacherId);
       // Check teacher double-booking (another lesson at the same time)
       {
-        const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === _liveTeacherId && l.day === newDay && l.start === slot.start);
-        if (conflict) warnings.push(`${teacher?.name || ""} already has ${conflict.studentName} at this time`);
+        const conflict = lessonList.find(l => l.id !== lesson.id && getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === _liveTeacherId && l.day === newDay && lessonTimeOverlaps(l, slot));
+        if (conflict) warnings.push(conflict.schoolId !== lesson.schoolId ? crossSchoolClashMsg(teacher?.name || "", conflict, schools) : `${teacher?.name || ""} already has ${conflict.studentName} at this time`);
       }
     }
 
