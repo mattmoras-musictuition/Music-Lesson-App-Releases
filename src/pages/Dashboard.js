@@ -15,7 +15,7 @@ import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCa
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
-import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail, getPrimaryAddress } from "../utils/emailHelpers";
+import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail, getPrimaryAddress, lessonChangeInfo } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
@@ -4877,11 +4877,21 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                             {lessons.map(l => {
                                               const st = linkedStudents.find(s => s.id === l.studentId);
                                               const school = schools.find(s => s.id === l.schoolId);
+                                              // Pair this week's slot with the regular Master-Timetable slot
+                                              // (matched by student + instrument) and flag if it changed.
+                                              const regular = (timetable?.lessons || []).find(r => r.studentId === l.studentId && (r.instrument || "").trim().toLowerCase() === (l.instrument || "").trim().toLowerCase()) || null;
+                                              const { thisWeekStr, regularStr, changed } = lessonChangeInfo(l, regular, hasWeeklyData);
                                               return (
                                                 <div key={l.id}
                                                   onClick={e => { e.stopPropagation(); if (school) { setSharedSchool(school.id); onNavigate(hasWeeklyData ? "weekly" : "timetable"); } }}
-                                                  style={{ fontSize: 12, color: colors.text, lineHeight: 1.6, display: "flex", alignItems: "center", gap: 4 }}>
-                                                  <strong>{st?.name}</strong> — {l.instrument} · {l.day} {l.start}
+                                                  style={{ fontSize: 12, color: colors.text, lineHeight: 1.6, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                                  <strong>{st?.name}</strong> — {l.instrument}
+                                                  {hasWeeklyData
+                                                    ? <> · this week {thisWeekStr} · {regular ? `regular ${regularStr}` : <span style={{ color: colors.textMuted }}>no regular slot</span>}</>
+                                                    : <> · {l.day} {l.start}</>}
+                                                  {changed && (
+                                                    <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "rgba(217,119,6,0.12)", color: "#D97706", textTransform: "uppercase", letterSpacing: "0.04em" }}>Changed</span>
+                                                  )}
                                                   {school && lessons.some((x, i) => i > 0 && x.schoolId !== lessons[0].schoolId) ? <span style={{ color: colors.textMuted }}> · {school.name}</span> : null}
                                                 </div>
                                               );

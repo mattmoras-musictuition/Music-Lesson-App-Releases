@@ -85,6 +85,52 @@ export function schoolSenderForSourceEmail(sourceEmail, schools) {
   return match ? (match.senderEmail || "").trim() : "";
 }
 
+// ── Lesson reference (email views) ─────────────────────────────────────────
+// Compare a student's lesson THIS WEEK against their REGULAR Master-Timetable
+// slot, for the inbox reference box and the compose modal. Pure — no app
+// imports; callers pass the lesson objects.
+
+// Format one lesson's "this week vs regular" comparison.
+//   thisWeek/regular: lesson objects with { day, start } (regular may be null)
+//   hasWeeklyData: true when `thisWeek` is genuine weekly-timetable data (not an
+//     MTT fallback) — only then can a slot meaningfully be "changed".
+// Returns { thisWeekStr, regularStr, changed }. "changed" is true when the day
+// OR the start time differs between this week and the regular slot.
+export function lessonChangeInfo(thisWeek, regular, hasWeeklyData) {
+  const fmt = (l) => l ? `${(l.day || "?")} ${(l.start || "")}`.trim() : "";
+  return {
+    thisWeekStr: fmt(thisWeek),
+    regularStr: regular ? fmt(regular) : "",
+    changed: !!(hasWeeklyData && regular && (regular.day !== thisWeek.day || regular.start !== thisWeek.start)),
+  };
+}
+
+// Build lesson-reference rows for a set of students: each student's lesson(s)
+// THIS WEEK (weekly timetable for `currentMonday`) paired with their REGULAR
+// slot (Master Timetable), matched by studentId + instrument. Falls back to
+// MTT-only rows when no weekly timetable exists for the current week. Pure.
+//   returns [{ lesson, regular, changed, hasWeeklyData, studentName, instrument, schoolId }]
+export function buildLessonReferenceRows(linkedStudents, { timetable, weeklyTimetables, currentMonday }) {
+  if (!Array.isArray(linkedStudents) || linkedStudents.length === 0) return [];
+  const mttLessons = (timetable && timetable.lessons) || [];
+  const wtt = weeklyTimetables || {};
+  const hasWeeklyData = linkedStudents.some(s => wtt[`${currentMonday}|${s.schoolId}`]);
+  const weeklyLessons = linkedStudents.flatMap(s =>
+    (wtt[`${currentMonday}|${s.schoolId}`]?.lessons || []).filter(l => l.studentId === s.id)
+  );
+  const masterLessons = mttLessons.filter(l => linkedStudents.some(s => s.id === l.studentId));
+  const lessons = hasWeeklyData ? weeklyLessons : masterLessons;
+  const norm = (x) => (x || "").trim().toLowerCase();
+  return lessons.map(l => {
+    const student = linkedStudents.find(s => s.id === l.studentId);
+    // Match the regular slot by student + instrument; first match wins if a
+    // student has more than one MTT lesson for the same instrument.
+    const regular = mttLessons.find(r => r.studentId === l.studentId && norm(r.instrument) === norm(l.instrument)) || null;
+    const { thisWeekStr, regularStr, changed } = lessonChangeInfo(l, regular, hasWeeklyData);
+    return { lesson: l, regular, changed, thisWeekStr, regularStr, hasWeeklyData, studentName: student?.name || "", instrument: l.instrument || "", schoolId: l.schoolId };
+  });
+}
+
 export function decodeEntities(str) {
   if (!str || !str.includes("&")) return str;
   return str

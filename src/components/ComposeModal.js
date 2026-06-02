@@ -16,9 +16,10 @@ import { getUserTemplates, applyMergeCtx, schoolAcronym, schoolIdForSenderEmail,
 // URL-based docs) and add them to the compose modal's attachments list so
 // they get picked up by the normal send path.
 import { BUCKET_DOCUMENTS, downloadAsBase64 } from "../utils/storageHelpers";
-import { resolveSenderHeaders, getPrimaryAddress } from "../utils/emailHelpers";
+import { resolveSenderHeaders, getPrimaryAddress, buildLessonReferenceRows } from "../utils/emailHelpers";
+import { getCurrentWeekMonday, toLocalDateStr } from "../utils/helpers";
 
-export function ComposeModal({ initial, schools, students, teachers, contacts, resources = [], documents = [], onClose, onCancelAll, notify, queueRemaining = 0, onSoundPlay, onSent }) {
+export function ComposeModal({ initial, schools, students, teachers, contacts, resources = [], documents = [], timetable = null, weeklyTimetables = {}, onClose, onCancelAll, notify, queueRemaining = 0, onSoundPlay, onSent }) {
   // Session 89 — v6 (HTML DOM-based stripping of quoted replies from initial.body)
   React.useEffect(() => { console.log("[ComposeModal] session 89 v6 loaded"); }, []);
   const { colors, darkMode } = useTheme();
@@ -56,6 +57,18 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const chipDragRef = React.useRef(null); // { email, fromField: 'to'|'cc'|'bcc' }
   const [chipDragOver, setChipDragOver] = React.useState(null); // current drop-target field name
   const [subject, setSubject] = React.useState(initial.subject || "");
+  // Lesson reference: when a recipient (To) is a parent of a student, surface
+  // that student's lesson this week vs their regular Master-Timetable slot,
+  // shown bottom-left below 'Previous messages'. Resolves from the To field
+  // only — group BCC blasts (empty To) deliberately show nothing. Display only.
+  const lessonRows = React.useMemo(() => {
+    const recipients = (to || []).map(a => (a.match(/<(.+)>/)?.[1] || a || "").trim().toLowerCase()).filter(Boolean);
+    if (recipients.length === 0) return [];
+    const linked = (students || []).filter(s => (s.parents || []).some(p => p.email && recipients.includes(p.email.toLowerCase())));
+    if (linked.length === 0) return [];
+    const currentMonday = toLocalDateStr(getCurrentWeekMonday());
+    return buildLessonReferenceRows(linked, { timetable, weeklyTimetables, currentMonday });
+  }, [to, students, timetable, weeklyTimetables]);
   const [sending, setSending] = React.useState(false);
   const [attachments, setAttachments] = React.useState(initial.attachments || []);
   const [minimised, setMinimised] = React.useState(false);
@@ -1123,11 +1136,30 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
 
         {/* Footer */}
         <div style={{ padding: "12px 20px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center", flexShrink: 0 }}>
-          {threadMessages.length > 0 && (
-            <button onClick={() => setShowThread(o => !o)}
-              style={{ marginRight: "auto", padding: "7px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: showThread ? colors.bg : colors.cardBg, color: colors.textMuted, fontSize: 12, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
-              {showThread ? "▾" : "▸"} Previous messages ({threadMessages.length})
-            </button>
+          {(threadMessages.length > 0 || lessonRows.length > 0) && (
+            <div style={{ marginRight: "auto", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, minWidth: 0, maxWidth: "58%" }}>
+              {threadMessages.length > 0 && (
+                <button onClick={() => setShowThread(o => !o)}
+                  style={{ padding: "7px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: showThread ? colors.bg : colors.cardBg, color: colors.textMuted, fontSize: 12, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  {showThread ? "▾" : "▸"} Previous messages ({threadMessages.length})
+                </button>
+              )}
+              {lessonRows.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 84, overflowY: "auto", width: "100%" }}>
+                  {lessonRows.map((r, i) => (
+                    <div key={i} style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                      <strong style={{ color: colors.text }}>{r.studentName}</strong> — {r.instrument}
+                      {r.hasWeeklyData
+                        ? <> · this week {r.thisWeekStr} · {r.regular ? `regular ${r.regularStr}` : <span style={{ color: colors.textMuted }}>no regular slot</span>}</>
+                        : <> · {r.lesson.day} {r.lesson.start}</>}
+                      {r.changed && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "rgba(217,119,6,0.12)", color: "#D97706", textTransform: "uppercase", letterSpacing: "0.04em" }}>Changed</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           {queueRemaining > 0 && onCancelAll && (
             <button onClick={onCancelAll} style={{ padding: "8px 14px", border: `1px solid ${colors.danger}40`, borderRadius: 8, background: darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2", fontSize: 13, fontFamily: "inherit", cursor: "pointer", color: colors.danger, marginRight: "auto" }}>

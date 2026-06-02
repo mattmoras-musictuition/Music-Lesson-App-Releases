@@ -4896,6 +4896,8 @@ export default function MusicTimetableApp() {
           contacts={contacts}
           resources={resources}
           documents={documents}
+          timetable={timetable}
+          weeklyTimetables={weeklyTimetables}
           queueRemaining={composeQueue.length}
           onClose={() => {
             if (composeQueue.length > 0) {
