@@ -60,10 +60,20 @@ export function buildSenderHeaders(school, primaryAddress) {
 // verbatim with no display name / Reply-To (legacy passthrough).
 export function resolveSenderHeaders(fromSelector, schools, primaryAddress) {
   const sel = (fromSelector || "").trim().toLowerCase();
-  if (!sel) return buildSenderHeaders(null, primaryAddress);
+  if (!sel) {
+    const h = buildSenderHeaders(null, primaryAddress);
+    console.log("[RTDEBUG headers] selector=", fromSelector, "-> (empty sel, generic)", h);
+    return h;
+  }
   const school = (schools || []).find(s => (s.senderEmail || "").trim().toLowerCase() === sel);
-  if (school) return buildSenderHeaders(school, primaryAddress);
-  return { from: fromSelector, replyTo: "" };
+  if (school) {
+    const h = buildSenderHeaders(school, primaryAddress);
+    console.log("[RTDEBUG headers] selector=", fromSelector, "-> (matched school)", h);
+    return h;
+  }
+  const h = { from: fromSelector, replyTo: "" };
+  console.log("[RTDEBUG headers] selector=", fromSelector, "-> (no school match, passthrough)", h);
+  return h;
 }
 
 // Reply-To gap fix: resolve the school a SOURCE message arrived on, by matching
@@ -75,14 +85,27 @@ export function resolveSenderHeaders(fromSelector, schools, primaryAddress) {
 // path turns into Reply-To), or "" when the message didn't arrive on a known
 // school alias (so callers fall back to recipient auto-detect / generic).
 export function schoolSenderForSourceEmail(sourceEmail, schools) {
-  if (!sourceEmail || !Array.isArray(schools)) return "";
+  console.log("[RTDEBUG resolver] entry", {
+    deliveredTo: sourceEmail && sourceEmail.deliveredTo,
+    to: sourceEmail && sourceEmail.to,
+    cc: sourceEmail && sourceEmail.cc,
+  });
+  if (!sourceEmail || !Array.isArray(schools)) {
+    console.log("[RTDEBUG resolver] return (none) — no sourceEmail/schools");
+    return "";
+  }
   const arrivedOn = `${sourceEmail.deliveredTo || ""} ${sourceEmail.to || ""} ${sourceEmail.cc || ""}`.toLowerCase();
-  if (!arrivedOn.trim()) return "";
+  if (!arrivedOn.trim()) {
+    console.log("[RTDEBUG resolver] return (none) — empty arrivedOn");
+    return "";
+  }
   const match = schools.find(s => {
     const alias = (s.senderEmail || "").trim().toLowerCase();
     return alias && arrivedOn.includes(alias);
   });
-  return match ? (match.senderEmail || "").trim() : "";
+  const result = match ? (match.senderEmail || "").trim() : "";
+  console.log("[RTDEBUG resolver] return", result || "(none)");
+  return result;
 }
 
 export function decodeEntities(str) {
