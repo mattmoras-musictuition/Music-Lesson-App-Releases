@@ -30,14 +30,6 @@ export function getPrimaryAddress() {
   return DEFAULT_PRIMARY_ADDRESS;
 }
 
-// School acronym for the From display name: the explicit acronym field if set,
-// else the local-part of the school senderEmail uppercased (mps@... -> MPS).
-function _schoolAcronym(school) {
-  if (school?.acronym && school.acronym.trim()) return school.acronym.trim().toUpperCase();
-  const local = (school?.senderEmail || "").split("@")[0];
-  return local ? local.toUpperCase() : "";
-}
-
 // Build the From header value. ASCII display names are quoted; non-ASCII names
 // are RFC-2047 (base64 UTF-8) encoded (encoded-words are not quoted).
 function _fromHeader(label, primary) {
@@ -49,15 +41,15 @@ function _fromHeader(label, primary) {
   return `${namePart} <${primary}>`;
 }
 
-// Single source of truth for outbound sender headers.
-//   school present -> { from: '"Matt Moras Music - ACR" <primary>', replyTo: alias }
-//   school absent   -> { from: '"Matt Moras Music" <primary>',        replyTo: "" }
+// Single source of truth for outbound sender headers. The From display name is
+// always the fixed brand "Matt Moras Music"; the school identity rides in
+// Reply-To (the school alias) when a school resolves, omitted otherwise.
+//   school present -> { from: '"Matt Moras Music" <primary>', replyTo: alias }
+//   school absent   -> { from: '"Matt Moras Music" <primary>', replyTo: "" }
 export function buildSenderHeaders(school, primaryAddress) {
   const primary = (primaryAddress && primaryAddress.includes("@")) ? primaryAddress : getPrimaryAddress();
-  const acr = school ? _schoolAcronym(school) : "";
-  const label = acr ? `Matt Moras Music - ${acr}` : "Matt Moras Music";
   return {
-    from: _fromHeader(label, primary),
+    from: _fromHeader("Matt Moras Music", primary),
     replyTo: school ? (school.senderEmail || "").trim() : "",
   };
 }
