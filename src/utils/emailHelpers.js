@@ -66,6 +66,23 @@ export function resolveSenderHeaders(fromSelector, schools, primaryAddress) {
   return { from: fromSelector, replyTo: "" };
 }
 
+// Reply-To gap fix: resolve the school a SOURCE message arrived on, by matching
+// the address it was delivered to (Delivered-To, then To) against the schools'
+// senderEmail aliases — the same signal the inbound filter uses. Returns that
+// school's senderEmail (suitable as the compose `from` selector, which the send
+// path turns into Reply-To), or "" when the message didn't arrive on a known
+// school alias (so callers fall back to recipient auto-detect / generic).
+export function schoolSenderForSourceEmail(sourceEmail, schools) {
+  if (!sourceEmail || !Array.isArray(schools)) return "";
+  const arrivedOn = `${sourceEmail.deliveredTo || sourceEmail.to || ""}`.toLowerCase();
+  if (!arrivedOn) return "";
+  const match = schools.find(s => {
+    const alias = (s.senderEmail || "").trim().toLowerCase();
+    return alias && arrivedOn.includes(alias);
+  });
+  return match ? (match.senderEmail || "").trim() : "";
+}
+
 export function decodeEntities(str) {
   if (!str || !str.includes("&")) return str;
   return str

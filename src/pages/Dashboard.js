@@ -15,7 +15,7 @@ import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCa
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
-import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml } from "../utils/emailHelpers";
+import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
@@ -2054,7 +2054,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     } else if (item.replyAddrs) {
       onClick = (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); setEmailGroupContactMenu({ x: r.left, y: r.bottom + 4, item }); };
     } else if (item.replyTo) {
-      onClick = (e) => { e.stopPropagation(); openCompose([item.replyTo], { subject: item.composeSubject ?? (item.emailId ? reSubject(inboxEmails.find(e2 => e2.id === item.emailId)?.subject || "") : ""), triggerId: "todo_email" }); };
+      onClick = (e) => { e.stopPropagation(); openCompose([item.replyTo], { from: schoolSenderForSourceEmail(item.emailId ? inboxEmails.find(e2 => e2.id === item.emailId) : null, schools) || "", subject: item.composeSubject ?? (item.emailId ? reSubject(inboxEmails.find(e2 => e2.id === item.emailId)?.subject || "") : ""), triggerId: "todo_email" }); };
     }
 
     if (!onClick) {
@@ -4383,7 +4383,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                       <button onClick={e => {
                                         e.stopPropagation();
                                         const replyAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
-                                        openCompose([replyAddr], { subject: reSubject(email.subject), body: "", threadMessages: email.threadMessages });
+                                        openCompose([replyAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: "", threadMessages: email.threadMessages });
                                         emailSwipeRef.current[email.id] = 0;
                                         setEmailSwipeState(prev => ({ ...prev, [email.id]: 0 }));
                                       }} style={{ flex: 1, background: colors.accent, border: "none", borderLeft: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }}>
@@ -4875,14 +4875,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         );
                                       })()}
                                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { subject: reSubject(email.subject), body: draft || "", threadMessages: email.threadMessages }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply{draft ? " with draft" : ""}</Btn>}
+                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: draft || "", threadMessages: email.threadMessages }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply{draft ? " with draft" : ""}</Btn>}
                                         {emailFolder !== "sent" && allRecipients.length > 1 && (
-                                          <Btn variant="secondary" onClick={() => { openCompose(allRecipients, { subject: reSubject(email.subject), body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply All</Btn>
+                                          <Btn variant="secondary" onClick={() => { openCompose(allRecipients, { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply All</Btn>
                                         )}
                                         {emailFolder !== "sent" && (
                                           <Btn variant="secondary" onClick={() => {
                                             const fwdBody = `<br><br><div style="border-left:2px solid #ccc;padding-left:12px;margin-top:8px;color:#999;font-size:12px"><div><strong>Forwarded message</strong> &nbsp;·&nbsp; From: ${activeFromName} &lt;${activeFromAddr}&gt; &nbsp;·&nbsp; Subject: ${email.subject || ""}</div><br>${bodyHtml || (bodyText || "").replace(/\n/g, "<br>") || ""}</div>`;
-                                            openCompose([], { subject: fwdSubject(email.subject), body: fwdBody });
+                                            openCompose([], { from: schoolSenderForSourceEmail(email, schools) || "", subject: fwdSubject(email.subject), body: fwdBody });
                                           }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Reply size={12} style={{ transform: "scaleX(-1)" }} /> Fwd</Btn>
                                         )}
                                         {emailFolder !== "sent" && <Btn variant="secondary" onClick={() => triageEmail(email)} disabled={isTriaging} style={{ fontSize: 12 }}>{isTriaging ? "✦ Drafting…" : draft ? "✦ Re-draft" : "✦ Triage"}</Btn>}
@@ -5504,7 +5504,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                               // Email sub-item — "Reply to [FirstName]" opens compose, "from Full Name" below
                                               <span style={{ fontSize: 12, color: sub.done ? colors.textMuted : colors.text, lineHeight: 1.4, textDecoration: sub.done ? "line-through" : "none" }}>
                                                 <span
-                                                  onClick={e => { e.stopPropagation(); openCompose([sub.replyTo], { subject: sub.composeSubject ?? (sub.replyEmailId ? reSubject(inboxEmails.find(e2 => e2.id === sub.replyEmailId)?.subject || "") : ""), triggerId: "todo_reply" }); }}
+                                                  onClick={e => { e.stopPropagation(); openCompose([sub.replyTo], { from: schoolSenderForSourceEmail(sub.replyEmailId ? inboxEmails.find(e2 => e2.id === sub.replyEmailId) : null, schools) || "", subject: sub.composeSubject ?? (sub.replyEmailId ? reSubject(inboxEmails.find(e2 => e2.id === sub.replyEmailId)?.subject || "") : ""), triggerId: "todo_reply" }); }}
                                                   style={{ color: sub.done ? colors.textMuted : colors.accentDark, fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}>
                                                   {sub.senderName || "Reply"}
                                                 </span>
@@ -6512,7 +6512,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             boxShadow: "0 4px 16px rgba(0,0,0,0.14)", minWidth: 180, overflow: "hidden",
             fontFamily: "inherit", fontSize: 13 }}>
           {emailContextMenu.fromAddr && (<>
-            <button onClick={() => { openCompose([emailContextMenu.fromAddr]); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
+            <button onClick={() => { openCompose([emailContextMenu.fromAddr], { from: schoolSenderForSourceEmail(emailContextMenu.email, schools) || "" }); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
               style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><Mail size={13} /> New Email</span></button>
             <button onClick={() => { navigator.clipboard?.writeText(emailContextMenu.fromAddr); setEmailContextMenu(null); setEmailContextSubMenu(null); }}
               style={btnStyle} onMouseEnter={btnHover} onMouseLeave={btnLeave}><span style={{ display: "flex", alignItems: "center", gap: 6 }}><Copy size={13} /> Copy Address</span></button>
