@@ -555,7 +555,6 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     // the actual headers — From = signed primary (+ school display name),
     // Reply-To = the school alias. Applied to every send branch below.
     const _hdr = resolveSenderHeaders(from, schools, primaryAddress);
-    console.log("[RTDEBUG compose] from state=", from, "-> _hdr=", _hdr);
     // Validation: in multi-recipient group mode (auto-BCC entry) the user is
     // no longer required to put a placeholder in To — we accept whichever
     // field(s) hold the recipients. All other entry modes keep the original

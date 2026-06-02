@@ -229,7 +229,6 @@ ipcMain.handle("gmail-disconnect", () => {
 
 ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, bodyHtml, attachments }) => {
   try {
-    console.log("[RTDEBUG gmail-send] from=", from, "replyTo=", replyTo, "-> Reply-To header written:", replyTo ? "YES" : "NO");
     const accessToken = await getValidAccessToken();
     const toHeader = Array.isArray(to) ? to.join(", ") : to;
     const ccHeader = Array.isArray(cc) ? cc.join(", ") : cc;
