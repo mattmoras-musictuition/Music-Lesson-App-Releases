@@ -15,7 +15,7 @@ import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCa
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
-import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail } from "../utils/emailHelpers";
+import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail, getPrimaryAddress } from "../utils/emailHelpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
@@ -4267,6 +4267,32 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               const displayHeader = emailFolder === "sent" ? (email.to || "") : (email.from || "");
                               const fromName = resolveDisplayName(displayHeader, contacts, students);
                               const fromAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
+                              // Thread name: show ALL distinct external respondents (most-recent first),
+                              // not just the primary sender — so a reply from someone else inside the
+                              // thread is visible when scanning. Reuses the same per-message from-name
+                              // resolution as the participant chips; excludes our own sends ("You") and
+                              // the school-alias / primary mailbox addresses. Inbox only; falls back to
+                              // the single sender for sent mail and single-message / not-yet-loaded threads.
+                              const threadDisplayNames = (() => {
+                                if (emailFolder === "sent") return fromName;
+                                const msgs = email.threadMessages || [];
+                                if (msgs.length <= 1) return fromName;
+                                const aliasAddrs = new Set((schools || []).map(s => (s.senderEmail || "").trim().toLowerCase()).filter(Boolean));
+                                try { const p = getPrimaryAddress(); if (p) aliasAddrs.add(p.toLowerCase()); } catch {}
+                                const seen = new Set();
+                                const names = [];
+                                for (const m of [...msgs].reverse()) {
+                                  if (m.isSent) continue;
+                                  const addr = (m.from?.match(/<(.+)>/)?.[1] || m.from || "").trim().toLowerCase();
+                                  if (addr && aliasAddrs.has(addr)) continue;
+                                  const nm = resolveDisplayName(m.from, contacts, students);
+                                  const key = nm.toLowerCase();
+                                  if (seen.has(key)) continue;
+                                  seen.add(key);
+                                  names.push(nm);
+                                }
+                                return names.length ? names.join(", ") : fromName;
+                              })();
                               // Reply-all recipients: extract all To/CC addresses excluding own address
                               const allRecipients = [fromAddr, ...(email.cc || "").split(",").map(s => s.trim()).filter(Boolean)].filter(Boolean);
                               const dateObj = email.date ? new Date(email.date) : null;
@@ -4490,7 +4516,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                           onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setEmailContextMenu({ x: e.clientX, y: e.clientY, text: "", emailId: email.id, email, fromAddr, fromName, isSenderCtx: true }); }}
                                           style={{ fontWeight: 700, fontSize: 13, color: colors.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "context-menu" }}>
                                           {emailFolder === "sent" && <span style={{ fontWeight: 400, color: colors.textMuted, marginRight: 3 }}>To:</span>}
-                                          {fromName}
+                                          {threadDisplayNames}
                                         </span>
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
                                           {needsReply && !isReplied && <span title="Response required" style={{ fontSize: 10, color: colors.danger, fontWeight: 700, lineHeight: 1, display: "inline-flex", alignItems: "center" }}><Reply size={10} /></span>}
