@@ -288,6 +288,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [missedZoneSubmenu, setMissedZoneSubmenu] = useState(null);
   const [dayHeaderSubmenu, setDayHeaderSubmenu] = useState(null);
   const dayHeaderHideTimer = React.useRef(null);
+  // Hover-intent timer for the day-header email submenu: switching from one
+  // open flyout (e.g. Parents) to another row (Class Teachers/Staff) is
+  // deferred briefly so a quick diagonal pass over a sibling row — on the way
+  // to the open flyout's items — doesn't hijack/close it before a click lands.
+  const dayHeaderOpenTimer = React.useRef(null);
   const missedZoneHideTimer = React.useRef(null);
   const [wttEmailSubmenu, setWttEmailSubmenu] = useState(null);
   const [wttEmailLevel2, setWttEmailLevel2] = useState(null);
@@ -2535,8 +2540,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const menuLeft = menuRect ? menuRect.left : contextMenu.x;
             const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
 
-            const keepDayHeaderOpen = () => { if (dayHeaderHideTimer.current) clearTimeout(dayHeaderHideTimer.current); };
+            const keepDayHeaderOpen = () => {
+              if (dayHeaderHideTimer.current) { clearTimeout(dayHeaderHideTimer.current); dayHeaderHideTimer.current = null; }
+              // Reaching the open flyout cancels any pending switch to a sibling
+              // row that was brushed over en route.
+              if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; }
+            };
             const scheduleDayHeaderClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
+            // Open this row's flyout: instant when none is open, but defer a
+            // *switch* from an already-open flyout so a transient diagonal
+            // pass-over (heading to the open flyout's items) doesn't hijack it.
+            const openDayHeaderSub = (type, y) => {
+              if (dayHeaderHideTimer.current) { clearTimeout(dayHeaderHideTimer.current); dayHeaderHideTimer.current = null; }
+              if (dayHeaderSubmenu?.type === type) return;
+              if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; }
+              if (dayHeaderSubmenu) {
+                dayHeaderOpenTimer.current = setTimeout(() => { dayHeaderOpenTimer.current = null; setDayHeaderSubmenu({ type, y }); }, 160);
+              } else {
+                setDayHeaderSubmenu({ type, y });
+              }
+            };
+            const cancelDayHeaderOpen = () => { if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; } };
 
             // Session 8 follow-up Item 3 — auto-attach the day's portrait
             // single-day export to whichever email handler the user picks
@@ -2618,7 +2642,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const mkEmailRow = (label, allEmails, rows, type, color) => {
               if (!allEmails.length) return null;
               const schoolSender = schools.find(s => s.id === selectedSchool)?.senderEmail || "";
-              const isOpen = dayHeaderSubmenu?.type === type;
               const multi = allEmails.length > 1;
               return (
                 <div style={{ position: "relative" }}>
@@ -2627,11 +2650,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <button
                       onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
                       onMouseEnter={e => {
-                        keepDayHeaderOpen();
                         e.currentTarget.style.background = colors.bg;
-                        if (!isOpen) setDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
+                        openDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top);
                       }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "none"; cancelDayHeaderOpen(); scheduleDayHeaderClose(); }}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
                       <span>{label} ({allEmails.length})</span>
                       <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
