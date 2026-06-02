@@ -1650,9 +1650,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         if (!STOPWORDS.has(a) && !STOPWORDS.has(b)) studentName = bodyMatch[1];
       }
     }
-    // School — match name or acronym against known schools, also check to/deliveredTo address
+    // School — match name or acronym against known schools, also check the
+    // address it was sent to. Combine Delivered-To + To + Cc: mail to a free
+    // alias lands in the primary mailbox, so Delivered-To is matt@ and the alias
+    // appears only in To/Cc.
     let school = "";
-    const rawToField = email.deliveredTo || email.to || "";
+    const rawToField = `${email.deliveredTo || ""} ${email.to || ""} ${email.cc || ""}`;
     const toEmails = [...rawToField.matchAll(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g)].map(m => m[1].toLowerCase());
     for (const sc of schools) {
       const sName = (sc.name || "").toLowerCase();
@@ -1681,7 +1684,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     let instrument = resolveInstrument(meta.instrument || "", _teacherInstrs) || resolveInstrument(fullText, _teacherInstrs);
     let enquirySchool = meta.school || "";
     if (!enquirySchool) {
-      const rawTo = email.deliveredTo || email.to || "";
+      const rawTo = `${email.deliveredTo || ""} ${email.to || ""} ${email.cc || ""}`;
       const toAddrs = [...rawTo.matchAll(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g)].map(m => m[1].toLowerCase());
       const bodyLow = fullText.toLowerCase();
       const fromDomain = (fromAddr.split("@")[1] || "").toLowerCase();
@@ -1790,7 +1793,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       let enquirySchool = meta.school || "";
       if (!enquirySchool) {
         // Extract all bare email addresses from the to/deliveredTo field (handles "Name <addr>" format)
-        const rawTo = email.deliveredTo || email.to || "";
+        const rawTo = `${email.deliveredTo || ""} ${email.to || ""} ${email.cc || ""}`;
         const toAddrs = [...rawTo.matchAll(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g)].map(m => m[1].toLowerCase());
         const bodyLow = fullText.toLowerCase();
         const fromDomain = (fromAddr.split("@")[1] || "").toLowerCase();
@@ -3222,7 +3225,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                   // Any recipient is a teacher with an active lane at this school
                   if (teachers.some(t => t.email && toAddrs.includes(t.email.toLowerCase()) && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
                 } else {
-                  if (school.senderEmail) { const toAddr = (e.deliveredTo || e.to || "").toLowerCase(); if (toAddr.includes(school.senderEmail.toLowerCase())) return true; }
+                  if (school.senderEmail) { const toAddr = `${e.deliveredTo || ""} ${e.to || ""} ${e.cc || ""}`.toLowerCase(); if (toAddr.includes(school.senderEmail.toLowerCase())) return true; }
                   if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && p.email.toLowerCase() === fromAddr2))) return true;
                   if (contacts.some(c => c.schoolId === schoolId && c.email && c.email.toLowerCase() === fromAddr2)) return true;
                   if (teachers.some(t => t.email && t.email.toLowerCase() === fromAddr2 && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
