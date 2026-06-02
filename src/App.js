@@ -5010,22 +5010,10 @@ export default function MusicTimetableApp() {
                   {weeklyWarningCount}
                 </span>
               )}
-              {item.id === "messages" && (
-                <>
-                  {messageBadgeCount > 0 && (
-                    <span style={{ background: colors.accent, color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: "50%", width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      {messageBadgeCount}
-                    </span>
-                  )}
-                <span
-                  title="Compose email"
-                  onClick={e => { e.stopPropagation(); if (window._openComposeModal) window._openComposeModal({ to: [], from: "", subject: "", body: "", triggerId: "sidebar_compose", mergeCtx: null, attachments: null }); }}
-                  style={{ marginLeft: "auto", marginRight: -3, display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: 5, background: colors.sidebarActive, cursor: "pointer", flexShrink: 0, border: "1.5px solid rgba(255,255,255,0.18)" }}
-                  onMouseEnter={e => { e.currentTarget.style.background = colors.accent; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = colors.sidebarActive; }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={colors.white} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+              {item.id === "messages" && messageBadgeCount > 0 && (
+                <span style={{ marginLeft: "auto", background: colors.accent, color: "#fff", fontSize: 11, fontWeight: 700, borderRadius: "50%", width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {messageBadgeCount}
                 </span>
-                </>
               )}
             </button>
           ))}
@@ -5587,6 +5575,19 @@ export default function MusicTimetableApp() {
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                      </svg>
+                    </button>
+                    {/* Quick email — opens the compose modal (relocated from the Messages nav row) */}
+                    <button
+                      title="Compose email"
+                      onClick={() => { if (window._openComposeModal) window._openComposeModal({ to: [], from: "", subject: "", body: "", triggerId: "sidebar_compose", mergeCtx: null, attachments: null }); }}
+                      style={{ flex: 1, height: 32, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 7, background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.7)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = colors.sidebarActive; e.currentTarget.style.color = colors.white; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
                       </svg>
                     </button>
                   </div>
