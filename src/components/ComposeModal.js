@@ -104,7 +104,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
 
   // Drag + resize state
   const [pos, setPos] = React.useState(() => ({ x: Math.max(0, (window.innerWidth - 640) / 2), y: Math.max(0, (window.innerHeight - 600) / 2) }));
-  const [size, setSize] = React.useState({ w: 640, h: 600 });
+  const [size, setSize] = React.useState({ w: 880, h: 600 });
   const interactRef = React.useRef(null);
   const modalRef = React.useRef(null);
   const MIN_W = 380, MIN_H = 320;
@@ -1137,23 +1137,23 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
         {/* Footer */}
         <div style={{ padding: "12px 20px", borderTop: `1px solid ${colors.border}`, display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center", flexShrink: 0 }}>
           {(threadMessages.length > 0 || lessonRows.length > 0) && (
-            <div style={{ marginRight: "auto", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, minWidth: 0, maxWidth: "58%" }}>
+            <div style={{ marginRight: "auto", flex: "1 1 auto", display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, minWidth: 0, overflow: "hidden" }}>
               {threadMessages.length > 0 && (
                 <button onClick={() => setShowThread(o => !o)}
-                  style={{ padding: "7px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: showThread ? colors.bg : colors.cardBg, color: colors.textMuted, fontSize: 12, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  style={{ flexShrink: 0, padding: "7px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: showThread ? colors.bg : colors.cardBg, color: colors.textMuted, fontSize: 12, fontFamily: "inherit", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}>
                   {showThread ? "▾" : "▸"} Previous messages ({threadMessages.length})
                 </button>
               )}
               {lessonRows.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 84, overflowY: "auto", width: "100%" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 100, overflowY: "auto", overflowX: "hidden", width: "100%" }}>
                   {lessonRows.map((r, i) => (
-                    <div key={i} style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                    <div key={i} style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                       <strong style={{ color: colors.text }}>{r.studentName}</strong> — {r.instrument}
                       {r.hasWeeklyData
                         ? <> · this week {r.thisWeekStr} · {r.regular ? `regular ${r.regularStr}` : <span style={{ color: colors.textMuted }}>no regular slot</span>}</>
                         : <> · {r.lesson.day} {r.lesson.start}</>}
                       {r.changed && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "rgba(217,119,6,0.12)", color: "#D97706", textTransform: "uppercase", letterSpacing: "0.04em" }}>Changed</span>
+                        <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "rgba(217,119,6,0.12)", color: "#D97706", textTransform: "uppercase", letterSpacing: "0.04em" }}>Changed</span>
                       )}
                     </div>
                   ))}
