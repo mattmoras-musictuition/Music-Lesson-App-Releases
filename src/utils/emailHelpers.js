@@ -4,6 +4,76 @@
 // No imports from the app — these are pure DOM/string helpers.
 // ============================================================
 
+// ============================================================
+// OUTBOUND SENDER HEADERS — DKIM/Yahoo fix (Option 1), single source of truth.
+//
+// Google only DKIM-signs mail from the primary mailbox, not the free school
+// send-as aliases (mps@/ebps@/sps@), so alias-From mail goes out unsigned and
+// Yahoo rejects it. Fix: send ALL mail From the signed primary address, carry
+// the school identity in the From display name, and put the school alias in
+// Reply-To so parent replies still land on the school address (which preserves
+// inbound school filtering — unknown senders file by the written-to alias).
+//
+// Every outbound send funnels through ComposeModal (direct send + the batch
+// builders that feed the auto-send queue), so these helpers are applied there.
+// ============================================================
+
+const DEFAULT_PRIMARY_ADDRESS = "matt@mattmorasmusic.com";
+
+// The signed primary sending address. Cached from the Gmail connection status
+// (electron profile fetch) into localStorage; falls back to the known mailbox.
+export function getPrimaryAddress() {
+  try {
+    const v = localStorage.getItem("mt-gmail-primary");
+    if (v && v.includes("@")) return v;
+  } catch {}
+  return DEFAULT_PRIMARY_ADDRESS;
+}
+
+// School acronym for the From display name: the explicit acronym field if set,
+// else the local-part of the school senderEmail uppercased (mps@... -> MPS).
+function _schoolAcronym(school) {
+  if (school?.acronym && school.acronym.trim()) return school.acronym.trim().toUpperCase();
+  const local = (school?.senderEmail || "").split("@")[0];
+  return local ? local.toUpperCase() : "";
+}
+
+// Build the From header value. ASCII display names are quoted; non-ASCII names
+// are RFC-2047 (base64 UTF-8) encoded (encoded-words are not quoted).
+function _fromHeader(label, primary) {
+  // eslint-disable-next-line no-control-regex
+  const isAscii = /^[\x00-\x7F]*$/.test(label);
+  const namePart = isAscii
+    ? `"${label}"`
+    : `=?UTF-8?B?${btoa(unescape(encodeURIComponent(label)))}?=`;
+  return `${namePart} <${primary}>`;
+}
+
+// Single source of truth for outbound sender headers.
+//   school present -> { from: '"Matt Moras Music - ACR" <primary>', replyTo: alias }
+//   school absent   -> { from: '"Matt Moras Music" <primary>',        replyTo: "" }
+export function buildSenderHeaders(school, primaryAddress) {
+  const primary = (primaryAddress && primaryAddress.includes("@")) ? primaryAddress : getPrimaryAddress();
+  const acr = school ? _schoolAcronym(school) : "";
+  const label = acr ? `Matt Moras Music - ${acr}` : "Matt Moras Music";
+  return {
+    from: _fromHeader(label, primary),
+    replyTo: school ? (school.senderEmail || "").trim() : "",
+  };
+}
+
+// Resolve sender headers from the compose `from` selector — the school alias
+// the picker holds, or "" for the generic primary identity — against the
+// schools list. A non-empty value that matches no known school alias is sent
+// verbatim with no display name / Reply-To (legacy passthrough).
+export function resolveSenderHeaders(fromSelector, schools, primaryAddress) {
+  const sel = (fromSelector || "").trim().toLowerCase();
+  if (!sel) return buildSenderHeaders(null, primaryAddress);
+  const school = (schools || []).find(s => (s.senderEmail || "").trim().toLowerCase() === sel);
+  if (school) return buildSenderHeaders(school, primaryAddress);
+  return { from: fromSelector, replyTo: "" };
+}
+
 export function decodeEntities(str) {
   if (!str || !str.includes("&")) return str;
   return str

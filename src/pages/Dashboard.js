@@ -3209,8 +3209,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                 const school = schools.find(s => s.id === schoolId);
                 if (!school) continue;
                 if (emailFolder === "sent") {
-                  // Sent FROM the school's sender address
+                  // Sent FROM the school's sender address (legacy: pre-DKIM-fix mail)
                   if (school.senderEmail && fromAddr2 === school.senderEmail.toLowerCase()) return true;
+                  // DKIM fix: school identity now rides in Reply-To (From is the
+                  // signed primary mailbox), so match the alias there too.
+                  const replyToAddr2 = (e.replyTo?.match(/<(.+)>/)?.[1] || e.replyTo || "").toLowerCase();
+                  if (school.senderEmail && replyToAddr2 === school.senderEmail.toLowerCase()) return true;
                   // Any recipient is a parent of a student at this school
                   if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && toAddrs.includes(p.email.toLowerCase())))) return true;
                   // Any recipient is a school contact

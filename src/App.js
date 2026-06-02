@@ -2558,6 +2558,10 @@ export default function MusicTimetableApp() {
               const result = await window.electronAPI.gmailSend({
                 to: first.to,
                 from: first.from || undefined,
+                // DKIM fix: queue items carry resolved sender headers from
+                // ComposeModal's batch builder (From = signed primary, Reply-To
+                // = school alias). Forward Reply-To so the runner sends it too.
+                replyTo: first.replyTo || undefined,
                 cc: first.cc && first.cc.length > 0 ? first.cc : undefined,
                 bcc: first.bcc && first.bcc.length > 0 ? first.bcc : undefined,
                 subject: first.subject,

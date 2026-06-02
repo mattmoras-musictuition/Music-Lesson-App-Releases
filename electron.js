@@ -12,6 +12,10 @@ const GMAIL_CLIENT_ID     = "134502425465-2tg0qce4gorbds16n0uc7tk1kidiuvus.apps.
 const GMAIL_CLIENT_SECRET = "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";
 const GMAIL_REDIRECT_URI  = "http://localhost";
 const GMAIL_SCOPE         = "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly";
+// DKIM fix (Option 1): all mail is sent From this signed primary mailbox. The
+// real value is fetched from the connected account's profile on connect; this
+// is only a backstop if that fetch is ever unavailable.
+const GMAIL_DEFAULT_PRIMARY = "matt@mattmorasmusic.com";
 
 const PREFS_PATH = path.join(app.getPath("userData"), "prefs.json");
 function loadPrefs() {
@@ -139,9 +143,30 @@ async function getValidAccessToken() {
   return newToken;
 }
 
+// Fetch the connected account's own address (the signed primary mailbox) and
+// cache it in prefs. Best-effort — never throws; callers fall back to the
+// stored value or the default.
+async function fetchAndStorePrimaryAddress(accessToken) {
+  try {
+    const res = await httpsGet("gmail.googleapis.com", "/gmail/v1/users/me/profile",
+      { "Authorization": `Bearer ${accessToken}` });
+    const data = JSON.parse(res.body);
+    if (data.emailAddress) {
+      const prefs = loadPrefs();
+      prefs.gmailPrimaryAddress = data.emailAddress;
+      savePrefs(prefs);
+      return data.emailAddress;
+    }
+  } catch {}
+  return null;
+}
+
 ipcMain.handle("gmail-get-status", () => {
   const prefs = loadPrefs();
-  return { connected: !!(prefs.gmailTokens && prefs.gmailTokens.refresh_token) };
+  return {
+    connected: !!(prefs.gmailTokens && prefs.gmailTokens.refresh_token),
+    primaryAddress: prefs.gmailPrimaryAddress || GMAIL_DEFAULT_PRIMARY,
+  };
 });
 
 ipcMain.handle("gmail-oauth-connect", () => {
@@ -185,6 +210,8 @@ ipcMain.handle("gmail-oauth-connect", () => {
           expiry: Date.now() + (tokens.expires_in || 3600) * 1000,
         };
         savePrefs(prefs);
+        // Capture the signed primary sending address for this account (best-effort).
+        await fetchAndStorePrimaryAddress(tokens.access_token);
         resolve({ ok: true });
       } catch(e) { resolve({ ok: false, error: e.message }); }
     });
@@ -200,7 +227,7 @@ ipcMain.handle("gmail-disconnect", () => {
   return { ok: true };
 });
 
-ipcMain.handle("gmail-send", async (_e, { to, from, cc, bcc, subject, bodyHtml, attachments }) => {
+ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, bodyHtml, attachments }) => {
   try {
     const accessToken = await getValidAccessToken();
     const toHeader = Array.isArray(to) ? to.join(", ") : to;
@@ -241,6 +268,7 @@ ipcMain.handle("gmail-send", async (_e, { to, from, cc, bcc, subject, bodyHtml, 
 
       mimeMessage = [
         `From: ${from || "me"}`,
+        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
         `To: ${toHeader}`,
         ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
         ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
@@ -255,6 +283,7 @@ ipcMain.handle("gmail-send", async (_e, { to, from, cc, bcc, subject, bodyHtml, 
       // ── Simple HTML email (no attachments) ────────────────────────────
       mimeMessage = [
         `From: ${from || "me"}`,
+        ...(replyTo ? [`Reply-To: ${replyTo}`] : []),
         `To: ${toHeader}`,
         ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
         ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
@@ -900,6 +929,7 @@ ipcMain.handle("gmail-list-sent", async () => {
         threadId:     msg.threadId,
         subject:      get("Subject"),
         from:         get("From") || get("Reply-To") || get("Sender") || "",
+        replyTo:      get("Reply-To"),
         to:           get("To"),
         cc:           get("Cc"),
         date:         get("Date"),
@@ -1037,6 +1067,7 @@ ipcMain.handle("gmail-search", async (_e, { query, folder }) => {
         threadId:     thread.id,
         subject,
         from,
+        replyTo:      get("Reply-To"),
         to:           get("To"),
         cc:           get("Cc"),
         deliveredTo:  get("Delivered-To"),

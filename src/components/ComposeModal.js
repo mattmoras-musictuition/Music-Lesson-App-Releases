@@ -16,6 +16,7 @@ import { getUserTemplates, applyMergeCtx, schoolAcronym, schoolIdForSenderEmail,
 // URL-based docs) and add them to the compose modal's attachments list so
 // they get picked up by the normal send path.
 import { BUCKET_DOCUMENTS, downloadAsBase64 } from "../utils/storageHelpers";
+import { resolveSenderHeaders, getPrimaryAddress } from "../utils/emailHelpers";
 
 export function ComposeModal({ initial, schools, students, teachers, contacts, resources = [], documents = [], onClose, onCancelAll, notify, queueRemaining = 0, onSoundPlay, onSent }) {
   // Session 89 — v6 (HTML DOM-based stripping of quoted replies from initial.body)
@@ -42,6 +43,9 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const [bccSuggestions, setBccSuggestions] = React.useState([]);
   const [bccSuggestionIdx, setBccSuggestionIdx] = React.useState(-1);
   const [from, setFrom] = React.useState(initial.from || "");
+  // DKIM fix: the signed primary sending address (From host); the `from` state
+  // above stays the school *selector* (alias or "") and becomes Reply-To.
+  const [primaryAddress, setPrimaryAddress] = React.useState(getPrimaryAddress());
   const [cc, setCc] = React.useState(initial.cc || []);
   const [ccInput, setCcInput] = React.useState("");
   const [bcc, setBcc] = React.useState(initBccGroup ? (initial.to || []) : (initial.bcc || []));
@@ -291,7 +295,13 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
 
   React.useEffect(() => {
     if (window.electronAPI?.gmailGetStatus) {
-      window.electronAPI.gmailGetStatus().then(s => setGmailConnected(s.connected));
+      window.electronAPI.gmailGetStatus().then(s => {
+        setGmailConnected(s.connected);
+        if (s.primaryAddress) {
+          setPrimaryAddress(s.primaryAddress);
+          try { localStorage.setItem("mt-gmail-primary", s.primaryAddress); } catch {}
+        }
+      });
     }
   }, []);
 
@@ -541,6 +551,10 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const batchTo = initial.batchTo || null;
 
   const handleSend = async () => {
+    // DKIM fix (single source of truth): turn the `from` school-selector into
+    // the actual headers — From = signed primary (+ school display name),
+    // Reply-To = the school alias. Applied to every send branch below.
+    const _hdr = resolveSenderHeaders(from, schools, primaryAddress);
     // Validation: in multi-recipient group mode (auto-BCC entry) the user is
     // no longer required to put a placeholder in To — we accept whichever
     // field(s) hold the recipients. All other entry modes keep the original
@@ -583,7 +597,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
           : (attachments.length > 0 ? attachments : undefined);
         return {
           to: [addr],
-          from: from || undefined,
+          from: _hdr.from, replyTo: _hdr.replyTo || undefined,
           subject: applyMergeCtx(subjectSource, ctx),
           bodyHtml: applyMergeCtx(bodySource, ctx),
           label: ctx.parent_name || addr,
@@ -623,7 +637,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
       }
       const batchItems = recipients.map(addr => ({
         to: [addr],
-        from: from || undefined,
+        from: _hdr.from, replyTo: _hdr.replyTo || undefined,
         subject,
         bodyHtml,
         label: addr,
@@ -642,7 +656,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     }
     setSending(true);
     try {
-      const result = await window.electronAPI.gmailSend({ to, from: from || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml, attachments: attachments.length > 0 ? attachments : undefined });
+      const result = await window.electronAPI.gmailSend({ to, from: _hdr.from, replyTo: _hdr.replyTo || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml, attachments: attachments.length > 0 ? attachments : undefined });
       if (result.ok) {
         try { localStorage.removeItem("mt-compose-draft"); } catch {}
         if (onSoundPlay) onSoundPlay();
