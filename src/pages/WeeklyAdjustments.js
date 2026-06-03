@@ -28,6 +28,35 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
+// ── Shared "is this master lesson present this week?" rule ──────────────────
+// Single source of truth for the weekly "not scheduled this week" check, used
+// by BOTH the amber banner and the right-click "Add unscheduled" menu.
+//
+// A master lesson (ml) counts as PRESENT (i.e. scheduled this week) when:
+//   • GROUP master lesson      → a matching group card (by groupId) is placed,
+//                                or a group-keyed Missed entry exists.
+//   • INDIVIDUAL master lesson → a direct individual card matches
+//                                (studentId + instrument), OR the student is a
+//                                member of a placed BAND session this week, OR
+//                                a matching Missed entry exists.
+//
+// A placed GROUP card does NOT cover a student's separate INDIVIDUAL lesson —
+// a group and an individual lesson are distinct enrolments, each needing its
+// own card. (Previously a group-membership branch masked the individual; see
+// fix/wtt-unscheduled-group-masking.) BAND coverage IS preserved: a band
+// represents its members' individual lessons combined.
+function isLessonPresentThisWeek(ml, wttLessons, wttMissed) {
+  const lessons = wttLessons || [];
+  const missed = wttMissed || [];
+  if (ml.isGroup) {
+    return lessons.some(wl => wl.groupId === ml.groupId)
+        || missed.some(wm => wm.groupId === ml.groupId);
+  }
+  return lessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)
+      || lessons.some(wl => wl.isBandSession && (wl.members || []).some(mb => mb.studentId === ml.studentId))
+      || missed.some(wm => wm.studentId === ml.studentId && wm.instrument === ml.instrument);
+}
+
 // Shared hover info card (student / group / band). For the band-session
 // submenu flyout (flyoutPanel set) it measures its OWN rendered height with
 // useLayoutEffect and shifts up so the bottom never clips the viewport — each
@@ -3095,22 +3124,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const mttLessons = timetable ? timetable.lessons.filter(l => l.schoolId === sId && !l.isBandSession) : [];
             const wttLessons = (weeklyTimetables[contextMenu.weekKey] || {}).lessons || [];
             const wttMissed = (weeklyTimetables[contextMenu.weekKey] || {}).missed || [];
-            // Unified "unscheduled" rule (matches the banner source): a
-            // student counts as unscheduled ONLY if they have no presence in
-            // the (school, week) — no grid lesson (individual OR group OR
-            // band-session member) and no Missed-zone card.
-            const missing = mttLessons.filter(ml => {
-              if (ml.isGroup) {
-                if (wttLessons.some(wl => wl.groupId === ml.groupId)) return false;
-                if (wttMissed.some(wm => wm.groupId === ml.groupId)) return false;
-                return true;
-              }
-              if (wttLessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)) return false;
-              if (wttLessons.some(wl => wl.isGroup && (wl.studentIds || []).includes(ml.studentId))) return false;
-              if (wttLessons.some(wl => wl.isBandSession && (wl.members || []).some(mb => mb.studentId === ml.studentId))) return false;
-              if (wttMissed.some(wm => wm.studentId === ml.studentId && wm.instrument === ml.instrument)) return false;
-              return true;
-            });
+            // Unscheduled rule shared with the amber banner via the module-level
+            // isLessonPresentThisWeek helper. A placed GROUP card does NOT cover a
+            // separate INDIVIDUAL lesson; band coverage is kept.
+            const missing = mttLessons.filter(ml => !isLessonPresentThisWeek(ml, wttLessons, wttMissed));
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -4403,6 +4420,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               ackedConstraints={ackedConstraints}
               lessons={weeklyData.lessons || []}
               students={students}
+              allClearLabel="No conflicts"
               onAckAll={() => setAckedConstraints(prev => {
                 const next = new Set(prev);
                 // Only acknowledge what's actually shown in the banner (the gated
@@ -4424,19 +4442,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const key = ml.isGroup ? `group|${ml.groupId}` : `${ml.studentId}|${ml.instrument}`;
               if (seen.has(key)) continue;
               seen.add(key);
-              // Unified "unscheduled" rule (matches the add-unscheduled menu
-              // source): in grid (individual OR group OR band-session member)
-              // or in Missed zone → not unscheduled.
-              let present;
-              if (ml.isGroup) {
-                present = wttLessons.some(wl => wl.groupId === ml.groupId)
-                       || wttMissed.some(wm => wm.groupId === ml.groupId);
-              } else {
-                present = wttLessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)
-                       || wttLessons.some(wl => wl.isGroup && (wl.studentIds || []).includes(ml.studentId))
-                       || wttLessons.some(wl => wl.isBandSession && (wl.members || []).some(mb => mb.studentId === ml.studentId))
-                       || wttMissed.some(wm => wm.studentId === ml.studentId && wm.instrument === ml.instrument);
-              }
+              // Unscheduled rule shared with the add-unscheduled menu via the
+              // module-level isLessonPresentThisWeek helper. A placed GROUP card
+              // does NOT cover a separate INDIVIDUAL lesson; band coverage is kept.
+              const present = isLessonPresentThisWeek(ml, wttLessons, wttMissed);
               if (!present) {
                 const label = ml.isGroup
                   ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group")

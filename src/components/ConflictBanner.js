@@ -7,7 +7,7 @@
 import React from "react";
 import { useTheme } from "../context/ThemeContext";
 
-export function ConflictBanner({ constraintWarnings, ackedConstraints, lessons, students, unscheduled, onAckAll }) {
+export function ConflictBanner({ constraintWarnings, ackedConstraints, lessons, students, unscheduled, onAckAll, allClearLabel = "No conflicts or unscheduled lessons" }) {
   const { colors, darkMode } = useTheme();
   const [expanded, setExpanded] = React.useState(false);
 
@@ -40,7 +40,7 @@ export function ConflictBanner({ constraintWarnings, ackedConstraints, lessons, 
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={green.text} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
           <polyline points="20 6 9 17 4 12"/>
         </svg>
-        <span style={{ fontWeight: 600, fontSize: 13, color: green.text }}>No conflicts or unscheduled lessons</span>
+        <span style={{ fontWeight: 600, fontSize: 13, color: green.text }}>{allClearLabel}</span>
       </div>
     );
   }
