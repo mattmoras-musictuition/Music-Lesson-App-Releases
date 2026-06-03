@@ -266,6 +266,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     const stu = allStudents || students;
     const info = {
       title: "",
+      day: lesson.day || "",
       instrument: lesson.instrument || "",
       // Cluster 12a: lane-resolved teacher name only.
       teacher: getLiveTeacherName(lesson, stu, teachers, enrolments, teacherCoverage),
@@ -328,15 +329,20 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const renderHoverPopover = () => {
     if (!hoverPopover) return null;
     const { info, rect, color } = hoverPopover;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const topPos = spaceBelow > 200 ? rect.bottom + 6 : rect.top - 6;
-    const anchor = spaceBelow > 200 ? "top" : "bottom";
-    const popLeft = Math.min(rect.left, window.innerWidth - 260);
+    // Popover sits BESIDE the card (never below it), top edges level. Opens to
+    // the card's right for Mon/Tue/Wed, to its left for Thu/Fri (default left),
+    // with edge guards so it can't run off-screen horizontally.
+    const POP_W = 270, GAP = 6, M = 8; // 240 content + 26 padding + 3 border
+    let popLeft = ["Monday", "Tuesday", "Wednesday"].includes(info.day)
+      ? rect.right + GAP : rect.left - GAP - POP_W;
+    if (popLeft + POP_W > window.innerWidth - M) popLeft = rect.left - GAP - POP_W; // flip left
+    if (popLeft < M) popLeft = rect.right + GAP; // flip right
+    popLeft = Math.max(M, Math.min(popLeft, window.innerWidth - M - POP_W));
+    const topPos = Math.max(M, rect.top);
 
     return (
       <div style={{
-        position: "fixed", left: popLeft,
-        [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos,
+        position: "fixed", left: popLeft, top: topPos,
         zIndex: 2000, background: colors.cardBg, borderRadius: 10,
         boxShadow: "0 4px 20px rgba(0,0,0,0.15)", border: `1.5px solid ${color}`,
         padding: "10px 13px", width: 240, pointerEvents: "none", fontFamily: "inherit",

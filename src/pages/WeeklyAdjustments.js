@@ -445,6 +445,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const buildPopoverInfo = (lesson) => {
     const info = {
       title: "",
+      day: lesson.day || "",
       instrument: lesson.instrument || "",
       // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
       teacher: getLiveTeacherName(lesson, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes),
@@ -533,7 +534,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
     // Band-session submenu band-row hover → cascading side flyout that measures
     // its own height (HoverInfoCard) so it never clips. All other hovers pass a
-    // fixed fallbackStyle (below/above-row) and the card skips measuring.
+    // fixed fallbackStyle: BESIDE the card (never below it), top edges level,
+    // opening right for Mon/Tue/Wed and left for Thu/Fri (default left), with
+    // edge guards so it can't run off-screen horizontally.
+    const POP_W = 270, GAP = 6, M = 8; // 240 content + 26 padding + 3 border
+    let besideLeft = ["Monday", "Tuesday", "Wednesday"].includes(info.day)
+      ? rect.right + GAP : rect.left - GAP - POP_W;
+    if (besideLeft + POP_W > window.innerWidth - M) besideLeft = rect.left - GAP - POP_W; // flip left
+    if (besideLeft < M) besideLeft = rect.right + GAP; // flip right
+    besideLeft = Math.max(M, Math.min(besideLeft, window.innerWidth - M - POP_W));
+    const besideTop = Math.max(M, rect.top);
     return (
       <HoverInfoCard
         colors={colors}
@@ -541,7 +551,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         info={info}
         flyoutPanel={hoverPopover.flyoutPanel || null}
         rectTop={rect.top}
-        fallbackStyle={{ left: popLeft, [anchor]: anchor === "top" ? topPos : window.innerHeight - topPos }}
+        fallbackStyle={{ left: besideLeft, top: besideTop }}
       />
     );
   };
