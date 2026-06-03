@@ -1554,7 +1554,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     // filters all inherited from deriveTallyRows. Current week is included
     // — matches the tally summary card.
     const catchupTotal = getOpenCatchupRows({
-      weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all",
+      weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all", catchups,
     }).length;
 
     const allRR = inboxEmails.filter(e => {
@@ -3014,7 +3014,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           // which counts all term-week owed catchups including the
           // current week.
           const byKey = {};
-          for (const r of getOpenCatchupRows({ weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all" })) {
+          for (const r of getOpenCatchupRows({ weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all", catchups })) {
             const e = r.missed;
             const k = `${e.studentId}|${e.instrument}`;
             if (!byKey[k]) {
