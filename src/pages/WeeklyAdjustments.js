@@ -782,6 +782,24 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
   });
 
+  // Shared enriched catch-ups for the selected school. ONE source consumed by
+  // the period grid (wLessons) AND the day-header export (PDF + Parents/Class
+  // Teachers email lists), so all three see the same catch-ups. Each entry
+  // carries: studentId (so per-student parent + class-teacher lookups resolve),
+  // bucket_id (so lane filtering resolves), and studentName (so the export list
+  // renderer can print the name — the grid resolves the name from studentId at
+  // render time, so the extra field is harmless there). Fail-safe: no
+  // selectedSchool → no catch-ups (never leak all schools).
+  const enrichedCatchups = useMemo(() => (
+    (selectedSchool ? (catchups || []).filter(c => c.schoolId === selectedSchool) : []).map(c => {
+      const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+      const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
+      const stu = en ? students.find(s => s.id === en.studentId) : null;
+      const base = en ? { ...c, studentId: en.studentId, studentName: stu?.name || "" } : c;
+      return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
+    })
+  ), [selectedSchool, catchups, enrolments, teacherCoverage, teachers, students]);
+
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
   // Spec 3 cluster 5b-3c-a — score helper for the catchup picker
@@ -2518,7 +2536,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // Spec 2 cluster 10 — lane-filter the day-header email aggregation.
             // Per-lesson because multi-day select means each lesson's day has
             // its own viewed lane.
-            const dayLessons = (weeklyData?.lessons || []).filter(l => {
+            // Include catch-ups: merge the SAME enriched catch-ups the grid
+            // uses, then apply the existing day + lane filter. This makes
+            // catch-up students' parents and class teachers appear in the
+            // Parents / Class Teachers email lists.
+            const dayLessons = mergeCatchupsIntoLessons(weeklyData?.lessons || [], enrichedCatchups, weekKey).filter(l => {
               if (!activeDays.includes(l.day)) return false;
               return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
             });
@@ -2613,8 +2635,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               try {
                 const schoolForExport = schools.find(s => s.id === selectedSchool);
                 const exportTitle = `${weekLabel} Timetable — ${schoolForExport?.name || "School"} — ${day}`;
+                // Include catch-ups in the exported PDF (same enriched catch-ups
+                // as the grid + email lists). generateExportHtml filters this
+                // down by schoolId + day internally.
+                const exportSourceLessons = mergeCatchupsIntoLessons(weeklyData?.lessons || [], enrichedCatchups, weekKey);
                 const html = generateExportHtml(
-                  weeklyData?.lessons || [],
+                  exportSourceLessons,
                   students, schools, teachers,
                   {
                     schoolId: selectedSchool,
@@ -4742,22 +4768,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
               {(() => {
                 const schoolDays = (currentSchool?.days || DAYS).slice().sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
-                // Spec 3 cluster 5b-2: enrich each catchup with `studentId`
-                // (derived from enrolment) so the period-grid card render
-                // resolves the student name correctly. mergeCatchupsIntoLessons
-                // adds `start: c.time` so the existing `l.start === time`
-                // cell filter at the per-cell map below sees the catchup
-                // at the right slot.
-                // Scope catch-ups to the selected school before merging into
-                // the period grid (regular displayLessons are already
-                // school-scoped via the weekKey|selectedSchool storageKey).
-                // Fail-safe: no selectedSchool → no catch-ups (never leak all).
-                const enrichedCatchups = (selectedSchool ? (catchups || []).filter(c => c.schoolId === selectedSchool) : []).map(c => {
-                  const en = (enrolments || []).find(e => e.id === c.enrolmentId);
-                  const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
-                  const base = en ? { ...c, studentId: en.studentId } : c;
-                  return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
-                });
+                // Spec 3 cluster 5b-2: catchups are enriched once at component
+                // scope (see `enrichedCatchups` memo) with studentId/bucket_id
+                // (+studentName for the export path) and shared with the
+                // day-header export. mergeCatchupsIntoLessons adds `start: c.time`
+                // so the existing `l.start === time` cell filter at the per-cell
+                // map below sees the catchup at the right slot.
                 const wLessons = mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey);
 
                 // Weekly break cards: stored in weeklyData.breaks; fall back to masterBreaks for this school
