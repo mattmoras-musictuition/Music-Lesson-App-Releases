@@ -30,18 +30,27 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, viewedWeekKey = null, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
   // Source is derived from sourceTab + selectedPastWeek
   const mostRecentWeek = (availableWeeks || []).slice(-1)[0] || null;
   const pastWeeks = (availableWeeks || []).slice(0, -1);
   const hasPastWeeks = pastWeeks.length > 0;
+  // Default the Weekly source to the week the caller (WTT) is currently
+  // viewing, when that week has a generated timetable. The "Weekly" tab maps
+  // to the most-recent week and the "Past" tab to an earlier week, so a viewed
+  // week that is the latest opens on "weekly", an earlier viewed week opens on
+  // "past" pre-selected to it. With no viewed week (MTT/tally callers) fall
+  // back to the previous behaviour: latest week → "weekly", else "master".
+  const viewedWeek = viewedWeekKey ? (availableWeeks || []).find(w => w.weekKey === viewedWeekKey) : null;
+  const viewedIsMostRecent = !!viewedWeek && !!mostRecentWeek && viewedWeekKey === mostRecentWeek.weekKey;
   const [sourceTab, setSourceTab] = React.useState(() =>
-    mostRecentWeek ? "weekly" : "master"
+    viewedWeek ? (viewedIsMostRecent ? "weekly" : "past")
+      : (mostRecentWeek ? "weekly" : "master")
   );
   const [selectedPastWeek, setSelectedPastWeek] = React.useState(
-    () => pastWeeks.slice(-1)[0]?.weekKey || ""
+    () => (viewedWeek && !viewedIsMostRecent) ? viewedWeekKey : (pastWeeks.slice(-1)[0]?.weekKey || "")
   );
   const source = sourceTab === "master" ? "master"
     : sourceTab === "weekly" ? (mostRecentWeek?.weekKey || "master")

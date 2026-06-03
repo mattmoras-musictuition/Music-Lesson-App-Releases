@@ -4834,7 +4834,7 @@ export default function MusicTimetableApp() {
   }, [page, showExportDialog, historyCursor, pageHistory]);
 
 
-  const handleExport = (callerWeeklyData = null, callerWeekLabel = "", initialType = null) => {
+  const handleExport = (callerWeeklyData = null, callerWeekLabel = "", initialType = null, callerWeekKey = null) => {
     if (!timetable && !callerWeeklyData && initialType !== "tally") { notify("No timetable to export", "warning"); return; }
     // Build list of all weeks that have a generated timetable, sorted chronologically
     const termBreaksForLabel = interruptions.filter(i => i.type === "term_break");
@@ -4849,7 +4849,7 @@ export default function MusicTimetableApp() {
         ? { weekKey: wKey, weekLabel: getTermWeekLabel(wKey, termBreaksForLabel), lessons: allLessons, missed: allMissed }
         : null;
     }).filter(Boolean);
-    setShowExportDialog({ availableWeeks, initialType });
+    setShowExportDialog({ availableWeeks, initialType, viewedWeekKey: callerWeekKey });
   };
 
   // ── Auth gates ───────────────────────────────────────────────
@@ -5978,6 +5978,7 @@ export default function MusicTimetableApp() {
             specialists={specialists}
             availableWeeks={showExportDialog.availableWeeks}
             initialType={showExportDialog.initialType}
+            viewedWeekKey={showExportDialog.viewedWeekKey}
             onClose={() => setShowExportDialog(null)}
             notify={notify}
             documents={documents}
