@@ -339,12 +339,12 @@ export const getClassTeacher = (student, contacts) => {
 
 // Open the in-app email compose modal.
 // Falls back to Gmail web URL if Electron API not available.
-export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, bccGroup = false, forceTo = false, threadMessages = null } = {}) => {
+export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, offeredAttachment = null, bccGroup = false, forceTo = false, threadMessages = null } = {}) => {
   if (!emails || emails.length === 0) return;
   const unique = [...new Set(emails.filter(Boolean))];
   if (unique.length === 0) return;
   if (window._openComposeModal) {
-    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments, bccGroup, forceTo, threadMessages });
+    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments, offeredAttachment, bccGroup, forceTo, threadMessages });
   } else {
     let url = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(unique.join(","));
     if (subject) url += "&su=" + encodeURIComponent(subject);
@@ -355,10 +355,10 @@ export const openCompose = (emails, { subject = "", from = "", body = "", trigge
 };
 
 // Open individual Gmail compose windows for each email in sequence (300ms apart).
-export const openGmailSequential = (emails, { subject = "", from = "", triggerId = null, mergeCtx = null, attachments = null } = {}) => {
+export const openGmailSequential = (emails, { subject = "", from = "", triggerId = null, mergeCtx = null, attachments = null, offeredAttachment = null } = {}) => {
   const unique = [...new Set(emails.filter(Boolean))];
   if (unique.length === 0) return;
-  const items = unique.map(email => ({ to: [email], subject, from, triggerId, mergeCtx, attachments }));
+  const items = unique.map(email => ({ to: [email], subject, from, triggerId, mergeCtx, attachments, offeredAttachment }));
   if (window._openComposeQueue) {
     window._openComposeQueue(items);
   } else {

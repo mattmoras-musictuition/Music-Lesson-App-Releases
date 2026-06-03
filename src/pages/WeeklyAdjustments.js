@@ -2623,15 +2623,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             };
             const cancelDayHeaderOpen = () => { if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; } };
 
-            // Session 8 follow-up Item 3 — auto-attach the day's portrait
-            // single-day export to whichever email handler the user picks
-            // from the day-header menu. Fold into the existing handlers
-            // (Parents / Class Teachers / Staff, group + individual). Matt's
-            // escape hatch is removing the chip from the compose modal
-            // before sending. Failure to render the attachment is non-fatal:
+            // Session 8 follow-up Item 3 — build the day's portrait single-day
+            // export and OFFER it (do not auto-attach). It is passed to the
+            // compose modal as `offeredAttachment`, which surfaces a row in the
+            // modal's Attach menu labelled with the filename; the PDF attaches
+            // only when the user picks that row. Failure to render is non-fatal:
             // open the compose modal anyway and notify.
             const composeForDay = async (emails, openOpts, useSequential) => {
-              let atts = null;
+              let offered = null;
               try {
                 const schoolForExport = schools.find(s => s.id === selectedSchool);
                 const exportTitle = `${weekLabel} Timetable — ${schoolForExport?.name || "School"} — ${day}`;
@@ -2664,16 +2663,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   });
                   const pdfBase64 = await electronPrintToPdf(html);
                   if (pdfBase64) {
-                    atts = [{ filename: filenameBase + ".pdf", contentBase64: pdfBase64, mimeType: "application/pdf" }];
+                    offered = { filename: filenameBase + ".pdf", contentBase64: pdfBase64, mimeType: "application/pdf" };
                   } else {
                     const contentBase64 = btoa(unescape(encodeURIComponent(html)));
-                    atts = [{ filename: filenameBase + ".html", contentBase64, mimeType: "text/html" }];
+                    offered = { filename: filenameBase + ".html", contentBase64, mimeType: "text/html" };
                   }
                 }
               } catch (e) {
-                notify && notify("Couldn't attach the day's timetable — " + (e?.message || "unknown error"), "warning", 4000);
+                notify && notify("Couldn't prepare the day's timetable — " + (e?.message || "unknown error"), "warning", 4000);
               }
-              const finalOpts = atts ? Object.assign({}, openOpts, { attachments: atts }) : openOpts;
+              const finalOpts = offered ? Object.assign({}, openOpts, { offeredAttachment: offered }) : openOpts;
               if (useSequential) openGmailSequential(emails, finalOpts);
               else openCompose(emails, finalOpts);
             };

@@ -71,6 +71,11 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   }, [to, students, timetable, weeklyTimetables]);
   const [sending, setSending] = React.useState(false);
   const [attachments, setAttachments] = React.useState(initial.attachments || []);
+  // An attachment offered (not auto-added) by the caller — e.g. the WTT
+  // day-header export's day timetable PDF. Surfaces as a row in the Attach
+  // menu; attaches only when the user picks it.
+  const offeredAttachment = initial.offeredAttachment || null;
+  const offeredAlreadyAttached = !!offeredAttachment && attachments.some(a => a.filename === offeredAttachment.filename);
   const [minimised, setMinimised] = React.useState(false);
   const bodyRef = React.useRef(null);
   const lastSelectionRef = React.useRef(null);
@@ -1192,6 +1197,18 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
             </button>
             {showAttachMenu && (
               <div style={{ position: "absolute", bottom: "calc(100% + 6px)", right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.15)", overflow: "hidden", minWidth: 180, zIndex: 10001 }}>
+                {offeredAttachment && (
+                  <button onClick={() => { setShowAttachMenu(false); if (!offeredAlreadyAttached) setAttachments(prev => [...prev, offeredAttachment]); }}
+                    disabled={offeredAlreadyAttached}
+                    title={offeredAlreadyAttached ? "Already attached" : "Attach the day's timetable"}
+                    style={{ width: "100%", padding: "10px 16px", border: "none", background: "none", cursor: offeredAlreadyAttached ? "default" : "pointer", fontSize: 13, fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 10, color: offeredAlreadyAttached ? colors.textMuted : colors.text, borderBottom: `1px solid ${colors.borderLight}` }}
+                    onMouseEnter={e => { if (!offeredAlreadyAttached) e.currentTarget.style.background = colors.bg; }}
+                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                    <FileText size={14} style={{ color: colors.accent, flexShrink: 0 }} />
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{offeredAttachment.filename}</span>
+                    {offeredAlreadyAttached && <span style={{ marginLeft: "auto", fontSize: 11, color: colors.textMuted }}>added</span>}
+                  </button>
+                )}
                 <button onClick={() => { setShowAttachMenu(false); document.getElementById("compose-attach-input")?.click(); }}
                   style={{ width: "100%", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 10, color: colors.text, borderBottom: `1px solid ${colors.borderLight}` }}
                   onMouseEnter={e => e.currentTarget.style.background = colors.bg}
