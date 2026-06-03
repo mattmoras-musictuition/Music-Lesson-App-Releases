@@ -21,6 +21,7 @@
 
 import { getTermWeekLabel } from "./helpers";
 import { isDayPast6pm } from "./tallyHelpers";
+import { buildBankingIndex, isCaughtUpCell } from "../data/catchupsDerive";
 
 // Internal predicate — single source of "open catch-up" semantics.
 // Mirrors the audit's banked follow-up #1 (single-source predicate)
@@ -590,6 +591,11 @@ export function findOpenCatchups({ weeklyTimetables, studentId, schoolId } = {})
  * @param {Object} params.timetable
  * @param {Array} params.termWeeks
  * @param {string} [params.schoolFilter="all"]
+ * @param {Array} [params.catchups=[]] - Catchups collection. When supplied,
+ *   cells already caught up via a banking catch-up whose slot has passed
+ *   (isCaughtUpCell) are excluded — exactly as TallyView's makeupOwed tile
+ *   does — so the chip count and the tally can't drift. Omit to keep the
+ *   raw owed list (callers that do their own already-scheduled filtering).
  * @returns {{weekKey: string, missed: Object}[]}
  */
 export function getOpenCatchupRows({
@@ -599,6 +605,7 @@ export function getOpenCatchupRows({
   timetable,
   termWeeks,
   schoolFilter = "all",
+  catchups = [],
 } = {}) {
   if (!termWeeks || termWeeks.length === 0) return [];
   const { tallyRows, entryMap } = deriveTallyRows({
@@ -606,12 +613,17 @@ export function getOpenCatchupRows({
   });
   const lessonKeySet = new Set(tallyRows.map(r => r.lessonKey));
   const termWeekKeys = new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey));
+  // Same banking-index + isCaughtUpCell predicate TallyView's makeupOwed tile
+  // uses. With catchups omitted the index is empty and isCaughtUpCell is a
+  // no-op, so legacy callers are unaffected.
+  const bankingIndex = buildBankingIndex(catchups || []);
   const out = [];
   for (const e of Object.values(entryMap)) {
     if (!lessonKeySet.has(e.lessonKey)) continue;
     if (!termWeekKeys.has(e.weekKey)) continue;
     if (e.status !== "missed") continue;
     if (!e.makeupEligible || e.madeUp) continue;
+    if (isCaughtUpCell(e, bankingIndex)) continue;
     out.push({ weekKey: e.weekKey, missed: e });
   }
   return out;
