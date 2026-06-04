@@ -518,7 +518,7 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
     }
     var inner = slot.items.map(renderLessonBlock).join('');
     return '<tr>'
-      + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:500;color:' + TEXT + ';font-size:14px">' + fmt12(slot.start) + '</td>'
+      + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:top;white-space:nowrap;font-weight:500;color:' + TEXT + ';font-size:14px">' + fmt12(slot.start) + '</td>'
       + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle">' + inner + '</td>'
       + '</tr>';
   }).join('');
