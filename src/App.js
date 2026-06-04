@@ -42,6 +42,7 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
+import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -4849,7 +4850,15 @@ export default function MusicTimetableApp() {
         ? { weekKey: wKey, weekLabel: getTermWeekLabel(wKey, termBreaksForLabel), lessons: allLessons, missed: allMissed }
         : null;
     }).filter(Boolean);
-    setShowExportDialog({ availableWeeks, initialType, viewedWeekKey: callerWeekKey });
+    // 3b: the current week (the WTT clock's "this week") drives the "This Week"
+    // tab; the active term's boundaries scope the "Past/Future Weeks" dropdown
+    // to current-term generated weeks only.
+    const currentWeekKey = toLocalDateStr(getCurrentWeekMonday());
+    const now = melbourneNow();
+    const currentTerm = getCurrentTerm(getTerms(termBreaksForLabel, now), now);
+    const termStartKey = currentTerm ? toLocalDateStr(_getMondayOf(currentTerm.start)) : null;
+    const termEndKey = currentTerm ? toLocalDateStr(currentTerm.end) : null;
+    setShowExportDialog({ availableWeeks, initialType, viewedWeekKey: callerWeekKey, currentWeekKey, termStartKey, termEndKey });
   };
 
   // ── Auth gates ───────────────────────────────────────────────
@@ -5979,6 +5988,9 @@ export default function MusicTimetableApp() {
             availableWeeks={showExportDialog.availableWeeks}
             initialType={showExportDialog.initialType}
             viewedWeekKey={showExportDialog.viewedWeekKey}
+            currentWeekKey={showExportDialog.currentWeekKey}
+            termStartKey={showExportDialog.termStartKey}
+            termEndKey={showExportDialog.termEndKey}
             onClose={() => setShowExportDialog(null)}
             notify={notify}
             documents={documents}
