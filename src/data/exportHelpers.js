@@ -475,29 +475,52 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   });
   var lessonItems = lessons.map(function(l) { return Object.assign({}, l, { _kind: "lesson" }); });
   var sorted = lessonItems.concat(breakRows).sort(function(a, b) { return timeToMin(a.start) - timeToMin(b.start); });
-  var rows = sorted.map(function(l) {
-    if (l._kind === "break") {
-      return '<tr>'
-        + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:400;color:#a39f97;font-size:14px;background:#F6F4EE">' + fmt12(l.start) + '</td>'
-        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;background:#F6F4EE">'
-          + '<span style="font-style:italic;font-size:13px;color:#9a978f">Break</span>'
-        + '</td></tr>';
+  // Group lessons that share a start time into a single slot: the time prints
+  // once and the students stack beneath it, with no divider line between
+  // students in the same slot. The bottom border (divider) renders once per
+  // slot, so the line appears only BETWEEN distinct time slots. Break rows
+  // never merge - each stands alone.
+  var slots = [];
+  for (var gi = 0; gi < sorted.length; gi++) {
+    var gItem = sorted[gi];
+    var prevSlot = slots[slots.length - 1];
+    if (gItem._kind === "lesson" && prevSlot && prevSlot.kind === "lesson"
+        && timeToMin(prevSlot.start) === timeToMin(gItem.start)) {
+      prevSlot.items.push(gItem);
+    } else {
+      slots.push({ kind: gItem._kind, start: gItem.start, items: [gItem] });
     }
+  }
+  // Build one student block (instrument pill + name, plus any adjusted note).
+  // idx > 0 blocks get a top margin so stacked students read as separate lines
+  // without a horizontal divider between them.
+  function renderLessonBlock(l, idx) {
     var st = students ? students.find(function(s) { return s.id === l.studentId; }) : null;
     var rawName = lessonDisplayName(l);
     var name = l.isBandSession ? rawName : applyPreferred(rawName);
     var cls = st ? st.className || "" : "";
     var label = l.instrument || (l.isBandSession ? "Band" : "");
     var pc = pillColors(label);
+    return '<div style="display:flex;align-items:center;gap:10px' + (idx > 0 ? ';margin-top:9px' : '') + '">'
+        + '<span style="display:inline-block;min-width:54px;padding:3px 11px;border-radius:999px;background:' + pc.bg + ';color:' + pc.fg + ';font-size:12px;font-weight:500;text-align:center;flex-shrink:0">' + label + '</span>'
+        + '<span style="font-size:14px;color:' + TEXT + '">' + name + (cls ? ' \u00B7 ' + cls : '') + '</span>'
+      + '</div>'
+      + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:11px;margin-top:3px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '');
+  }
+  var rows = slots.map(function(slot) {
+    if (slot.kind === "break") {
+      var b = slot.items[0];
+      return '<tr>'
+        + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:400;color:#a39f97;font-size:14px;background:#F6F4EE">' + fmt12(b.start) + '</td>'
+        + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;background:#F6F4EE">'
+          + '<span style="font-style:italic;font-size:13px;color:#9a978f">Break</span>'
+        + '</td></tr>';
+    }
+    var inner = slot.items.map(renderLessonBlock).join('');
     return '<tr>'
-      + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:500;color:' + TEXT + ';font-size:14px">' + fmt12(l.start) + '</td>'
-      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle">'
-        + '<div style="display:flex;align-items:center;gap:10px">'
-          + '<span style="display:inline-block;min-width:54px;padding:3px 11px;border-radius:999px;background:' + pc.bg + ';color:' + pc.fg + ';font-size:12px;font-weight:500;text-align:center;flex-shrink:0">' + label + '</span>'
-          + '<span style="font-size:14px;color:' + TEXT + '">' + name + (cls ? ' · ' + cls : '') + '</span>'
-        + '</div>'
-        + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:11px;margin-top:3px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
-      + '</td></tr>';
+      + '<td style="width:76px;min-width:76px;padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle;white-space:nowrap;font-weight:500;color:' + TEXT + ';font-size:14px">' + fmt12(slot.start) + '</td>'
+      + '<td style="padding:9px 10px;border-bottom:1px solid ' + BORDER + ';vertical-align:middle">' + inner + '</td>'
+      + '</tr>';
   }).join('');
   var phoneCss = "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','DM Sans',sans-serif;margin:14px;font-size:12px;color:" + TEXT + ";max-width:440px}"
     + "@media print{body{margin:6mm}@page{size:A4 portrait;margin:6mm}}";
