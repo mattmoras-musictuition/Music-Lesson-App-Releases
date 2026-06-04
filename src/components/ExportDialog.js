@@ -30,31 +30,39 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, viewedWeekKey = null, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, viewedWeekKey = null, currentWeekKey = null, termStartKey = null, termEndKey = null, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(initialType || "timetable");
-  // Source is derived from sourceTab + selectedPastWeek
-  const mostRecentWeek = (availableWeeks || []).slice(-1)[0] || null;
-  const pastWeeks = (availableWeeks || []).slice(0, -1);
-  const hasPastWeeks = pastWeeks.length > 0;
-  // Default the Weekly source to the week the caller (WTT) is currently
-  // viewing, when that week has a generated timetable. The "Weekly" tab maps
-  // to the most-recent week and the "Past" tab to an earlier week, so a viewed
-  // week that is the latest opens on "weekly", an earlier viewed week opens on
-  // "past" pre-selected to it. With no viewed week (MTT/tally callers) fall
-  // back to the previous behaviour: latest week → "weekly", else "master".
-  const viewedWeek = viewedWeekKey ? (availableWeeks || []).find(w => w.weekKey === viewedWeekKey) : null;
-  const viewedIsMostRecent = !!viewedWeek && !!mostRecentWeek && viewedWeekKey === mostRecentWeek.weekKey;
+  // ── Week model (3b) — locked 4 Jun ────────────────────────────────────────
+  // "This Week" (tab id "weekly") is ALWAYS the current week — the same week
+  // the WTT clock shows — never "latest generated" or "viewed". "Past/Future
+  // Weeks" (tab id "past") lists ANY generated week in the CURRENT TERM, past
+  // or future, sorted chronologically. Master is unchanged.
+  const currentWeek = currentWeekKey ? (availableWeeks || []).find(w => w.weekKey === currentWeekKey) : null;
+  // Past/Future = generated weeks inside the current term, excluding the
+  // current week (it has its own tab), ascending (chronological). The term
+  // boundaries (termStartKey..termEndKey) keep prior-term weeks out.
+  const termWeeks = (availableWeeks || [])
+    .filter(w => w.weekKey !== currentWeekKey)
+    .filter(w => (!termStartKey || w.weekKey >= termStartKey) && (!termEndKey || w.weekKey <= termEndKey))
+    .sort((a, b) => a.weekKey.localeCompare(b.weekKey));
+  const hasTermWeeks = termWeeks.length > 0;
+  // Default tab (preserves the a857224 viewed-week behaviour, adapted):
+  //   viewed === current week        → "This Week"
+  //   viewed is an available term wk  → "Past/Future Weeks", preset to it
+  //   else (e.g. a prior-term week)   → "This Week"
+  const viewedInTermList = viewedWeekKey ? termWeeks.find(w => w.weekKey === viewedWeekKey) : null;
   const [sourceTab, setSourceTab] = React.useState(() =>
-    viewedWeek ? (viewedIsMostRecent ? "weekly" : "past")
-      : (mostRecentWeek ? "weekly" : "master")
+    (viewedWeekKey && viewedWeekKey === currentWeekKey && currentWeek) ? "weekly"
+      : viewedInTermList ? "past"
+      : (currentWeek ? "weekly" : (hasTermWeeks ? "past" : "master"))
   );
   const [selectedPastWeek, setSelectedPastWeek] = React.useState(
-    () => (viewedWeek && !viewedIsMostRecent) ? viewedWeekKey : (pastWeeks.slice(-1)[0]?.weekKey || "")
+    () => viewedInTermList ? viewedWeekKey : (termWeeks[termWeeks.length - 1]?.weekKey || "")
   );
   const source = sourceTab === "master" ? "master"
-    : sourceTab === "weekly" ? (mostRecentWeek?.weekKey || "master")
-    : (selectedPastWeek || mostRecentWeek?.weekKey || "master");
+    : sourceTab === "weekly" ? (currentWeek?.weekKey || "master")
+    : (selectedPastWeek || termWeeks[termWeeks.length - 1]?.weekKey || "master");
   const [schoolId, setSchoolId] = React.useState("");
   const [teacherName, setTeacherName] = React.useState("");
   const [className, setClassName] = React.useState("");
@@ -549,12 +557,12 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
 
         <div style={{ marginBottom: 16 }}>
           <div style={labelStyle}>Source</div>
-          <div ref={pastDropdownRef} style={{ position: "relative", width: "fit-content" }}>
+          <div ref={pastDropdownRef} style={{ position: "relative", width: "100%" }}>
             <div style={{ display: "flex", gap: 0, background: colors.bg, border: `2px solid ${colors.sidebarActive}40`, borderRadius: 10, overflow: "hidden" }}>
               {[
                 { id: "master", label: "Master", disabled: !lessons || lessons.length === 0 },
-                { id: "weekly", label: "Weekly", disabled: !mostRecentWeek },
-                { id: "past", disabled: !hasPastWeeks },
+                { id: "weekly", label: "This Week", disabled: !currentWeek },
+                { id: "past", label: "Past/Future Weeks", disabled: !hasTermWeeks },
               ].map(tab => (
                 <button key={tab.id}
                   onClick={() => {
@@ -563,16 +571,16 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                     if (tab.id === "past") setShowPastDropdown(v => !v);
                     else setShowPastDropdown(false);
                   }}
-                  style={{ width: 100, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: tab.disabled ? "default" : "pointer", fontWeight: 600, background: sourceTab === tab.id ? colors.sidebarActive : "transparent", color: sourceTab === tab.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s", opacity: tab.disabled ? 0.4 : 1, textAlign: "center", whiteSpace: "nowrap" }}>
+                  style={{ flex: 1, minWidth: 0, padding: "8px 0", border: "none", fontSize: 13, fontFamily: "inherit", cursor: tab.disabled ? "default" : "pointer", fontWeight: 600, background: sourceTab === tab.id ? colors.sidebarActive : "transparent", color: sourceTab === tab.id ? "#fff" : colors.textMuted, transition: "background 0.15s, color 0.15s", opacity: tab.disabled ? 0.4 : 1, textAlign: "center", whiteSpace: "nowrap" }}>
                   {tab.id === "past"
-                    ? (sourceTab === "past" && selectedPastWeek ? (pastWeeks.find(w => w.weekKey === selectedPastWeek)?.weekLabel || "Past Weeks") : "Past Weeks")
+                    ? (sourceTab === "past" && selectedPastWeek ? (termWeeks.find(w => w.weekKey === selectedPastWeek)?.weekLabel || "Past/Future Weeks") : "Past/Future Weeks")
                     : tab.label}
                 </button>
               ))}
             </div>
-            {showPastDropdown && hasPastWeeks && (
+            {showPastDropdown && hasTermWeeks && (
               <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 200, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.13)", minWidth: 160, overflow: "hidden" }}>
-                {pastWeeks.slice().reverse().map(w => (
+                {termWeeks.map(w => (
                   <button key={w.weekKey}
                     onClick={() => { setSelectedPastWeek(w.weekKey); setShowPastDropdown(false); }}
                     style={{ display: "block", width: "100%", padding: "9px 14px", background: selectedPastWeek === w.weekKey ? colors.blueLight : "none", border: "none", fontSize: 13, fontFamily: "inherit", cursor: "pointer", textAlign: "left", color: selectedPastWeek === w.weekKey ? colors.sidebarHover : colors.text, fontWeight: selectedPastWeek === w.weekKey ? 600 : 400 }}
