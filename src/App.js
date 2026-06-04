@@ -43,6 +43,7 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
+import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -4840,6 +4841,20 @@ export default function MusicTimetableApp() {
     // Build list of all weeks that have a generated timetable, sorted chronologically
     const termBreaksForLabel = interruptions.filter(i => i.type === "term_break");
     const weekKeys = [...new Set(Object.keys(weeklyTimetables).map(k => k.split("|")[0]))].sort();
+    // 3a: enrich every catch-up (across ALL schools, since the modal spans them)
+    // with studentId / studentName / bucket_id, matching the right-click WTT
+    // path's enrichedCatchups pattern. Each catch-up carries its own schoolId +
+    // day, so lane resolution is per-row — no per-school scoping needed here.
+    // mergeCatchupsIntoLessons then folds the right week's catch-ups into each
+    // week's source below, so the exported timetable AND the school/teacher
+    // dropdowns reflect catch-ups, consistent with the right-click fix.
+    const enrichedExportCatchups = (catchups || []).map(c => {
+      const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+      const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
+      const stu = en ? students.find(s => s.id === en.studentId) : null;
+      const base = en ? { ...c, studentId: en.studentId, studentName: stu?.name || "" } : c;
+      return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
+    });
     const availableWeeks = weekKeys.map(wKey => {
       const allLessons = [], allMissed = [];
       for (const s of schools) {
@@ -4847,7 +4862,7 @@ export default function MusicTimetableApp() {
         if (wd) { allLessons.push(...wd.lessons); allMissed.push(...(wd.missed || [])); }
       }
       return allLessons.length > 0
-        ? { weekKey: wKey, weekLabel: getTermWeekLabel(wKey, termBreaksForLabel), lessons: allLessons, missed: allMissed }
+        ? { weekKey: wKey, weekLabel: getTermWeekLabel(wKey, termBreaksForLabel), lessons: mergeCatchupsIntoLessons(allLessons, enrichedExportCatchups, wKey), missed: allMissed }
         : null;
     }).filter(Boolean);
     // 3b: the current week (the WTT clock's "this week") drives the "This Week"
