@@ -295,7 +295,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_parents", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_parents" ? prev : { type: "multiEmail_parents", y }); }}
           onMouseLeave={unhov}>
           <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
@@ -308,7 +308,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_teachers", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_teachers" ? prev : { type: "multiEmail_teachers", y }); }}
           onMouseLeave={unhov}>
           <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
@@ -321,7 +321,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_staff", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_staff" ? prev : { type: "multiEmail_staff", y }); }}
           onMouseLeave={unhov}>
           <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
@@ -2768,9 +2768,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               if (dayHeaderSubmenu?.type === type) return;
               if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; }
               if (dayHeaderSubmenu) {
-                dayHeaderOpenTimer.current = setTimeout(() => { dayHeaderOpenTimer.current = null; setDayHeaderSubmenu({ type, y }); }, 160);
+                dayHeaderOpenTimer.current = setTimeout(() => { dayHeaderOpenTimer.current = null; setDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }, 160);
               } else {
-                setDayHeaderSubmenu({ type, y });
+                setDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y });
               }
             };
             const cancelDayHeaderOpen = () => { if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; } };
@@ -3970,7 +3970,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             <div style={{ position: "relative" }}>
                               <button
                                 onClick={() => { openCompose(parentObjs.map(p => p.email), { from: _wttSchoolSender, triggerId: "lesson_parent", mergeCtx: _wttMergeCtx }); setContextMenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); }}
-                                onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "parents", y: e.currentTarget.getBoundingClientRect().top }); }}
+                                onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "parents" ? prev : { type: "parents", y }); }}
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 Parents
@@ -4000,7 +4000,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             <div style={{ position: "relative" }}>
                               <button
                                 onClick={() => { openCompose(allGroupParentEmails, { from: _wttSchoolSender, triggerId: "lesson_parent", mergeCtx: _wttMergeCtx }); setContextMenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); }}
-                                onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "groupParents", y: e.currentTarget.getBoundingClientRect().top }); }}
+                                onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "groupParents" ? prev : { type: "groupParents", y }); }}
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.accent)}>
                                 All Parents
@@ -4031,7 +4031,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             <div style={{ position: "relative" }}>
                               <button
                                 onClick={() => { openCompose(schoolTeacherList.map(t => t.email), { from: _wttSchoolSender, triggerId: "lesson_class_teacher", mergeCtx: _wttMergeCtx }); setContextMenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); }}
-                                onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "teachers", y: e.currentTarget.getBoundingClientRect().top }); }}
+                                onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "teachers" ? prev : { type: "teachers", y }); }}
                                 onMouseLeave={unhov}
                                 style={btnChev(colors.sidebarActive)}>
                                 Teachers
@@ -4151,7 +4151,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <div style={{ position: "relative" }}>
                       <EmailLevel2Panel submenu={swapTeacherSubmenu} panelRef={swapTeacherSubRef} level3Ref={level3MenuRef} subX={subX} level3X={level3X} colors={colors} keepSwap={keepSwap} schedSwapClose={schedSwapClose} schoolSender={schoolSender} closeAll={closeAll} setWttEmailLevel2={setWttEmailLevel2} level2={wttEmailLevel2} allParentEmails={allParentEmails} parentRows={parentRows} allCtEmails={allCtEmails} ctRows={ctRows} allStaffEmails={allStaffEmails} staffRows={staffRows} hasAnyEmail={hasAnyEmail} />
                       <button
-                        onMouseEnter={e => { hov(e); setSwapTeacherSubmenu({ type: "multiEmail", y: e.currentTarget.getBoundingClientRect().top }); setWttEmailLevel2(null); keepSwap(); }}
+                        onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setSwapTeacherSubmenu(prev => prev?.type === "multiEmail" ? prev : { type: "multiEmail", y }); setWttEmailLevel2(null); keepSwap(); }}
                         onMouseLeave={e => { unhov(e); schedSwapClose(); }}
                         style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: hasAnyEmail ? colors.accent : colors.textMuted, fontFamily: "inherit", fontWeight: 600 }}>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Mail size={13} /> Email</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />

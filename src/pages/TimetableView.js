@@ -938,7 +938,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   {multi ? (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => { hov(e); setMttDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top }); }}
+                      onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setMttDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }}
                       onMouseLeave={unhov}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
                       <span>{label} ({allEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
@@ -1160,7 +1160,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 </MttAddSubPanel>
                 {allSchoolUnscheduled.length > 0 && (
                   <button style={mkItemStyle(colors.sidebarActive)}
-                    onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu({ type: "unsched", y }); }}
+                    onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "unsched" ? prev : { type: "unsched", y }); }}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Plus size={13} /> Add unscheduled</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                   </button>
