@@ -116,7 +116,7 @@ function getAttachmentType(filename) {
   return "other";
 }
 
-export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onImportFromMtt, onJumpToWeekly, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, setAutoSendQueue, autoSendTimerRef, autoSendActiveRef, setDashBadges, onViewStudent, onViewGroups, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
+export function Dashboard({ schools, students, enrolments, catchups = [], teachers, teacherCoverage, laneOverrides = [], specialists, interruptions, setInterruptions, groups, timetable, weeklyTimetables, setWeeklyTimetables, weeklyAckedConstraints, masterBreaks, contacts, bands, resources, setResources, documents, setDocuments, onNavigate, onImportFromMtt, onJumpToWeekly, onRestore, onBackup, errorLog, logError, notify, goBack, goForward, historyCursor, pageHistory, setStudentsViewState, setNewStudentPrefill, setAddParentPrefill, setNewContactPrefill, setSharedSchool, recordUsage, hoveredScrollRef, emailNavRef, emailListRef, filteredEmailsRef, todoUndoRef, autoSendQueue, cancelAutoSend, setDashBadges, onViewStudent, onViewGroups, onNewEmail, quickAddTodoTrigger, quickAddReminderTrigger, emailStyle }) {
   const { colors, darkMode } = useTheme();
   const activeStudents = students.filter(s => s.status === "active");
 
@@ -4150,7 +4150,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               <span style={{ fontSize: 11, color: colors.amberDark, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 5 }}>
                                 <Loader2 size={11} style={{ animation: "spin 1s linear infinite", flexShrink: 0 }} /> Sending {autoSendQueue[0]?.label || autoSendQueue[0]?.to?.[0] || "email"}{autoSendQueue.length > 1 ? ` (+${autoSendQueue.length - 1} queued)` : ""}…
                               </span>
-                              <button onClick={() => { clearTimeout(autoSendTimerRef.current); autoSendActiveRef.current = false; setAutoSendQueue([]); notify("Auto-send cancelled", "warning"); }}
+                              <button onClick={() => { cancelAutoSend(); notify("Auto-send cancelled", "warning"); }}
                                 style={{ padding: "2px 8px", borderRadius: 5, border: `1px solid ${colors.warning}`, background: colors.cardBg, color: colors.amberDark, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
                                 Undo
                               </button>

@@ -1001,8 +1001,22 @@ export default function MusicTimetableApp() {
   const [composeEmail, setComposeEmail] = useState(null); // null | { to[], from, subject, body }
   const [composeQueue, setComposeQueue] = useState([]); // queued sequential emails
   const [autoSendQueue, setAutoSendQueue] = useState([]); // { to, from, subject, bodyHtml, label }[]
+  // True while a 5s countdown is armed or a send is in flight. State (not a
+  // ref) on purpose: flipping it false when a send finishes is what re-runs
+  // the processor effect and arms the timer for the next item.
+  const [autoSendActive, setAutoSendActive] = useState(false);
   const autoSendTimerRef = React.useRef(null);
-  const autoSendActiveRef = React.useRef(false);
+  // Bumped by cancelAutoSend (Undo) so a send already in flight can't pop
+  // the queue or re-arm the processor after the user cancelled.
+  const autoSendEpochRef = React.useRef(0);
+  // Undo for the auto-send queue: stop the countdown, void any in-flight
+  // completion, empty the queue (banner disappears), reset in-flight state.
+  const cancelAutoSend = React.useCallback(() => {
+    clearTimeout(autoSendTimerRef.current);
+    autoSendEpochRef.current++;
+    setAutoSendQueue([]);
+    setAutoSendActive(false);
+  }, []);
 
   // ── Supabase connectivity ────────────────────────────────────
   // null = checking on startup, true = reachable, false = offline/fallback
@@ -2542,45 +2556,57 @@ export default function MusicTimetableApp() {
   }, []);
 
 
-  // Auto-send queue processor — sends one email every 5s with undo window
+  // Auto-send queue processor — sends one email every 5s with undo window.
+  // The queue item is popped AFTER its send completes (success or failure),
+  // so the banner's queue[0] is always the item currently counting down or
+  // in flight, never one already sent. A failed send notifies and advances —
+  // one bad address never halts the rest of the queue. This effect has no
+  // cleanup on purpose: re-runs caused by enqueues mid-countdown must not
+  // kill the armed timer (that was the re-enqueue deadlock). The timer is
+  // cleared only on unmount (effect below) and by cancelAutoSend (Undo).
   useEffect(() => {
-    if (autoSendQueue.length === 0 || autoSendActiveRef.current) return;
-    autoSendActiveRef.current = true;
+    if (autoSendQueue.length === 0 || autoSendActive) return;
+    setAutoSendActive(true);
+    const epoch = autoSendEpochRef.current;
+    const first = autoSendQueue[0];
     autoSendTimerRef.current = setTimeout(async () => {
+      try {
+        if (window.electronAPI?.gmailSend) {
+          // Session 95: pass attachments through. Prior version stripped
+          // them entirely — bulk invoice sends were going out with no PDF
+          // attached. Also pass cc/bcc if queue items carry them (for
+          // future callers; invoices don't use these).
+          const result = await window.electronAPI.gmailSend({
+            to: first.to,
+            from: first.from || undefined,
+            // DKIM fix: queue items carry resolved sender headers from
+            // ComposeModal's batch builder (From = signed primary, Reply-To
+            // = school alias). Forward Reply-To so the runner sends it too.
+            replyTo: first.replyTo || undefined,
+            cc: first.cc && first.cc.length > 0 ? first.cc : undefined,
+            bcc: first.bcc && first.bcc.length > 0 ? first.bcc : undefined,
+            subject: first.subject,
+            bodyHtml: first.bodyHtml || first.body || "",
+            attachments: first.attachments && first.attachments.length > 0 ? first.attachments : undefined,
+          });
+          if (!result.ok) notify(`Send failed for ${first.label || first.to}: ${result.error}`, "danger");
+        }
+      } catch(e) { notify(`Send error: ${e.message}`, "danger"); }
+      if (autoSendEpochRef.current !== epoch) return; // Undo fired mid-send — drop this completion
       setAutoSendQueue(prev => {
-        if (prev.length === 0) { autoSendActiveRef.current = false; return prev; }
-        const [first, ...rest] = prev;
-        (async () => {
-          try {
-            if (window.electronAPI?.gmailSend) {
-              // Session 95: pass attachments through. Prior version stripped
-              // them entirely — bulk invoice sends were going out with no PDF
-              // attached. Also pass cc/bcc if queue items carry them (for
-              // future callers; invoices don't use these).
-              const result = await window.electronAPI.gmailSend({
-                to: first.to,
-                from: first.from || undefined,
-                // DKIM fix: queue items carry resolved sender headers from
-                // ComposeModal's batch builder (From = signed primary, Reply-To
-                // = school alias). Forward Reply-To so the runner sends it too.
-                replyTo: first.replyTo || undefined,
-                cc: first.cc && first.cc.length > 0 ? first.cc : undefined,
-                bcc: first.bcc && first.bcc.length > 0 ? first.bcc : undefined,
-                subject: first.subject,
-                bodyHtml: first.bodyHtml || first.body || "",
-                attachments: first.attachments && first.attachments.length > 0 ? first.attachments : undefined,
-              });
-              if (!result.ok) notify(`Send failed for ${first.label || first.to}: ${result.error}`, "danger");
-            }
-          } catch(e) { notify(`Send error: ${e.message}`, "danger"); }
-          if (rest.length === 0) playUISound("queue_complete");
-          autoSendActiveRef.current = false;
-        })();
+        if (prev.length === 0 || prev[0] !== first) return prev;
+        const rest = prev.slice(1);
+        if (rest.length === 0) playUISound("queue_complete");
         return rest;
       });
+      // State (not ref) reset: this is what wakes the effect to arm the next timer.
+      setAutoSendActive(false);
     }, 5000);
-    return () => clearTimeout(autoSendTimerRef.current);
-  }, [autoSendQueue]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoSendQueue, autoSendActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Unmount-only timer cleanup for the auto-send queue (kept separate from
+  // the processor effect so re-runs don't clear an armed timer).
+  useEffect(() => () => clearTimeout(autoSendTimerRef.current), []);
 
   const readClaudeFile = (file) => {
     if (!file) return;
@@ -6015,7 +6041,7 @@ export default function MusicTimetableApp() {
 
         <div style={{ padding: "28px 36px", maxWidth: 1200 }}>
           <div style={{ display: page === "dashboard" ? undefined : "none" }}>
-          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} onImportFromMtt={handleImportFromMtt} onJumpToWeekly={handleJumpToWeekly} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} setAutoSendQueue={setAutoSendQueue} autoSendTimerRef={autoSendTimerRef} autoSendActiveRef={autoSendActiveRef} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onViewGroups={() => { setStudentsTabRequest("groups"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
+          <Dashboard schools={schools} students={students} enrolments={enrolments} catchups={catchups} teachers={teachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} weeklyAckedConstraints={weeklyAckedConstraints} specialists={specialists} interruptions={interruptions} setInterruptions={setInterruptions} groups={groups} timetable={timetable} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} masterBreaks={masterBreaks} contacts={contacts} bands={bands} resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} onNavigate={setPage} onImportFromMtt={handleImportFromMtt} onJumpToWeekly={handleJumpToWeekly} setStudentsViewState={setStudentsViewState} setNewStudentPrefill={setNewStudentPrefill} setAddParentPrefill={setAddParentPrefill} setNewContactPrefill={setNewContactPrefill} setSharedSchool={setSharedSchool} errorLog={errorLog} logError={logError} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onRestore={handleRestore} onBackup={handleBackup} notify={notify} recordUsage={recordUsage} hoveredScrollRef={hoveredScrollRef} emailNavRef={emailNavRef} emailListRef={emailListRef} filteredEmailsRef={filteredEmailsRef} todoUndoRef={todoUndoRef} autoSendQueue={autoSendQueue} cancelAutoSend={cancelAutoSend} setDashBadges={setDashBadges} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("dashboard"); setPage("students"); }} onViewGroups={() => { setStudentsTabRequest("groups"); setPage("students"); }} onNewEmail={() => playSound("email-receive.mp3")} quickAddTodoTrigger={quickAddTodoTrigger} quickAddReminderTrigger={quickAddReminderTrigger} emailStyle={emailStyle} />
           </div>
           {page === "schools" && <SchoolsManager schools={schools} setSchools={setSchools} notify={notify} resetKey={resetKey} viewState={schoolsViewState} setViewState={setSchoolsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
