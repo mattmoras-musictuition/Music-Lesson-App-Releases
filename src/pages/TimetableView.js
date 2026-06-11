@@ -27,7 +27,47 @@ function buildPreferredDisplayName(name) {
   return surname ? `${prefFirst} ${surname}` : prefFirst;
 }
 
+// ── Hoisted menu flyout panels ───────────────────────────────
+// Previously defined inside the render body: a per-render component gets a
+// new identity every render, so React unmounted and remounted the open
+// flyout on every page re-render — wiping inline hover highlights and
+// dropping in-flight clicks (the "inert context menu" bug). Module level =
+// stable identity = DOM reconciled in place. Closure values arrive as props.
 
+// MTT day-header email flyout: Group / Individually / per-contact rows.
+function MttDaySubPanel({ submenu, panelRef, subX, subMenuW, colors, schoolSender, setContextMenu, setMttDayHeaderSubmenu, type, rows, allEmails, color, multi }) {
+  if (submenu?.type !== type || !rows.length) return null;
+  const btn = (c) => ({ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
+  const hov = (e) => e.currentTarget.style.background = colors.bg;
+  const unhov = (e) => e.currentTarget.style.background = "none";
+  return (
+    <div ref={panelRef}
+      style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+      {rows.map((r, i) => (
+        <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
+          style={{ ...btn(colors.text) }}
+          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
+          {r.name ? r.name.split(" ")[0] : r.email}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// MTT add-lesson flyout shell (Add pending / Add unscheduled lists).
+function MttAddSubPanel({ submenu, panelRef, subX, subMenuW, colors, type, color, title, children }) {
+  return submenu && submenu.type === type ? (
+    <div ref={panelRef} style={{ position: "fixed", ...clampMenuPos(subX, submenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
+      <div style={{ padding: "6px 12px", fontSize: 11, color: color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>{title}</div>
+      {children}
+    </div>
+  ) : null;
+}
 
 export function TimetableView({ mainScrollRef, timetable, schools, students, allStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], viewedLanes = {}, onSwitchLane, onAddStaff, onRemoveStaff, specialists, pendingStudents, masterBreaks, setMasterBreaks, bands, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onExport, onPrint, onClearSchool, onClear, onSchedulePending, onMoveLesson, onDeleteLesson, onReturnToPending, onViewStudent, onViewGroup, onPlaceUnsched, onPlacePending, onAllocatePlace, onUndo, onRedo, undoCount, redoCount, onDismissUnscheduled, onLoadVersion, onWarningsChange, initialConstraintWarnings, initialAckedConstraints, contacts, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
@@ -886,37 +926,15 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const menuLeft = menuRect ? menuRect.left : contextMenu.x;
             const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
 
-            const btn = (color) => ({ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, fontWeight: 400 });
             const hov = (e) => e.currentTarget.style.background = colors.bg;
             const unhov = (e) => e.currentTarget.style.background = "none";
-
-            const MttDaySubPanel = ({ type, rows, allEmails, color, multi }) => {
-              if (mttDayHeaderSubmenu?.type !== type || !rows.length) return null;
-              return (
-                <div ref={mttDayHeaderSubRef}
-                  style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                  {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                  {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
-                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
-                  {rows.map((r, i) => (
-                    <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                      style={{ ...btn(colors.text) }}
-                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
-                      {r.name ? r.name.split(" ")[0] : r.email}
-                    </button>
-                  ))}
-                </div>
-              );
-            };
 
             const mkMttEmailRow = (label, allEmails, rows, type, color) => {
               if (!allEmails.length) return null;
               const multi = allEmails.length > 1;
               return (
                 <div style={{ position: "relative" }}>
-                  <MttDaySubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
+                  <MttDaySubPanel submenu={mttDayHeaderSubmenu} panelRef={mttDayHeaderSubRef} subX={subX} subMenuW={subMenuW} colors={colors} schoolSender={schoolSender} setContextMenu={setContextMenu} setMttDayHeaderSubmenu={setMttDayHeaderSubmenu} type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
                   {multi ? (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
@@ -1102,15 +1120,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 const menuLeft = menuRect ? menuRect.left : contextMenu.x;
                 const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
                 const mkItemStyle = (fg) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", borderTop: `1px solid ${colors.borderLight}`, fontSize: 13, cursor: "pointer", color: fg, borderRadius: 6, fontFamily: "inherit" });
-                const SubPanel = ({ type, color, title, children }) => mttAddSubmenu && mttAddSubmenu.type === type ? (
-                  <div ref={mttSubMenuRef} style={{ position: "fixed", ...clampMenuPos(subX, mttAddSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
-                    <div style={{ padding: "6px 12px", fontSize: 11, color: color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>{title}</div>
-                    {children}
-                  </div>
-                ) : null;
                 return (
                   <div style={{ position: "relative" }}>
-                    <SubPanel type="pending" color={colors.purple600} title="Add pending">
+                    <MttAddSubPanel submenu={mttAddSubmenu} panelRef={mttSubMenuRef} subX={subX} subMenuW={subMenuW} colors={colors} type="pending" color={colors.purple600} title="Add pending">
                       {[...pendingRows].sort((a, b) => (a.name || "").localeCompare(b.name || "") || (a._inst?.name || "").localeCompare(b._inst?.name || "")).map((row, ri) => (
                         <button key={row.id + (row._inst?.name || "") + ri} onClick={() => {
                           if (onSchedulePending) onSchedulePending(row.id, contextMenu.schoolId, contextMenu.day, contextMenu.time, row._inst?.name);
@@ -1122,13 +1134,13 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           <span style={{ fontSize: 11, color: colors.gray500 }}>{row._inst?.name || ""}</span>
                         </button>
                       ))}
-                    </SubPanel>
+                    </MttAddSubPanel>
                     <button style={mkItemStyle(colors.purple600)}
                       onMouseEnter={e => { e.currentTarget.style.background = colors.purpleLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "pending" ? prev : { type: "pending", y }); }}
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Clock size={13} /> Add pending</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
-                <SubPanel type="unsched" color={colors.sidebarActive} title="Add unscheduled">
+                <MttAddSubPanel submenu={mttAddSubmenu} panelRef={mttSubMenuRef} subX={subX} subMenuW={subMenuW} colors={colors} type="unsched" color={colors.sidebarActive} title="Add unscheduled">
                   {allSchoolUnscheduled.map((u, ui) => (
                     <button key={ui} onClick={() => {
                       const student = u.student;
@@ -1145,7 +1157,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <span style={{ fontSize: 11, color: colors.gray500 }}>{(u.instrument || "") + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</span>
                     </button>
                   ))}
-                </SubPanel>
+                </MttAddSubPanel>
                 {allSchoolUnscheduled.length > 0 && (
                   <button style={mkItemStyle(colors.sidebarActive)}
                     onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu({ type: "unsched", y }); }}
