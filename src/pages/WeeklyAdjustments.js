@@ -179,6 +179,158 @@ function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyl
   );
 }
 
+// ── Hoisted menu flyout panels ───────────────────────────────
+// These were previously defined inside the render body. A component defined
+// per-render gets a new identity every render, so React unmounted and
+// remounted any open flyout on every page re-render (background polls,
+// realtime events, hover state changes) — wiping inline hover highlights and
+// dropping in-flight clicks (the "inert context menu" bug). At module level
+// the identity is stable and React reconciles the DOM in place. Everything
+// the panels used to capture from the render closure arrives as props.
+
+// WTT day-header email flyout: Group / Individually / per-contact rows.
+function DaySubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, scheduleClose, setContextMenu, setDayHeaderSubmenu, composeForDay, type, rows, allEmails, color, multi, schoolSender }) {
+  if (!submenu || submenu.type !== type || !rows.length) return null;
+  const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
+  const hov = (e) => e.currentTarget.style.background = colors.bg;
+  const unhov = (e) => e.currentTarget.style.background = "none";
+  return (
+    <div ref={panelRef}
+      onMouseEnter={keepOpen}
+      onMouseLeave={scheduleClose}
+      style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+      {rows.map((r, i) => (
+        <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
+          style={r.color ? btn(colors.text) : btn(color || colors.accent)}
+          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
+          {r.name ? r.name.split(" ")[0] : r.email}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Catch-up card email flyout — same shape as DaySubPanel but opens the
+// compose modal directly (no day-export attachment offer). Was `SubPanel`
+// inside the catch-up card menu IIFE.
+function CatchupSubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, scheduleClose, setContextMenu, setDayHeaderSubmenu, schoolSender, type, rows, allEmails, color, multi }) {
+  if (!submenu || submenu.type !== type || !rows.length) return null;
+  const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
+  const hov = (e) => e.currentTarget.style.background = colors.bg;
+  const unhov = (e) => e.currentTarget.style.background = "none";
+  return (
+    <div ref={panelRef}
+      onMouseEnter={keepOpen}
+      onMouseLeave={scheduleClose}
+      style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+      {rows.map((r, i) => (
+        <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
+          style={r.color ? btn(colors.text) : btn(color || colors.accent)}
+          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
+          {r.name ? r.name.split(" ")[0] : r.email}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Multi-select cascade level-3: Group / Individually / per-contact rows.
+function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll, type, allEmails, rows, color }) {
+  if (level2?.type !== type || !allEmails.length) return null;
+  const multi = allEmails.length > 1;
+  const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, gap: 6 });
+  const hov = (e) => e.currentTarget.style.background = colors.bg;
+  const unhov = (e) => e.currentTarget.style.background = "none";
+  return (
+    <div ref={panelRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
+      style={{ position: "fixed", top: level2.y, left: level3X, zIndex: 10003, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
+      {rows.map(r => (
+        <button key={r.email} onClick={() => { openCompose([r.email], { from: schoolSender }); closeAll(); }}
+          style={r.color ? btn(colors.text) : btn(color)}
+          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block" }} />}
+          {(r.name || r.email).split(" ")[0]}
+        </button>
+      ))}
+      {/* Fallback if rows is empty but we have emails (no names) */}
+      {rows.length === 0 && allEmails.map(e => (
+        <button key={e} onClick={() => { openCompose([e], { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>{e}</button>
+      ))}
+    </div>
+  );
+}
+
+// Multi-select cascade level-2: Parents / Teachers / Staff rows, each with a
+// GroupEmailPanel flyout (level-3).
+function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll, setWttEmailLevel2, level2, allParentEmails, parentRows, allCtEmails, ctRows, allStaffEmails, staffRows, hasAnyEmail }) {
+  if (submenu?.type !== "multiEmail") return null;
+  const hov = (e) => e.currentTarget.style.background = colors.bg;
+  const unhov = (e) => e.currentTarget.style.background = "none";
+  const groupProps = { level2, panelRef: level3Ref, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll };
+  return (
+    <div ref={panelRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
+      style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
+      <GroupEmailPanel {...groupProps} type="multiEmail_parents" allEmails={allParentEmails} rows={parentRows} color={colors.accent} />
+      <GroupEmailPanel {...groupProps} type="multiEmail_teachers" allEmails={allCtEmails} rows={ctRows} color={colors.sidebarActive} />
+      <GroupEmailPanel {...groupProps} type="multiEmail_staff" allEmails={allStaffEmails} rows={staffRows} color={colors.textLight} />
+      {allParentEmails.length > 0 && (allParentEmails.length === 1 ? (
+        <button onClick={() => { openCompose(allParentEmails, { from: schoolSender }); closeAll(); }}
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={hov} onMouseLeave={unhov}>
+          {parentRows[0] ? (parentRows[0].name || parentRows[0].email).split(" ")[0] : "Parent"}
+        </button>
+      ) : (
+        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_parents", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseLeave={unhov}>
+          <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+        </button>
+      ))}
+      {allCtEmails.length > 0 && (allCtEmails.length === 1 ? (
+        <button onClick={() => { openCompose(allCtEmails, { from: schoolSender }); closeAll(); }}
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={hov} onMouseLeave={unhov}>
+          {ctRows[0] ? (ctRows[0].name || ctRows[0].email).split(" ")[0] : "Teacher"}
+        </button>
+      ) : (
+        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_teachers", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseLeave={unhov}>
+          <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+        </button>
+      ))}
+      {allStaffEmails.length > 0 && (allStaffEmails.length === 1 ? (
+        <button onClick={() => { openCompose(allStaffEmails, { from: schoolSender }); closeAll(); }}
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={hov} onMouseLeave={unhov}>
+          {staffRows[0] ? (staffRows[0].name || staffRows[0].email).split(" ")[0] : "Staff"}
+        </button>
+      ) : (
+        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
+          onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_staff", y: e.currentTarget.getBoundingClientRect().top }); }}
+          onMouseLeave={unhov}>
+          <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+        </button>
+      ))}
+      {!hasAnyEmail && <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No email addresses found</div>}
+    </div>
+  );
+}
+
 export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
@@ -2677,39 +2829,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               else openCompose(emails, finalOpts);
             };
 
-            const DaySubPanel = ({ type, rows, allEmails, color, multi, schoolSender }) => {
-              if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
-              const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-              const hov = (e) => e.currentTarget.style.background = colors.bg;
-              const unhov = (e) => e.currentTarget.style.background = "none";
-              return (
-                <div ref={dayHeaderSubRef}
-                  onMouseEnter={keepDayHeaderOpen}
-                  onMouseLeave={scheduleDayHeaderClose}
-                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                  {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                  {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
-                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
-                  {rows.map((r, i) => (
-                    <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
-                      style={r.color ? btn(colors.text) : btn(color || colors.accent)}
-                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
-                      {r.name ? r.name.split(" ")[0] : r.email}
-                    </button>
-                  ))}
-                </div>
-              );
-            };
-
             const mkEmailRow = (label, allEmails, rows, type, color) => {
               if (!allEmails.length) return null;
               const schoolSender = schools.find(s => s.id === selectedSchool)?.senderEmail || "";
               const multi = allEmails.length > 1;
               return (
                 <div style={{ position: "relative" }}>
-                  <DaySubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} schoolSender={schoolSender} />
+                  <DaySubPanel submenu={dayHeaderSubmenu} panelRef={dayHeaderSubRef} subX={subX} subMenuW={subMenuW} colors={colors} keepOpen={keepDayHeaderOpen} scheduleClose={scheduleDayHeaderClose} setContextMenu={setContextMenu} setDayHeaderSubmenu={setDayHeaderSubmenu} composeForDay={composeForDay} type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} schoolSender={schoolSender} />
                   {multi ? (
                     <button
                       onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
@@ -3630,39 +3756,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const scheduleClose = () => { dayHeaderHideTimer.current = setTimeout(() => setDayHeaderSubmenu(null), 200); };
             const schoolSender = schools.find(s => s.id === cu.schoolId)?.senderEmail || "";
 
-            const SubPanel = ({ type, rows, allEmails, color, multi }) => {
-              if (!dayHeaderSubmenu || dayHeaderSubmenu.type !== type || !rows.length) return null;
-              const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-              const hov = (e) => e.currentTarget.style.background = colors.bg;
-              const unhov = (e) => e.currentTarget.style.background = "none";
-              return (
-                <div ref={dayHeaderSubRef}
-                  onMouseEnter={keepOpen}
-                  onMouseLeave={scheduleClose}
-                  style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-                  {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                  {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
-                  {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
-                  {rows.map((r, i) => (
-                    <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                      style={r.color ? btn(colors.text) : btn(color || colors.accent)}
-                      onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                      {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
-                      {r.name ? r.name.split(" ")[0] : r.email}
-                    </button>
-                  ))}
-                </div>
-              );
-            };
-
             const mkEmailRow = (label, allEmails, rows, type, color) => {
               if (!allEmails.length) return null;
               const isOpen = dayHeaderSubmenu?.type === type;
               const multi = allEmails.length > 1;
               return (
                 <div style={{ position: "relative" }}>
-                  <SubPanel type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
+                  <CatchupSubPanel submenu={dayHeaderSubmenu} panelRef={dayHeaderSubRef} subX={subX} subMenuW={subMenuW} colors={colors} keepOpen={keepOpen} scheduleClose={scheduleClose} setContextMenu={setContextMenu} setDayHeaderSubmenu={setDayHeaderSubmenu} schoolSender={schoolSender} type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
                   {multi ? (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
@@ -4037,91 +4137,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const sub2Rect = swapTeacherSubRef.current?.getBoundingClientRect();
                   const level3X = sub2Rect ? (sub2Rect.right + 190 > window.innerWidth ? sub2Rect.left - 190 : sub2Rect.right) : subX + 200;
 
-                  const btn = (color) => ({ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color, gap: 6 });
                   const hov = (e) => e.currentTarget.style.background = colors.bg;
                   const unhov = (e) => e.currentTarget.style.background = "none";
                   const closeAll = () => { setContextMenu(null); setSwapTeacherSubmenu(null); setWttEmailLevel2(null); setSelectedCards(new Set()); };
-
-                  // Level-3 panel: Group / Individually / individual names
-                  // If only 1 unique email, skip the group/individually options — just list the contact
-                  const GroupEmailPanel = ({ type, allEmails, rows, color }) => {
-                    if (wttEmailLevel2?.type !== type || !allEmails.length) return null;
-                    const multi = allEmails.length > 1;
-                    return (
-                      <div ref={level3MenuRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                        style={{ position: "fixed", top: wttEmailLevel2.y, left: level3X, zIndex: 10003, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
-                        {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-                        {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
-                        {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
-                        {rows.map(r => (
-                          <button key={r.email} onClick={() => { openCompose([r.email], { from: schoolSender }); closeAll(); }}
-                            style={r.color ? btn(colors.text) : btn(color)}
-                            onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                            {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block" }} />}
-                            {(r.name || r.email).split(" ")[0]}
-                          </button>
-                        ))}
-                        {/* Fallback if rows is empty but we have emails (no names) */}
-                        {rows.length === 0 && allEmails.map(e => (
-                          <button key={e} onClick={() => { openCompose([e], { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>{e}</button>
-                        ))}
-                      </div>
-                    );
-                  };
-
-                  // Level-2 panel: Parents / Teachers / Staff
-                  const EmailLevel2Panel = () => {
-                    if (swapTeacherSubmenu?.type !== "multiEmail") return null;
-                    return (
-                      <div ref={swapTeacherSubRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
-                        style={{ position: "fixed", top: swapTeacherSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
-                        <GroupEmailPanel type="multiEmail_parents" allEmails={allParentEmails} rows={parentRows} color={colors.accent} />
-                        <GroupEmailPanel type="multiEmail_teachers" allEmails={allCtEmails} rows={ctRows} color={colors.sidebarActive} />
-                        <GroupEmailPanel type="multiEmail_staff" allEmails={allStaffEmails} rows={staffRows} color={colors.textLight} />
-                        {allParentEmails.length > 0 && (allParentEmails.length === 1 ? (
-                          <button onClick={() => { openCompose(allParentEmails, { from: schoolSender }); closeAll(); }}
-                            style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={hov} onMouseLeave={unhov}>
-                            {parentRows[0] ? (parentRows[0].name || parentRows[0].email).split(" ")[0] : "Parent"}
-                          </button>
-                        ) : (
-                          <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_parents", y: e.currentTarget.getBoundingClientRect().top }); }}
-                            onMouseLeave={unhov}>
-                            <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                          </button>
-                        ))}
-                        {allCtEmails.length > 0 && (allCtEmails.length === 1 ? (
-                          <button onClick={() => { openCompose(allCtEmails, { from: schoolSender }); closeAll(); }}
-                            style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={hov} onMouseLeave={unhov}>
-                            {ctRows[0] ? (ctRows[0].name || ctRows[0].email).split(" ")[0] : "Teacher"}
-                          </button>
-                        ) : (
-                          <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_teachers", y: e.currentTarget.getBoundingClientRect().top }); }}
-                            onMouseLeave={unhov}>
-                            <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                          </button>
-                        ))}
-                        {allStaffEmails.length > 0 && (allStaffEmails.length === 1 ? (
-                          <button onClick={() => { openCompose(allStaffEmails, { from: schoolSender }); closeAll(); }}
-                            style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={hov} onMouseLeave={unhov}>
-                            {staffRows[0] ? (staffRows[0].name || staffRows[0].email).split(" ")[0] : "Staff"}
-                          </button>
-                        ) : (
-                          <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-                            onMouseEnter={e => { hov(e); setWttEmailLevel2({ type: "multiEmail_staff", y: e.currentTarget.getBoundingClientRect().top }); }}
-                            onMouseLeave={unhov}>
-                            <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
-                          </button>
-                        ))}
-                        {!hasAnyEmail && <div style={{ padding: "8px 12px", fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No email addresses found</div>}
-                      </div>
-                    );
-                  };
 
                   return (<>
                     {/* Heading — at top */}
@@ -4131,7 +4149,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                     {/* Email ▶ */}
                     <div style={{ position: "relative" }}>
-                      <EmailLevel2Panel />
+                      <EmailLevel2Panel submenu={swapTeacherSubmenu} panelRef={swapTeacherSubRef} level3Ref={level3MenuRef} subX={subX} level3X={level3X} colors={colors} keepSwap={keepSwap} schedSwapClose={schedSwapClose} schoolSender={schoolSender} closeAll={closeAll} setWttEmailLevel2={setWttEmailLevel2} level2={wttEmailLevel2} allParentEmails={allParentEmails} parentRows={parentRows} allCtEmails={allCtEmails} ctRows={ctRows} allStaffEmails={allStaffEmails} staffRows={staffRows} hasAnyEmail={hasAnyEmail} />
                       <button
                         onMouseEnter={e => { hov(e); setSwapTeacherSubmenu({ type: "multiEmail", y: e.currentTarget.getBoundingClientRect().top }); setWttEmailLevel2(null); keepSwap(); }}
                         onMouseLeave={e => { unhov(e); schedSwapClose(); }}
