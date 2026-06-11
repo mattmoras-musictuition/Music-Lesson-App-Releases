@@ -24,11 +24,10 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   React.useEffect(() => { console.log("[ComposeModal] session 89 v6 loaded"); }, []);
   const { colors, darkMode } = useTheme();
   // Multi-recipient privacy: if 2+ recipients and not a reply/forward, the
-  // modal initially places them in BCC and the To field starts empty. On
-  // Send, that mode now fans out one individual email per recipient (each
-  // with their address in the To header) instead of one BCC-blast message —
-  // see handleSend below. The to-self/BCC pattern that this used to produce
-  // was the leading suspect for Yahoo 550 5.7.9 (DKIM=FAILURE) bounces.
+  // modal places them in BCC and the To field starts empty. Send goes out as
+  // ONE email with the recipients in BCC. (A per-recipient fan-out lived here
+  // v2.9.10–v2.17.x as a Yahoo-bounce workaround; the real cause was fixed in
+  // v2.15.0 via DKIM/sender identity, so the fan-out was reverted.)
   const isReply = /^(re|fwd?)\s*:/i.test(initial.subject || "");
   const initBccGroup = !isReply && !initial.forceTo && (initial.to || []).length >= 2;
   // Marker preserved for the lifetime of this modal open so post-mount edits
@@ -633,42 +632,6 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
       console.log("[ComposeModal] batch onSent firing for", batchItems.length, "items");
       if (onSent) onSent();
       notify(`Queued ${batchTo.length} emails to send ✓`);
-      onClose();
-      return;
-    }
-    // Per-recipient fan-out — multi-recipient parent-notification entry
-    // mode. Replaces the legacy single-send-with-BCC-blast path so each
-    // recipient gets their own message with their address in the To
-    // header (no BCC blast, no to-self placeholder). Routes through the
-    // same _autoSendBatch queue used by bulk-invoice sends.
-    if (wasMultiRecipientGroupRef.current && (to.length > 0 || bcc.length > 0)) {
-      // Combine whatever recipients are currently in to and bcc (the user
-      // may have edited either field after the modal opened). Best-effort
-      // drop the sender's own address if `from` matches one of them, so a
-      // habitually-typed self-placeholder doesn't generate a self-email.
-      const all = [...new Set([...to, ...bcc])];
-      const senderSelf = (from || "").trim().toLowerCase();
-      const recipients = senderSelf ? all.filter(a => a.trim().toLowerCase() !== senderSelf) : all;
-      if (recipients.length === 0) {
-        notify("Add at least one recipient", "warning");
-        return;
-      }
-      const batchItems = recipients.map(addr => ({
-        to: [addr],
-        from: _hdr.from, replyTo: _hdr.replyTo || undefined,
-        subject,
-        bodyHtml,
-        label: addr,
-        attachments: attachments.length > 0 ? attachments : undefined,
-        cc: cc.length > 0 ? cc : undefined,
-        // No bcc — the per-recipient To header replaces the BCC blast.
-      }));
-      if (window._autoSendBatch) window._autoSendBatch(batchItems);
-      if (onSoundPlay) onSoundPlay();
-      try { localStorage.removeItem("mt-compose-draft"); } catch {}
-      console.log("[ComposeModal] per-recipient fan-out for", batchItems.length, "items");
-      if (onSent) onSent();
-      notify(`Queued ${recipients.length} email${recipients.length === 1 ? "" : "s"} to send ✓`);
       onClose();
       return;
     }
