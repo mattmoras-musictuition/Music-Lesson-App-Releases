@@ -35,13 +35,14 @@ function buildPreferredDisplayName(name) {
 // stable identity = DOM reconciled in place. Closure values arrive as props.
 
 // MTT day-header email flyout: Group / Individually / per-contact rows.
-function MttDaySubPanel({ submenu, panelRef, subX, subMenuW, colors, schoolSender, setContextMenu, setMttDayHeaderSubmenu, type, rows, allEmails, color, multi }) {
+function MttDaySubPanel({ submenu, panelRef, subX, subMenuW, colors, schoolSender, setContextMenu, setMttDayHeaderSubmenu, keepOpen, type, rows, allEmails, color, multi }) {
   if (submenu?.type !== type || !rows.length) return null;
   const btn = (c) => ({ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
   const hov = (e) => e.currentTarget.style.background = colors.bg;
   const unhov = (e) => e.currentTarget.style.background = "none";
   return (
     <div ref={panelRef}
+      onMouseEnter={keepOpen}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
       {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
       {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
@@ -211,6 +212,24 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const [mttEmailSubmenu, setMttEmailSubmenu] = useState(null); // { y } or null
   const [mttEmailLevel2, setMttEmailLevel2] = useState(null); // { type: "parents"|"teachers", y } or null
   const [mttDayHeaderSubmenu, setMttDayHeaderSubmenu] = useState(null); // { type, y } or null
+  // Hover-intent for the day-header submenu (ported from WeeklyAdjustments'
+  // bc9e727 fix): first open is instant, but *switching* an already-open
+  // flyout to a different row is deferred so a diagonal pass over a sibling
+  // row — en route to the open flyout's items — doesn't hijack/close it
+  // before a click lands. Cancelled when the pointer reaches the open flyout
+  // or leaves the sibling row.
+  const mttDayHeaderOpenTimer = React.useRef(null);
+  const cancelMttDayHeaderOpen = () => { if (mttDayHeaderOpenTimer.current) { clearTimeout(mttDayHeaderOpenTimer.current); mttDayHeaderOpenTimer.current = null; } };
+  const keepMttDayHeaderOpen = () => { cancelMttDayHeaderOpen(); };
+  const openMttDayHeaderSub = (type, y) => {
+    cancelMttDayHeaderOpen();
+    if (mttDayHeaderSubmenu?.type === type) return;
+    if (mttDayHeaderSubmenu) {
+      mttDayHeaderOpenTimer.current = setTimeout(() => { mttDayHeaderOpenTimer.current = null; setMttDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }, 300);
+    } else {
+      setMttDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y });
+    }
+  };
   const [mttSelectedDays, setMttSelectedDays] = useState(new Set()); // Set of day names selected via header click
   const mttSubMenuRef = React.useRef(null);
   const mttMenuRef = React.useRef(null);
@@ -934,12 +953,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
               const multi = allEmails.length > 1;
               return (
                 <div style={{ position: "relative" }}>
-                  <MttDaySubPanel submenu={mttDayHeaderSubmenu} panelRef={mttDayHeaderSubRef} subX={subX} subMenuW={subMenuW} colors={colors} schoolSender={schoolSender} setContextMenu={setContextMenu} setMttDayHeaderSubmenu={setMttDayHeaderSubmenu} type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
+                  <MttDaySubPanel submenu={mttDayHeaderSubmenu} panelRef={mttDayHeaderSubRef} subX={subX} subMenuW={subMenuW} colors={colors} schoolSender={schoolSender} setContextMenu={setContextMenu} setMttDayHeaderSubmenu={setMttDayHeaderSubmenu} keepOpen={keepMttDayHeaderOpen} type={type} rows={rows} allEmails={allEmails} color={color} multi={multi} />
                   {multi ? (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setMttDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }}
-                      onMouseLeave={unhov}
+                      onMouseEnter={e => { hov(e); openMttDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top); }}
+                      onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
                       <span>{label} ({allEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
@@ -997,6 +1016,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <div style={{ position: "relative" }}>
                         {isOpen && (
                           <div ref={mttDayHeaderSubRef}
+                            onMouseEnter={keepMttDayHeaderOpen}
                             style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                             {allocLanes.map(lane => {
                               const t = teachers.find(tt => tt.id === lane.teacherId);
@@ -1012,8 +1032,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           </div>
                         )}
                         <button
-                          onMouseEnter={e => { hov(e); if (!isOpen) setMttDayHeaderSubmenu({ type: "allocate", y: e.currentTarget.getBoundingClientRect().top }); }}
-                          onMouseLeave={unhov}
+                          onMouseEnter={e => { hov(e); openMttDayHeaderSub("allocate", e.currentTarget.getBoundingClientRect().top); }}
+                          onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Crosshair size={13} /> Allocate to…</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
@@ -1041,6 +1061,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <div style={{ position: "relative" }}>
                         {isOpen && (
                           <div ref={mttDayHeaderSubRef}
+                            onMouseEnter={keepMttDayHeaderOpen}
                             style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                             {notAddedTeachers.map(t => (
                               <button key={t.id} onClick={() => { onAddStaff && onAddStaff(selectedSchool, day, t.id); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
@@ -1066,9 +1087,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         <button
                           onMouseEnter={e => {
                             hov(e);
-                            if (!isOpen) setMttDayHeaderSubmenu({ type: "manageStaff", y: e.currentTarget.getBoundingClientRect().top });
+                            openMttDayHeaderSub("manageStaff", e.currentTarget.getBoundingClientRect().top);
                           }}
-                          onMouseLeave={unhov}
+                          onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Users size={13} /> Manage Staff</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />

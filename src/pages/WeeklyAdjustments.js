@@ -245,14 +245,14 @@ function CatchupSubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, 
 }
 
 // Multi-select cascade level-3: Group / Individually / per-contact rows.
-function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll, type, allEmails, rows, color }) {
+function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwapClose, cancelLevel2Open, schoolSender, closeAll, type, allEmails, rows, color }) {
   if (level2?.type !== type || !allEmails.length) return null;
   const multi = allEmails.length > 1;
   const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, gap: 6 });
   const hov = (e) => e.currentTarget.style.background = colors.bg;
   const unhov = (e) => e.currentTarget.style.background = "none";
   return (
-    <div ref={panelRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
+    <div ref={panelRef} onMouseEnter={() => { keepSwap(); if (cancelLevel2Open) cancelLevel2Open(); }} onMouseLeave={schedSwapClose}
       style={{ position: "fixed", top: level2.y, left: level3X, zIndex: 10003, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
       {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
       {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
@@ -276,11 +276,11 @@ function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwa
 
 // Multi-select cascade level-2: Parents / Teachers / Staff rows, each with a
 // GroupEmailPanel flyout (level-3).
-function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll, setWttEmailLevel2, level2, allParentEmails, parentRows, allCtEmails, ctRows, allStaffEmails, staffRows, hasAnyEmail }) {
+function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors, keepSwap, schedSwapClose, openLevel2, cancelLevel2Open, schoolSender, closeAll, level2, allParentEmails, parentRows, allCtEmails, ctRows, allStaffEmails, staffRows, hasAnyEmail }) {
   if (submenu?.type !== "multiEmail") return null;
   const hov = (e) => e.currentTarget.style.background = colors.bg;
   const unhov = (e) => e.currentTarget.style.background = "none";
-  const groupProps = { level2, panelRef: level3Ref, level3X, colors, keepSwap, schedSwapClose, schoolSender, closeAll };
+  const groupProps = { level2, panelRef: level3Ref, level3X, colors, keepSwap, schedSwapClose, cancelLevel2Open, schoolSender, closeAll };
   return (
     <div ref={panelRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
@@ -295,8 +295,8 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_parents" ? prev : { type: "multiEmail_parents", y }); }}
-          onMouseLeave={unhov}>
+          onMouseEnter={e => { hov(e); openLevel2("multiEmail_parents", e.currentTarget.getBoundingClientRect().top); }}
+          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
           <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
@@ -308,8 +308,8 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_teachers" ? prev : { type: "multiEmail_teachers", y }); }}
-          onMouseLeave={unhov}>
+          onMouseEnter={e => { hov(e); openLevel2("multiEmail_teachers", e.currentTarget.getBoundingClientRect().top); }}
+          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
           <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
@@ -321,8 +321,8 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
         </button>
       ) : (
         <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setWttEmailLevel2(prev => prev?.type === "multiEmail_staff" ? prev : { type: "multiEmail_staff", y }); }}
-          onMouseLeave={unhov}>
+          onMouseEnter={e => { hov(e); openLevel2("multiEmail_staff", e.currentTarget.getBoundingClientRect().top); }}
+          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
           <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
@@ -508,6 +508,23 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const level3MenuRef = React.useRef(null); // level-3 email panel in multi-card cascade
   const keepSwap = React.useCallback(() => { if (swapTeacherHideTimer.current) { clearTimeout(swapTeacherHideTimer.current); swapTeacherHideTimer.current = null; } }, []);
   const schedSwapClose = React.useCallback(() => { swapTeacherHideTimer.current = setTimeout(() => setSwapTeacherSubmenu(null), 200); }, []);
+  // Hover-intent for the multi-select cascade's level-3 flyout (same pattern
+  // as the day-header's openDayHeaderSub): switching an already-open flyout
+  // to a different row (Parents → Teachers/Staff) is deferred so a diagonal
+  // pass over a sibling row — heading for the open flyout's items — doesn't
+  // hijack it before a click lands. Cancelled when the pointer reaches the
+  // open flyout or leaves the sibling row. First open stays instant.
+  const wttLevel2OpenTimer = React.useRef(null);
+  const cancelWttLevel2Open = () => { if (wttLevel2OpenTimer.current) { clearTimeout(wttLevel2OpenTimer.current); wttLevel2OpenTimer.current = null; } };
+  const openWttLevel2 = (type, y) => {
+    cancelWttLevel2Open();
+    if (wttEmailLevel2?.type === type) return;
+    if (wttEmailLevel2) {
+      wttLevel2OpenTimer.current = setTimeout(() => { wttLevel2OpenTimer.current = null; setWttEmailLevel2(prev => prev?.type === type ? prev : { type, y }); }, 300);
+    } else {
+      setWttEmailLevel2(prev => prev?.type === type ? prev : { type, y });
+    }
+  };
   const contextMenuRef = React.useRef(null);
   const subMenuRef = React.useRef(null);
   const clickTimerRef = React.useRef({}); // per-lessonId timers for single vs double click
@@ -2768,7 +2785,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               if (dayHeaderSubmenu?.type === type) return;
               if (dayHeaderOpenTimer.current) { clearTimeout(dayHeaderOpenTimer.current); dayHeaderOpenTimer.current = null; }
               if (dayHeaderSubmenu) {
-                dayHeaderOpenTimer.current = setTimeout(() => { dayHeaderOpenTimer.current = null; setDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }, 160);
+                dayHeaderOpenTimer.current = setTimeout(() => { dayHeaderOpenTimer.current = null; setDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y }); }, 300);
               } else {
                 setDayHeaderSubmenu(prev => prev?.type === type ? prev : { type, y });
               }
@@ -4149,7 +4166,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                     {/* Email ▶ */}
                     <div style={{ position: "relative" }}>
-                      <EmailLevel2Panel submenu={swapTeacherSubmenu} panelRef={swapTeacherSubRef} level3Ref={level3MenuRef} subX={subX} level3X={level3X} colors={colors} keepSwap={keepSwap} schedSwapClose={schedSwapClose} schoolSender={schoolSender} closeAll={closeAll} setWttEmailLevel2={setWttEmailLevel2} level2={wttEmailLevel2} allParentEmails={allParentEmails} parentRows={parentRows} allCtEmails={allCtEmails} ctRows={ctRows} allStaffEmails={allStaffEmails} staffRows={staffRows} hasAnyEmail={hasAnyEmail} />
+                      <EmailLevel2Panel submenu={swapTeacherSubmenu} panelRef={swapTeacherSubRef} level3Ref={level3MenuRef} subX={subX} level3X={level3X} colors={colors} keepSwap={keepSwap} schedSwapClose={schedSwapClose} openLevel2={openWttLevel2} cancelLevel2Open={cancelWttLevel2Open} schoolSender={schoolSender} closeAll={closeAll} level2={wttEmailLevel2} allParentEmails={allParentEmails} parentRows={parentRows} allCtEmails={allCtEmails} ctRows={ctRows} allStaffEmails={allStaffEmails} staffRows={staffRows} hasAnyEmail={hasAnyEmail} />
                       <button
                         onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setSwapTeacherSubmenu(prev => prev?.type === "multiEmail" ? prev : { type: "multiEmail", y }); setWttEmailLevel2(null); keepSwap(); }}
                         onMouseLeave={e => { unhov(e); schedSwapClose(); }}
