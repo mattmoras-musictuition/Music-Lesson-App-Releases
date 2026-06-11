@@ -38,20 +38,18 @@ function buildPreferredDisplayName(name) {
 function MttDaySubPanel({ submenu, panelRef, subX, subMenuW, colors, schoolSender, setContextMenu, setMttDayHeaderSubmenu, keepOpen, type, rows, allEmails, color, multi }) {
   if (submenu?.type !== type || !rows.length) return null;
   const btn = (c) => ({ display: "flex", alignItems: "center", justifyContent: "flex-start", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-  const hov = (e) => e.currentTarget.style.background = colors.bg;
-  const unhov = (e) => e.currentTarget.style.background = "none";
   return (
     <div ref={panelRef}
+      onClick={e => e.stopPropagation()}
       onMouseEnter={keepOpen}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setMttDayHeaderSubmenu(null); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Individually</button>}
       {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
       {rows.map((r, i) => (
         <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-          style={{ ...btn(colors.text) }}
-          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          className="mt-menu-row"
+          style={{ ...btn(colors.text), "--mt-hov": r.color ? r.color + "33" : colors.bg }}>
           {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
           {r.name ? r.name.split(" ")[0] : r.email}
         </button>
@@ -63,7 +61,7 @@ function MttDaySubPanel({ submenu, panelRef, subX, subMenuW, colors, schoolSende
 // MTT add-lesson flyout shell (Add pending / Add unscheduled lists).
 function MttAddSubPanel({ submenu, panelRef, subX, subMenuW, colors, type, color, title, children }) {
   return submenu && submenu.type === type ? (
-    <div ref={panelRef} style={{ position: "fixed", ...clampMenuPos(subX, submenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
+    <div ref={panelRef} onClick={e => e.stopPropagation()} style={{ position: "fixed", ...clampMenuPos(subX, submenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
       <div style={{ padding: "6px 12px", fontSize: 11, color: color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>{title}</div>
       {children}
     </div>
@@ -893,6 +891,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       {contextMenu && (
         <div ref={mttMenuRef} style={{ position: "fixed", ...(contextMenu.fromMissed ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 200, 0).left, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 160 }}
           onClick={e => e.stopPropagation()}>
+          {/* Hover via CSS class so a re-render/remount can never strip the
+              highlight (it used to be an inline style mutated in JS handlers).
+              Each row carries its themed hover colour in --mt-hov. */}
+          <style>{".mt-menu-row:hover { background: var(--mt-hov) !important; }"}</style>
           {contextMenu.isDayHeader && contextMenu.isMtt ? (() => {
             const day = contextMenu.day;
             const activeDays = mttSelectedDays.size > 0 ? [...mttSelectedDays] : [day];
@@ -945,9 +947,6 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const menuLeft = menuRect ? menuRect.left : contextMenu.x;
             const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
 
-            const hov = (e) => e.currentTarget.style.background = colors.bg;
-            const unhov = (e) => e.currentTarget.style.background = "none";
-
             const mkMttEmailRow = (label, allEmails, rows, type, color) => {
               if (!allEmails.length) return null;
               const multi = allEmails.length > 1;
@@ -957,16 +956,17 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   {multi ? (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => { hov(e); openMttDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top); }}
-                      onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      onMouseEnter={e => openMttDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top)}
+                      onMouseLeave={() => cancelMttDayHeaderOpen()}
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       <span>{label} ({allEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                   ) : (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                      onMouseEnter={hov} onMouseLeave={unhov}
-                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
                     </button>
                   )}
@@ -1002,8 +1002,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       <>
                         <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
                         <button onClick={() => arm(allocLanes[0])}
-                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}
-                          onMouseEnter={hov} onMouseLeave={unhov}>
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                           <Crosshair size={13} /> Allocate to {t?.name?.split(" ")[0] || "teacher"}
                         </button>
                       </>
@@ -1022,8 +1022,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                               const t = teachers.find(tt => tt.id === lane.teacherId);
                               return (
                                 <button key={lane.id} onClick={() => arm(lane)}
-                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                                  onMouseEnter={hov} onMouseLeave={unhov}>
+                                  className="mt-menu-row"
+                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                                   {t?.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
                                   Allocate to {t?.name?.split(" ")[0] || "teacher"}
                                 </button>
@@ -1032,9 +1032,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           </div>
                         )}
                         <button
-                          onMouseEnter={e => { hov(e); openMttDayHeaderSub("allocate", e.currentTarget.getBoundingClientRect().top); }}
-                          onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600 }}>
+                          onMouseEnter={e => openMttDayHeaderSub("allocate", e.currentTarget.getBoundingClientRect().top)}
+                          onMouseLeave={() => cancelMttDayHeaderOpen()}
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Crosshair size={13} /> Allocate to…</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
@@ -1065,8 +1066,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                             style={{ position: "fixed", top: mttDayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                             {notAddedTeachers.map(t => (
                               <button key={t.id} onClick={() => { onAddStaff && onAddStaff(selectedSchool, day, t.id); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                                onMouseEnter={hov} onMouseLeave={unhov}>
+                                className="mt-menu-row"
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                                 {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
                                 {t.name.split(" ")[0]}
                               </button>
@@ -1076,8 +1077,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                             )}
                             {assignedTeachers.map(({ lane, teacher }) => (
                               <button key={lane.id} onClick={() => { onRemoveStaff && onRemoveStaff(lane); setContextMenu(null); setMttDayHeaderSubmenu(null); }}
-                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                                onMouseEnter={hov} onMouseLeave={unhov}>
+                                className="mt-menu-row"
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                                 {teacher.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: teacher.color, flexShrink: 0, display: "inline-block" }} />}
                                 {teacher.name.split(" ")[0]}
                               </button>
@@ -1085,12 +1086,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           </div>
                         )}
                         <button
-                          onMouseEnter={e => {
-                            hov(e);
-                            openMttDayHeaderSub("manageStaff", e.currentTarget.getBoundingClientRect().top);
-                          }}
-                          onMouseLeave={e => { unhov(e); cancelMttDayHeaderOpen(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          onMouseEnter={e => openMttDayHeaderSub("manageStaff", e.currentTarget.getBoundingClientRect().top)}
+                          onMouseLeave={() => cancelMttDayHeaderOpen()}
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Users size={13} /> Manage Staff</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
@@ -1148,17 +1147,14 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                         <button key={row.id + (row._inst?.name || "") + ri} onClick={() => {
                           if (onSchedulePending) onSchedulePending(row.id, contextMenu.schoolId, contextMenu.day, contextMenu.time, row._inst?.name);
                           setContextMenu(null); setMttAddSubmenu(null);
-                        }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", textAlign: "left" }}
-                          onMouseEnter={e => e.currentTarget.style.background = colors.purpleLight}
-                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                        }} className="mt-menu-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", textAlign: "left", "--mt-hov": colors.purpleLight }}>
                           <span>{row.name}</span>
                           <span style={{ fontSize: 11, color: colors.gray500 }}>{row._inst?.name || ""}</span>
                         </button>
                       ))}
                     </MttAddSubPanel>
-                    <button style={mkItemStyle(colors.purple600)}
-                      onMouseEnter={e => { e.currentTarget.style.background = colors.purpleLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "pending" ? prev : { type: "pending", y }); }}
-                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                    <button className="mt-menu-row" style={{ ...mkItemStyle(colors.purple600), "--mt-hov": colors.purpleLight }}
+                      onMouseEnter={e => { const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "pending" ? prev : { type: "pending", y }); }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Clock size={13} /> Add pending</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                 <MttAddSubPanel submenu={mttAddSubmenu} panelRef={mttSubMenuRef} subX={subX} subMenuW={subMenuW} colors={colors} type="unsched" color={colors.sidebarActive} title="Add unscheduled">
@@ -1171,18 +1167,16 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                       handleDropUnsched(`unsched:${student.id}:${instrumentName}`, contextMenu.day, contextMenu.time);
                       setContextMenu(null); setMttAddSubmenu(null);
                     }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
-                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", "--mt-hov": colors.blueLight }}>
                       <span>{u.student?.name}</span>
                       <span style={{ fontSize: 11, color: colors.gray500 }}>{(u.instrument || "") + (u.reason === "Unassigned" ? " — Unassigned" : u._derived ? " — No slot" : "")}</span>
                     </button>
                   ))}
                 </MttAddSubPanel>
                 {allSchoolUnscheduled.length > 0 && (
-                  <button style={mkItemStyle(colors.sidebarActive)}
-                    onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "unsched" ? prev : { type: "unsched", y }); }}
-                    onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <button className="mt-menu-row" style={{ ...mkItemStyle(colors.sidebarActive), "--mt-hov": colors.blueLight }}
+                    onMouseEnter={e => { const y = e.currentTarget.getBoundingClientRect().top; setMttAddSubmenu(prev => prev?.type === "unsched" ? prev : { type: "unsched", y }); }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Plus size={13} /> Add unscheduled</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                   </button>
                 )}

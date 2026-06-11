@@ -192,21 +192,19 @@ function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyl
 function DaySubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, scheduleClose, setContextMenu, setDayHeaderSubmenu, composeForDay, type, rows, allEmails, color, multi, schoolSender }) {
   if (!submenu || submenu.type !== type || !rows.length) return null;
   const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-  const hov = (e) => e.currentTarget.style.background = colors.bg;
-  const unhov = (e) => e.currentTarget.style.background = "none";
   return (
     <div ref={panelRef}
+      onClick={e => e.stopPropagation()}
       onMouseEnter={keepOpen}
       onMouseLeave={scheduleClose}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Group</button>}
+      {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Individually</button>}
       {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
       {rows.map((r, i) => (
         <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
-          style={r.color ? btn(colors.text) : btn(color || colors.accent)}
-          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          className="mt-menu-row"
+          style={{ ...(r.color ? btn(colors.text) : btn(color || colors.accent)), "--mt-hov": r.color ? r.color + "33" : colors.bg }}>
           {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
           {r.name ? r.name.split(" ")[0] : r.email}
         </button>
@@ -221,21 +219,19 @@ function DaySubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, sche
 function CatchupSubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, scheduleClose, setContextMenu, setDayHeaderSubmenu, schoolSender, type, rows, allEmails, color, multi }) {
   if (!submenu || submenu.type !== type || !rows.length) return null;
   const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "8px 14px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, fontWeight: 400 });
-  const hov = (e) => e.currentTarget.style.background = colors.bg;
-  const unhov = (e) => e.currentTarget.style.background = "none";
   return (
     <div ref={panelRef}
+      onClick={e => e.stopPropagation()}
       onMouseEnter={keepOpen}
       onMouseLeave={scheduleClose}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
-      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); setContextMenu(null); setDayHeaderSubmenu(null); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Individually</button>}
       {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
       {rows.map((r, i) => (
         <button key={i} onClick={() => { openCompose([r.email], { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
-          style={r.color ? btn(colors.text) : btn(color || colors.accent)}
-          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          className="mt-menu-row"
+          style={{ ...(r.color ? btn(colors.text) : btn(color || colors.accent)), "--mt-hov": r.color ? r.color + "33" : colors.bg }}>
           {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
           {r.name ? r.name.split(" ")[0] : r.email}
         </button>
@@ -249,26 +245,23 @@ function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwa
   if (level2?.type !== type || !allEmails.length) return null;
   const multi = allEmails.length > 1;
   const btn = (c) => ({ display: "flex", alignItems: "center", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", color: c, gap: 6 });
-  const hov = (e) => e.currentTarget.style.background = colors.bg;
-  const unhov = (e) => e.currentTarget.style.background = "none";
   return (
-    <div ref={panelRef} onMouseEnter={() => { keepSwap(); if (cancelLevel2Open) cancelLevel2Open(); }} onMouseLeave={schedSwapClose}
+    <div ref={panelRef} onClick={e => e.stopPropagation()} onMouseEnter={() => { keepSwap(); if (cancelLevel2Open) cancelLevel2Open(); }} onMouseLeave={schedSwapClose}
       style={{ position: "fixed", top: level2.y, left: level3X, zIndex: 10003, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 170, padding: "4px 0", maxHeight: 300, overflowY: "auto" }}>
-      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Group</button>}
-      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>Individually</button>}
+      {multi && <button onClick={() => { openCompose(allEmails, { from: schoolSender }); closeAll(); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Group</button>}
+      {multi && <button onClick={() => { openGmailSequential(allEmails, { from: schoolSender }); closeAll(); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Individually</button>}
       {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
       {rows.map(r => (
         <button key={r.email} onClick={() => { openCompose([r.email], { from: schoolSender }); closeAll(); }}
-          style={r.color ? btn(colors.text) : btn(color)}
-          onMouseEnter={e => { e.currentTarget.style.background = r.color ? r.color + "33" : colors.bg; }}
-          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+          className="mt-menu-row"
+          style={{ ...(r.color ? btn(colors.text) : btn(color)), "--mt-hov": r.color ? r.color + "33" : colors.bg }}>
           {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block" }} />}
           {(r.name || r.email).split(" ")[0]}
         </button>
       ))}
       {/* Fallback if rows is empty but we have emails (no names) */}
       {rows.length === 0 && allEmails.map(e => (
-        <button key={e} onClick={() => { openCompose([e], { from: schoolSender }); closeAll(); }} style={btn(color)} onMouseEnter={hov} onMouseLeave={unhov}>{e}</button>
+        <button key={e} onClick={() => { openCompose([e], { from: schoolSender }); closeAll(); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>{e}</button>
       ))}
     </div>
   );
@@ -278,51 +271,49 @@ function GroupEmailPanel({ level2, panelRef, level3X, colors, keepSwap, schedSwa
 // GroupEmailPanel flyout (level-3).
 function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors, keepSwap, schedSwapClose, openLevel2, cancelLevel2Open, schoolSender, closeAll, level2, allParentEmails, parentRows, allCtEmails, ctRows, allStaffEmails, staffRows, hasAnyEmail }) {
   if (submenu?.type !== "multiEmail") return null;
-  const hov = (e) => e.currentTarget.style.background = colors.bg;
-  const unhov = (e) => e.currentTarget.style.background = "none";
   const groupProps = { level2, panelRef: level3Ref, level3X, colors, keepSwap, schedSwapClose, cancelLevel2Open, schoolSender, closeAll };
   return (
-    <div ref={panelRef} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
+    <div ref={panelRef} onClick={e => e.stopPropagation()} onMouseEnter={keepSwap} onMouseLeave={schedSwapClose}
       style={{ position: "fixed", top: submenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 190, padding: "4px 0" }}>
       <GroupEmailPanel {...groupProps} type="multiEmail_parents" allEmails={allParentEmails} rows={parentRows} color={colors.accent} />
       <GroupEmailPanel {...groupProps} type="multiEmail_teachers" allEmails={allCtEmails} rows={ctRows} color={colors.sidebarActive} />
       <GroupEmailPanel {...groupProps} type="multiEmail_staff" allEmails={allStaffEmails} rows={staffRows} color={colors.textLight} />
       {allParentEmails.length > 0 && (allParentEmails.length === 1 ? (
         <button onClick={() => { openCompose(allParentEmails, { from: schoolSender }); closeAll(); }}
-          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={hov} onMouseLeave={unhov}>
+          className="mt-menu-row"
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
           {parentRows[0] ? (parentRows[0].name || parentRows[0].email).split(" ")[0] : "Parent"}
         </button>
       ) : (
-        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); openLevel2("multiEmail_parents", e.currentTarget.getBoundingClientRect().top); }}
-          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
+        <button className="mt-menu-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.accent, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}
+          onMouseEnter={e => openLevel2("multiEmail_parents", e.currentTarget.getBoundingClientRect().top)}
+          onMouseLeave={() => cancelLevel2Open()}>
           <span>Parents ({allParentEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
       {allCtEmails.length > 0 && (allCtEmails.length === 1 ? (
         <button onClick={() => { openCompose(allCtEmails, { from: schoolSender }); closeAll(); }}
-          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={hov} onMouseLeave={unhov}>
+          className="mt-menu-row"
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
           {ctRows[0] ? (ctRows[0].name || ctRows[0].email).split(" ")[0] : "Teacher"}
         </button>
       ) : (
-        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); openLevel2("multiEmail_teachers", e.currentTarget.getBoundingClientRect().top); }}
-          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
+        <button className="mt-menu-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.sidebarActive, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}
+          onMouseEnter={e => openLevel2("multiEmail_teachers", e.currentTarget.getBoundingClientRect().top)}
+          onMouseLeave={() => cancelLevel2Open()}>
           <span>Teachers ({allCtEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
       {allStaffEmails.length > 0 && (allStaffEmails.length === 1 ? (
         <button onClick={() => { openCompose(allStaffEmails, { from: schoolSender }); closeAll(); }}
-          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={hov} onMouseLeave={unhov}>
+          className="mt-menu-row"
+          style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
           {staffRows[0] ? (staffRows[0].name || staffRows[0].email).split(" ")[0] : "Staff"}
         </button>
       ) : (
-        <button style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600 }}
-          onMouseEnter={e => { hov(e); openLevel2("multiEmail_staff", e.currentTarget.getBoundingClientRect().top); }}
-          onMouseLeave={e => { unhov(e); cancelLevel2Open(); }}>
+        <button className="mt-menu-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}
+          onMouseEnter={e => openLevel2("multiEmail_staff", e.currentTarget.getBoundingClientRect().top)}
+          onMouseLeave={() => cancelLevel2Open()}>
           <span>Staff ({allStaffEmails.length})</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
         </button>
       ))}
@@ -2629,6 +2620,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       {contextMenu && (
         <div ref={contextMenuRef} style={{ position: "fixed", ...((contextMenu.fromMissed || contextMenu.isCatchupStage || contextMenu.isMissedZone) ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : (contextMenu.y + 160 > window.innerHeight ? { bottom: window.innerHeight - contextMenu.y + 4, top: "auto" } : { top: contextMenu.y })), left: clampMenuPos(contextMenu.x, contextMenu.y, 220, 0).left, zIndex: 9999, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: 200 }}
           onClick={e => e.stopPropagation()}>
+          {/* Hover via CSS class so a re-render/remount can never strip the
+              highlight (it used to be an inline style mutated in JS handlers).
+              Each row carries its themed hover colour in --mt-hov. */}
+          <style>{".mt-menu-row:hover { background: var(--mt-hov) !important; }"}</style>
           {contextMenu.fromMissed ? (() => {
             const missedIdx = (weeklyData?.missed || []).findIndex(m => m.id === contextMenu.lessonId);
             const missedLesson = missedIdx >= 0 ? weeklyData.missed[missedIdx] : null;
@@ -2856,21 +2851,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   {multi ? (
                     <button
                       onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.background = colors.bg;
-                        openDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top);
-                      }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; cancelDayHeaderOpen(); scheduleDayHeaderClose(); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      onMouseEnter={e => openDayHeaderSub(type, e.currentTarget.getBoundingClientRect().top)}
+                      onMouseLeave={() => { cancelDayHeaderOpen(); scheduleDayHeaderClose(); }}
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       <span>{label} ({allEmails.length})</span>
                       <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                   ) : (
                     <button
                       onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
-                      onMouseEnter={e => { keepDayHeaderOpen(); e.currentTarget.style.background = colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
-                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      onMouseEnter={() => keepDayHeaderOpen()}
+                      onMouseLeave={() => scheduleDayHeaderClose()}
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
                     </button>
                   )}
@@ -2915,17 +2909,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                             {existingOverride && (
                               <button onClick={() => { onClearLaneOverride && onClearLaneOverride(weekKey, targetLane.id); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                                style={{ display: "flex", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                                onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
-                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                className="mt-menu-row"
+                                style={{ display: "flex", width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 12, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}>
                                 <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Restore {originalTeacher.name.split(" ")[0]}</span>
                               </button>
                             )}
                             {availTeachers.map(t => (
                               <button key={t.id} onClick={() => { onSetLaneOverride && onSetLaneOverride(weekKey, targetLane.id, t.id); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                className="mt-menu-row"
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                                 {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
                                 {t.name.split(" ")[0]}
                               </button>
@@ -2935,11 +2927,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         <button
                           onMouseEnter={e => {
                             keepDayHeaderOpen();
-                            e.currentTarget.style.background = colors.bg;
                             if (!isOpen) setDayHeaderSubmenu({ type: "substitute", y: e.currentTarget.getBoundingClientRect().top });
                           }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          onMouseLeave={() => scheduleDayHeaderClose()}
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RefreshCw size={13} /> {triggerLabel}</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
@@ -2965,9 +2957,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             style={{ position: "fixed", top: dayHeaderSubmenu.y, left: subX, zIndex: 10002, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 300, overflowY: "auto", padding: "4px 0" }}>
                             {sortedTeachers.map(t => (
                               <button key={t.id} onClick={() => { handleAddTemporaryTeacher(selectedSchool, day, weekKey, t.id); }}
-                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit" }}
-                                onMouseEnter={e => e.currentTarget.style.background = colors.bg}
-                                onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                className="mt-menu-row"
+                                style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                                 {t.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.color, flexShrink: 0, display: "inline-block" }} />}
                                 {t.name.split(" ")[0]}
                               </button>
@@ -2977,11 +2968,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         <button
                           onMouseEnter={e => {
                             keepDayHeaderOpen();
-                            e.currentTarget.style.background = colors.bg;
                             if (!isOpen) setDayHeaderSubmenu({ type: "addteacher", y: e.currentTarget.getBoundingClientRect().top });
                           }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit" }}>
+                          onMouseLeave={() => scheduleDayHeaderClose()}
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.textLight, fontFamily: "inherit", "--mt-hov": colors.bg }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Plus size={13} /> Add Teacher</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
@@ -3003,9 +2994,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       <>
                         <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
                         <button onClick={() => { handleRemoveTemporaryLane(lane.id); }}
-                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                          onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
-                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}>
                           <X size={13} /> Remove temporary teacher: {tName.split(" ")[0]}
                         </button>
                       </>
@@ -3025,9 +3015,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               const tName = teachers.find(t => t.id === lane.teacherId)?.name || "teacher";
                               return (
                                 <button key={lane.id} onClick={() => { handleRemoveTemporaryLane(lane.id); }}
-                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                                  onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
-                                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                                  className="mt-menu-row"
+                                  style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "7px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}>
                                   <X size={12} /> {tName.split(" ")[0]}
                                 </button>
                               );
@@ -3037,11 +3026,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         <button
                           onMouseEnter={e => {
                             keepDayHeaderOpen();
-                            e.currentTarget.style.background = colors.bg;
                             if (!isOpen) setDayHeaderSubmenu({ type: "removetemp", y: e.currentTarget.getBoundingClientRect().top });
                           }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleDayHeaderClose(); }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}>
+                          onMouseLeave={() => scheduleDayHeaderClose()}
+                          className="mt-menu-row"
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}>
                           <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove temporary teacher</span>
                           <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                         </button>
@@ -3785,20 +3774,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
                       onMouseEnter={e => {
                         keepOpen();
-                        e.currentTarget.style.background = colors.bg;
                         if (!isOpen) setDayHeaderSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
                       }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleClose(); }}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      onMouseLeave={() => scheduleClose()}
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       <span>{label} ({allEmails.length})</span>
                       <ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                     </button>
                   ) : (
                     <button
                       onClick={() => { openCompose(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }); setContextMenu(null); setDayHeaderSubmenu(null); }}
-                      onMouseEnter={e => { keepOpen(); e.currentTarget.style.background = colors.bg; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = "none"; scheduleClose(); }}
-                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600 }}>
+                      onMouseEnter={() => keepOpen()}
+                      onMouseLeave={() => scheduleClose()}
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                       {rows[0] ? (rows[0].name || rows[0].email).split(" ")[0] : label}
                     </button>
                   )}
@@ -3817,9 +3807,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 <div style={{ height: 1, background: colors.borderLight, margin: "4px 8px" }} />
                 <button
                   onClick={() => handleDeleteCatchup(cu)}
-                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
-                  onMouseEnter={e => e.currentTarget.style.background = colors.redLight}
-                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  className="mt-menu-row"
+                  style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit", "--mt-hov": colors.redLight }}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Delete catchup</span>
                 </button>
               </div>
@@ -4154,8 +4143,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const sub2Rect = swapTeacherSubRef.current?.getBoundingClientRect();
                   const level3X = sub2Rect ? (sub2Rect.right + 190 > window.innerWidth ? sub2Rect.left - 190 : sub2Rect.right) : subX + 200;
 
-                  const hov = (e) => e.currentTarget.style.background = colors.bg;
-                  const unhov = (e) => e.currentTarget.style.background = "none";
                   const closeAll = () => { setContextMenu(null); setSwapTeacherSubmenu(null); setWttEmailLevel2(null); setSelectedCards(new Set()); };
 
                   return (<>
@@ -4168,9 +4155,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     <div style={{ position: "relative" }}>
                       <EmailLevel2Panel submenu={swapTeacherSubmenu} panelRef={swapTeacherSubRef} level3Ref={level3MenuRef} subX={subX} level3X={level3X} colors={colors} keepSwap={keepSwap} schedSwapClose={schedSwapClose} openLevel2={openWttLevel2} cancelLevel2Open={cancelWttLevel2Open} schoolSender={schoolSender} closeAll={closeAll} level2={wttEmailLevel2} allParentEmails={allParentEmails} parentRows={parentRows} allCtEmails={allCtEmails} ctRows={ctRows} allStaffEmails={allStaffEmails} staffRows={staffRows} hasAnyEmail={hasAnyEmail} />
                       <button
-                        onMouseEnter={e => { hov(e); const y = e.currentTarget.getBoundingClientRect().top; setSwapTeacherSubmenu(prev => prev?.type === "multiEmail" ? prev : { type: "multiEmail", y }); setWttEmailLevel2(null); keepSwap(); }}
-                        onMouseLeave={e => { unhov(e); schedSwapClose(); }}
-                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: hasAnyEmail ? colors.accent : colors.textMuted, fontFamily: "inherit", fontWeight: 600 }}>
+                        onMouseEnter={e => { const y = e.currentTarget.getBoundingClientRect().top; setSwapTeacherSubmenu(prev => prev?.type === "multiEmail" ? prev : { type: "multiEmail", y }); setWttEmailLevel2(null); keepSwap(); }}
+                        onMouseLeave={() => schedSwapClose()}
+                        className="mt-menu-row"
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: hasAnyEmail ? colors.accent : colors.textMuted, fontFamily: "inherit", fontWeight: 600, "--mt-hov": colors.bg }}>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Mail size={13} /> Email</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
                       </button>
                     </div>
@@ -4180,8 +4168,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
                     {/* Mark all missed */}
                     <button onClick={() => { setMissedModal({ type: "bulk", lessonIds: contextMenu.selectedIds, weekKey, category: null, reasonDetail: "", catchup: null, details: "" }); setContextMenu(null); }}
-                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}
+                      onMouseEnter={() => { setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Mark all missed…</span>
                     </button>
 
@@ -4196,8 +4185,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       notify(`${idsToDelete.length} lessons deleted`);
                       setContextMenu(null); setSelectedCards(new Set());
                     }}
-                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit" }}
-                      onMouseEnter={e => { e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"; setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      className="mt-menu-row"
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, fontFamily: "inherit", "--mt-hov": darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2" }}
+                      onMouseEnter={() => { setSwapTeacherSubmenu(null); setWttEmailLevel2(null); }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Trash2 size={13} /> Delete lessons</span>
                     </button>
                   </>);
