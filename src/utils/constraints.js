@@ -166,7 +166,7 @@ export function isConstraintVisibleForLesson(lesson, lessons, todayStr, weekDate
  * @param ctx          — captured environment:
  *                       { weekKey, selectedSchool, currentSchool,
  *                         weeklyTimetables, teacherCoverage, laneOverrides,
- *                         students, enrolments, teachers, schools, bands,
+ *                         students, enrolments, teachers, schools,
  *                         groups, weekDateMap, weekInterruptions,
  *                         specLookupRef, timetable }
  */
@@ -174,7 +174,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   const {
     weekKey, selectedSchool, currentSchool, weeklyTimetables,
     teacherCoverage, laneOverrides, students, enrolments, teachers,
-    schools, bands, groups, weekDateMap, weekInterruptions,
+    schools, groups, weekDateMap, weekInterruptions,
     specLookupRef, timetable, temporaryLanes = [], crossSchoolLessons,
   } = ctx;
 
@@ -210,9 +210,10 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
       }
     }
     const school = schools.find(s => s.id === lesson.schoolId);
-    const liveBand = bands?.find(b => b.id === lesson.bandId);
-    // Cluster 12a: stamped lesson.teacherId fallback removed.
-    const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes) || liveBand?.teacherId;
+    // Band de-allocation — the band record's teacherId fallback is removed;
+    // the occupying lane (via getCardTeacherId) is the sole teacher identity
+    // for band clash detection, same as lesson cards.
+    const effectiveBandTeacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
     const teacher = teachers.find(t => t.id === effectiveBandTeacherId);
     if (teacher && school) {
       const conflict = teacherClash(lessonsToCheck, effectiveBandTeacherId, lesson);

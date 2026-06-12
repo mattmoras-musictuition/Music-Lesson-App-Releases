@@ -1452,7 +1452,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const handleAddBandSession = (band) => {
     const day = contextMenu.day;
     const time = contextMenu.time;
-    const teacher = teachers.find(t => t.id === band.teacherId);
     const existingData = weeklyTimetables[storageKey] || { lessons: [], missed: [] };
     let lessons = [...(existingData.lessons || [])];
     const bandRemovedLessons = [];
@@ -1472,20 +1471,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         if (removedLesson) { bandRemovedLessons.push(removedLesson); lessons = lessons.filter(l => l.id !== removedLesson.id); }
       }
     }
-    // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-    const bandBucketId = band.teacherId
-      ? findLaneId(teacherCoverage, band.schoolId, day, band.teacherId)
-      : null;
-    if (!bandBucketId) {
+    // Band de-allocation — bands place into the chip-active lane of the
+    // right-clicked day (same destination resolution as placeLesson /
+    // handleWeeklyMoveLesson), not the band record's teacher.
+    const destLane = getDayLaneTeacher(teacherCoverage, teachers, band.schoolId, day, laneOverrides, weekKey, viewedLanes, temporaryLanes);
+    if (!destLane || !destLane.lane) {
       const sName = schools.find(s => s.id === band.schoolId)?.name || band.schoolId;
-      if (notify) notify(`No covering lane for ${teacher?.name || "(unassigned)"} at ${sName} on ${day}. Add staff first.`, "warning");
+      if (notify) notify(`No covering lane for ${sName} on ${day}. Add staff first.`, "warning");
       return;
     }
     const bandLesson = {
       id: uid(), isBandSession: true,
       bandId: band.id, bandName: band.name || "TBC",
       schoolId: band.schoolId,
-      bucket_id: bandBucketId, teacherName: teacher?.name || "",
+      bucket_id: destLane.lane.id, teacherName: destLane.teacher?.name || "",
       day, start: time, end: time,
       members: band.members || [],
       removedLessons: bandRemovedLessons,
@@ -2060,6 +2059,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             weekDate: dayDate?.date || l.weekDate,
             adjusted: false, adjustReason: undefined,
             bucket_id: destBucketId,
+            // Band de-allocation — band cards re-stamp teacherName from the
+            // destination lane so the placement-time stamp can't go stale on
+            // move. Non-band entries keep their stamp untouched.
+            ...(l.isBandSession ? { teacherName: destLane.teacher?.name || "" } : {}),
             duringSpecialist: l.isBandSession ? false : getSpecialistForSlot(l, newDay, slot)
           } : l)
         }
@@ -2175,20 +2178,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const matchAny = lessons.find(l => !l.isBandSession && l.studentId === member.studentId && l.day === newDay);
         if (matchAny) { bandRemovedLessons.push(matchAny); lessons = lessons.filter(l => l.id !== matchAny.id); }
       }
-      const teacher = teachers.find(t => t.id === band.teacherId);
-      // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-      const dropBucketId = band.teacherId
-        ? findLaneId(teacherCoverage, band.schoolId, newDay, band.teacherId)
-        : null;
-      if (!dropBucketId) {
+      // Band de-allocation — the drop's target lane (chip-active, override-aware)
+      // decides bucket_id, exactly as handleWeeklyMoveLesson does for moves.
+      const destLane = getDayLaneTeacher(teacherCoverage, teachers, band.schoolId, newDay, laneOverrides, weekKey, viewedLanes, temporaryLanes);
+      if (!destLane || !destLane.lane) {
         const sName = schools.find(s => s.id === band.schoolId)?.name || band.schoolId;
-        if (notify) notify(`No covering lane for ${teacher?.name || "(unassigned)"} at ${sName} on ${newDay}. Add staff first.`, "warning");
+        if (notify) notify(`No covering lane for ${sName} on ${newDay}. Add staff first.`, "warning");
         return;
       }
       const bandLesson = {
         id: staged.id, isBandSession: true, bandId: band.id, bandName: band.name,
-        schoolId: band.schoolId, bucket_id: dropBucketId,
-        teacherName: teacher?.name || "",
+        schoolId: band.schoolId, bucket_id: destLane.lane.id,
+        teacherName: destLane.teacher?.name || "",
         day: newDay, start: slot.start, end: slot.end, slotId: slot.id,
         weekDate: dayDate?.date || "", fromStaged: true,
         members: (band.members || []).map(m => ({ id: m.id, studentId: m.studentId, instrument: m.instrument })),
@@ -3240,7 +3241,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         <button key={band.id} disabled={disabled} onClick={() => {
                           if (disabled) return;
                           // Spec 2 cluster 4c — staged entry: bucket_id deferred until drag-into-slot.
-                          const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, teacherId: band.teacherId || "", members: band.members || [] };
+                          const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, members: band.members || [] };
                           setWeeklyTimetables(prev => {
                             const entry = prev[storageKey] || { lessons: [], missed: [] };
                             return { ...prev, [storageKey]: { ...entry, catchupStaged: [...(entry.catchupStaged || []), stagedBand] } };
@@ -5559,7 +5560,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       || "";
                     let restoredCard;
                     if (draggedLesson.isBandSession) {
-                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, teacherId: stagedTeacherId, members: draggedLesson.members || [] };
+                      // Band de-allocation — staged band cards carry no teacher;
+                      // the lane is resolved at drop time.
+                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, members: draggedLesson.members || [] };
                     } else {
                       restoredCard = {
                         id: draggedLesson.id, studentId: draggedLesson.studentId, studentName: draggedLesson.studentName,
