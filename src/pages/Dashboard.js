@@ -624,7 +624,28 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const [emailContextSubMenu, setEmailContextSubMenu] = React.useState(null); // "contacts" | null
   const [emailCategoryFilter, setEmailCategoryFilter] = React.useState(new Set()); // ★ | parent | teacher | staff | admin | enquiry | other
   const [emailCategoryOverrides, setEmailCategoryOverrides] = React.useState(() => { try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.emailCategoryOverrides) || "{}"); } catch { return {}; } });
-  const [emailNoReplyOverrides, setEmailNoReplyOverrides] = React.useState(() => { try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.emailNoReplyOverrides) || "[]")); } catch { return new Set(); } });
+  const [emailNoReplyOverrides, setEmailNoReplyOverrides] = React.useState(() => {
+    try {
+      const loaded = new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.emailNoReplyOverrides) || "[]"));
+      // A shrinking count across restarts means a dismissal write was lost (H2)
+      console.log("[overrides] loaded", loaded.size);
+      return loaded;
+    } catch { return new Set(); }
+  });
+  // Persist override dismissals with failure visibility — a silently swallowed
+  // QuotaExceededError loses the dismissal at the next restart (ghost pills).
+  const overridesPersistWarnedRef = React.useRef(false);
+  const persistNoReplyOverrides = (next, id) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next]));
+    } catch (err) {
+      console.error("[overrides] persist FAILED", id, err?.name);
+      if (!overridesPersistWarnedRef.current) {
+        overridesPersistWarnedRef.current = true;
+        if (notify) notify("Dismissal may not survive a restart (storage full)", "danger");
+      }
+    }
+  };
   const [emailMoveToOpen, setEmailMoveToOpen] = React.useState(null); // emailId of open Move To popup
   const [bulkMoveOpen, setBulkMoveOpen] = React.useState(false);
   const [emailSchoolFilter, setEmailSchoolFilter] = React.useState(new Set()); // school:id
@@ -3653,7 +3674,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {(() => { const visibleResponseRed = responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseRed.length > 0 && !isAlertDismissed("alert-response-red") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseRed.length} overdue email${visibleResponseRed.length !== 1 ? "s" : ""} requiring response`, tag: "email", groupType: "alert-response-red", responseEmails: responseRequiredRed })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {} }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseRed.length} response overdue</span>
@@ -3661,7 +3682,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             const next = new Set(emailNoReplyOverrides);
                             for (const em of responseRequiredRed) next.add(em.id);
                             setEmailNoReplyOverrides(next);
-                            try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {}
+                            persistNoReplyOverrides(next, "batch-red");
                             dismissAlert("alert-response-red");
                           }} />
                         </div>
@@ -3712,7 +3733,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {(() => { const visibleResponseYellow = responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseYellow.length > 0 && !isAlertDismissed("alert-response-yellow") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseYellow.length} email${visibleResponseYellow.length !== 1 ? "s" : ""} awaiting response`, tag: "email", groupType: "alert-response-yellow", responseEmails: responseRequiredYellow })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.accent, items: responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: darkMode ? colors.accent : colors.accentDark, chipBg: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, chipBorder: colors.accent, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {} }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.accent, items: responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: darkMode ? colors.accent : colors.accentDark, chipBg: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, chipBorder: colors.accent, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseYellow.length} response pending</span>
@@ -3720,7 +3741,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             const next = new Set(emailNoReplyOverrides);
                             for (const em of responseRequiredYellow) next.add(em.id);
                             setEmailNoReplyOverrides(next);
-                            try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {}
+                            persistNoReplyOverrides(next, "batch-yellow");
                             dismissAlert("alert-response-yellow");
                           }} />
                         </div>
@@ -3878,7 +3899,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {(() => { const visibleResponseBlue = responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseBlue.length} email${visibleResponseBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: darkMode ? colors.blue600 : colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${darkMode ? colors.blue600 : colors.sidebarActive}40`, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {} }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: darkMode ? colors.blue600 : colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${darkMode ? colors.blue600 : colors.sidebarActive}40`, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
                           style={{ padding: "3px 10px", background: colors.blueLight, border: `1px solid ${darkMode ? colors.blue600 : colors.sidebarActive}40`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: darkMode ? colors.blue600 : colors.sidebarActive, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> {visibleResponseBlue.length} question{visibleResponseBlue.length !== 1 ? "s" : ""} today</span>
@@ -3886,7 +3907,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             const next = new Set(emailNoReplyOverrides);
                             for (const em of responseRequiredBlue) next.add(em.id);
                             setEmailNoReplyOverrides(next);
-                            try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {}
+                            persistNoReplyOverrides(next, "batch-blue");
                             dismissAlert("alert-response-blue");
                           }} />
                         </div>
@@ -4930,7 +4951,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                           <button onMouseDown={e => e.preventDefault()} onClick={() => {
                                             const next = new Set(emailNoReplyOverrides); next.add(email.id);
                                             setEmailNoReplyOverrides(next);
-                                            try { localStorage.setItem(STORAGE_KEYS.emailNoReplyOverrides, JSON.stringify([...next])); } catch {}
+                                            persistNoReplyOverrides(next, email.id);
                                           }} style={{ background: "none", border: "none", cursor: "pointer", color: darkMode ? colors.accent : colors.accentDark, fontSize: 13, lineHeight: 1, padding: 0, opacity: 0.7, display: "flex", alignItems: "center" }}><X size={12} /></button>
                                         </div>
                                       )}
