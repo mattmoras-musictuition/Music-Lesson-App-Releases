@@ -39,11 +39,11 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
   }, [triggerNew]); // eslint-disable-line
 
   const newBand = () => {
-    setForm({ id: uid(), name: "", schoolId: schools.length === 1 ? schools[0].id : "", teacherId: "", teacherInstrument: "", members: [], links: [], notes: "" });
+    setForm({ id: uid(), name: "", schoolId: schools.length === 1 ? schools[0].id : "", teacherId: "", teacherInstrument: "", personnel: [], members: [], links: [], notes: "" });
     setEditing("new");
   };
 
-  const editBand = (b) => { setForm({ ...b, members: [...(b.members || [])], links: [...(b.links || [])] }); setEditing(b.id); };
+  const editBand = (b) => { setForm({ ...b, personnel: [...(b.personnel || [])], members: [...(b.members || [])], links: [...(b.links || [])] }); setEditing(b.id); };
 
   const saveBand = () => {
     if (!form.schoolId) { notify("Select a school", "warning"); return; }
@@ -105,20 +105,30 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
               </select>
             </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-            <div>
-              <label style={labelStyle}>Teacher</label>
-              <select style={inputStyle} value={form.teacherId} onChange={e => setForm(p => ({ ...p, teacherId: e.target.value }))}>
-                <option value="">Select teacher…</option>
-                {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }}>Personnel</label>
+              <button onClick={() => setForm(p => ({ ...p, personnel: [...(p.personnel || []), { teacherId: "", instrument: "" }] }))}
+                style={{ padding: "4px 12px", background: colors.sidebarActive, color: colors.cardBg, border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>+ Add</button>
             </div>
-            <div>
-              <label style={labelStyle}>Teacher's Instrument in Band</label>
-              <select style={inputStyle} value={form.teacherInstrument} onChange={e => setForm(p => ({ ...p, teacherInstrument: e.target.value }))}>
-                <option value="">Not performing</option>
-                {BAND_INSTRUMENTS.map(i => <option key={i} value={i}>{i}</option>)}
-              </select>
+            {(form.personnel || []).length === 0 && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No personnel yet — display-only, shown on band cards and timetable popovers</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(form.personnel || []).map((p, idx) => (
+                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select style={{ ...inputStyle, flex: 1 }} value={p.teacherId}
+                    onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, teacherId: e.target.value } : row) }))}>
+                    <option value="">Select teacher…</option>
+                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                  <select style={{ ...inputStyle, flex: 1 }} value={p.instrument}
+                    onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, instrument: e.target.value } : row) }))}>
+                    <option value="">Not performing</option>
+                    {BAND_INSTRUMENTS.map(i => <option key={i} value={i}>{i}</option>)}
+                  </select>
+                  <button onClick={() => setForm(prev => ({ ...prev, personnel: prev.personnel.filter((_, i) => i !== idx) }))}
+                    style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0, display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
+                </div>
+              ))}
             </div>
           </div>
           <div style={{ marginBottom: 14 }}>
@@ -271,7 +281,13 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filteredBands.map(band => {
             const school = schools.find(s => s.id === band.schoolId);
-            const teacher = teachers.find(t => t.id === band.teacherId);
+            // Personnel is the display source; fall back to the legacy
+            // teacherId+teacherInstrument pair (read-only) when it's empty.
+            const personnelRows = ((band.personnel || []).length > 0
+              ? band.personnel
+              : (band.teacherId ? [{ teacherId: band.teacherId, instrument: band.teacherInstrument }] : []))
+              .map(p => ({ teacher: teachers.find(t => t.id === p.teacherId), instrument: p.instrument }))
+              .filter(p => p.teacher);
             const memberStudents = (band.members || [])
               .map(m => ({ member: m, student: students.find(s => s.id === m.studentId) }))
               .filter(({ student }) => Boolean(student));
@@ -284,7 +300,13 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
                       <span style={{ fontWeight: 700, fontSize: 15, color: colors.text }}>{band.name || "TBC"}</span>
                       {school && <Tag color={school.color || colors.textMuted}>{school.name.replace(/Primary School/gi, "PS")}</Tag>}
                     </div>
-                    {teacher && <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 6 }}>{teacher.name}{band.teacherInstrument ? ` · ${band.teacherInstrument}` : ""}</div>}
+                    {personnelRows.length > 0 && (
+                      <div style={{ marginBottom: 6 }}>
+                        {personnelRows.map((p, i) => (
+                          <div key={i} style={{ fontSize: 12, color: colors.textMuted }}>{p.teacher.name}{p.instrument ? ` · ${p.instrument}` : ""}</div>
+                        ))}
+                      </div>
+                    )}
                     {memberStudents.length > 0 && (
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
                         {memberStudents.map(({ member, student }) => {

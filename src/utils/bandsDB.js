@@ -11,6 +11,10 @@ function rowToBand(row) {
     schoolId:          row.school_id          || "",
     teacherId:         row.teacher_id         || "",
     teacherInstrument: row.teacher_instrument || "",
+    // Cosmetic personnel list [{teacherId, instrument}] — display-only,
+    // replaces the legacy teacher_id+teacher_instrument pair for admin logic.
+    // The legacy columns are still mapped because the teacher app writes them.
+    personnel:         row.personnel          || [],
     members:           row.members            || [],
     links:             row.links              || [],
     notes:             row.notes              || "",
@@ -25,6 +29,7 @@ function bandToRow(band, userId) {
     school_id:          band.schoolId           || "",
     teacher_id:         band.teacherId          || "",
     teacher_instrument: band.teacherInstrument  || "",
+    personnel:          band.personnel          || [],
     members:            band.members            || [],
     links:              band.links              || [],
     notes:              band.notes              || "",
