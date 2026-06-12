@@ -552,6 +552,10 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const [emailFolder, setEmailFolder] = React.useState(() => { try { return localStorage.getItem("mt-email-folder") || "inbox"; } catch { return "inbox"; } }); // "inbox" | "sent"
   const setEmailFolderPersist = (v) => { setEmailFolder(v); try { localStorage.setItem("mt-email-folder", v); } catch {} };
   const [sentEmails, setSentEmails] = React.useState([]);
+  // True after the first SUCCESSFUL sent fetch (never reset). Until then,
+  // replied-status is unknown — response pills/chips are suppressed rather
+  // than rendered transiently and hidden when the fetch lands.
+  const [sentLoaded, setSentLoaded] = React.useState(false);
   const [sentLoading, setSentLoading] = React.useState(false);
   const [inboxLastFetched, setInboxLastFetched] = React.useState(() => { try { const c = JSON.parse(localStorage.getItem(STORAGE_KEYS.inboxCache) || "null"); return c?.ts || 0; } catch { return 0; } });
   const [gmailRateLimitUntil, setGmailRateLimitUntil] = React.useState(() => {
@@ -1609,15 +1613,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       // Exclude emails already replied to
       const msgs = e.threadMessages || [];
       if (msgs.some(m => m.isSent)) return false;
-      if (sentEmails.length > 0) {
-        const tid = e.threadId || e.id;
-        const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-        if (sentEmails.some(s => {
-          if (s.threadId && s.threadId === e.threadId) return true;
-          if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
-          return (s.threadId || s.id) === tid;
-        })) return false;
-      }
+      // Replied-status unknown until the first sent fetch lands — suppress
+      if (!sentLoaded) return false;
+      const tid = e.threadId || e.id;
+      const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
+      if (sentEmails.some(s => {
+        if (s.threadId && s.threadId === e.threadId) return true;
+        if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
+        return (s.threadId || s.id) === tid;
+      })) return false;
       return true;
     });
     const rrRed = allRR.filter(e => emailAgeMs2(e) < startOfYesterday);
@@ -1661,7 +1665,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, termWeeks, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, termWeeks, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -2256,7 +2260,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     setSentLoading(true);
     try {
       const res = await window.electronAPI.gmailListSent();
-      if (res.ok) setSentEmails((res.emails || []).map(preprocessEmail));
+      if (res.ok) { setSentEmails((res.emails || []).map(preprocessEmail)); setSentLoaded(true); }
     } catch {}
     setSentLoading(false);
   }, []);
@@ -3035,15 +3039,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           // Exclude emails already replied to
           const msgs = e.threadMessages || [];
           if (msgs.some(m => m.isSent)) return false;
-          if (sentEmails.length > 0) {
-            const tid = e.threadId || e.id;
-            const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-            if (sentEmails.some(s => {
-              if (s.threadId && s.threadId === e.threadId) return true;
-              if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
-              return (s.threadId || s.id) === tid;
-            })) return false;
-          }
+          // Replied-status unknown until the first sent fetch lands — suppress
+          if (!sentLoaded) return false;
+          const tid = e.threadId || e.id;
+          const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
+          if (sentEmails.some(s => {
+            if (s.threadId && s.threadId === e.threadId) return true;
+            if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
+            return (s.threadId || s.id) === tid;
+          })) return false;
           return true;
         });
         const responseRequiredRed = allResponseRequired.filter(e => emailAgeMs(e) < startOfYesterday);
@@ -4415,7 +4419,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 const msgs = email.threadMessages || [];
                                 if (msgs.some(m => m.isSent)) return true;
                                 // Fallback B: sentEmails cross-reference
-                                if (sentEmails.length > 0) {
+                                if (sentLoaded) {
                                   const tid = email.threadId || email.id;
                                   const normSubject = (email.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
                                   return sentEmails.some(s => {
@@ -4608,7 +4612,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                           {threadDisplayNames}
                                         </span>
                                         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                                          {needsReply && !isReplied && <span title="Response required" style={{ fontSize: 10, color: colors.danger, fontWeight: 700, lineHeight: 1, display: "inline-flex", alignItems: "center" }}><Reply size={10} /></span>}
+                                          {sentLoaded && needsReply && !isReplied && <span title="Response required" style={{ fontSize: 10, color: colors.danger, fontWeight: 700, lineHeight: 1, display: "inline-flex", alignItems: "center" }}><Reply size={10} /></span>}
                                           {hasAttachment && <span title="Has attachment" style={{ color: colors.textMuted, display: "inline-flex", alignItems: "center" }}><Paperclip size={10} /></span>}
                                           {threadCount > 1 && <span style={{ fontSize: 10, fontWeight: 700, background: colors.tagBg, color: colors.textLight, borderRadius: 8, padding: "1px 5px" }}>{threadCount}</span>}
                                           <span style={{ fontSize: 11, color: colors.textMuted }}>{dateStr}</span>
@@ -4684,7 +4688,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                                 const repliedInThread = threadMsgsOrig.some((other, j) => other.isSent && j > origIdx);
                                                 const tid = email.threadId || email.id;
                                                 const normSubj = (email.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-                                                const repliedViaSent = sentEmails.length > 0 && sentEmails.some(s => {
+                                                const repliedViaSent = sentLoaded && sentEmails.some(s => {
                                                   const sameThread = (s.threadId && s.threadId === email.threadId) ||
                                                     (normSubj && (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase() === normSubj) ||
                                                     (s.threadId || s.id) === tid;
@@ -4912,8 +4916,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         </div>
                                       )}
 
-                                      {/* Response flagged chip — dismissible */}
-                                      {needsReply && !isReplied && !emailNoReplyOverrides.has(email.id) && (
+                                      {/* Response flagged chip — dismissible; suppressed until first sent load */}
+                                      {sentLoaded && needsReply && !isReplied && !emailNoReplyOverrides.has(email.id) && (
                                         <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, marginBottom: 10, alignSelf: "flex-start" }}>
                                           <span style={{ fontSize: 11, color: darkMode ? colors.accent : colors.accentDark, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><Reply size={11} /> Response flagged</span>
                                           <button onMouseDown={e => e.preventDefault()} onClick={() => {
