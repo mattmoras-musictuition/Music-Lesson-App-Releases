@@ -1507,34 +1507,45 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   const trialDismissed = isAlertDismissed("alert-trial");
 
   // v2.18.0 — uninvoiced-students alert chip data.
-  // READ-ONLY mount-time read of the invoice drafts InvoicingManager persists
-  // to localStorage. Dashboard must NEVER write this key — InvoicingManager
-  // owns it. Freshness is guaranteed by page remount on tab navigation.
-  const [dashInvoiceDrafts] = React.useState(() => {
-    try { const v = JSON.parse(localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"); return Array.isArray(v) ? v : []; }
-    catch { return []; }
-  });
-  // Per-student, term-scoped dismissals — SAME key the Invoicing banner
-  // writes ("<termLabel>|<studentName>"), so chip and banner stay in lockstep.
-  const [uninvoicedDismissals, setUninvoicedDismissals] = React.useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.uninvoicedDismissals) || "[]")); }
-    catch { return new Set(); }
-  });
+  // READ-ONLY reads of the invoice drafts and dismissal keys InvoicingManager
+  // persists to localStorage. Dashboard never writes invoiceDrafts.
+  //
+  // IMPORTANT: Dashboard NEVER remounts — App keeps it permanently mounted
+  // behind display:none — so a mount-time useState read goes stale forever.
+  // Instead the RAW strings are read on every render (cheap: in-memory
+  // localStorage cache) and the derivation memo is keyed on them, so it
+  // re-parses only when the stored values actually change. A dismissal made
+  // on the Invoicing banner is therefore picked up by the very next render
+  // (at latest, the navigation back to the Dashboard), and freshly generated
+  // invoices drop students off the chip the same way.
+  let uninvoicedDismissalsRaw = "[]";
+  try { uninvoicedDismissalsRaw = localStorage.getItem(STORAGE_KEYS.uninvoicedDismissals) || "[]"; } catch {}
+  let dashInvoiceDraftsRaw = "[]";
+  try { dashInvoiceDraftsRaw = localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"; } catch {}
+  // Per-student, term-scoped dismissal from the chip dropdown — SAME key the
+  // Invoicing banner writes ("<termLabel>|<studentName>"), so chip and banner
+  // stay in lockstep. Read-modify-write against localStorage (NOT React
+  // state) so banner-side keys written since the last read are never
+  // clobbered; the tick state just forces a re-render to re-read.
+  const [, setUninvoicedSyncTick] = React.useState(0);
   const dismissUninvoicedStudent = (termLabel, studentName) => {
-    setUninvoicedDismissals(prev => {
-      const next = new Set(prev);
-      next.add(uninvoicedDismissKey(termLabel, studentName));
-      try { localStorage.setItem(STORAGE_KEYS.uninvoicedDismissals, JSON.stringify([...next])); } catch {}
-      return next;
-    });
+    try {
+      const cur = new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.uninvoicedDismissals) || "[]"));
+      cur.add(uninvoicedDismissKey(termLabel, studentName));
+      localStorage.setItem(STORAGE_KEYS.uninvoicedDismissals, JSON.stringify([...cur]));
+    } catch {}
+    setUninvoicedSyncTick(t => t + 1);
   };
   // Current term resolved exactly as Invoicing's default selection (selIdx 0).
   const uninvoicedAlert = React.useMemo(() => {
     const term = resolveCurrentTerm(interruptions || []);
     if (!term) return { term: null, rows: [] };
-    const rows = getUninvoicedStudents({ timetable, groups, students, schools, invoices: dashInvoiceDrafts, termInfo: term, dismissals: uninvoicedDismissals });
+    let dismissals; let invoices;
+    try { dismissals = new Set(JSON.parse(uninvoicedDismissalsRaw)); } catch { dismissals = new Set(); }
+    try { const v = JSON.parse(dashInvoiceDraftsRaw); invoices = Array.isArray(v) ? v : []; } catch { invoices = []; }
+    const rows = getUninvoicedStudents({ timetable, groups, students, schools, invoices, termInfo: term, dismissals });
     return { term, rows };
-  }, [interruptions, timetable, groups, students, schools, dashInvoiceDrafts, uninvoicedDismissals]);
+  }, [interruptions, timetable, groups, students, schools, uninvoicedDismissalsRaw, dashInvoiceDraftsRaw]);
 
   // Lesson-change email dismissals — keyed by email id, persistent across midnight
   // (parallel to alertDismissals but no `date` field and no daily reset)
