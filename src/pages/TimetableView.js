@@ -915,8 +915,12 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 const st = (allStudents || students).find(s => s.id === sid);
                 if (!st) return;
                 (st.parents || []).forEach(p => {
-                  if (p.email && !parentEmailSet.has(p.email)) { parentEmailSet.add(p.email); parentRows.push({ name: p.name || p.email, email: p.email }); }
+                  const _e = (p.email || "").trim();
+                  if (_e && !parentEmailSet.has(_e.toLowerCase())) { parentEmailSet.add(_e.toLowerCase()); parentRows.push({ name: p.name || _e, email: _e }); }
                 });
+                // v2.18.2: top-level parentEmail shape (assistant-written records)
+                const _tE = (st.parentEmail || "").trim();
+                if (_tE && !parentEmailSet.has(_tE.toLowerCase())) { parentEmailSet.add(_tE.toLowerCase()); parentRows.push({ name: st.parentName || _tE, email: _tE }); }
               });
             });
             const allParentEmails = [...parentEmailSet];
@@ -1225,7 +1229,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   const _mttSchool = schools.find(s => s.id === (_mttLesson?.schoolId || _mttSt?.schoolId));
                   const _mttMergeCtx = {
                     student_name: preferredFirstName(_mttSt?.name || _mttLesson?.studentName || ""),
-                    parent_name: preferredFirstName(_mttSt?.parents?.[0]?.name) || "there",
+                    parent_name: preferredFirstName(_mttSt?.parents?.[0]?.name || _mttSt?.parentName) || "there",
                     instrument: _mttLesson?.instrument || "",
                     day: _mttLesson?.day || "",
                     lesson_time: _mttLesson?.start || "",
@@ -1235,7 +1239,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                     class_name: _mttSt?.className || "",
                     specialist_subject: specSubjects[0] || "",
                   };
-                  const parentObjs = !contextMenu.isGroup && _mttSt ? (_mttSt.parents || []).filter(p => p.email) : [];
+                  const parentObjs = !contextMenu.isGroup && _mttSt ? (() => { const ps = (_mttSt.parents || []).filter(p => p.email); const tE = (_mttSt.parentEmail || "").trim(); if (tE && !ps.some(p => (p.email || "").trim().toLowerCase() === tE.toLowerCase())) ps.push({ name: _mttSt.parentName || tE, email: tE }); return ps; })() : [];
                   const groupParents = contextMenu.isGroup && _mttLesson
                     ? (() => {
                         const allStuRef = allStudents || students;
@@ -1243,6 +1247,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           const ms = allStuRef.find(s => s.id === mid);
                           if (!ms) return null;
                           const ps = (ms.parents || []).filter(p => p.email);
+                          const tE = (ms.parentEmail || "").trim();
+                          if (tE && !ps.some(p => (p.email || "").trim().toLowerCase() === tE.toLowerCase())) ps.push({ name: ms.parentName || tE, email: tE });
                           if (!ps.length) return null;
                           return { studentName: ms.name, studentFirst: ms.name.split(' ')[0], parents: ps };
                         }).filter(Boolean);

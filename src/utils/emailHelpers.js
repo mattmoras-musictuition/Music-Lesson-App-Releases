@@ -190,12 +190,14 @@ export function resolveDisplayName(raw, contacts, students) {
     const match = contacts.find(c => c.email && c.email.toLowerCase() === addr);
     if (match && match.name) return match.name;
   }
-  // Check student parents
+  // Check student parents — both contact shapes (parents[] array and
+  // top-level parentEmail/parentName, v2.18.2)
   if (students && students.length) {
     for (const s of students) {
       for (const p of (s.parents || [])) {
         if (p.email && p.email.toLowerCase() === addr && p.name) return p.name;
       }
+      if (s.parentEmail && s.parentEmail.trim().toLowerCase() === addr && s.parentName) return s.parentName;
     }
   }
   // If there's a display name in the header, use it — unless it's a generic provider name

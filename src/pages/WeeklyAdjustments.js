@@ -2655,7 +2655,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   <button
                     onClick={() => {
                       const tmpl = getEmailTemplates()[currentReason] || getEmailTemplates().other;
-                      const parentName = (missedSt?.parents?.[0]?.name || "").split(" ")[0] || "there";
+                      const parentName = (missedSt?.parents?.[0]?.name || missedSt?.parentName || "").split(" ")[0] || "there";
                       const resolved = resolveTemplate(tmpl, {
                         studentName: preferredFirstName(missedLesson.studentName),
                         parentName: preferredFirstName(parentName) || "there",
@@ -2717,11 +2717,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 const st = students.find(s => s.id === sid);
                 if (!st) return;
                 (st.parents || []).forEach(p => {
-                  if (p.email && !parentEmailSet.has(p.email)) {
-                    parentEmailSet.add(p.email);
-                    parentRows.push({ name: p.name || p.email, email: p.email });
+                  const _e = (p.email || "").trim();
+                  if (_e && !parentEmailSet.has(_e.toLowerCase())) {
+                    parentEmailSet.add(_e.toLowerCase());
+                    parentRows.push({ name: p.name || _e, email: _e });
                   }
                 });
+                // v2.18.2: top-level parentEmail shape (assistant-written records)
+                const _tE = (st.parentEmail || "").trim();
+                if (_tE && !parentEmailSet.has(_tE.toLowerCase())) { parentEmailSet.add(_tE.toLowerCase()); parentRows.push({ name: st.parentName || _tE, email: _tE }); }
               });
             });
             const allParentEmails = [...parentEmailSet];
@@ -3715,11 +3719,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const st = students.find(s => s.id === sid);
               if (!st) return;
               (st.parents || []).forEach(p => {
-                if (p.email && !parentEmailSet.has(p.email)) {
-                  parentEmailSet.add(p.email);
-                  parentRows.push({ name: p.name || p.email, email: p.email });
+                const _e = (p.email || "").trim();
+                if (_e && !parentEmailSet.has(_e.toLowerCase())) {
+                  parentEmailSet.add(_e.toLowerCase());
+                  parentRows.push({ name: p.name || _e, email: _e });
                 }
               });
+              // v2.18.2: top-level parentEmail shape (assistant-written records)
+              const _tE = (st.parentEmail || "").trim();
+              if (_tE && !parentEmailSet.has(_tE.toLowerCase())) { parentEmailSet.add(_tE.toLowerCase()); parentRows.push({ name: st.parentName || _tE, email: _tE }); }
             });
             const allParentEmails = [...parentEmailSet];
 
@@ -3902,7 +3910,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const _wttSchool = schools.find(s => s.id === (selectedSchool || _wttLesson?.schoolId || _wttSt?.schoolId));
                   const _wttMergeCtx = {
                     student_name: preferredFirstName(_wttSt?.name || _wttLesson?.studentName || ""),
-                    parent_name: preferredFirstName(_wttSt?.parents?.[0]?.name) || "there",
+                    parent_name: preferredFirstName(_wttSt?.parents?.[0]?.name || _wttSt?.parentName) || "there",
                     instrument: _wttLesson?.instrument || "",
                     day: _wttLesson?.day || "",
                     lesson_time: _wttLesson?.start || "",
@@ -3912,12 +3920,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     class_name: _wttSt?.className || "",
                     specialist_subject: specSubjects[0] || "",
                   };
-                  const parentObjs = !contextMenu.isGroup && _wttSt ? (_wttSt.parents || []).filter(p => p.email) : [];
+                  const parentObjs = !contextMenu.isGroup && _wttSt ? (() => { const ps = (_wttSt.parents || []).filter(p => p.email); const tE = (_wttSt.parentEmail || "").trim(); if (tE && !ps.some(p => (p.email || "").trim().toLowerCase() === tE.toLowerCase())) ps.push({ name: _wttSt.parentName || tE, email: tE }); return ps; })() : [];
                   const groupParents = contextMenu.isGroup && _wttLesson
                     ? (() => (_wttLesson.studentIds || []).map(mid => {
                         const ms = students.find(s => s.id === mid);
                         if (!ms) return null;
                         const ps = (ms.parents || []).filter(p => p.email);
+                        const tE = (ms.parentEmail || "").trim();
+                        if (tE && !ps.some(p => (p.email || "").trim().toLowerCase() === tE.toLowerCase())) ps.push({ name: ms.parentName || tE, email: tE });
                         if (!ps.length) return null;
                         return { studentName: ms.name, studentFirst: ms.name.split(' ')[0], parents: ps };
                       }).filter(Boolean))()
@@ -4105,7 +4115,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   selLessons.forEach(l => {
                     const st = students.find(s => s.id === l.studentId);
                     if (!st) return;
-                    (st.parents || []).forEach(p => { if (p.email) parentMap[p.email] = p.name || p.email; });
+                    (st.parents || []).forEach(p => { if (p.email) parentMap[p.email] = p.name || p.email; }); const _tE = (st.parentEmail || "").trim(); if (_tE && !Object.keys(parentMap).some(k => k.toLowerCase() === _tE.toLowerCase())) parentMap[_tE] = st.parentName || _tE;
                   });
                   const allParentEmails = Object.keys(parentMap);
                   const parentRows = Object.entries(parentMap).map(([email, name]) => ({ email, name }));

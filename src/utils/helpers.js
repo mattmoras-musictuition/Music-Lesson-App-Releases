@@ -321,10 +321,32 @@ export function getSchoolAcronym(school) {
 
 // ── Email plumbing helpers ────────────────────────────────────────────────────
 
-// Get parent email addresses from a student record
+// Get parent email addresses from a student record.
+// v2.18.2: parent contact lives in TWO shapes — the parents[] array
+// (Students-tab UI) and top-level parentEmail (in-app assistant tools).
+// Both are returned, deduped case-insensitively (first casing wins).
 export const getParentEmails = (student) => {
   if (!student) return [];
-  return (student.parents || []).map(p => (p.email || "").trim()).filter(Boolean);
+  const out = [];
+  const seen = new Set();
+  for (const p of (student.parents || [])) {
+    const e = (p.email || "").trim();
+    if (e && !seen.has(e.toLowerCase())) { seen.add(e.toLowerCase()); out.push(e); }
+  }
+  const top = (student.parentEmail || "").trim();
+  if (top && !seen.has(top.toLowerCase())) out.push(top);
+  return out;
+};
+
+// v2.18.2: single predicate for "does this student's parent contact match
+// this email address" — covers both contact shapes (see getParentEmails).
+// Case-insensitive, trimmed. Use this for inbound-email → student matching
+// instead of scanning parents[] inline.
+export const studentMatchesParentEmail = (student, addr) => {
+  const a = (addr || "").trim().toLowerCase();
+  if (!a || !student) return false;
+  if ((student.parents || []).some(p => (p.email || "").trim().toLowerCase() === a)) return true;
+  return (student.parentEmail || "").trim().toLowerCase() === a;
 };
 
 // Find the classroom teacher contact for a student (matched by schoolId + className)
@@ -389,7 +411,8 @@ export function getInterruptionAffectedStudents(intr, students) {
     return classes.includes((s.className || "").trim().toLowerCase());
   }).map(s => ({
     studentId: s.id, studentName: s.name,
-    parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || "",
+    // v2.18.2: top-level parentName/parentEmail as fallback (dual contact shape)
+    parentName: s.parents?.[0]?.name || s.parentName || "", parentEmail: s.parents?.[0]?.email || s.parentEmail || "",
   }));
 }
 

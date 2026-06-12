@@ -9,7 +9,7 @@ import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 import { useTheme } from "../context/ThemeContext";
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
+import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
@@ -1201,7 +1201,7 @@ For other: {"type":"other","summary":""}`,
         const studentNames = (s.studentName || "").split(/,\s*/).map(n => n.trim()).filter(Boolean);
         const parentContacts = studentNames.map(sName => {
           const st = students.find(st => st.name === sName || st.name.split(" ")[0] === sName.split(" ")[0]);
-          return st ? { parentName: st.parents?.[0]?.name || "", parentEmail: st.parents?.[0]?.email || "", studentName: st.name } : null;
+          return st ? { parentName: st.parents?.[0]?.name || st.parentName || "", parentEmail: st.parents?.[0]?.email || st.parentEmail || "", studentName: st.name } : null;
         }).filter(Boolean);
         const parentFirstNames = parentContacts.map(p => preferredFirstName(p.parentName) || "parent");
         const parentStr = parentFirstNames.length > 1
@@ -1348,9 +1348,8 @@ For other: {"type":"other","summary":""}`,
   const classifyEmail = React.useCallback((fromAddr) => {
     if (!fromAddr) return "other";
     const addr = fromAddr.toLowerCase();
-    // Parent — in any student's parent contacts
-    const allParents = students.flatMap(s => (s.parents || []).map(p => p.email || "").filter(Boolean));
-    if (allParents.some(e => e.toLowerCase() === addr)) return "parent";
+    // Parent — in any student's parent contacts (both shapes, v2.18.2)
+    if (students.some(s => studentMatchesParentEmail(s, addr))) return "parent";
     // Staff — my music teachers tab
     if (teachers.some(t => t.email && t.email.toLowerCase() === addr)) return "staff";
     // School contacts — split by role
@@ -1633,7 +1632,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const lcKeywords = ["reschedul","change","swap","move","different time","different day","can't make","cannot make","won't be","will not be","away","absent","cancel","conflict","clash"];
     const lcEmails = inboxEmails.filter(e => {
       const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-      if (!students.some(s => (s.parents || []).some(p => p.email?.toLowerCase() === addr))) return false;
+      if (!students.some(s => studentMatchesParentEmail(s, addr))) return false;
       const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
       return lcKeywords.some(kw => text.includes(kw));
     });
@@ -1779,7 +1778,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
     // Find linked student for known parents
     const linkedStudent = isParent
-      ? students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr.toLowerCase()))
+      ? students.find(s => studentMatchesParentEmail(s, fromAddr))
       : null;
 
     const meta = isEnquiry ? parseEnquiryMeta(email) : { parentName: fromName };
@@ -1806,7 +1805,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       const subItems = nonSentMsgs.map(msgSubItem);
       const replyAddrs = nonSentMsgs.map(m => m.from?.match(/<(.+)>/)?.[1] || m.from || "").filter(Boolean);
       // Detect if all senders are known parents
-      const allParents = replyAddrs.every(addr => students.some(s => (s.parents || []).some(p => p.email?.toLowerCase() === addr.toLowerCase())));
+      const allParents = replyAddrs.every(addr => students.some(s => studentMatchesParentEmail(s, addr)));
       // Build sender names in order for label
       const senderFirstNames = [...new Map(nonSentMsgs.map(m => {
         const addr = m.from?.match(/<(.+)>/)?.[1] || m.from || "";
@@ -1915,7 +1914,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta }];
         const newSubItems = [...prevSubItems, newSubItem];
         const allParents = newSubItems.every(s => s.replyTo &&
-          students.some(st => (st.parents || []).some(p => p.email?.toLowerCase() === (s.replyTo || "").toLowerCase())));
+          students.some(st => studentMatchesParentEmail(st, s.replyTo)));
         const newText = allParents
           ? `Contact parents re: ${cleanSubject}`
           : `${cleanSubject} — ${newSubItems.length} contacts`;
@@ -1948,7 +1947,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       const isParent = category === "parent";
       const isEnquiry = category === "enquiry";
       // Find linked student for parent emails
-      const linkedStudent = (isParent || isEnquiry) ? students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr0.toLowerCase())) : null;
+      const linkedStudent = (isParent || isEnquiry) ? students.find(s => studentMatchesParentEmail(s, fromAddr0)) : null;
       // Extract instrument from any subject in the group
       const _teacherInstrs3 = [...new Set(teachers.flatMap(t => (t.instruments || []).map(i => i.name)))];
       let instrument = "";
@@ -2001,6 +2000,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           return { parentName: parent.name || parent.email, studentName: student.name, studentId: student.id };
         }
       }
+      // v2.18.2: top-level parentEmail shape (assistant-written records)
+      if (student.parentEmail && student.parentEmail.trim().toLowerCase() === lAddr) {
+        return { parentName: student.parentName || student.parentEmail, studentName: student.name, studentId: student.id };
+      }
     }
     for (const contact of contacts) {
       if (contact.email && contact.email.toLowerCase() === lAddr) {
@@ -2021,6 +2024,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           seen.add(parent.email.toLowerCase());
           result.push({ name: parent.name || parent.email, email: parent.email, sub: student.name });
         }
+      }
+      // v2.18.2: top-level parentEmail shape (assistant-written records)
+      const topE = (student.parentEmail || "").trim();
+      if (topE && !seen.has(topE.toLowerCase())) {
+        seen.add(topE.toLowerCase());
+        result.push({ name: student.parentName || topE, email: topE, sub: student.name });
       }
     }
     for (const contact of contacts) {
@@ -3089,7 +3098,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const lessonChangeKeywords = ["reschedul", "change", "swap", "move", "different time", "different day", "can't make", "cannot make", "won't be", "will not be", "away", "absent", "cancel", "conflict", "clash"];
         const lessonChangeEmails = inboxEmails.filter(e => {
           const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-          const isParent = students.some(s => (s.parents || []).some(p => p.email?.toLowerCase() === addr));
+          const isParent = students.some(s => studentMatchesParentEmail(s, addr));
           if (!isParent) return false;
           const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
           return lessonChangeKeywords.some(kw => text.includes(kw));
@@ -3207,7 +3216,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
             seen.add(ek);
             results.push({ name, email });
           };
-          for (const s of students) for (const p of (s.parents || [])) add(p.name || "", p.email || "");
+          for (const s of students) { for (const p of (s.parents || [])) add(p.name || "", p.email || ""); add(s.parentName || "", s.parentEmail || ""); }
           for (const c of contacts) add(c.name || "", c.email || "");
           for (const t of teachers) add(t.name || "", t.email || "");
           return results.slice(0, 8);
@@ -3282,14 +3291,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                   const replyToAddr2 = (e.replyTo?.match(/<(.+)>/)?.[1] || e.replyTo || "").toLowerCase();
                   if (school.senderEmail && replyToAddr2 === school.senderEmail.toLowerCase()) return true;
                   // Any recipient is a parent of a student at this school
-                  if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && toAddrs.includes(p.email.toLowerCase())))) return true;
+                  if (students.some(s => s.schoolId === schoolId && toAddrs.some(a => studentMatchesParentEmail(s, a)))) return true;
                   // Any recipient is a school contact
                   if (contacts.some(c => c.schoolId === schoolId && c.email && toAddrs.includes(c.email.toLowerCase()))) return true;
                   // Any recipient is a teacher with an active lane at this school
                   if (teachers.some(t => t.email && toAddrs.includes(t.email.toLowerCase()) && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
                 } else {
                   if (school.senderEmail) { const toAddr = `${e.deliveredTo || ""} ${e.to || ""} ${e.cc || ""}`.toLowerCase(); if (toAddr.includes(school.senderEmail.toLowerCase())) return true; }
-                  if (students.some(s => s.schoolId === schoolId && (s.parents || []).some(p => p.email && p.email.toLowerCase() === fromAddr2))) return true;
+                  if (students.some(s => s.schoolId === schoolId && studentMatchesParentEmail(s, fromAddr2))) return true;
                   if (contacts.some(c => c.schoolId === schoolId && c.email && c.email.toLowerCase() === fromAddr2)) return true;
                   if (teachers.some(t => t.email && t.email.toLowerCase() === fromAddr2 && teacherCoverage.some(l => l.teacherId === t.id && l.schoolId === schoolId && l.status === "active"))) return true;
                 }
@@ -3649,7 +3658,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") && (() => {
                         const missedWithParents = missedThisWeek.map(m => {
                           const st = students.find(s => s.id === m.studentId);
-                          const primaryParent = st?.parents?.[0];
+                          const primaryParent = st?.parents?.[0] || (st && (st.parentName || st.parentEmail) ? { name: st.parentName, email: st.parentEmail } : null);
                           return { ...m, parentName: primaryParent?.name || "", parentEmail: primaryParent?.email || "" };
                         });
                         return (
@@ -3709,7 +3718,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {catchupTotal > 0 && !isAlertDismissed("alert-catchup") && (() => {
                         const catchupStudents = missedPriorSorted.map(m => {
                           const st = students.find(s => s.id === m.studentId);
-                          const primaryParent = st?.parents?.[0];
+                          const primaryParent = st?.parents?.[0] || (st && (st.parentName || st.parentEmail) ? { name: st.parentName, email: st.parentEmail } : null);
                           return { studentId: m.studentId, studentName: m.studentName, instrument: m.instrument || "", count: m.count, schoolId: st?.schoolId || m.schoolId || "", parentName: primaryParent?.name || "", parentEmail: primaryParent?.email || "" };
                         });
                         return (
@@ -3899,7 +3908,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               items: visEms.map(em => {
                                 const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown";
                                 const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase();
-                                const parentStudent = students.find(s => (s.parents || []).some(p => p.email?.toLowerCase() === fromAddr));
+                                const parentStudent = students.find(s => studentMatchesParentEmail(s, fromAddr));
                                 const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null;
                                 const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark);
                                 return {
@@ -3926,12 +3935,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             // Math.max(1, ...) floor in pendingOnly count for instrument-less students.
                             return [{
                               studentId: s.id, studentName: s.name, instrument: "(no instrument)", schoolId: s.schoolId || "",
-                              parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                              parentName: s.parents?.[0]?.name || s.parentName || "", parentEmail: s.parents?.[0]?.email || s.parentEmail || ""
                             }];
                           }
                           return nonGroup.map(i => ({
                             studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
-                            parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                            parentName: s.parents?.[0]?.name || s.parentName || "", parentEmail: s.parents?.[0]?.email || s.parentEmail || ""
                           }));
                         });
                         return (
@@ -3953,12 +3962,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             // Math.max(1, ...) floor in trialOnly count for instrument-less students.
                             return [{
                               studentId: s.id, studentName: s.name, instrument: "(no instrument)", schoolId: s.schoolId || "",
-                              parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                              parentName: s.parents?.[0]?.name || s.parentName || "", parentEmail: s.parents?.[0]?.email || s.parentEmail || ""
                             }];
                           }
                           return nonGroup.map(i => ({
                             studentId: s.id, studentName: s.name, instrument: i.name, schoolId: s.schoolId || "",
-                            parentName: s.parents?.[0]?.name || "", parentEmail: s.parents?.[0]?.email || ""
+                            parentName: s.parents?.[0]?.name || s.parentName || "", parentEmail: s.parents?.[0]?.email || s.parentEmail || ""
                           }));
                         });
                         return (
@@ -4921,7 +4930,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         // Use the active message sender (follows chip selection in group threads)
                                         const activeSender = (activeMsg?.from?.match(/<(.+)>/)?.[1] || activeMsg?.from || email.from?.match(/<(.+)>/)?.[1] || email.from || "").toLowerCase();
                                         const linkedStudents = students.filter(s =>
-                                          (s.parents || []).some(p => p.email?.toLowerCase() === activeSender)
+                                          studentMatchesParentEmail(s, activeSender)
                                         );
                                         if (linkedStudents.length === 0) return null;
                                         // Prefer this week's weekly timetable; fall back to master
@@ -6221,7 +6230,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             {(r.parentName || r.studentName) && r.emailFrom && <span> · </span>}
                             {r.studentName && (() => {
                               const st = students.find(s => s.name === r.studentName || s.id === r.studentId);
-                              const pEmail = st?.parents?.[0]?.email;
+                              const pEmail = st?.parents?.[0]?.email || st?.parentEmail;
                               return st && onViewStudent
                                 ? <button onClick={() => onViewStudent(st.id)} style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:colors.accent, fontFamily:"inherit", fontSize:"inherit", textDecoration:"underline", textDecorationStyle:"dotted" }}>{r.studentName}</button>
                                 : pEmail

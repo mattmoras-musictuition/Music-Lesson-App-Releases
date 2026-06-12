@@ -184,6 +184,12 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
         const label = firstName ? `${firstName}'s ${rel}` : rel;
         pool.push({ name: p.name || p.email, email: p.email, type: "parent", studentName: st.name, parentLabel: label });
       });
+      // v2.18.2: top-level parentEmail shape (assistant-written records)
+      const topE = (st.parentEmail || "").trim();
+      if (topE && !(st.parents || []).some(p => (p.email || "").trim().toLowerCase() === topE.toLowerCase())) {
+        const firstName = st.name ? st.name.split(" ")[0] : "";
+        pool.push({ name: st.parentName || topE, email: topE, type: "parent", studentName: st.name, parentLabel: firstName ? `${firstName}'s parent` : "parent" });
+      }
     });
     (contacts || []).forEach(c => {
       if (c.email) pool.push({ name: c.name || c.email, email: c.email, type: c.role || "contact", schoolName: (schools.find(s => s.id === c.schoolId) || {}).name });
