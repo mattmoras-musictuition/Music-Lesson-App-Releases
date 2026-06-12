@@ -892,6 +892,10 @@ ipcMain.handle("gmail-list-sent", async () => {
       { "Authorization": `Bearer ${accessToken}` }
     );
     const listData = JSON.parse(listRes.body);
+    // A Gmail-level failure (rate limit, auth blip) must NOT read as an empty
+    // sent folder — the renderer would wipe sentEmails and every reply-derived
+    // pill suppression with it. Mirror the inbox handler's error check.
+    if (listData.error) return { ok: false, error: `Gmail API: ${listData.error.message || JSON.stringify(listData.error)}` };
     if (!listData.messages) return { ok: true, emails: [] };
 
     function findPart(payload, mimeType) {
@@ -916,6 +920,9 @@ ipcMain.handle("gmail-list-sent", async () => {
         { "Authorization": `Bearer ${accessToken}` }
       );
       const detail = JSON.parse(detailRes.body);
+      // A failed detail fetch would otherwise yield an entry with an empty
+      // subject that silently stops matching in the replied cross-reference.
+      if (detail.error || !detail.payload) return null;
       const headers = detail.payload?.headers || [];
       const get = (name) => headers.find(h => h.name === name)?.value || "";
 
@@ -941,7 +948,10 @@ ipcMain.handle("gmail-list-sent", async () => {
       };
     }));
 
-    return { ok: true, emails };
+    const okEmails = emails.filter(Boolean);
+    const skipped = emails.length - okEmails.length;
+    if (skipped > 0) console.log(`[gmail-list-sent] skipped ${skipped} message(s) whose detail fetch errored`);
+    return { ok: true, emails: okEmails, skipped };
   } catch(e) {
     return { ok: false, error: e.message };
   }
