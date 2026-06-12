@@ -1134,7 +1134,9 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                     <div key={i} style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                       <strong style={{ color: colors.text }}>{r.studentName}</strong> — {r.instrument}
                       {r.hasWeeklyData
-                        ? <> · this week {r.thisWeekStr} · {r.regular ? `regular ${r.regularStr}` : <span style={{ color: colors.textMuted }}>no regular slot</span>}</>
+                        ? (r.notThisWeek
+                          ? <> · regular {r.regularStr} · <span style={{ color: colors.textMuted }}>not this week</span></>
+                          : <> · this week {r.thisWeekStr} · {r.regular ? `regular ${r.regularStr}` : <span style={{ color: colors.textMuted }}>no regular slot</span>}</>)
                         : <> · {r.lesson.day} {r.lesson.start}</>}
                       {r.changed && (
                         <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 10, background: "rgba(217,119,6,0.12)", color: "#D97706", textTransform: "uppercase", letterSpacing: "0.04em" }}>Changed</span>

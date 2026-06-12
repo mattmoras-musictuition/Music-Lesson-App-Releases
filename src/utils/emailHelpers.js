@@ -105,30 +105,56 @@ export function lessonChangeInfo(thisWeek, regular, hasWeeklyData) {
   };
 }
 
-// Build lesson-reference rows for a set of students: each student's lesson(s)
-// THIS WEEK (weekly timetable for `currentMonday`) paired with their REGULAR
-// slot (Master Timetable), matched by studentId + instrument. Falls back to
-// MTT-only rows when no weekly timetable exists for the current week. Pure.
-//   returns [{ lesson, regular, changed, hasWeeklyData, studentName, instrument, schoolId }]
+// Build lesson-reference rows for a set of students. v2.18.2 (item 7
+// completion): rows are enumerated from the MTT — one row per resolved
+// student's master lesson — so a child without a card in this week's WTT
+// still appears. The WTT for `currentMonday` is layered on per student's
+// school:
+//   - week has a WTT and a matching card  → this-week vs regular (+Changed)
+//   - week has a WTT but NO card          → regular slot + "not this week"
+//     (notThisWeek: true; changed is always false for these rows)
+//   - no WTT for that school this week    → plain MTT day/time fallback
+//     (hasWeeklyData: false, existing display)
+// WTT-only cards (no matching MTT lesson, e.g. one-offs) are unioned in and
+// keep their existing "no regular slot" handling. Pure.
+//   returns [{ lesson, regular, changed, hasWeeklyData, notThisWeek,
+//              thisWeekStr, regularStr, studentName, instrument, schoolId }]
 export function buildLessonReferenceRows(linkedStudents, { timetable, weeklyTimetables, currentMonday }) {
   if (!Array.isArray(linkedStudents) || linkedStudents.length === 0) return [];
   const mttLessons = (timetable && timetable.lessons) || [];
   const wtt = weeklyTimetables || {};
-  const hasWeeklyData = linkedStudents.some(s => wtt[`${currentMonday}|${s.schoolId}`]);
-  const weeklyLessons = linkedStudents.flatMap(s =>
-    (wtt[`${currentMonday}|${s.schoolId}`]?.lessons || []).filter(l => l.studentId === s.id)
-  );
-  const masterLessons = mttLessons.filter(l => linkedStudents.some(s => s.id === l.studentId));
-  const lessons = hasWeeklyData ? weeklyLessons : masterLessons;
   const norm = (x) => (x || "").trim().toLowerCase();
-  const rows = lessons.map(l => {
-    const student = linkedStudents.find(s => s.id === l.studentId);
-    // Match the regular slot by student + instrument; first match wins if a
-    // student has more than one MTT lesson for the same instrument.
-    const regular = mttLessons.find(r => r.studentId === l.studentId && norm(r.instrument) === norm(l.instrument)) || null;
-    const { thisWeekStr, regularStr, changed } = lessonChangeInfo(l, regular, hasWeeklyData);
-    return { lesson: l, regular, changed, thisWeekStr, regularStr, hasWeeklyData, studentName: student?.name || "", instrument: l.instrument || "", schoolId: l.schoolId };
-  });
+  const rows = [];
+  for (const s of linkedStudents) {
+    const week = wtt[`${currentMonday}|${s.schoolId}`];
+    const weekLessons = (week?.lessons || []).filter(l => l.studentId === s.id);
+    const masterForStudent = mttLessons.filter(l => l.studentId === s.id);
+    for (const m of masterForStudent) {
+      // Match the regular slot by student + instrument; first match wins if a
+      // student has more than one MTT lesson for the same instrument.
+      const regular = mttLessons.find(r => r.studentId === m.studentId && norm(r.instrument) === norm(m.instrument)) || null;
+      if (!week) {
+        const { thisWeekStr, regularStr, changed } = lessonChangeInfo(m, regular, false);
+        rows.push({ lesson: m, regular, changed, thisWeekStr, regularStr, hasWeeklyData: false, notThisWeek: false, studentName: s.name || "", instrument: m.instrument || "", schoolId: m.schoolId });
+        continue;
+      }
+      const card = weekLessons.find(l => norm(l.instrument) === norm(m.instrument)) || null;
+      if (card) {
+        const { thisWeekStr, regularStr, changed } = lessonChangeInfo(card, regular, true);
+        rows.push({ lesson: card, regular, changed, thisWeekStr, regularStr, hasWeeklyData: true, notThisWeek: false, studentName: s.name || "", instrument: card.instrument || "", schoolId: card.schoolId });
+      } else {
+        // Comparing the regular slot against itself keeps changed === false.
+        const { thisWeekStr, regularStr } = lessonChangeInfo(m, regular || m, true);
+        rows.push({ lesson: m, regular: regular || m, changed: false, thisWeekStr, regularStr, hasWeeklyData: true, notThisWeek: true, studentName: s.name || "", instrument: m.instrument || "", schoolId: m.schoolId });
+      }
+    }
+    // WTT-only cards — on this week's timetable with no matching MTT lesson.
+    for (const c of weekLessons) {
+      if (masterForStudent.some(m => norm(m.instrument) === norm(c.instrument))) continue;
+      const { thisWeekStr, regularStr, changed } = lessonChangeInfo(c, null, true);
+      rows.push({ lesson: c, regular: null, changed, thisWeekStr, regularStr, hasWeeklyData: true, notThisWeek: false, studentName: s.name || "", instrument: c.instrument || "", schoolId: c.schoolId });
+    }
+  }
   // Item 7 (v2.18.1): dedupe by student + instrument + slot so a student
   // reachable through more than one matching path is never listed twice.
   const seen = new Set();
