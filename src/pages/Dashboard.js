@@ -1979,6 +1979,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   // ── Open an email in the inbox panel ─────────────────────────
   const openEmail = React.useCallback((emailId) => {
     saveDashPanels({ ...dashPanels, emails: true });
+    // Item 4 (v2.18.1): the target email lives in Inbox — if the panel is on
+    // the Sent tab the selection silently no-ops. Switch unconditionally
+    // (no-op when already on Inbox). Both callers (alert-dropdown openEmailId
+    // items and the teacher-email chip) only ever open received mail.
+    setEmailFolderPersist("inbox");
     setInboxSelected(emailId);
     setTimeout(() => {
       const el = emailListRef.current?.querySelector(`[data-emailid="${emailId}"]`);
