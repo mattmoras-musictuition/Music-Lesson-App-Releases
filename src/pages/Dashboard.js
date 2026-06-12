@@ -13,6 +13,11 @@ import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWee
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
+// v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
+// the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
+// from detectTerms over term-break interruptions).
+import { getUninvoicedStudents, uninvoicedDismissKey } from "../utils/uninvoicedDerive";
+import { resolveCurrentTerm } from "../utils/invoiceTerms";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { preprocessEmail, resolveDisplayName, decodeEntities, isPlainTextHtml, getPlainParts, formatWallOfText, getCleanHtml, schoolSenderForSourceEmail, getPrimaryAddress, lessonChangeInfo } from "../utils/emailHelpers";
@@ -1500,6 +1505,36 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   const isAlertDismissed = (key) => !!alertDismissals.dismissed[key];
   const pendingDismissed = isAlertDismissed("alert-pending");
   const trialDismissed = isAlertDismissed("alert-trial");
+
+  // v2.18.0 — uninvoiced-students alert chip data.
+  // READ-ONLY mount-time read of the invoice drafts InvoicingManager persists
+  // to localStorage. Dashboard must NEVER write this key — InvoicingManager
+  // owns it. Freshness is guaranteed by page remount on tab navigation.
+  const [dashInvoiceDrafts] = React.useState(() => {
+    try { const v = JSON.parse(localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"); return Array.isArray(v) ? v : []; }
+    catch { return []; }
+  });
+  // Per-student, term-scoped dismissals — SAME key the Invoicing banner
+  // writes ("<termLabel>|<studentName>"), so chip and banner stay in lockstep.
+  const [uninvoicedDismissals, setUninvoicedDismissals] = React.useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.uninvoicedDismissals) || "[]")); }
+    catch { return new Set(); }
+  });
+  const dismissUninvoicedStudent = (termLabel, studentName) => {
+    setUninvoicedDismissals(prev => {
+      const next = new Set(prev);
+      next.add(uninvoicedDismissKey(termLabel, studentName));
+      try { localStorage.setItem(STORAGE_KEYS.uninvoicedDismissals, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+  // Current term resolved exactly as Invoicing's default selection (selIdx 0).
+  const uninvoicedAlert = React.useMemo(() => {
+    const term = resolveCurrentTerm(interruptions || []);
+    if (!term) return { term: null, rows: [] };
+    const rows = getUninvoicedStudents({ timetable, groups, students, schools, invoices: dashInvoiceDrafts, termInfo: term, dismissals: uninvoicedDismissals });
+    return { term, rows };
+  }, [interruptions, timetable, groups, students, schools, dashInvoiceDrafts, uninvoicedDismissals]);
 
   // Lesson-change email dismissals — keyed by email id, persistent across midnight
   // (parallel to alertDismissals but no `date` field and no daily reset)
@@ -3547,6 +3582,23 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                           <span style={{ color: colors.danger, fontWeight: 700 }}>{incompleteStudents.length} incomplete profile{incompleteStudents.length !== 1 ? "s" : ""}</span>
                           <DismissBtn groupType="alert-incomplete" />
+                        </div>
+                      )}
+                      {/* v2.18.0 — uninvoiced students (current term). Consumes the
+                          same shared derivation as the Invoicing banner. Per-row X
+                          writes the term-scoped permanent dismissal key (lockstep
+                          with the banner); the whole-chip DismissBtn is the standard
+                          alertDismissals hide ONLY — deliberately does NOT batch-add
+                          students to the permanent dismissal set (a money warning
+                          should not be bulk-silenced). */}
+                      {uninvoicedAlert.rows.length > 0 && !isAlertDismissed("alert-uninvoiced") && (
+                        <div
+                          onClick={() => onNavigate("invoicing")}
+                          onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNINVOICED STUDENTS", borderColor: colors.danger, items: uninvoicedAlert.rows.map(row => ({ label: `${row.studentName} — ${row.parentName}${row.schoolAcronym ? ` (${row.schoolAcronym})` : ""}`, chipColor: colors.danger, navigateToStudent: row.studentId, onDismiss: () => dismissUninvoicedStudent(uninvoicedAlert.term.label, row.studentName) })) }); }}
+                          onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,84,84,0.18)" : colors.redLight, border: `1px solid ${colors.danger}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                          <span style={{ color: colors.danger, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={11} /> {uninvoicedAlert.rows.length} uninvoiced student{uninvoicedAlert.rows.length !== 1 ? "s" : ""}</span>
+                          <DismissBtn groupType="alert-uninvoiced" />
                         </div>
                       )}
                       {/* Response required — red (2+ days old) */}
