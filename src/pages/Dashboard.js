@@ -3156,6 +3156,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           if (upcomingAbsences.length > 0) keys["alert-upcoming-absences"] = true;
           if (unassignedGroupCount > 0) keys["alert-unassigned-groups"] = true;
           if (upcomingReminderAlerts.length > 0) keys["alert-reminder-upcoming"] = true;
+          // v2.18.0 — uninvoiced-students chip: alertDismissals hide ONLY.
+          // Deliberately does NOT write the per-student permanent dismissal
+          // set — a money warning must not be bulk-silenced.
+          if (uninvoicedAlert.rows.length > 0) keys["alert-uninvoiced"] = true;
           const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...keys } };
           setAlertDismissals(next);
           try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
@@ -3163,6 +3167,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           // so route them through the dedicated bulk helper to preserve global Dismiss-all coverage.
           const visibleLessonChangeIds = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id);
           if (visibleLessonChangeIds.length > 0) dismissLessonChangesBulk(visibleLessonChangeIds);
+          // Seen-set chips ("new X" alerts) don't read alertDismissals at all —
+          // hide each the same way its own dismiss X does, by marking its ids
+          // seen. NOTE: this handler enumerates chips by hand; any future chip
+          // must be added here too, or Dismiss-all will skip it.
+          if (newTeacherNotes.length > 0) dismissAllTeacherNoteAlerts(newTeacherNotes.map(n => n.id));
+          if (newStaffDocs.length > 0) dismissAllStaffDocAlerts(newStaffDocs.map(d => d.id));
+          if (newTeacherEmailAlerts.length > 0) dismissAllTeacherEmailAlerts(newTeacherEmailAlerts.map(a => a.emailId));
+          if (newInvoices.length > 0) dismissAllInvoiceAlerts(newInvoices.map(inv => inv.id));
         };
 
         const CATEGORY_FILTERS = [
