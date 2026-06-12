@@ -361,12 +361,12 @@ export const getClassTeacher = (student, contacts) => {
 
 // Open the in-app email compose modal.
 // Falls back to Gmail web URL if Electron API not available.
-export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, offeredAttachment = null, bccGroup = false, forceTo = false, threadMessages = null } = {}) => {
+export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, offeredAttachment = null, bccGroup = false, forceTo = false, threadMessages = null, replyThreadId = null } = {}) => {
   if (!emails || emails.length === 0) return;
   const unique = [...new Set(emails.filter(Boolean))];
   if (unique.length === 0) return;
   if (window._openComposeModal) {
-    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments, offeredAttachment, bccGroup, forceTo, threadMessages });
+    window._openComposeModal({ to: unique, from, subject, body, triggerId, mergeCtx, attachments, offeredAttachment, bccGroup, forceTo, threadMessages, replyThreadId });
   } else {
     let url = "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(unique.join(","));
     if (subject) url += "&su=" + encodeURIComponent(subject);

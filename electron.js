@@ -227,13 +227,17 @@ ipcMain.handle("gmail-disconnect", () => {
   return { ok: true };
 });
 
-ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, bodyHtml, attachments }) => {
+ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, bodyHtml, attachments, threadId, inReplyTo }) => {
   try {
     const accessToken = await getValidAccessToken();
     const toHeader = Array.isArray(to) ? to.join(", ") : to;
     const ccHeader = Array.isArray(cc) ? cc.join(", ") : cc;
     const bccHeader = Array.isArray(bcc) ? bcc.join(", ") : bcc;
     const subjectEncoded = `=?UTF-8?B?${Buffer.from(subject || "").toString("base64")}?=`;
+    // Reply threading: In-Reply-To/References (RFC 5322) plus threadId in the
+    // API body place the sent message inside the original Gmail conversation.
+    // Absent for non-reply sends — those stay byte-identical to before.
+    const replyHeaders = inReplyTo ? [`In-Reply-To: ${inReplyTo}`, `References: ${inReplyTo}`] : [];
 
     let mimeMessage;
 
@@ -273,6 +277,7 @@ ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, b
         ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
         ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
         `Subject: ${subjectEncoded}`,
+        ...replyHeaders,
         `MIME-Version: 1.0`,
         `Content-Type: multipart/mixed; boundary="${boundary}"`,
         ``,
@@ -288,6 +293,7 @@ ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, b
         ...(cc && cc.length > 0 ? [`Cc: ${ccHeader}`] : []),
         ...(bcc && bcc.length > 0 ? [`Bcc: ${bccHeader}`] : []),
         `Subject: ${subjectEncoded}`,
+        ...replyHeaders,
         `MIME-Version: 1.0`,
         `Content-Type: text/html; charset=UTF-8`,
         `Content-Transfer-Encoding: base64`,
@@ -300,7 +306,7 @@ ipcMain.handle("gmail-send", async (_e, { to, from, replyTo, cc, bcc, subject, b
     const encoded = Buffer.from(mimeMessage).toString("base64")
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-    const body = JSON.stringify({ raw: encoded });
+    const body = JSON.stringify(threadId ? { raw: encoded, threadId } : { raw: encoded });
     const res = await httpsPost("gmail.googleapis.com",
       "/gmail/v1/users/me/messages/send",
       { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
@@ -773,6 +779,9 @@ ipcMain.handle("gmail-list-inbox", async () => {
             body: decodeBody(mPlainData || mHtmlData).slice(0, 3000),
             bodyHtml: mHtmlData ? decodeRaw(mHtmlData) : "",
             attachments: findAttachments(m.payload), messageId: m.id,
+            // RFC 5322 Message-ID — needed for In-Reply-To/References when
+            // replying so the reply threads into this Gmail conversation.
+            rfcMessageId: (mh.find(h => h.name.toLowerCase() === "message-id")?.value || "").trim(),
           };
         });
 

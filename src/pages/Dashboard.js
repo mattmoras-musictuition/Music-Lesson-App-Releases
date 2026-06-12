@@ -4533,7 +4533,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                       <button onClick={e => {
                                         e.stopPropagation();
                                         const replyAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
-                                        openCompose([replyAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: "", threadMessages: email.threadMessages });
+                                        openCompose([replyAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: "", threadMessages: email.threadMessages, replyThreadId: email.threadId || email.id });
                                         emailSwipeRef.current[email.id] = 0;
                                         setEmailSwipeState(prev => ({ ...prev, [email.id]: 0 }));
                                       }} style={{ flex: 1, background: colors.accent, border: "none", borderLeft: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", lineHeight: 1.3 }}>
@@ -5035,7 +5035,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         );
                                       })()}
                                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: draft || "", threadMessages: email.threadMessages }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply{draft ? " with draft" : ""}</Btn>}
+                                        {emailFolder !== "sent" && <Btn onClick={() => { openCompose([activeFromAddr], { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: draft || "", threadMessages: email.threadMessages, replyThreadId: email.threadId || email.id }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply{draft ? " with draft" : ""}</Btn>}
                                         {emailFolder !== "sent" && allRecipients.length > 1 && (
                                           <Btn variant="secondary" onClick={() => { openCompose(allRecipients, { from: schoolSenderForSourceEmail(email, schools) || "", subject: reSubject(email.subject), body: draft || "" }); markRead(email.id); }} style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}><Mail size={12} /> Reply All</Btn>
                                         )}

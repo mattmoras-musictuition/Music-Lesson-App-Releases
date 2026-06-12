@@ -100,6 +100,10 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
 
   // Thread history panel — read-only, not included in the email send
   const threadMessages = initial.threadMessages || [];
+  // Reply context — present only when opened via a Reply action. threadId +
+  // the replied-to message's RFC Message-ID let Gmail thread the send into
+  // the original conversation (batch/queue/new-compose shapes never set it).
+  const replyThreadId = initial.replyThreadId || null;
   const [showThread, setShowThread] = React.useState(false);
   const [expandedThreadMsgs, setExpandedThreadMsgs] = React.useState(new Set());
 
@@ -653,7 +657,16 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     }
     setSending(true);
     try {
-      const result = await window.electronAPI.gmailSend({ to, from: _hdr.from, replyTo: _hdr.replyTo || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml: _padBodyForAttachments(bodyHtml, attachments), attachments: attachments.length > 0 ? attachments : undefined });
+      // Reply threading — In-Reply-To targets the latest inbound message in
+      // the thread (the one being answered). Older cached threads may lack
+      // rfcMessageId; threadId alone still threads via the Gmail API.
+      const replyCtx = (() => {
+        if (!replyThreadId) return {};
+        const withRfc = threadMessages.filter(m => !m.isSent && m.rfcMessageId);
+        const target = withRfc[withRfc.length - 1] || [...threadMessages].reverse().find(m => m.rfcMessageId);
+        return { threadId: replyThreadId, inReplyTo: target?.rfcMessageId || undefined };
+      })();
+      const result = await window.electronAPI.gmailSend({ to, from: _hdr.from, replyTo: _hdr.replyTo || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml: _padBodyForAttachments(bodyHtml, attachments), attachments: attachments.length > 0 ? attachments : undefined, ...replyCtx });
       if (result.ok) {
         try { localStorage.removeItem("mt-compose-draft"); } catch {}
         if (onSoundPlay) onSoundPlay();
