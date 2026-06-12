@@ -100,6 +100,7 @@ export const STORAGE_KEYS = {
   invoiceSettings:        "mt-invoice-settings",
   invoiceRates:           "mt-invoice-rates",
   invoiceDrafts:          "mt-invoice-drafts",
+  uninvoicedDismissals:   "mt-uninvoiced-dismissals",
 };
 
 // ── Colour maps ──────────────────────────────────────────────────────────────

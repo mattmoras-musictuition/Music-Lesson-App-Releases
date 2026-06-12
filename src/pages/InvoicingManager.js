@@ -6,7 +6,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   Receipt, ChevronDown, ChevronUp, Plus, Trash2, Send,
   Eye, RefreshCw, DollarSign, FileText, Check, AlertTriangle,
-  Users
+  Users, X
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
@@ -16,7 +16,7 @@ import { detectTerms, _sortedBreaks, _toDS, _addDays, _today } from "../utils/in
 // v2.18.0 — uninvoiced-students derivation relocated verbatim to
 // utils/uninvoicedDerive.js, shared with the Dashboard alert chip.
 // _primaryParent moved with it; imported back here, single definition.
-import { getUninvoicedStudents, _primaryParent } from "../utils/uninvoicedDerive";
+import { getUninvoicedStudents, uninvoicedDismissKey, _primaryParent } from "../utils/uninvoicedDerive";
 import { STORAGE_KEYS } from "../constants";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
@@ -684,6 +684,18 @@ export function InvoicingManager({
     try { return JSON.parse(localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"); }
     catch { return []; }
   });
+  // v2.18.0 — per-student, term-scoped dismissals for the uninvoiced banner.
+  // Keys are "<termLabel>|<studentName>" (uninvoicedDismissKey). The Dashboard
+  // alert chip reads/writes the same key, so banner and chip stay in lockstep.
+  // Set + JSON-array idiom matches emailNoReplyOverrides.
+  const [uninvoicedDismissals, setUninvoicedDismissals] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(STORAGE_KEYS.uninvoicedDismissals) || "[]")); }
+    catch { return new Set(); }
+  });
+  const saveUninvoicedDismissals = (next) => {
+    setUninvoicedDismissals(next);
+    try { localStorage.setItem(STORAGE_KEYS.uninvoicedDismissals, JSON.stringify([...next])); } catch {}
+  };
 
   // ── UI state ──────────────────────────────────────────────
   // Session 9 follow-up — default landing is the Draft/setup view regardless
@@ -1223,10 +1235,30 @@ export function InvoicingManager({
   // derivation lives in utils/uninvoicedDerive.js (relocated verbatim,
   // v2.18.0) so the Dashboard alert chip consumes the same source of truth.
   const uninvoicedStudents = useMemo(
-    () => getUninvoicedStudents({ timetable, groups, students, schools, invoices, termInfo: selTerm }),
-    [students, timetable, groups, invoices, selTerm, schools]);
+    () => getUninvoicedStudents({ timetable, groups, students, schools, invoices, termInfo: selTerm, dismissals: uninvoicedDismissals }),
+    [students, timetable, groups, invoices, selTerm, schools, uninvoicedDismissals]);
   const uninvoicedStudentCount = uninvoicedStudents.length;
   const [bannerExpanded, setBannerExpanded] = useState(false);
+  // v2.18.0 — dismissed names for the SELECTED term, recovered from the keys
+  // themselves ("<termLabel>|<studentName>"), for the restore footer.
+  const dismissedUninvoicedNames = useMemo(() => {
+    if (!selTerm) return [];
+    const prefix = `${selTerm.label}|`;
+    return [...uninvoicedDismissals].filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length)).sort((a, b) => a.localeCompare(b));
+  }, [uninvoicedDismissals, selTerm]);
+  const [showDismissedUninvoiced, setShowDismissedUninvoiced] = useState(false);
+  const dismissUninvoiced = (studentName) => {
+    if (!selTerm) return;
+    const next = new Set(uninvoicedDismissals);
+    next.add(uninvoicedDismissKey(selTerm.label, studentName));
+    saveUninvoicedDismissals(next);
+  };
+  const restoreUninvoiced = (studentName) => {
+    if (!selTerm) return;
+    const next = new Set(uninvoicedDismissals);
+    next.delete(uninvoicedDismissKey(selTerm.label, studentName));
+    saveUninvoicedDismissals(next);
+  };
 
   const renderSetup = () => (
     <div style={{ maxWidth: 760 }}>
@@ -1272,8 +1304,39 @@ export function InvoicingManager({
                   <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.studentName}</span>
                   <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.instruments.join(", ")}</span>
                   <span style={{ minWidth: 50, textAlign: "right", fontWeight: 600 }}>{r.schoolAcronym}</span>
+                  {/* v2.18.0 — per-row dismiss: hides this student for the
+                      selected term only (term-scoped key, shared with the
+                      Dashboard chip). Styled like the Dashboard DismissBtn. */}
+                  <span
+                    onClick={e => { e.stopPropagation(); dismissUninvoiced(r.studentName); }}
+                    title="Dismiss for this term"
+                    style={{ marginLeft: 3, color: colors.danger, opacity: 0.45, fontSize: 13, lineHeight: 1, cursor: "pointer", padding: "0 1px", userSelect: "none", display: "inline-flex", alignItems: "center", flexShrink: 0 }}
+                    onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                    onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}
+                  ><X size={11} /></span>
                 </div>
               ))}
+              {/* v2.18.0 — restore affordance: quiet footer listing this
+                  term's dismissed students, each restorable. */}
+              {dismissedUninvoicedNames.length > 0 && (
+                <div style={{ borderTop: `1px solid ${darkMode ? "#3D2020" : "#FEE2E2"}`, padding: "5px 16px 6px", fontSize: 11, color: colors.danger, opacity: 0.55 }}>
+                  <span
+                    onClick={e => { e.stopPropagation(); setShowDismissedUninvoiced(v => !v); }}
+                    style={{ cursor: "pointer", userSelect: "none" }}>
+                    {dismissedUninvoicedNames.length} dismissed for this term — {showDismissedUninvoiced ? "hide" : "show"}
+                  </span>
+                  {showDismissedUninvoiced && dismissedUninvoicedNames.map(name => (
+                    <div key={name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0 0" }}>
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                      <span
+                        onClick={e => { e.stopPropagation(); restoreUninvoiced(name); }}
+                        style={{ cursor: "pointer", textDecoration: "underline", userSelect: "none", flexShrink: 0 }}>
+                        Restore
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
