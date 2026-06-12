@@ -55,6 +55,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   // Chip drag — tracks which email chip is being dragged between To/CC/BCC fields
   const chipDragRef = React.useRef(null); // { email, fromField: 'to'|'cc'|'bcc' }
   const [chipDragOver, setChipDragOver] = React.useState(null); // current drop-target field name
+  // Chip multi-select — shift-click toggles membership. Keys are "field|email"
+  // pairs: the same address can legitimately sit in two fields (e.g. To and
+  // CC) and selecting one must not select the other.
+  const [selectedChips, setSelectedChips] = React.useState(() => new Set());
+  const chipKey = (field, email) => field + "|" + email;
+  const chipSelected = (field, email) => selectedChips.has(chipKey(field, email));
   const [subject, setSubject] = React.useState(initial.subject || "");
   // Lesson reference: when a recipient (To) is a parent of a student, surface
   // that student's lesson this week vs their regular Master-Timetable slot,
@@ -421,7 +427,6 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     if (!to.includes(e)) setTo(prev => [...prev, e]);
     setToInput(""); setToSuggestions([]); setSuggestionIdx(-1);
   };
-  const removeRecipient = (email) => setTo(prev => prev.filter(e => e !== email));
 
   const handleToInput = (val) => {
     setToInput(val); setSuggestionIdx(-1);
@@ -444,6 +449,65 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     const q = val.toLowerCase();
     setBccSuggestions(emailPool.filter(p => !bcc.includes(p.email) && (p.email.toLowerCase().includes(q) || (p.label || "").toLowerCase().includes(q) || (p.sub || "").toLowerCase().includes(q))).slice(0, 6));
   };
+
+  // ── Chip selection helpers ──────────────────────────────────
+  const onChipClick = (e, field, email) => {
+    if (e.shiftKey) {
+      // stopPropagation so the modal-root click handler doesn't immediately
+      // clear what we just selected
+      e.preventDefault(); e.stopPropagation();
+      setSelectedChips(prev => {
+        const next = new Set(prev);
+        const k = chipKey(field, email);
+        if (next.has(k)) next.delete(k); else next.add(k);
+        return next;
+      });
+    } else if (selectedChips.size > 0) {
+      setSelectedChips(new Set());
+    }
+  };
+  const removeSelectedChips = () => {
+    if (selectedChips.size === 0) return;
+    const keep = (field) => (email) => !selectedChips.has(chipKey(field, email));
+    setTo(prev => prev.filter(keep("to")));
+    setCc(prev => prev.filter(keep("cc")));
+    setBcc(prev => prev.filter(keep("bcc")));
+    setSelectedChips(new Set());
+  };
+  // × on a selected chip removes the whole selection; on an unselected chip
+  // just that chip. Selection clears after any removal.
+  const removeChip = (field, email) => {
+    if (chipSelected(field, email)) { removeSelectedChips(); return; }
+    if (field === "to") setTo(prev => prev.filter(x => x !== email));
+    if (field === "cc") setCc(prev => prev.filter(x => x !== email));
+    if (field === "bcc") setBcc(prev => prev.filter(x => x !== email));
+    setSelectedChips(prev => (prev.size > 0 ? new Set() : prev));
+  };
+  // Delete/Backspace removes the selection — capture phase so the modal
+  // root's stopPropagation can't swallow it, and only when focus is NOT in a
+  // text input / the contentEditable body (normal typing stays unaffected;
+  // the recipient inputs keep their own backspace-pops-last-chip behaviour).
+  React.useEffect(() => {
+    if (selectedChips.size === 0) return;
+    const handler = (e) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      removeSelectedChips();
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [selectedChips]); // eslint-disable-line
+
+  // Selected chips get an accent fill + ring (box-shadow, not border, so
+  // there's no layout shift) — same accent conventions as the drag-over
+  // field highlight above.
+  const chipStyle = (field, email) => {
+    const sel = chipSelected(field, email);
+    return { display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: sel ? colors.accent : colors.accentLight, borderRadius: 20, fontSize: 12, color: sel ? "#fff" : colors.accentDark, fontWeight: 500, cursor: "grab", boxShadow: sel ? `0 0 0 1.5px ${colors.accent}` : "none", transition: "background 0.1s, box-shadow 0.1s" };
+  };
+  const chipXStyle = (field, email) => ({ background: "none", border: "none", cursor: "pointer", color: chipSelected(field, email) ? "#fff" : colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 });
 
   // ── Chip drag helpers ────────────────────────────────────────
   const onChipDragStart = (e, email, fromField) => {
@@ -598,6 +662,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     }
     if (!canSend) return;
     if (!gmailConnected) { notify("Connect Gmail first in Settings → App", "warning"); return; }
+    setSelectedChips(prev => (prev.size > 0 ? new Set() : prev));
     const bodyHtml = bodyRef.current.innerHTML;
     // Item 6 (v2.18.1): some mail clients (Apple Mail confirmed) render
     // attachments flush against the last character of the body. Append a
@@ -706,6 +771,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     <div style={{ position: "fixed", left: pos.x, top: pos.y, zIndex: 10000, width: size.w, height: minimised ? "auto" : size.h, minWidth: MIN_W, minHeight: minimised ? 0 : MIN_H }}
       ref={modalRef}
       onKeyDown={e => { e.stopPropagation(); }}
+      onClick={() => setSelectedChips(prev => (prev.size > 0 ? new Set() : prev))}
       onDragOver={e => { if (!chipDragRef.current && (e.dataTransfer.types.includes("Files") || isInternalDrag())) { e.preventDefault(); setFileDragOver(true); } }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setFileDragOver(false); }}
       onDrop={handleFileDrop}>
@@ -803,10 +869,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                 onDrop={e => onFieldDrop(e, "to")}>
                 {to.map(email => (
                   <span key={email} draggable onDragStart={e => onChipDragStart(e, email, "to")} onDragEnd={onChipDragEnd}
+                    onClick={e => onChipClick(e, "to", email)}
+                    onMouseDown={e => { if (e.shiftKey) e.preventDefault(); }}
                     title={email}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, borderRadius: 20, fontSize: 12, color: colors.accentDark, fontWeight: 500, cursor: "grab" }}>
+                    style={chipStyle("to", email)}>
                     {resolveChipLabel(email)}
-                    <button onClick={() => removeRecipient(email)} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                    <button onClick={() => removeChip("to", email)} style={chipXStyle("to", email)}>×</button>
                   </span>
                 ))}
                 <input id="compose-to-input" value={toInput} onChange={e => handleToInput(e.target.value)}
@@ -868,10 +936,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                 onDrop={e => onFieldDrop(e, "cc")}>
                 {cc.map(email => (
                   <span key={email} draggable onDragStart={e => onChipDragStart(e, email, "cc")} onDragEnd={onChipDragEnd}
+                    onClick={e => onChipClick(e, "cc", email)}
+                    onMouseDown={e => { if (e.shiftKey) e.preventDefault(); }}
                     title={email}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, borderRadius: 20, fontSize: 12, color: colors.accentDark, fontWeight: 500, cursor: "grab" }}>
+                    style={chipStyle("cc", email)}>
                     {resolveChipLabel(email)}
-                    <button onClick={() => setCc(prev => prev.filter(e => e !== email))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                    <button onClick={() => removeChip("cc", email)} style={chipXStyle("cc", email)}>×</button>
                   </span>
                 ))}
                 <input value={ccInput} onChange={e => handleCcInput(e.target.value)}
@@ -920,10 +990,12 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                 onDrop={e => onFieldDrop(e, "bcc")}>
                 {bcc.map(email => (
                   <span key={email} draggable onDragStart={e => onChipDragStart(e, email, "bcc")} onDragEnd={onChipDragEnd}
+                    onClick={e => onChipClick(e, "bcc", email)}
+                    onMouseDown={e => { if (e.shiftKey) e.preventDefault(); }}
                     title={email}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", background: colors.accentLight, borderRadius: 20, fontSize: 12, color: colors.accentDark, fontWeight: 500, cursor: "grab" }}>
+                    style={chipStyle("bcc", email)}>
                     {resolveChipLabel(email)}
-                    <button onClick={() => setBcc(prev => prev.filter(e => e !== email))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                    <button onClick={() => removeChip("bcc", email)} style={chipXStyle("bcc", email)}>×</button>
                   </span>
                 ))}
                 <input value={bccInput} onChange={e => handleBccInput(e.target.value)}
