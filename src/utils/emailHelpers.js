@@ -121,13 +121,22 @@ export function buildLessonReferenceRows(linkedStudents, { timetable, weeklyTime
   const masterLessons = mttLessons.filter(l => linkedStudents.some(s => s.id === l.studentId));
   const lessons = hasWeeklyData ? weeklyLessons : masterLessons;
   const norm = (x) => (x || "").trim().toLowerCase();
-  return lessons.map(l => {
+  const rows = lessons.map(l => {
     const student = linkedStudents.find(s => s.id === l.studentId);
     // Match the regular slot by student + instrument; first match wins if a
     // student has more than one MTT lesson for the same instrument.
     const regular = mttLessons.find(r => r.studentId === l.studentId && norm(r.instrument) === norm(l.instrument)) || null;
     const { thisWeekStr, regularStr, changed } = lessonChangeInfo(l, regular, hasWeeklyData);
     return { lesson: l, regular, changed, thisWeekStr, regularStr, hasWeeklyData, studentName: student?.name || "", instrument: l.instrument || "", schoolId: l.schoolId };
+  });
+  // Item 7 (v2.18.1): dedupe by student + instrument + slot so a student
+  // reachable through more than one matching path is never listed twice.
+  const seen = new Set();
+  return rows.filter(r => {
+    const key = `${r.lesson.studentId}|${norm(r.instrument)}|${r.lesson.day || ""}|${r.lesson.start || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

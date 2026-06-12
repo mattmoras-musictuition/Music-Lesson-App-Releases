@@ -63,7 +63,16 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const lessonRows = React.useMemo(() => {
     const recipients = (to || []).map(a => (a.match(/<(.+)>/)?.[1] || a || "").trim().toLowerCase()).filter(Boolean);
     if (recipients.length === 0) return [];
-    const linked = (students || []).filter(s => (s.parents || []).some(p => p.email && recipients.includes(p.email.toLowerCase())));
+    // Item 7 (v2.18.1): parent contact lives in TWO shapes — the parents[]
+    // array (Students-tab UI) and top-level parentEmail (records written by
+    // the in-app assistant tools). Matching only parents[] dropped any
+    // sibling whose record carries the email solely in parentEmail, so a
+    // multi-child parent could surface just one (and seemingly wrong) child.
+    // Consult both, same as _primaryParent does for invoicing.
+    const linked = (students || []).filter(s =>
+      (s.parents || []).some(p => p.email && recipients.includes(p.email.toLowerCase()))
+      || (s.parentEmail && recipients.includes(s.parentEmail.trim().toLowerCase()))
+    );
     if (linked.length === 0) return [];
     const currentMonday = toLocalDateStr(getCurrentWeekMonday());
     return buildLessonReferenceRows(linked, { timetable, weeklyTimetables, currentMonday });
