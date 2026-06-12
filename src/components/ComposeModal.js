@@ -662,6 +662,9 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
         // sent after this push, the console will tell us which branch we hit.
         console.log("[ComposeModal] single send OK — onSent:", typeof onSent);
         if (onSent) onSent();
+        // Fire-and-forget sent refresh so reply pills clear without waiting
+        // for the Dashboard's 30s poll.
+        try { window._refreshSent && window._refreshSent(); } catch {}
         notify("Email sent ✓");
         onClose();
       } else {

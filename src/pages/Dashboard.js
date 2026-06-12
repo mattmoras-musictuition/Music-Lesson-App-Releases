@@ -2294,6 +2294,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     return () => clearInterval(interval);
   }, [fetchInbox, fetchSent]);
 
+  // Compose calls this after a successful send so reply pills clear
+  // immediately instead of waiting for the next 30s poll.
+  useEffect(() => {
+    window._refreshSent = fetchSent;
+    return () => { if (window._refreshSent === fetchSent) window._refreshSent = null; };
+  }, [fetchSent]);
+
   // Full-history Gmail search — debounced 600ms, fires when search bar has a value
   useEffect(() => {
     if (gmailSearchTimerRef.current) clearTimeout(gmailSearchTimerRef.current);
