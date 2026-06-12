@@ -261,7 +261,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         const billable = termN;
 
         if (billable > 0 && indRate > 0)
-          lines.push({ id: uid(), type: "lesson", studentName: student.name,
+          lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
             description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
 
         if (prevTerm && indRate > 0) {
@@ -276,10 +276,10 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
             nextTermStart: termInfo.start,
           });
           if (deductions > 0)
-            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+            lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
               description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
           if (extras > 0)
-            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+            lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
               description: `${instr} – Extra Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
         }
       }
@@ -306,7 +306,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         for (const en of privEnrolments) {
           const instr = en.instrument;
           if (termWeeksCount > 0) {
-            lines.push({ id: uid(), type: "lesson", studentName: student.name,
+            lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
               description: `${instr} Lessons`, qty: termWeeksCount, rate: indRate,
               subtotal: termWeeksCount * indRate, schoolName: "Private" });
           }
@@ -321,12 +321,12 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
               nextTermStart: termInfo.start,
             });
             if (deductions > 0) {
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
                 description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate,
                 subtotal: -deductions * indRate, schoolName: "Private" });
             }
             if (extras > 0) {
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
                 description: `${instr} – Extra Lessons`, qty: extras, rate: indRate,
                 subtotal: extras * indRate, schoolName: "Private" });
             }
@@ -373,7 +373,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
           if (!topDay) continue;
           const termN = _countWeekday(_dowNum(topDay), termInfo.start, termInfo.end);
           if (termN > 0)
-            lines.push({ id: uid(), type: "lesson", studentName: student.name,
+            lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
               description: `${instr} Lessons`, qty: termN, rate: indRate, subtotal: termN * indRate, schoolName });
         }
         // Per-enrolment prev-term deductions for every instrument with prev-term
@@ -392,10 +392,10 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
               nextTermStart: termInfo.start,
             });
             if (deductions > 0)
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
                 description: `${instr} – Missed Lessons`, qty: deductions, rate: -indRate, subtotal: -deductions * indRate, schoolName });
             if (extras > 0)
-              lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+              lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
                 description: `${instr} – Extra Lessons`, qty: extras, rate: indRate, subtotal: extras * indRate, schoolName });
           }
         }
@@ -409,7 +409,7 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         const bill = termN;
 
         if (bill > 0)
-          lines.push({ id: uid(), type: "lesson", studentName: student.name,
+          lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
             description: grp.name || `Group`, qty: bill, rate: grpRate, subtotal: bill * grpRate, schoolName });
 
         if (prevTerm) {
@@ -423,10 +423,10 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
             nextTermStart: termInfo.start,
           });
           if (groupMath.deductions > 0 && grpRate > 0)
-            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+            lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
               description: `${grp.name || "Group"} – Missed`, qty: groupMath.deductions, rate: -grpRate, subtotal: -groupMath.deductions * grpRate, schoolName });
           if (groupMath.extras > 0 && grpRate > 0)
-            lines.push({ id: uid(), type: "adjustment", studentName: student.name,
+            lines.push({ id: uid(), type: "adjustment", studentName: student.name, studentId: student.id,
               description: `${grp.name || "Group"} – Extra Lessons`, qty: groupMath.extras, rate: grpRate, subtotal: groupMath.extras * grpRate, schoolName });
         }
       }

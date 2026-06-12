@@ -47,9 +47,11 @@ export function uninvoicedDismissKey(termLabel, studentName) {
 // are not invoiced via these paths and are correctly excluded.
 //
 // "Covered by an invoice for the term" = any invoice with
-// termLabel === termInfo.label has a line with studentName === student.name.
-// Lines carry studentName but no studentId, so the match is name-based —
-// consistent with how InvoicingManager links lines back to students.
+// termLabel === termInfo.label has a line whose studentId matches the
+// student's id, OR (fallback) whose studentName matches the student's name.
+// Lines generated from v2.18.0 onward carry studentId, so a corrected
+// spelling no longer makes a student show as permanently uninvoiced; older
+// invoices have name-only lines and keep matching by name.
 //
 // Row shape mirrors what buildInvoices would emit: parentName resolved via
 // _primaryParent (same helper buildInvoices uses transitively); instruments
@@ -62,15 +64,18 @@ export function uninvoicedDismissKey(termLabel, studentName) {
 export function getUninvoicedStudents({ timetable, groups, students, schools, invoices, termInfo, dismissals }) {
   if (!termInfo) return [];
   const active = (students || []).filter(s => s.status !== "archived");
+  const coveredIds = new Set();
   const coveredNames = new Set();
   for (const inv of (invoices || [])) {
     if (inv.termLabel !== termInfo.label) continue;
     for (const line of (inv.lines || [])) {
+      if (line.studentId) coveredIds.add(line.studentId);
       if (line.studentName) coveredNames.add(line.studentName);
     }
   }
   const rows = [];
   for (const s of active) {
+    if (coveredIds.has(s.id)) continue;
     if (coveredNames.has(s.name)) continue;
     if (dismissals && dismissals.has(uninvoicedDismissKey(termInfo.label, s.name))) continue;
     const instruments = [];
