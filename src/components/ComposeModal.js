@@ -510,15 +510,32 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   const chipXStyle = (field, email) => ({ background: "none", border: "none", cursor: "pointer", color: chipSelected(field, email) ? "#fff" : colors.accentDark, fontSize: 14, lineHeight: 1, padding: 0 });
 
   // ── Chip drag helpers ────────────────────────────────────────
+  // Payload lives in chipDragRef (ref-based, same pattern as the Dashboard
+  // to-do drags) — dataTransfer carries a copy only as a marker. Shape:
+  // { chips: [{ field: 'to'|'cc'|'bcc', email }] }. A drag starting on a
+  // selected chip carries the WHOLE selection (across fields); starting on
+  // an unselected chip carries just that chip and clears the selection.
   const onChipDragStart = (e, email, fromField) => {
     e.stopPropagation();
-    chipDragRef.current = { email, fromField };
+    let chips;
+    if (chipSelected(fromField, email)) {
+      chips = [...selectedChips].map(k => {
+        const i = k.indexOf("|");
+        return { field: k.slice(0, i), email: k.slice(i + 1) };
+      });
+    } else {
+      chips = [{ field: fromField, email }];
+      setSelectedChips(prev => (prev.size > 0 ? new Set() : prev));
+    }
+    chipDragRef.current = { chips };
     e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("application/x-chip", email);
+    e.dataTransfer.setData("application/x-chip", chips.map(c => c.email).join(","));
   };
   const onChipDragEnd = () => { chipDragRef.current = null; setChipDragOver(null); };
   const onFieldDragOver = (e, field) => {
-    if (!chipDragRef.current || chipDragRef.current.fromField === field) return;
+    const info = chipDragRef.current;
+    // No highlight when every carried chip already lives in this field
+    if (!info || info.chips.every(c => c.field === field)) return;
     e.preventDefault(); e.stopPropagation();
     setChipDragOver(field);
   };
@@ -526,15 +543,31 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     e.preventDefault(); e.stopPropagation();
     setChipDragOver(null);
     const info = chipDragRef.current;
-    if (!info || info.fromField === toField) return;
-    const { email, fromField } = info;
-    if (fromField === "to") setTo(prev => prev.filter(x => x !== email));
-    if (fromField === "cc") setCc(prev => prev.filter(x => x !== email));
-    if (fromField === "bcc") setBcc(prev => prev.filter(x => x !== email));
-    if (toField === "to") setTo(prev => prev.includes(email) ? prev : [...prev, email]);
-    if (toField === "cc") { setCc(prev => prev.includes(email) ? prev : [...prev, email]); setShowCc(true); }
-    if (toField === "bcc") { setBcc(prev => prev.includes(email) ? prev : [...prev, email]); setShowBcc(true); }
     chipDragRef.current = null;
+    if (!info) return;
+    // Chips already in the target field stay put (own-field drop is a no-op)
+    const moving = info.chips.filter(c => c.field !== toField);
+    if (moving.length === 0) return;
+    const fromByField = { to: [], cc: [], bcc: [] };
+    moving.forEach(c => fromByField[c.field].push(c.email));
+    if (fromByField.to.length) setTo(prev => prev.filter(x => !fromByField.to.includes(x)));
+    if (fromByField.cc.length) setCc(prev => prev.filter(x => !fromByField.cc.includes(x)));
+    if (fromByField.bcc.length) setBcc(prev => prev.filter(x => !fromByField.bcc.includes(x)));
+    const appendDeduped = (prev) => {
+      // Case-insensitive dedupe: an address the target already holds is
+      // removed from its source (above) but not duplicated here
+      const have = new Set(prev.map(x => x.toLowerCase()));
+      const additions = [];
+      moving.forEach(c => {
+        const lc = c.email.toLowerCase();
+        if (!have.has(lc)) { have.add(lc); additions.push(c.email); }
+      });
+      return additions.length ? [...prev, ...additions] : prev;
+    };
+    if (toField === "to") setTo(appendDeduped);
+    if (toField === "cc") { setCc(appendDeduped); setShowCc(true); }
+    if (toField === "bcc") { setBcc(appendDeduped); setShowBcc(true); }
+    setSelectedChips(prev => (prev.size > 0 ? new Set() : prev));
   };
 
   const restoreSelection = () => {
