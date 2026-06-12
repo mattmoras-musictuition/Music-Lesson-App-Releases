@@ -586,6 +586,13 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     if (!canSend) return;
     if (!gmailConnected) { notify("Connect Gmail first in Settings → App", "warning"); return; }
     const bodyHtml = bodyRef.current.innerHTML;
+    // Item 6 (v2.18.1): some mail clients (Apple Mail confirmed) render
+    // attachments flush against the last character of the body. Append a
+    // trailing blank line at SEND time when the message carries attachments —
+    // the editor/stored body is never altered. Applied per send shape below
+    // (batch items can carry their own attachments).
+    const _padBodyForAttachments = (html, atts) =>
+      (atts && atts.length > 0) ? html + "<br><br>" : html;
     if (batchTo && batchTo.length > 0) {
       // Session 95 BUG 4: prefer the raw template (stashed at template-load
       // time) when resolving each recipient. If the user edited the subject
@@ -616,7 +623,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
           to: [addr],
           from: _hdr.from, replyTo: _hdr.replyTo || undefined,
           subject: applyMergeCtx(subjectSource, ctx),
-          bodyHtml: applyMergeCtx(bodySource, ctx),
+          bodyHtml: _padBodyForAttachments(applyMergeCtx(bodySource, ctx), itemAttachments),
           label: ctx.parent_name || addr,
           attachments: itemAttachments,
           cc: cc.length > 0 ? cc : undefined,
@@ -637,7 +644,7 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     }
     setSending(true);
     try {
-      const result = await window.electronAPI.gmailSend({ to, from: _hdr.from, replyTo: _hdr.replyTo || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml, attachments: attachments.length > 0 ? attachments : undefined });
+      const result = await window.electronAPI.gmailSend({ to, from: _hdr.from, replyTo: _hdr.replyTo || undefined, cc: cc.length > 0 ? cc : undefined, bcc: bcc.length > 0 ? bcc : undefined, subject, bodyHtml: _padBodyForAttachments(bodyHtml, attachments), attachments: attachments.length > 0 ? attachments : undefined });
       if (result.ok) {
         try { localStorage.removeItem("mt-compose-draft"); } catch {}
         if (onSoundPlay) onSoundPlay();
