@@ -9,10 +9,14 @@ import {
   Users
 } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
-import { uid, getSchoolAcronym } from "../utils/helpers";
+import { uid } from "../utils/helpers";
 // v2.18.0 — term detection relocated verbatim to utils/invoiceTerms.js so the
 // Dashboard alert chip can share it; imported back here, single definition.
 import { detectTerms, _sortedBreaks, _toDS, _addDays, _today } from "../utils/invoiceTerms";
+// v2.18.0 — uninvoiced-students derivation relocated verbatim to
+// utils/uninvoicedDerive.js, shared with the Dashboard alert chip.
+// _primaryParent moved with it; imported back here, single definition.
+import { getUninvoicedStudents, _primaryParent } from "../utils/uninvoicedDerive";
 import { STORAGE_KEYS } from "../constants";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { getEnrolmentTermDeductionMath, getGroupTermDeductionMath } from "../utils/tallyDerive";
@@ -178,21 +182,8 @@ function _countWeekday(dowNum, start, end) {
 // PARENT UTILITIES
 // ─────────────────────────────────────────────────────────────
 // Returns a stable key for grouping students by parent
-// Pull the primary parent record from a student — checks parentEmail/parentName
-// and also the parents[] array some students may have.
-function _primaryParent(student) {
-  const email = student.parentEmail?.trim() || "";
-  const name  = student.parentName?.trim()  || "";
-  if (email || name) return { email, name };
-  if (Array.isArray(student.parents) && student.parents.length) {
-    const p = student.parents[0];
-    return {
-      email: (p.email || p.parentEmail || "").trim(),
-      name:  (p.name  || p.parentName  || "").trim(),
-    };
-  }
-  return { email: "", name: "" };
-}
+// (_primaryParent lives in utils/uninvoicedDerive.js as of v2.18.0 —
+// relocated with the uninvoiced derivation, imported above.)
 function _parentKey(student) {
   const { email, name } = _primaryParent(student);
   if (email) return `email:${email.toLowerCase()}`;
@@ -1228,72 +1219,12 @@ export function InvoicingManager({
   }, [students]);
 
   // Session 9 — students with an active MTT enrolment in the selected term who
-  // haven't been included on any generated invoice for that term. Returns the
-  // detail rows so the expanded banner can render them; the count is just the
-  // length.
-  //
-  // "Active MTT enrolment" = appears in timetable.lessons (non-group) OR is in
-  // a scheduled group's studentIds. Mirrors the two MTT paths in buildInvoices.
-  // Private enrolments (driven by `enrolments`, not the MTT) and band sessions
-  // (no top-level studentId, skipped by the indLessons filter at line 309)
-  // are not invoiced via these paths and are correctly excluded.
-  //
-  // "Covered by an invoice for the selected term" = any invoice with
-  // termLabel === selTerm.label has a line with studentName === student.name.
-  // Lines carry studentName but no studentId, so the match is name-based —
-  // consistent with how the rest of this file links lines back to students.
-  //
-  // Row shape mirrors what buildInvoices would emit: parentName resolved via
-  // _primaryParent (same helper buildInvoices uses transitively); instruments
-  // = distinct l.instrument values for individual lessons + grp.instrument ||
-  // grp.name fallback for groups (mirrors the group line description at
-  // line 472); schoolAcronym via getSchoolAcronym.
-  const uninvoicedStudents = useMemo(() => {
-    if (!selTerm) return [];
-    const active = (students || []).filter(s => s.status !== "archived");
-    const coveredNames = new Set();
-    for (const inv of (invoices || [])) {
-      if (inv.termLabel !== selTerm.label) continue;
-      for (const line of (inv.lines || [])) {
-        if (line.studentName) coveredNames.add(line.studentName);
-      }
-    }
-    const rows = [];
-    for (const s of active) {
-      if (coveredNames.has(s.name)) continue;
-      const instruments = [];
-      // Individual lessons — distinct instruments.
-      const seenInst = new Set();
-      for (const l of (timetable?.lessons || [])) {
-        if (l.studentId !== s.id || l.isGroup) continue;
-        if (!l.instrument || seenInst.has(l.instrument)) continue;
-        seenInst.add(l.instrument);
-        instruments.push(l.instrument);
-      }
-      // Groups — grp.instrument with grp.name fallback (matches buildInvoices's
-      // group line description at line 472).
-      for (const g of (groups || [])) {
-        if (g.status !== "scheduled") continue;
-        if (!(g.studentIds || []).includes(s.id)) continue;
-        const label = g.instrument || g.name || "Group";
-        if (!seenInst.has(label)) {
-          seenInst.add(label);
-          instruments.push(label);
-        }
-      }
-      if (instruments.length === 0) continue; // no MTT enrolment — skip
-      const school = (schools || []).find(sc => sc.id === s.schoolId);
-      const parentName = _primaryParent(s).name;
-      rows.push({
-        id: s.id,
-        parentName: parentName || "—",
-        studentName: s.name,
-        instruments,
-        schoolAcronym: school ? getSchoolAcronym(school) : "",
-      });
-    }
-    return rows;
-  }, [students, timetable, groups, invoices, selTerm, schools]);
+  // haven't been included on any generated invoice for that term. The
+  // derivation lives in utils/uninvoicedDerive.js (relocated verbatim,
+  // v2.18.0) so the Dashboard alert chip consumes the same source of truth.
+  const uninvoicedStudents = useMemo(
+    () => getUninvoicedStudents({ timetable, groups, students, schools, invoices, termInfo: selTerm }),
+    [students, timetable, groups, invoices, selTerm, schools]);
   const uninvoicedStudentCount = uninvoicedStudents.length;
   const [bannerExpanded, setBannerExpanded] = useState(false);
 
