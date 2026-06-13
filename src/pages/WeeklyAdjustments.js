@@ -3329,7 +3329,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // resolution is override-aware (laneOverrides + weekKey) so a
                   // sub-this-week lane lands in the right place.
                   const { teacherId: _optsTid, teacherName: _optsTname, ...restOpts } = opts || {};
-                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, sId, contextMenu.day, laneOverrides, contextMenu.weekKey, viewedLanes, temporaryLanes);
+                  // contextMenu.weekKey is the composite `${weekKey}|${selectedSchool}` storage key
+                  // (set at the empty-cell right-click). getDayLaneTeacher's override matching needs the
+                  // PLAIN week key (Monday date) — split off the composite suffix so this-week lane
+                  // substitutions resolve here the same way the drag-move path (handleWeeklyMoveLesson)
+                  // already does. The composite is still correct for the weeklyTimetables map lookup below.
+                  const plainWeekKey = (contextMenu.weekKey || "").split("|")[0];
+                  const destLane = getDayLaneTeacher(teacherCoverage, teachers, sId, contextMenu.day, laneOverrides, plainWeekKey, viewedLanes, temporaryLanes);
                   if (!destLane || !destLane.lane) {
                     const sName = schools.find(sc => sc.id === sId)?.name || sId;
                     if (notify) notify(`No covering lane for ${sName} on ${contextMenu.day}. Add staff first.`, "warning");
