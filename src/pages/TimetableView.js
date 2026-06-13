@@ -334,6 +334,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
       bands: [],
       groupMembers: [],
       bandMembers: [],
+      bandPersonnel: [],
     };
 
     if (lesson.isGroup) {
@@ -355,6 +356,14 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
     } else if (lesson.isBandSession) {
       info.title = lesson.bandName || "Band";
       info.time = "";
+      // Cosmetic personnel from the live band record — same "With:" line as
+      // the WTT popover (defensive: MTT has no bands today).
+      const liveBand = (bands || []).find(b => b.id === lesson.bandId);
+      info.bandPersonnel = (liveBand?.personnel || []).map(p => {
+        const t = teachers.find(tt => tt.id === p.teacherId);
+        if (!t) return null;
+        return p.instrument ? `${t.name} (${p.instrument})` : t.name;
+      }).filter(Boolean);
       const memberArr = lesson.members || [];
       info.bandMembers = memberArr.map(m => {
         const st = stu.find(s => s.id === m.studentId);
@@ -466,6 +475,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 )}
               </div>
             ))}
+          </div>
+        )}
+        {(info.bandPersonnel || []).length > 0 && (
+          <div style={{ marginTop: 4, fontSize: 11, color: colors.textLight }}>
+            With: {info.bandPersonnel.join(", ")}
           </div>
         )}
       </div>

@@ -175,6 +175,11 @@ function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyl
           ))}
         </div>
       )}
+      {(info.bandPersonnel || []).length > 0 && (
+        <div style={{ marginTop: 4, fontSize: 11, color: colors.textLight }}>
+          With: {info.bandPersonnel.join(", ")}
+        </div>
+      )}
     </div>
   );
 }
@@ -616,6 +621,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       bands: [],
       groupMembers: [],
       bandMembers: [],
+      bandPersonnel: [],
     };
 
     if (lesson.isGroup) {
@@ -637,6 +643,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     } else if (lesson.isBandSession) {
       info.title = lesson.bandName || "Band";
       info.time = "";
+      // Cosmetic personnel from the live band record — "With:" line in the
+      // popover. The lane-teacher line above is untouched.
+      const liveBand = (bands || []).find(b => b.id === lesson.bandId);
+      info.bandPersonnel = (liveBand?.personnel || []).map(p => {
+        const t = teachers.find(tt => tt.id === p.teacherId);
+        if (!t) return null;
+        return p.instrument ? `${t.name} (${p.instrument})` : t.name;
+      }).filter(Boolean);
       const memberArr = lesson.members || [];
       info.bandMembers = memberArr.map(m => {
         const st = students.find(s => s.id === m.studentId);
@@ -3526,7 +3540,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 // buildPopoverInfo handles the isBandSession
                                 // branch and produces the "Members" list.
                                 const rect = e.currentTarget.getBoundingClientRect();
-                                const info = buildPopoverInfo({ isBandSession: true, bandName: band.name, members: band.members || [] });
+                                const info = buildPopoverInfo({ isBandSession: true, bandId: band.id, bandName: band.name, members: band.members || [] });
                                 // flyoutPanel = the band-list submenu panel's rect, so the info
                                 // card cascades beside the panel rather than overlapping it.
                                 const flyoutPanel = subMenuRef.current ? subMenuRef.current.getBoundingClientRect() : null;
