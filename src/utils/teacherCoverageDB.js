@@ -40,6 +40,10 @@ function fromRow(row) {
     day:        row.day        || "",
     teacherId:  row.teacher_id || "",
     status:     row.status     || "active",
+    // Nullable lane end-date (item 11). null = applies forever. When set to a
+    // week-Monday "YYYY-MM-DD" string, the lane applies only up to and including
+    // that week (see laneAppliesForWeek). Null-safe if the column is absent.
+    effectiveTo: row.effective_to || null,
     notes:      row.notes      || null,
     createdAt:  row.created_at || "",
     updatedAt:  row.updated_at || "",
@@ -125,6 +129,27 @@ export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
          l.status === "active"
   );
   return lane ? lane.id : null;
+}
+
+/**
+ * Lane applicability for a given week (item 11 — lane end-dating).
+ *
+ * A lane with no effectiveTo applies forever (unchanged behaviour). An end-dated
+ * lane applies only up to and including its effectiveTo week:
+ *   - current week (weekKey === effectiveTo) → applies (the lane stays live the
+ *     week it was removed);
+ *   - future weeks (weekKey > effectiveTo)   → excluded;
+ *   - week-less MTT callers (weekKey null)   → excluded (the MTT shows the
+ *     forward state, where the lane is gone);
+ *   - past weeks (weekKey < effectiveTo)     → applies (past weeks resolve via
+ *     frozenTeacherId anyway).
+ * Comparison is a plain lexical "YYYY-MM-DD" compare, matching isPastWeek.
+ *
+ * @param {{effectiveTo?: string|null}} lane
+ * @param {string|null} weekKey  Monday-anchored "YYYY-MM-DD", or null for MTT.
+ */
+export function laneAppliesForWeek(lane, weekKey) {
+  return !lane.effectiveTo ? true : (!!weekKey && weekKey <= lane.effectiveTo);
 }
 
 /**
@@ -374,6 +399,27 @@ export async function archiveTeacherCoverage({ id }) {
   const { error } = await supabase
     .from("teacher_coverage")
     .update({ status: "archived", updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * Single-row end-date — sets effective_to (+ bumps updated_at), status untouched
+ * (stays 'active'). The "keep this week's lessons" branch of Remove Staff (item
+ * 11): the lane stays live through the named week and stops applying to future
+ * weeks / the MTT. Mirrors archiveTeacherCoverage's surgical shape.
+ *
+ * Safe under the dev Proxy short-circuit: the supabase.from() call is suppressed
+ * in dev; the void return means the caller's local-state update fires
+ * unconditionally — correct in both dev and prod.
+ *
+ * @param {{id: string, effectiveTo: string}} args  effectiveTo = week-Monday
+ *        "YYYY-MM-DD" (toLocalDateStr(getCurrentWeekMonday())).
+ */
+export async function setLaneEffectiveTo({ id, effectiveTo }) {
+  const { error } = await supabase
+    .from("teacher_coverage")
+    .update({ effective_to: effectiveTo, updated_at: new Date().toISOString() })
     .eq("id", id);
   if (error) throw error;
 }
