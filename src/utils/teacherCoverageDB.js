@@ -211,7 +211,10 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
       if (override?.overrideTeacherId) return override.overrideTeacherId;
     }
     const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
-    if (lane?.teacherId) return lane.teacherId;
+    // Date-check (item 11): an end-dated lane no longer applies to future weeks
+    // or the week-less MTT, so a card still carrying its bucket_id falls through
+    // to the Phase 2 day-lane fallback (or null) instead of resolving to it.
+    if (lane?.teacherId && laneAppliesForWeek(lane, weekKey)) return lane.teacherId;
     // Temp lane carrying this bucket_id — week-specific, so only when weekKey
     // matches. Searched only after the permanent set misses (same union order
     // as getDayLanes: permanent first, temp as fallback).
@@ -263,7 +266,7 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
  */
 export function getDayLanes(teacherCoverage, schoolId, day, temporaryLanes = [], weekKey = null) {
   const permanent = (teacherCoverage || []).filter(
-    l => l.schoolId === schoolId && l.day === day && l.status === "active"
+    l => l.schoolId === schoolId && l.day === day && l.status === "active" && laneAppliesForWeek(l, weekKey)
   );
   if (!weekKey || !Array.isArray(temporaryLanes) || temporaryLanes.length === 0) {
     return permanent;

@@ -7,7 +7,7 @@ import { Printer, Trash2, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, U
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, lessonBelongsToViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1601,7 +1601,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {DAYS.map(d => {
                   const daySelected = mttSelectedDays.has(d);
                   const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, null, null, viewedLanes)?.teacher;
-                  const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active");
+                  const dayLanes = teacherCoverage.filter(c => c.schoolId === selectedSchool && c.day === d && c.status === "active" && laneAppliesForWeek(c, null));
                   const viewedLaneId = (viewedLanes?.[selectedSchool]?.[d] && dayLanes.some(c => c.id === viewedLanes[selectedSchool][d])) ? viewedLanes[selectedSchool][d] : (dayLanes[0]?.id || null);
                   const isArmed = !!armedLane && armedLane.schoolId === selectedSchool && armedLane.day === d;
                   return (
