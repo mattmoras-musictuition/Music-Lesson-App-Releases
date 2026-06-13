@@ -106,32 +106,6 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
             </div>
           </div>
           <div style={{ marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <label style={{ ...labelStyle, marginBottom: 0 }}>Personnel</label>
-              <button onClick={() => setForm(p => ({ ...p, personnel: [...(p.personnel || []), { teacherId: "", instrument: "" }] }))}
-                style={{ padding: "4px 12px", background: colors.sidebarActive, color: colors.cardBg, border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>+ Add</button>
-            </div>
-            {(form.personnel || []).length === 0 && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No personnel yet — display-only, shown on band cards and timetable popovers</div>}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(form.personnel || []).map((p, idx) => (
-                <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <select style={{ ...inputStyle, flex: 1 }} value={p.teacherId}
-                    onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, teacherId: e.target.value } : row) }))}>
-                    <option value="">Select teacher…</option>
-                    {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
-                  <select style={{ ...inputStyle, flex: 1 }} value={p.instrument}
-                    onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, instrument: e.target.value } : row) }))}>
-                    <option value="">Not performing</option>
-                    {BAND_INSTRUMENTS.map(i => <option key={i} value={i}>{i}</option>)}
-                  </select>
-                  <button onClick={() => setForm(prev => ({ ...prev, personnel: prev.personnel.filter((_, i) => i !== idx) }))}
-                    style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0, display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div style={{ marginBottom: 14 }}>
             <label style={labelStyle}>Notes</label>
             <textarea style={{ ...inputStyle, minHeight: 52, resize: "vertical" }} value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any notes…" />
           </div>
@@ -188,6 +162,33 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
             </div>
           )}
           {!form.schoolId && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>Select a school first</div>}
+        </Card>
+
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <label style={labelStyle}>Teachers ({(form.personnel || []).length})</label>
+            <button onClick={() => setForm(p => ({ ...p, personnel: [...(p.personnel || []), { teacherId: "", instrument: "" }] }))}
+              style={{ padding: "4px 12px", background: colors.sidebarActive, color: colors.cardBg, border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>+ Add</button>
+          </div>
+          {(form.personnel || []).length === 0 && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>No teachers yet — display-only, shown on band cards and timetable popovers</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(form.personnel || []).map((p, idx) => (
+              <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <select style={{ ...inputStyle, flex: 1 }} value={p.teacherId}
+                  onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, teacherId: e.target.value } : row) }))}>
+                  <option value="">Select teacher…</option>
+                  {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                <select style={{ ...inputStyle, flex: 1 }} value={p.instrument}
+                  onChange={e => setForm(prev => ({ ...prev, personnel: prev.personnel.map((row, i) => i === idx ? { ...row, instrument: e.target.value } : row) }))}>
+                  <option value="">Not performing</option>
+                  {BAND_INSTRUMENTS.map(i => <option key={i} value={i}>{i}</option>)}
+                </select>
+                <button onClick={() => setForm(prev => ({ ...prev, personnel: prev.personnel.filter((_, i) => i !== idx) }))}
+                  style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: 4, lineHeight: 1, flexShrink: 0, display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
+              </div>
+            ))}
+          </div>
         </Card>
 
         <Card style={{ marginBottom: 16 }}>
