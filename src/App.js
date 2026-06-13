@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup } from "./utils/catchupsDB";
 import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
@@ -984,6 +984,11 @@ export default function MusicTimetableApp() {
   const tallyEntriesRef = useRef([]);
   const schoolsRef = useRef([]);
   const [notification, setNotification] = useState(null);
+  // Remove-teacher choice modal (item 11). null | { modalText, apply } where
+  // apply(mode) runs the deferred removal — mode "keep" (end-date the lane, keep
+  // this week live) or "clear" (archive, also clear this week). Cancel just nulls
+  // this, never calls apply.
+  const [removeStaffModal, setRemoveStaffModal] = useState(null);
   const [quickAddTodoTrigger, setQuickAddTodoTrigger] = useState(0);
   const [quickAddReminderTrigger, setQuickAddReminderTrigger] = useState(0);
   // Defined immediately after setNotification to prevent temporal dead zone in HMR
@@ -1735,51 +1740,82 @@ export default function MusicTimetableApp() {
       ? `Remove ${teacherName} from ${lane.day}s at ${schoolName}? No lessons are currently scheduled.`
       : `Remove ${teacherName} from ${lane.day}s at ${schoolName}? ${total} current and future lessons will be unscheduled.`;
 
-    if (!window.confirm(modalText)) return;
+    // Defer the actual mutation behind the keep-vs-clear choice modal (item 11).
+    // The lane, closures (lessonBelongsToLane / catchupBelongsToLane) and
+    // currentMondayStr computed above are captured by applyRemoval; the modal's
+    // buttons pick the branch. Cancel never calls applyRemoval — a true no-op.
+    const applyRemoval = async (mode) => {
+      const keepThisWeek = mode === "keep";
 
-    // Archive — only step that can throw.
-    try {
-      await archiveTeacherCoverage({ id: lane.id });
-    } catch (e) {
-      try { notify(`Failed to remove ${teacherName}`, "error"); } catch (_) {}
-      if (logError) logError("Remove staff failed", e?.message);
-      return;
-    }
-
-    // Local-state sweep — synchronous filters, can't fail individually.
-    setTeacherCoverage(prev => prev.filter(l => l.id !== lane.id));
-    setTimetable(prev => {
-      if (!prev) return prev;
-      return { ...prev, lessons: (prev.lessons || []).filter(l => !lessonBelongsToLane(l)) };
-    });
-    setWeeklyTimetables(prev => {
-      const next = { ...prev };
-      Object.entries(next).forEach(([key, data]) => {
-        const [weekKey, suffix] = key.split("|");
-        if (suffix !== lane.schoolId) return;
-        if (weekKey < currentMondayStr) return;
-        next[key] = { ...data, lessons: (data.lessons || []).filter(l => !lessonBelongsToLane(l)) };
-      });
-      return next;
-    });
-
-    // Spec 3 cluster 11b-A — catchups for this lane are deleted from the
-    // canonical catchups Supabase table. Each delete is individually
-    // try/catch'd so one failure doesn't abort the rest; setCatchups
-    // runs once after the loop for atomic local state update.
-    const catchupsToRemove = (catchups || []).filter(catchupBelongsToLane);
-    if (catchupsToRemove.length > 0) {
-      for (const c of catchupsToRemove) {
-        try {
-          await deleteCatchup({ id: c.id });
-        } catch (e) {
-          logError(`Failed to delete catchup ${c.id} during lane removal`, e?.message || String(e));
+      // Keep: end-date the lane (effective_to = this week's Monday) so it stays
+      // live this week and stops applying to future weeks / the MTT — status
+      // stays 'active'. Clear: archive the lane (today's behaviour). Only step
+      // that can throw.
+      try {
+        if (keepThisWeek) {
+          await setLaneEffectiveTo({ id: lane.id, effectiveTo: currentMondayStr });
+        } else {
+          await archiveTeacherCoverage({ id: lane.id });
         }
+      } catch (e) {
+        try { notify(`Failed to remove ${teacherName}`, "error"); } catch (_) {}
+        if (logError) logError("Remove staff failed", e?.message);
+        return;
       }
-      setCatchups(prev => prev.filter(c => !catchupBelongsToLane(c)));
-    }
 
-    try { notify(`Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
+      // Local-state lane update — keep: stamp effectiveTo in place so this session
+      // resolves the current week live and future/MTT revert (lane stays in the
+      // array). Clear: drop the lane entirely. Synchronous, can't fail.
+      setTeacherCoverage(prev => keepThisWeek
+        ? prev.map(l => l.id === lane.id ? { ...l, effectiveTo: currentMondayStr } : l)
+        : prev.filter(l => l.id !== lane.id));
+      // MTT always loses the teacher (no week dimension — future-only by nature).
+      setTimetable(prev => {
+        if (!prev) return prev;
+        return { ...prev, lessons: (prev.lessons || []).filter(l => !lessonBelongsToLane(l)) };
+      });
+      // WTT — keep path sweeps STRICTLY-future weeks only (current week is left
+      // untouched: the still-live end-dated lane resolves those cards normally,
+      // no stamping). Clear path sweeps current + future. Past weeks
+      // (< currentMondayStr) are never swept in either mode.
+      setWeeklyTimetables(prev => {
+        const next = { ...prev };
+        Object.entries(next).forEach(([key, data]) => {
+          const [weekKey, suffix] = key.split("|");
+          if (suffix !== lane.schoolId) return;
+          const skipWeek = keepThisWeek ? weekKey <= currentMondayStr : weekKey < currentMondayStr;
+          if (skipWeek) return;
+          next[key] = { ...data, lessons: (data.lessons || []).filter(l => !lessonBelongsToLane(l)) };
+        });
+        return next;
+      });
+
+      // Spec 3 cluster 11b-A — catchups for this lane are deleted from the
+      // canonical catchups Supabase table. Each delete is individually
+      // try/catch'd so one failure doesn't abort the rest; setCatchups runs once
+      // after the loop. Keep path deletes FUTURE only — current-week catch-ups
+      // for the lane are kept (past already excluded by catchupBelongsToLane).
+      const catchupsToRemove = (catchups || []).filter(c => {
+        if (!catchupBelongsToLane(c)) return false;
+        if (keepThisWeek && c.weekKey === currentMondayStr) return false;
+        return true;
+      });
+      if (catchupsToRemove.length > 0) {
+        for (const c of catchupsToRemove) {
+          try {
+            await deleteCatchup({ id: c.id });
+          } catch (e) {
+            logError(`Failed to delete catchup ${c.id} during lane removal`, e?.message || String(e));
+          }
+        }
+        const removeIds = new Set(catchupsToRemove.map(c => c.id));
+        setCatchups(prev => prev.filter(c => !removeIds.has(c.id)));
+      }
+
+      try { notify(keepThisWeek ? `Removed ${teacherName} from future ${lane.day}s — this week kept` : `Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
+    };
+
+    setRemoveStaffModal({ modalText, apply: applyRemoval });
   }, [sessionUserId, teachers, schools, teacherCoverage, timetable, weeklyTimetables, catchups, setCatchups, enrolments, deleteCatchup, logError]);
 
   // Load data on mount — uses test data as fallback when storage is empty
@@ -6688,6 +6724,41 @@ export default function MusicTimetableApp() {
                     style={{ padding: "6px 12px", border: `1px solid ${colors.border}`, borderRadius: 7, background: "none", fontSize: 12, cursor: "pointer", fontFamily: "inherit", color: colors.textMuted }}>Cancel</button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Remove-teacher choice modal (item 11: keep vs clear this week) ── */}
+      {removeStaffModal && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9991, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setRemoveStaffModal(null)}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.25)", width: 460, maxWidth: "92vw", display: "flex", flexDirection: "column", overflow: "hidden" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding: "18px 22px 14px", borderBottom: `1px solid ${colors.border}` }}>
+              <span style={{ fontWeight: 700, fontSize: 15, color: colors.text }}>Remove teacher</span>
+            </div>
+            <div style={{ padding: "16px 22px", fontSize: 13.5, lineHeight: 1.55, color: colors.text }}>
+              {removeStaffModal.modalText}
+              <div style={{ marginTop: 10, fontSize: 12.5, color: colors.textMuted }}>
+                The master timetable and all future weeks lose this teacher either way — choose what happens to <strong>this week</strong>.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", padding: "12px 22px 18px", flexWrap: "wrap" }}>
+              <button onClick={() => setRemoveStaffModal(null)}
+                style={{ padding: "8px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: "none", color: colors.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                Cancel
+              </button>
+              <button onClick={() => { const m = removeStaffModal; setRemoveStaffModal(null); m.apply("clear"); }}
+                style={{ padding: "8px 14px", border: `1px solid ${colors.border}`, borderRadius: 8, background: "none", color: colors.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = colors.danger; e.currentTarget.style.color = colors.danger; e.currentTarget.style.background = colors.redLight; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = colors.border; e.currentTarget.style.color = colors.textMuted; e.currentTarget.style.background = "none"; }}>
+                Also clear this week
+              </button>
+              <button autoFocus onClick={() => { const m = removeStaffModal; setRemoveStaffModal(null); m.apply("keep"); }}
+                style={{ padding: "8px 16px", border: "none", borderRadius: 8, background: colors.accent, color: "#fff", fontSize: 13, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+                Keep this week's lessons
+              </button>
             </div>
           </div>
         </div>
