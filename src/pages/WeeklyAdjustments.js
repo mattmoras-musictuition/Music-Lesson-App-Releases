@@ -5122,7 +5122,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         const sid = draggingId.split(":")[1];
                                         dl = (weeklyData.catchupStaged || []).find(c => c.id === sid) || null;
                                       } else {
-                                        dl = (weeklyData ? weeklyData.lessons : []).find(l => l.id === draggingId);
+                                        // Fall back to wLessons (the merged catch-up-inclusive pool built
+                                        // above in this IIFE) so a dragged catch-up — bare id, not in
+                                        // weeklyData.lessons — resolves here. It carries studentId, schoolId
+                                        // and the stamped `end`, so the checkConstraints + specialist
+                                        // computation below light up the live hover panel like a normal card.
+                                        dl = (weeklyData ? weeklyData.lessons : []).find(l => l.id === draggingId) || (wLessons || []).find(l => l.id === draggingId);
                                       }
                                       const sl = (currentSchool.slots || []).find(s => s.start === time);
                                       if (dl && sl) {
@@ -5371,7 +5376,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       // (writes to weekly_adjustments JSONB).
                                       const payload = l.__isCatchup ? "catchup:" + l.id : l.id;
                                       e.dataTransfer.setData("text/plain", payload); e.dataTransfer.effectAllowed = "move";
-                                      setDraggingId(l.__isCatchup ? "catchup:" + l.id : l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
+                                      // draggingId is the BARE id for catch-ups too (the catchup: prefix
+                                      // stays only on the dataTransfer payload above, which the drop handler
+                                      // routes on). Bare id lets the in-place tag/dim guards (draggingId
+                                      // === l.id) match, so the tag clears and the card dims on pickup like
+                                      // a normal card.
+                                      setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {};
                                       // Cluster 12a: drag auto-clear of _swapTeacherId removed (mechanism gone).
                                     }}
                                     onDragEnd={() => { setDraggingId(null); setDragOver(null); hideHoverPanel(); dragCache.current = {}; }}
