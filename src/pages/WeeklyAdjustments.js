@@ -23,7 +23,7 @@ import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
-import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson } from "../utils/constraints";
+import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
@@ -1314,6 +1314,34 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return changed ? updated : prev;
     });
   }, [weeklyTimetables, storageKey, students, teachers, schools, enrolments, bands, groups, interruptions, specialists, timetable]);
+
+  // Card-scoped constraint warnings for catch-up cards ONLY. Catch-ups are never
+  // in weeklyData.lessons, so the global constraintWarnings recompute (above) and
+  // the visibleWarnings gate can't reach them. This SEPARATE map (keyed by the
+  // catch-up's stable DB id) gives the period-grid catch-up card the same
+  // checkConstraints surface a normal card gets, WITHOUT touching the global
+  // store or its weeklyData.lessons purge. checkConstraints reads its time window
+  // from the slot param (not lesson.end) and routes a non-group/non-band object
+  // to the individual branch, so the merged catchup shape is accepted as-is —
+  // same pattern the Add-lesson/temp paths already use. The "no teacher assigned"
+  // category is suppressed: catch-ups carry no teacher by design, so it would be
+  // meaningless noise (it can't mask a real double-booking — that branch is
+  // skipped whenever a lesson is unassigned). The clash pool is weeklyData.lessons,
+  // so catchup-vs-regular clashes surface; catchup-vs-catchup is out of scope.
+  const catchupWarnings = useMemo(() => {
+    const out = {};
+    const baseLessons = weeklyData?.lessons || [];
+    for (const c of (enrichedCatchups || [])) {
+      if (c.weekKey !== weekKey) continue;
+      const slots = (schools || []).find(s => s.id === c.schoolId)?.slots || [];
+      const slot = slots.find(sl => sl.start === c.time) || { start: c.time, end: c.time };
+      const merged = { ...c, start: c.time, __isCatchup: true };
+      const raw = checkConstraints(merged, c.day, slot, baseLessons, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
+      const filtered = raw.filter(w => w !== UNASSIGNED_TEACHER_WARNING);
+      if (filtered.length > 0) out[c.id] = filtered;
+    }
+    return out;
+  }, [enrichedCatchups, weekKey, weeklyData, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons]);
 
 
   useEffect(() => {
@@ -5239,7 +5267,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   // banner, the sidebar badge and the Dashboard count all agree.
                                   // Past lessons (or future lessons with a past relational partner)
                                   // simply have no entry here. Ack state untouched.
-                                  const cWarnings = visibleWarnings[l.id] || [];
+                                  // Catch-up cards aren't in the global visibleWarnings pipeline
+                                  // (they're never in weeklyData.lessons); fall back to the
+                                  // card-scoped catchupWarnings map for them. Ack still keys on l.id
+                                  // (the catch-up's stable DB id) via the regular-card handlers below.
+                                  const cWarnings = visibleWarnings[l.id] ?? catchupWarnings[l.id] ?? [];
                                   // ── Band session card ──
                                   if (l.isBandSession) {
                                     const bandMembers = (l.members || []);

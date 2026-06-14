@@ -12,6 +12,14 @@ import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
 
+// Single source of truth for the unassigned-teacher warning string. Exported so
+// catch-up card warnings (which carry no teacher by design) can suppress ONLY
+// this category by exact match without re-typing the literal. This is the sole
+// push site for the "no teacher" category — when _wttUnassigned is true the
+// teacher-double-booking branch is skipped (teacher resolves to null), so this
+// string can never be confused with a genuine double-booking warning.
+export const UNASSIGNED_TEACHER_WARNING = "No teacher assigned — assign a teacher in student details";
+
 // ============================================================
 // Teacher double-booking — shared single source of truth (bug-2 + MTT parity).
 // Both this file's WTT checker and the MTT shadow checker in TimetableView.js
@@ -311,7 +319,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   if (hints.preferredDays && hints.preferredDays.length > 0 && !hints.preferredDays.includes(newDay)) warnings.push(`Preferred day${hints.preferredDays.length > 1 ? "s" : ""}: ${hints.preferredDays.join(", ")}`);
   const _wttUnassigned = isLessonUnassigned(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
   if (_wttUnassigned) {
-    warnings.push("No teacher assigned — assign a teacher in student details");
+    warnings.push(UNASSIGNED_TEACHER_WARNING);
   }
   // Lane-first via getLiveTeacherId; fallback chain (instrument enrolment → stamped) lives in the helper.
   const liveTeacherId = getLiveTeacherId(lesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
