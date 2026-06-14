@@ -969,10 +969,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const en = (enrolments || []).find(e => e.id === c.enrolmentId);
       const laneResult = getDayLaneTeacher(teacherCoverage, teachers, c.schoolId, c.day);
       const stu = en ? students.find(s => s.id === en.studentId) : null;
-      const base = en ? { ...c, studentId: en.studentId, studentName: stu?.name || "" } : c;
+      // Slot-derived `end` so render-time specialist-overlap (getLiveSpecialistTag,
+      // which reads lesson.end) resolves — the raw catchup row carries only `time`.
+      // Resolve from the catch-up's OWN school's slots; zero-duration fallback to
+      // c.time when no slot matches (keeps the overlap test honest, just no match).
+      const slots = (schools || []).find(s => s.id === c.schoolId)?.slots || [];
+      const end = slots.find(sl => sl.start === c.time)?.end || c.time;
+      const base = en ? { ...c, studentId: en.studentId, studentName: stu?.name || "", end } : { ...c, end };
       return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
     })
-  ), [selectedSchool, catchups, enrolments, teacherCoverage, teachers, students]);
+  ), [selectedSchool, catchups, enrolments, teacherCoverage, teachers, students, schools]);
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
