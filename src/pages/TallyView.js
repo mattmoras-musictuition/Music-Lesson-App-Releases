@@ -572,8 +572,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         Tally
       </PageTitle>
 
-      {/* Summary cards — two rows of three */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
+      {/* Summary cards — single row of six */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10, marginBottom: 20 }}>
         {[
           { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○" },
           { label: "Completed", value: stats.completed, color: colors.success, bg: `${colors.success}18`, icon: "✓" },
@@ -582,7 +582,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
           { label: "Makeup Scheduled", value: stats.makeupScheduled, color: colors.blue600, bg: `${colors.blue600}18`, icon: "◷" },
           { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺" },
         ].map(s => (
-          <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 18px", minWidth: 0, display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
+          <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 14px", minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, flexShrink: 0 }}>{s.value}</div>
             <div style={{ fontSize: 13, fontWeight: 600, color: colors.gray700, lineHeight: 1.3 }}>{s.label}</div>
           </div>
