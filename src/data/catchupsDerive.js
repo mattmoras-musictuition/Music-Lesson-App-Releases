@@ -273,10 +273,48 @@ export function isCatchupCompleted(catchup, now) {
  * @returns {boolean}
  */
 export function isCaughtUpCell(entry, bankingIndex, now) {
-  if (!entry || entry.status !== "missed" || !entry.makeupEligible || entry.madeUp) return false;
-  if (!bankingIndex || entry.enrolmentId == null || entry.weekKey == null) return false;
-  const catchup = bankingIndex.get(`${entry.enrolmentId}|${entry.weekKey}`) || null;
+  const catchup = getBankingCatchupForEntry(entry, bankingIndex);
   return !!(catchup && isCatchupCompleted(catchup, now));
+}
+
+/**
+ * Shared entry-guard + banking lookup for the two catch-up overlay
+ * predicates (isCaughtUpCell / isScheduledCatchupCell). Returns the
+ * banking catch-up resolving this cell, or null when the entry isn't an
+ * open eligible miss or no banking catch-up exists. Factored so the two
+ * predicates can never drift on the guard or the lookup key — they
+ * differ ONLY on the slot-time-passed branch.
+ *
+ * @param {object|null} entry
+ * @param {Map<string,Catchup>} bankingIndex
+ * @returns {Catchup|null}
+ */
+function getBankingCatchupForEntry(entry, bankingIndex) {
+  if (!entry || entry.status !== "missed" || !entry.makeupEligible || entry.madeUp) return null;
+  if (!bankingIndex || entry.enrolmentId == null || entry.weekKey == null) return null;
+  return bankingIndex.get(`${entry.enrolmentId}|${entry.weekKey}`) || null;
+}
+
+/**
+ * Spec 3 cluster 8 sibling — the "make-up scheduled" overlay predicate.
+ *
+ * The exact inverse of isCaughtUpCell on the time check only: same entry
+ * guard, same banking lookup (both via getBankingCatchupForEntry), opposite
+ * slot-time-passed branch. Reads true when the underlying entry is a missed,
+ * makeup-eligible, not-yet-made-up lesson that HAS a banking catch-up booked
+ * whose scheduled slot time has NOT yet passed — i.e. a make-up is on the
+ * calendar but hasn't happened. Pure render/derive-time classification; the
+ * WTT entry is never mutated.
+ *
+ * @param {object|null} entry  A tally entry/shim carrying status,
+ *                             makeupEligible, madeUp, enrolmentId, weekKey.
+ * @param {Map<string,Catchup>} bankingIndex  From buildBankingIndex(catchups).
+ * @param {Date} [now]  Injectable clock, forwarded to isCatchupCompleted.
+ * @returns {boolean}
+ */
+export function isScheduledCatchupCell(entry, bankingIndex, now) {
+  const catchup = getBankingCatchupForEntry(entry, bankingIndex);
+  return !!(catchup && !isCatchupCompleted(catchup, now));
 }
 
 /**

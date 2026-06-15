@@ -21,7 +21,7 @@
 
 import { getTermWeekLabel } from "./helpers";
 import { isDayPast6pm } from "./tallyHelpers";
-import { buildBankingIndex, isCaughtUpCell } from "../data/catchupsDerive";
+import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell } from "../data/catchupsDerive";
 
 // Internal predicate — single source of "open catch-up" semantics.
 // Mirrors the audit's banked follow-up #1 (single-source predicate)
@@ -592,10 +592,11 @@ export function findOpenCatchups({ weeklyTimetables, studentId, schoolId } = {})
  * @param {Array} params.termWeeks
  * @param {string} [params.schoolFilter="all"]
  * @param {Array} [params.catchups=[]] - Catchups collection. When supplied,
- *   cells already caught up via a banking catch-up whose slot has passed
- *   (isCaughtUpCell) are excluded — exactly as TallyView's makeupOwed tile
- *   does — so the chip count and the tally can't drift. Omit to keep the
- *   raw owed list (callers that do their own already-scheduled filtering).
+ *   cells with a banking catch-up are excluded whether the catch-up's slot has
+ *   already passed (isCaughtUpCell) or is still scheduled ahead (isScheduled-
+ *   CatchupCell) — exactly as TallyView's "Unscheduled Makeups" tile does — so
+ *   the chip count and the tally can't drift. Omit to keep the raw owed list
+ *   (callers that do their own already-scheduled filtering).
  * @returns {{weekKey: string, missed: Object}[]}
  */
 export function getOpenCatchupRows({
@@ -613,9 +614,12 @@ export function getOpenCatchupRows({
   });
   const lessonKeySet = new Set(tallyRows.map(r => r.lessonKey));
   const termWeekKeys = new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey));
-  // Same banking-index + isCaughtUpCell predicate TallyView's makeupOwed tile
-  // uses. With catchups omitted the index is empty and isCaughtUpCell is a
-  // no-op, so legacy callers are unaffected.
+  // Same banking-index + overlay predicates TallyView's "Unscheduled Makeups"
+  // tile uses. Both a caught-up cell (catch-up slot already passed) and a
+  // scheduled cell (catch-up booked, slot not yet passed) are excluded, so the
+  // chip counts only misses with no catch-up booked at all — exactly the
+  // Unscheduled Makeups tile. With catchups omitted the index is empty and both
+  // predicates are no-ops, so legacy callers are unaffected.
   const bankingIndex = buildBankingIndex(catchups || []);
   const out = [];
   for (const e of Object.values(entryMap)) {
@@ -624,6 +628,7 @@ export function getOpenCatchupRows({
     if (e.status !== "missed") continue;
     if (!e.makeupEligible || e.madeUp) continue;
     if (isCaughtUpCell(e, bankingIndex)) continue;
+    if (isScheduledCatchupCell(e, bankingIndex)) continue;
     out.push({ weekKey: e.weekKey, missed: e });
   }
   return out;

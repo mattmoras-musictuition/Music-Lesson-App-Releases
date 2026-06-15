@@ -9,7 +9,7 @@ import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getPare
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
-import { buildBankingIndex, isCaughtUpCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
+import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -146,11 +146,18 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     const completed = visibleEntries.filter(e => e.status === "completed").length;
     const missed = visibleEntries.filter(e => e.status === "missed").length;
     // Spec 3 cluster 8 — a caught-up overlay cell (banking catch-up whose slot
-    // has passed) reads as "Made Up", not "Makeup Owed". Same isCaughtUpCell
+    // has passed) reads as "Made Up", not a makeup still owed. Same isCaughtUpCell
     // predicate the grid renderer uses, so tiles and grid never diverge.
-    const makeupOwed = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && !isCaughtUpCell(e, bankingIndex)).length;
+    //
+    // The old single "Makeup Owed" bucket now splits in two, partitioning every
+    // missed/eligible/!madeUp entry into exactly one of three tiles:
+    //   unscheduledMakeups — no banking catch-up booked at all
+    //   makeupScheduled    — a catch-up is booked but its slot hasn't passed yet
+    //   madeUp             — formally made up, OR caught up (slot already passed)
+    const unscheduledMakeups = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && !isCaughtUpCell(e, bankingIndex) && !isScheduledCatchupCell(e, bankingIndex)).length;
+    const makeupScheduled = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && isScheduledCatchupCell(e, bankingIndex)).length;
     const madeUp = visibleEntries.filter(e => e.madeUp || isCaughtUpCell(e, bankingIndex)).length;
-    return { totalCells, completed, missed, makeupOwed, madeUp, unmarked: totalCells - completed - missed };
+    return { totalCells, completed, missed, unscheduledMakeups, makeupScheduled, madeUp, unmarked: totalCells - completed - missed };
   }, [entryMap, lessonRows, termWeeks, termWeekKeys, bankingIndex]);
 
   // Private-students panel stats — mirrors the main grid's `stats` shape
@@ -524,7 +531,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   if (!timetable) {
     return (
       <div>
-        <PageTitle subtitle="Track lesson completion across all schools and teachers" pageColor={PAGE_COLORS.tally}>Master Tally</PageTitle>
+        <PageTitle subtitle="Track lesson completion across all schools and teachers" pageColor={PAGE_COLORS.tally}>Tally</PageTitle>
         <EmptyState icon={<ClipboardCheck size={32} />} title="No master timetable yet" subtitle="Generate a master timetable first to use the Tally." />
       </div>
     );
@@ -562,19 +569,20 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
           </Btn>
           {onExport && <Btn onClick={() => onExport(null, "", "tally")}><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Send size={13} /> Export</span></Btn>}
         </div>}>
-        Master Tally
+        Tally
       </PageTitle>
 
-      {/* Summary cards */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "nowrap", overflowX: "auto" }}>
+      {/* Summary cards — two rows of three */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
         {[
           { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○" },
           { label: "Completed", value: stats.completed, color: colors.success, bg: `${colors.success}18`, icon: "✓" },
-          { label: "Absent (no makeup)", value: stats.missed - stats.makeupOwed - stats.madeUp, color: colors.danger, bg: colors.redLight, icon: "✕" },
-          { label: "Makeup Owed", value: stats.makeupOwed, color: colors.accent, bg: colors.accentLight, icon: "●" },
+          { label: "Absent (no makeup)", value: stats.missed - stats.unscheduledMakeups - stats.makeupScheduled - stats.madeUp, color: colors.danger, bg: colors.redLight, icon: "✕" },
+          { label: "Unscheduled Makeups", value: stats.unscheduledMakeups, color: colors.accent, bg: colors.accentLight, icon: "●" },
+          { label: "Makeup Scheduled", value: stats.makeupScheduled, color: colors.blue600, bg: `${colors.blue600}18`, icon: "◷" },
           { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺" },
         ].map(s => (
-          <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 18px", flex: "1 1 0", minWidth: 0, display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
+          <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 18px", minWidth: 0, display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
             <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, flexShrink: 0 }}>{s.value}</div>
             <div style={{ fontSize: 13, fontWeight: 600, color: colors.gray700, lineHeight: 1.3 }}>{s.label}</div>
           </div>

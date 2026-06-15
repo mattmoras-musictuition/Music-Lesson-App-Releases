@@ -5049,7 +5049,7 @@ export default function MusicTimetableApp() {
             { id: "calendar", icon: <Calendar size={16} />, label: "Calendar" },
             { id: "timetable", icon: <LayoutGrid size={16} />, label: "Master Timetable" },
             { id: "weekly", icon: <CalendarDays size={16} />, label: "Weekly Adjustments" },
-            { id: "tally", icon: <ClipboardCheck size={16} />, label: "Master Tally" },
+            { id: "tally", icon: <ClipboardCheck size={16} />, label: "Tally" },
             { id: "students", icon: <GraduationCap size={16} />, label: "Students" },
             { id: "studentnotes", icon: <NotebookPen size={16} />, label: "Student Notes" },
             { id: "bands", icon: <Piano size={16} />, label: "Bands" },
