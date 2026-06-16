@@ -320,7 +320,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   }, [flatRows]);
 
   // ── Cell render ─────────────────────────────────────────────
-  const CellIcon = ({ entry, isFuture, caughtUp }) => {
+  const CellIcon = ({ entry, isFuture, caughtUp, scheduled }) => {
     if (!entry) {
       return <span style={{ color: isFuture ? "#9CA3AF" : "#C4C9D4", display: "inline-flex", alignItems: "center" }}><span style={{ width: 12, height: 12, borderRadius: "50%", border: `1.5px solid currentColor`, display: "inline-block" }} /></span>;
     }
@@ -329,7 +329,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     if (entry.status === "missed") {
       if (entry.madeUp) return <span style={{ color: colors.sidebarActive, display: "inline-flex", alignItems: "center" }}><RotateCcw size={13} /></span>;
       if (caughtUp) return <span style={{ color: colors.blue600, display: "inline-flex", alignItems: "center" }}><Check size={14} /></span>;
-      if (entry.makeupEligible) return <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: colors.accent }} />;
+      if (entry.makeupEligible) return <span style={{ display: "inline-block", width: 12, height: 12, borderRadius: "50%", background: scheduled ? colors.blue600 : colors.accent }} />;
       return <span style={{ color: colors.danger, display: "inline-flex", alignItems: "center" }}><X size={13} /></span>;
     }
     return null;
@@ -601,6 +601,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             { icon: <span style={{ width: 11, height: 11, borderRadius: "50%", border: "1.5px solid #9CA3AF", display: "inline-block" }} />, color: "#9CA3AF", label: "Unmarked" },
             { icon: <Check size={13} />, color: colors.success, label: "Completed" },
             { icon: <span style={{ width: 10, height: 10, borderRadius: "50%", background: colors.accent, display: "inline-block" }} />, color: colors.accent, label: "Makeup owed" },
+            { icon: <span style={{ width: 10, height: 10, borderRadius: "50%", background: colors.blue600, display: "inline-block" }} />, color: colors.blue600, label: "Makeup scheduled" },
             { icon: <RotateCcw size={12} />, color: colors.sidebarActive, label: "Made up" },
             { icon: <Check size={13} />, color: colors.blue600, label: "Caught up" },
             { icon: <X size={13} />, color: colors.danger, label: "No catch-up" },
@@ -750,6 +751,12 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                             && lesson.enrolmentId
                           ) ? (bankingIndex.get(`${lesson.enrolmentId}|${w.weekKey}`) || null) : null;
                           const caughtUp = isCaughtUpCell(displayEntry, bankingIndex);
+                          // Spec 3 cluster 8 sibling — a banking catch-up booked
+                          // but whose slot time hasn't passed flips the orange
+                          // "makeup owed" dot to a BLUE dot. Same predicate +
+                          // arguments the "Makeup Scheduled" tile counts, so grid
+                          // and tile never diverge. caughtUp wins over scheduled.
+                          const scheduled = isScheduledCatchupCell(displayEntry, bankingIndex);
 
                           return (
                             <td key={w.weekKey}
@@ -781,7 +788,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                               onMouseLeave={() => { setHoveredWeekKey(null); setTallyTooltip(null); }}>
                               {!holidayBlank && (
                                 <div style={{ width: 28, height: 28, margin: "0 auto", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: displayEntry ? (displayEntry.status === "completed" ? `${colors.success}18` : displayEntry.status === "removed" ? (darkMode ? colors.inputBg : "#F9FAFB") : displayEntry.madeUp ? "rgba(52,69,101,0.07)" : caughtUp ? `${colors.blue600}18` : displayEntry.makeupEligible ? colors.accentLight : colors.redLight) : "transparent" }}>
-                                  <CellIcon entry={displayEntry} isFuture={future} caughtUp={caughtUp} />
+                                  <CellIcon entry={displayEntry} isFuture={future} caughtUp={caughtUp} scheduled={scheduled} />
                                 </div>
                               )}
                             </td>
