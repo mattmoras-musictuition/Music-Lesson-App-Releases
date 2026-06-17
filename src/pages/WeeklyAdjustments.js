@@ -457,7 +457,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // derived) so the value pushed to App.js is the past-dated-GATED warning set,
   // keeping the sidebar nav badge in agreement with the cards / banner / Dashboard.
   const [contextMenu, setContextMenu] = useState(null);
-  // Per-day teacher-actuals ghost visibility. Key: `${weekKey}_${day}`.
+  // Per-day teacher-actuals ghost visibility. Key: `${weekKey}|${selectedSchool}|${day}`
+  // — scoped to the viewed school + week so a toggle never leaks to other schools.
   // Default empty = all days hidden. Session-scoped (not persisted).
   const [dayGhostsVisible, setDayGhostsVisible] = useState({});
   const [pendingSubmenu, setPendingSubmenu] = useState(null);
@@ -5048,7 +5049,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 // view IS the actuals. No toggle needed.
                                 const isDayDrained = dayDateStr && dayDateStr < melbourneToday();
                                 if (isDayDrained) return null;
-                                const ghostKey = `${weekKey}_${d}`;
+                                const ghostKey = `${weekKey}|${selectedSchool}|${d}`;
                                 const ghostsVisible = !!dayGhostsVisible[ghostKey];
                                 return (
                                   <button
@@ -5195,7 +5196,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     toggle is ON these are the only lesson layer
                                     for that day (admin cards hidden below). */}
                                 {(() => {
-                                  const ghostKey = `${weekKey}_${day}`;
+                                  const ghostKey = `${weekKey}|${selectedSchool}|${day}`;
                                   if (!dayGhostsVisible[ghostKey]) return null;
                                   // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
                                   const ghostDayLanes = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey);
@@ -5269,7 +5270,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       title="Remove break" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>
                                   </div>
                                 )}
-                                {!dayGhostsVisible[`${weekKey}_${day}`] && cellLessons.map((l, li) => {
+                                {!dayGhostsVisible[`${weekKey}|${selectedSchool}|${day}`] && cellLessons.map((l, li) => {
                                   // v2.9.12 past-dated display gate: read from the single gated
                                   // source of truth (visibleWarnings) so the card, the conflicts
                                   // banner, the sidebar badge and the Dashboard count all agree.
@@ -5507,7 +5508,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   {weeklyData.missed.map((m, i) => {
                     // When the day's Actuals toggle is ON, hide admin's missed for that day —
                     // teacher's missed will render below in their place.
-                    if (m.day && dayGhostsVisible[`${weekKey}_${m.day}`]) return null;
+                    if (m.day && dayGhostsVisible[`${weekKey}|${selectedSchool}|${m.day}`]) return null;
                     const isSelectedMissed = selectedMissed.has(i);
                     const missedStudent = !m.isGroup ? students.find(s => s.id === m.studentId) : null;
                     const missedClassName = missedStudent?.className || "";
@@ -5557,7 +5558,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       Only renders for days whose Actuals toggle is ON; admin's
                       missed for those same days are hidden above. */}
                   {currentTeacherActualsMissed
-                    .filter(tm => tm.day && dayGhostsVisible[`${weekKey}_${tm.day}`])
+                    .filter(tm => tm.day && dayGhostsVisible[`${weekKey}|${selectedSchool}|${tm.day}`])
                     .map((tm, ti) => {
                       const tmColor = getInstColor(tm.instrument, tm.isGroup);
                       const tmStudent = !tm.isGroup ? students.find(s => s.id === tm.studentId) : null;
