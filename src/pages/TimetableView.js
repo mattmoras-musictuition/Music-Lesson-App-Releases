@@ -1702,7 +1702,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                           }}
                           onDragOver={e => {
                             e.preventDefault(); e.dataTransfer.dropEffect = "move";
-                            setDragOver({ day, time: row.time });
+                            // Coalesce: onDragOver fires continuously while the pointer sits in one
+                            // cell. Build a new object (and re-render the grid) only when the target
+                            // cell actually changes — same-cell moves return prev so React bails out.
+                            setDragOver(prev => (prev && prev.day === day && prev.time === row.time) ? prev : { day, time: row.time });
                             if (draggingId && currentSchool) {
                               const ck = day + "|" + row.time + "|" + draggingId;
                               if (!dragCache.current[ck]) {

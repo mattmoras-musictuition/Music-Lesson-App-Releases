@@ -5110,7 +5110,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 }}
                                 onDragOver={e => {
                                 e.preventDefault(); e.dataTransfer.dropEffect = "move";
-                                setDragOver({ day, time });
+                                // Coalesce: onDragOver fires continuously while the pointer sits in one
+                                // cell. Build a new object (and re-render the grid) only when the target
+                                // cell actually changes — same-cell moves return prev so React bails out.
+                                setDragOver(prev => (prev && prev.day === day && prev.time === time) ? prev : { day, time });
                                 if (draggingId && currentSchool) {
                                   const ck = day + "|" + time;
                                   if (!dragCache.current[ck]) {
