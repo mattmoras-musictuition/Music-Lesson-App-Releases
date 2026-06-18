@@ -949,13 +949,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // grid to lessons bound to the day's viewed lane (or, for legacy cards
   // without bucket_id, only show under the default first-added lane).
   // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
-  const displayLessons = (weeklyData?.lessons || []).filter(l => {
+  const displayLessons = useMemo(() => (weeklyData?.lessons || []).filter(l => {
     if (!l.isGroup && l.studentId) {
       const liveStu = students.find(s => s.id === l.studentId);
       if (liveStu?.status === "archived") return false;
     }
     return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
-  });
+  }), [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool]);
 
   // Shared enriched catch-ups for the selected school. ONE source consumed by
   // the period grid (wLessons) AND the day-header export (PDF + Parents/Class
@@ -980,6 +980,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       return laneResult?.lane ? { ...base, bucket_id: laneResult.lane.id } : base;
     })
   ), [selectedSchool, catchups, enrolments, teacherCoverage, teachers, students, schools]);
+
+  // Perf (perf-wtt-memo, Commit 1): the merged catch-up-inclusive lesson pool
+  // for the grid. Previously rebuilt inline inside the grid render IIFE on every
+  // render — including every pointer event (dragOver / hover / contextMenu) —
+  // even though its inputs don't change during pointer interaction. Hoisted to a
+  // component-scope memo so the per-cell and per-card pipeline below reuse one
+  // stable array. Same call, same args, same output as the old inline build.
+  const wLessons = useMemo(
+    () => mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey),
+    [displayLessons, enrichedCatchups, weekKey]
+  );
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
@@ -4867,7 +4878,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // day-header export. mergeCatchupsIntoLessons adds `start: c.time`
                 // so the existing `l.start === time` cell filter at the per-cell
                 // map below sees the catchup at the right slot.
-                const wLessons = mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey);
+                // `wLessons` is now a component-scope memo (perf-wtt-memo Commit 1);
+                // this IIFE just consumes it.
 
                 // Weekly break cards: stored in weeklyData.breaks; fall back to masterBreaks for this school
                 const weeklyBreaks = weeklyData.breaks || (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
