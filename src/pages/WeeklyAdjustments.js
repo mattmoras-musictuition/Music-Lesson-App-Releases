@@ -788,7 +788,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (schools.length > 0 && !selectedSchool) setSelectedSchool(schools[0].id);
   }, [schools]);
 
-  const getWeekDates = (offset) => {
+  const getWeekDates = React.useCallback((offset) => {
     const monday = getCurrentWeekMonday();
     monday.setDate(monday.getDate() + offset * 7);
     return DAYS.map((day, d) => {
@@ -796,12 +796,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       date.setDate(monday.getDate() + d);
       return { day, date: toLocalDateStr(date), dateObj: date };
     });
-  };
+  }, []);
 
-  const weekDates = getWeekDates(weekOffset);
+  // Stable identity across renders: weekDates (and weekDateMap derived from it)
+  // recompute only when the displayed week (weekOffset) actually changes. This
+  // is what keeps the visibleWarnings / catchupWarnings memos (which depend on
+  // weekDateMap) from getting a fresh identity every render — previously the
+  // root of the constraint-warning render loop.
+  const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset, getWeekDates]);
   const weekKey = weekDates[0].date;
-  const weekDateMap = {};
-  for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+  const weekDateMap = useMemo(() => {
+    const m = {};
+    for (const wd of weekDates) m[wd.day] = wd.date;
+    return m;
+  }, [weekDates]);
   // v2.9.12 past-dated display gate: today's date in Melbourne local time, as
   // a 'YYYY-MM-DD' string for comparison against weekDateMap entries.
   const weeklyTodayStr = melbourneToday();
