@@ -1013,6 +1013,88 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return map;
   }, [wLessons]);
 
+  // Perf (perf-wtt-memo, Commit 3): precompute the DATA-derived per-card display
+  // values once, keyed by l.id. These (teacher name via lane resolution, live
+  // instrument from enrolments, member-name list, specialist tags, etc.) used to
+  // run inline for every card on every render — including every pointer event —
+  // even though they depend only on data, never on pointer/selection/drag state.
+  // Each expression is hoisted VERBATIM (same calls, same args, same branching).
+  // Values that genuinely depend on render-local state (warnings/ack/expanded/
+  // drag/selection) stay inline at the card and are NOT in this map.
+  // getLiveSpecialistTag is an in-component helper (unstable identity); its body
+  // is inlined below so this memo depends only on stable imports + reactive data.
+  const cardDisplayById = useMemo(() => {
+    const out = {};
+    for (const l of wLessons) {
+      // Teacher name is derived identically for band + regular cards.
+      const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
+      if (l.isBandSession) {
+        const bandMembers = (l.members || []);
+        const resolvedStudents = bandMembers.map(m => students.find(st => st.id === m.studentId));
+        const memberNames = bandMembers.map((m, mi) => {
+          const s = resolvedStudents[mi];
+          if (!s) return null;
+          // Inline name logic: first name, add surname initial if duplicate first name
+          const first = (s.name || "").split(" ")[0];
+          const hasDupe = resolvedStudents.some((os, oi) => oi !== mi && os && (os.name || "").split(" ")[0] === first);
+          const parts = (s.name || "").split(" ");
+          const displayName = hasDupe && parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
+          return displayName + (m.instrument ? ` (${m.instrument})` : "");
+        }).filter(Boolean);
+        // Specialist conflicts across all members
+        const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
+        const bandSpecTags = (() => {
+          if (!sl) return [];
+          const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start);
+          const specSet = new Set();
+          for (const m of bandMembers) {
+            const ms = students.find(s => s.id === m.studentId);
+            if (!ms?.className) continue;
+            const mSpecs = (specLookupRef[l.schoolId + "|" + ms.className + "|" + l.day] || []).filter(sp => sS < sp.end && sE > sp.start);
+            mSpecs.forEach(sp => specSet.add((sp.subject || "Specialist") + " (" + ms.name.split(" ")[0] + ")"));
+          }
+          return [...specSet];
+        })();
+        out[l.id] = { teacherName, memberNames, bandSpecTags };
+      } else {
+        // Live instrument: if the student's instrument changed, reflect it on the card
+        const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
+        const _cardWInsts = _cardStuW ? instrumentsFromEnrolments(_cardStuW.id, enrolments) : [];
+        const liveInst = _cardStuW
+          ? (_cardWInsts.find(i => i.name === l.instrument)
+              ? l.instrument
+              : (_cardWInsts.find(i => !i.isGroup)?.name || l.instrument))
+          : l.instrument;
+        const _unassigned = isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
+        // Inlined verbatim from getLiveSpecialistTag(l) (lesson -> l).
+        const specialistTag = (() => {
+          const sStart = timeToMin(l.start), sEnd = timeToMin(l.end);
+          if (l.isGroup) {
+            const memberIds = l.studentIds || [];
+            const subjects = [];
+            for (const mid of memberIds) {
+              const ms = students.find(s => s.id === mid);
+              if (!ms || !ms.className) continue;
+              const key = `${l.schoolId}|${ms.className}|${l.day}`;
+              const specs = specLookupRef[key] || [];
+              const match = specs.find(sp => sStart < sp.end && sEnd > sp.start);
+              if (match && !subjects.includes(match.subject || "specialist")) subjects.push(match.subject || "specialist");
+            }
+            return subjects.length > 0 ? subjects.join(", ") : false;
+          }
+          const student = students.find(s => s.id === l.studentId);
+          if (!student) return false;
+          const key = `${l.schoolId}|${student.className}|${l.day}`;
+          const specs = specLookupRef[key] || [];
+          const match = specs.find(sp => sStart < sp.end && sEnd > sp.start);
+          return match ? (match.subject || true) : false;
+        })();
+        out[l.id] = { teacherName, cardStuW: _cardStuW, liveInst, unassigned: _unassigned, specialistTag };
+      }
+    }
+    return out;
+  }, [wLessons, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes, currentSchool, specLookupRef]);
+
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
   // Spec 3 cluster 5b-3c-a — score helper for the catchup picker
@@ -5317,38 +5399,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   // card-scoped catchupWarnings map for them. Ack still keys on l.id
                                   // (the catch-up's stable DB id) via the regular-card handlers below.
                                   const cWarnings = visibleWarnings[l.id] ?? catchupWarnings[l.id] ?? [];
+                                  // Per-card DATA values precomputed once in cardDisplayById (perf-wtt-memo
+                                  // Commit 3). Pointer/selection/warning state stays inline below.
+                                  const _d = cardDisplayById[l.id];
                                   // ── Band session card ──
                                   if (l.isBandSession) {
-                                    const bandMembers = (l.members || []);
-                                    const resolvedStudents = bandMembers.map(m => students.find(st => st.id === m.studentId));
-                                    const memberNames = bandMembers.map((m, mi) => {
-                                      const s = resolvedStudents[mi];
-                                      if (!s) return null;
-                                      // Inline name logic: first name, add surname initial if duplicate first name
-                                      const first = (s.name || "").split(" ")[0];
-                                      const hasDupe = resolvedStudents.some((os, oi) => oi !== mi && os && (os.name || "").split(" ")[0] === first);
-                                      const parts = (s.name || "").split(" ");
-                                      const displayName = hasDupe && parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
-                                      return displayName + (m.instrument ? ` (${m.instrument})` : "");
-                                    }).filter(Boolean);
+                                    const memberNames = _d.memberNames;
                                     const bandWarnings = cWarnings;
                                     const hasBandWarning = bandWarnings.length > 0 && !ackedConstraints.has(l.id);
                                     const bandWarningAcked = bandWarnings.length > 0 && ackedConstraints.has(l.id);
                                     const isBandExpanded = expandedWarnings.has(l.id);
-                                    // Specialist conflicts across all members
-                                    const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
-                                    const bandSpecTags = (() => {
-                                      if (!sl) return [];
-                                      const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start);
-                                      const specSet = new Set();
-                                      for (const m of bandMembers) {
-                                        const ms = students.find(s => s.id === m.studentId);
-                                        if (!ms?.className) continue;
-                                        const mSpecs = (specLookupRef[l.schoolId + "|" + ms.className + "|" + l.day] || []).filter(sp => sS < sp.end && sE > sp.start);
-                                        mSpecs.forEach(sp => specSet.add((sp.subject || "Specialist") + " (" + ms.name.split(" ")[0] + ")"));
-                                      }
-                                      return [...specSet];
-                                    })();
+                                    // Specialist conflicts across all members (precomputed in cardDisplayById)
+                                    const bandSpecTags = _d.bandSpecTags;
                                     return (
                                       <div key={li} draggable
                                         onDragStart={e => { e.dataTransfer.setData("text/plain", l.id); e.dataTransfer.effectAllowed = "move"; setDraggingId(l.id); setExpandedWarnings(new Set()); setHoverPopover(null); dragCache.current = {}; }}
@@ -5380,7 +5442,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
-                                        {(() => { const tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
+                                        {(() => { const tn = _d.teacherName; return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (
                                           <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
@@ -5396,14 +5458,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   const showRed = hasConstraintIssue;
                                   const hasAckedWarning = constraintAcked;
                                   const isExpanded = expandedWarnings.has(l.id);
-                                  // Live instrument: if the student's instrument changed, reflect it on the card
-                                  const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
-                                  const _cardWInsts = _cardStuW ? instrumentsFromEnrolments(_cardStuW.id, enrolments) : [];
-                                  const liveInst = _cardStuW
-                                    ? (_cardWInsts.find(i => i.name === l.instrument)
-                                        ? l.instrument
-                                        : (_cardWInsts.find(i => !i.isGroup)?.name || l.instrument))
-                                    : l.instrument;
+                                  // Live instrument (precomputed in cardDisplayById)
+                                  const liveInst = _d.liveInst;
                                   return (
                                   <div key={li} draggable
                                     onDragStart={e => {
@@ -5470,15 +5526,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     {/* 4: Name + inline note icon */}
                                     <div style={{ fontWeight: 600, color: colors.text, display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
                                       {l.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}
-                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", ")) : ""); })() : (() => { const st = students.find(s => s.id === l.studentId); return getPrefDisplayName(st?.name || l.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}</span>
-                                      {(() => { const _wttSt = !l.isGroup ? students.find(s => s.id === l.studentId) : null; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
+                                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.isGroup && l.studentNames ? (() => { const names = groupDisplayName(l); const classes = (l.studentIds || []).map(sid => { const ms = students.find(s => s.id === sid); return ms?.className || ""; }).filter(Boolean); const uniqueClasses = [...new Set(classes)]; return names + (uniqueClasses.length > 0 ? " — " + (uniqueClasses.length === 1 ? uniqueClasses[0] : uniqueClasses.join(", ")) : ""); })() : (() => { const st = _d.cardStuW; return getPrefDisplayName(st?.name || l.studentName) + (st?.className ? ` · ${st.className}` : ""); })()}</span>
+                                      {(() => { const _wttSt = _d.cardStuW; const noteText = l.cardNote || (_wttSt?.notes || ""); if (!noteText) return null; return <span onClick={e => e.stopPropagation()} onMouseEnter={e => setHoverNotes({ text: noteText, x: e.clientX, y: e.clientY })} onMouseMove={e => setHoverNotes(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : prev)} onMouseLeave={() => setHoverNotes(null)} style={{ color: l.cardNote ? colors.accent : colors.textMuted, cursor: "default", userSelect: "none", flexShrink: 0, display: "inline-flex", alignItems: "center" }}><StickyNote size={10} /></span>; })()}
                                     </div>
                                     {/* 5: Teacher line — shows swap name */}
                                     {/* Cluster 12a: _swapTeacherId branch + _overrideActive purple-text both removed.
                                         Lane resolution carries the substitute-divergence signal at the column level
                                         via clusters 6c/7/8 (cluster 11 was retired as over-engineering). */}
-                                    {(() => { const _tn = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); const _unassigned = isLessonUnassigned(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes); return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
-                                    {(() => { const ds = getLiveSpecialistTag(l); return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
+                                    {(() => { const _tn = _d.teacherName; const _unassigned = _d.unassigned; return <div style={{ color: _unassigned ? colors.danger : colors.textLight }}>{liveInst ? `${liveInst} · ` : ""}{_unassigned ? "Unassigned" : _tn.split(" ")[0]}{l.isTemp && <span style={{ color: colors.danger, fontWeight: 700, fontSize: 10, marginLeft: 4 }}>TEMP</span>}</div>; })()}
+                                    {(() => { const ds = _d.specialistTag; return ds && draggingId !== l.id ? <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {typeof ds === "string" ? ds : "specialist"}</div> : null; })()}
                                     {l.adjusted && <div style={{ fontSize: 10, color: "#D97706", marginTop: 2, fontStyle: "italic", display: "flex", alignItems: "center", gap: 4 }}><RotateCcw size={9} /> {l.adjustReason}</div>}
                                     {isExpanded && <div style={{ position: "absolute", left: -3, right: 0, top: "100%", marginTop: 2, padding: "6px 8px", background: colors.redLight, border: `1px solid ${colors.danger}30`, borderRadius: 6, fontSize: 10, lineHeight: 1.4, zIndex: 20, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>{cWarnings.map((w, wi) => <div key={wi} style={{ color: colors.danger, fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}><AlertTriangle size={10} style={{ flexShrink: 0 }} /> {w}</div>)}</div>}
                                   </div>
