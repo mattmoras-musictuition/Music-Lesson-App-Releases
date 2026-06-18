@@ -28,6 +28,11 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
+// Stable empty array returned for grid cells that have no lessons. Module-level
+// so it keeps the same identity across renders (never recreated), letting empty
+// cells reuse one reference instead of a fresh [] each render (perf-wtt-memo).
+const EMPTY_LESSONS = [];
+
 // ── Shared "is this master lesson present this week?" rule ──────────────────
 // Single source of truth for the weekly "not scheduled this week" check, used
 // by BOTH the amber banner and the right-click "Add unscheduled" menu.
@@ -991,6 +996,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     () => mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey),
     [displayLessons, enrichedCatchups, weekKey]
   );
+
+  // Perf (perf-wtt-memo, Commit 2): pre-group wLessons once into per-cell slices
+  // keyed by `${day}|${start}`, using the SAME fields as the old per-cell filter
+  // (`l.day === day && l.start === time`). The grid render previously ran that
+  // O(cards) filter for every one of ~75 cells on every render (incl. every
+  // pointer event). Building the map once and looking up by key is O(1) per cell.
+  // Iteration order of wLessons is preserved within each bucket, so each cell's
+  // array has identical membership AND order to the old filter output.
+  const lessonsByCell = useMemo(() => {
+    const map = {};
+    for (const l of wLessons) {
+      const key = `${l.day}|${l.start}`;
+      (map[key] || (map[key] = [])).push(l);
+    }
+    return map;
+  }, [wLessons]);
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
@@ -5107,7 +5128,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             </div>
                           ) : schoolDays.map(day => {
                             const cellBreak = wGetBreak(time, day);
-                            const cellLessons = wLessons.filter(l => l.day === day && l.start === time);
+                            const cellLessons = lessonsByCell[`${day}|${time}`] || EMPTY_LESSONS;
                             const blocked = isDayBlocked(day);
                             const isDropTarget = dragOver && dragOver.day === day && dragOver.time === time;
                             const isDayConfirmed = (confirmedDaysMap[weekDateMap[day]] || []).length > 0;
