@@ -4588,12 +4588,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   })
                 )}
               </div>
-              <div style={{ display: "flex", alignItems: "center", background: colors.sidebarHover, borderRadius: 8, overflow: "hidden", height: 34, boxSizing: "border-box", flexShrink: 0 }}>
-                <button onClick={() => setWeekOffset(o => o - 1)} disabled={weekOffset <= minWeekOffset}
-                  style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: weekOffset <= minWeekOffset ? "default" : "pointer", opacity: weekOffset <= minWeekOffset ? 0.3 : 1, fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>‹</button>
-                <div style={{ fontWeight: 700, fontSize: 13, padding: "0 8px", color: colors.white, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{weekLabel}</div>
-                <button onClick={() => setWeekOffset(o => o + 1)}
-                  style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: "pointer", fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>›</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                {/* Past-week WTT edit-unlock toggle — sits to the LEFT of the week
+                    selector and extends leftward. The selector is the last child of
+                    this right-anchored group, so it keeps its original far-right
+                    position whether the toggle is shown (past weeks) or hidden
+                    (current/future). Same gating + onClick as the old RECORD-banner control. */}
+                {!isHolidayWeek && isPastWeek && (
+                  <button onClick={() => setEditUnlocked(v => !v)}
+                    style={{ height: 34, padding: "0 16px", background: "none", border: `1px solid ${colors.border}`, borderRadius: 8, fontSize: 13, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", color: colors.textMuted, boxSizing: "border-box", flexShrink: 0 }}>
+                    {editUnlocked ? "Lock" : "Edit"}
+                  </button>
+                )}
+                <div style={{ display: "flex", alignItems: "center", background: colors.sidebarHover, borderRadius: 8, overflow: "hidden", height: 34, boxSizing: "border-box", flexShrink: 0 }}>
+                  <button onClick={() => setWeekOffset(o => o - 1)} disabled={weekOffset <= minWeekOffset}
+                    style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: weekOffset <= minWeekOffset ? "default" : "pointer", opacity: weekOffset <= minWeekOffset ? 0.3 : 1, fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>‹</button>
+                  <div style={{ fontWeight: 700, fontSize: 13, padding: "0 8px", color: colors.white, letterSpacing: 0.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{weekLabel}</div>
+                  <button onClick={() => setWeekOffset(o => o + 1)}
+                    style={{ background: "none", border: "none", color: colors.cardBg, fontSize: 18, padding: "0 12px", height: "100%", cursor: "pointer", fontFamily: "inherit", lineHeight: 1, display: "flex", alignItems: "center" }}>›</button>
+                </div>
               </div>
             </div>
           </FrozenCard>
@@ -4802,10 +4815,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               <span style={{ background: colors.sidebarActive, color: "#fff", borderRadius: 8, padding: "6px 18px", fontSize: 13, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", border: `2px solid ${colors.sidebarActive}`, boxShadow: "0 2px 8px rgba(52,69,101,0.18)" }}>
                 {weekLabel} RECORD
               </span>
-              <button onClick={() => setEditUnlocked(v => !v)}
-                style={{ padding: "5px 16px", background: "none", border: `1px solid ${colors.border}`, borderRadius: 8, fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", color: colors.textMuted }}>
-                {editUnlocked ? "Lock" : "Edit"}
-              </button>
+              {/* Edit/Lock toggle moved into the floating week-selector banner (FrozenCard) above. */}
             </div>
           )}
           {!isHolidayWeek && !isLocked && (
