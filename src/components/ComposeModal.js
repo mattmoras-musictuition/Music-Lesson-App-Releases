@@ -6,6 +6,7 @@
 
 import React from "react";
 import { Paperclip, File, Library, FileText, Link, X } from "lucide-react";
+import PdfPreviewModal from "./PdfPreviewModal";
 import { TRIGGER_MAP } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 // Session 95: helpers for school-tagged templates — used to pre-select the
@@ -85,6 +86,18 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
   }, [to, students, timetable, weeklyTimetables]);
   const [sending, setSending] = React.useState(false);
   const [attachments, setAttachments] = React.useState(initial.attachments || []);
+  // Click-to-preview: the attachment currently open in the preview overlay
+  // (a PDF → PdfPreviewModal, an image → inline lightbox), or null.
+  const [previewAtt, setPreviewAtt] = React.useState(null);
+  // The image lightbox is plain inline JSX, so it needs its own Esc handler.
+  // (The PDF case is handled inside PdfPreviewModal.) Capture phase so the
+  // compose window's keydown stopPropagation can't swallow it.
+  React.useEffect(() => {
+    if (!previewAtt || previewAtt.mimeType === "application/pdf") return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setPreviewAtt(null); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [previewAtt]);
   // An attachment offered (not auto-added) by the caller — e.g. the WTT
   // day-header export's day timetable PDF. Surfaces as a row in the Attach
   // menu; attaches only when the user picks it.
@@ -1075,12 +1088,18 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
           {attachments.filter(a => a.mimeType !== "image/png").length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "8px 12px", background: colors.bg, borderRadius: 8, border: `1px solid ${colors.border}` }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, alignSelf: "center", marginRight: 4 }}>📎</span>
-              {attachments.filter(a => a.mimeType !== "image/png").map((att, i) => (
-                <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, fontSize: 12, color: colors.text }}>
+              {attachments.filter(a => a.mimeType !== "image/png").map((att, i) => {
+                const canPreview = att.mimeType === "application/pdf" || (att.mimeType || "").startsWith("image/");
+                return (
+                <span key={i}
+                  onClick={canPreview ? () => setPreviewAtt(att) : undefined}
+                  title={canPreview ? "Click to preview" : undefined}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, fontSize: 12, color: colors.text, cursor: canPreview ? "pointer" : "default" }}>
                   {att.filename}
-                  <button onClick={() => setAttachments(prev => prev.filter(a => a !== att))} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+                  <button onClick={(e) => { e.stopPropagation(); setAttachments(prev => prev.filter(a => a !== att)); }} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
                 </span>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -1417,6 +1436,25 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
                 ))
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Attachment preview overlay — PDF via pdfjs canvas viewer, image via lightbox */}
+      {previewAtt && previewAtt.mimeType === "application/pdf" && (
+        <PdfPreviewModal base64={previewAtt.contentBase64} onClose={() => setPreviewAtt(null)} />
+      )}
+      {previewAtt && previewAtt.mimeType !== "application/pdf" && (previewAtt.mimeType || "").startsWith("image/") && (
+        <div onClick={() => setPreviewAtt(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 10200, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ position: "relative", maxWidth: "90vw", maxHeight: "90vh", display: "flex" }}>
+            <button type="button" onClick={() => setPreviewAtt(null)} aria-label="Close"
+              style={{ position: "absolute", top: -14, right: -14, zIndex: 2, width: 32, height: 32, borderRadius: 999, border: "none", cursor: "pointer", background: "rgba(0,0,0,0.7)", color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+              <X size={18} />
+            </button>
+            <img src={`data:${previewAtt.mimeType};base64,${previewAtt.contentBase64}`} alt={previewAtt.filename || "Attachment preview"}
+              style={{ maxWidth: "90vw", maxHeight: "90vh", objectFit: "contain", borderRadius: 8, boxShadow: "0 20px 60px rgba(0,0,0,0.45)", background: "#fff" }} />
           </div>
         </div>
       )}

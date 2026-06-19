@@ -9,8 +9,12 @@
 // ============================================================
 
 // ── pdfjs (lazy) ─────────────────────────────────────────────
+// Exported so other previewers (e.g. components/PdfPreviewModal.js) can reuse
+// the SAME lazily-imported legacy pdfjs build and self-hosted worker config —
+// no second pdfjs import, no duplicate worker setup. Returns the pdfjs module
+// with GlobalWorkerOptions.workerSrc already pointed at the bundled worker.
 let pdfjsPromise = null;
-function loadPdfjs() {
+export function loadPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import("pdfjs-dist/legacy/build/pdf.min.mjs").then(pdfjs => {
       pdfjs.GlobalWorkerOptions.workerSrc = `${process.env.PUBLIC_URL || ""}/pdf.worker.legacy.min.mjs`;
