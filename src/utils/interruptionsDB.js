@@ -5,7 +5,7 @@
 
 import { supabase } from "../supabaseClient";
 
-function rowToInterruption(row) {
+export function rowToInterruption(row) {
   return {
     id:              row.id,
     type:            row.type             || "other",

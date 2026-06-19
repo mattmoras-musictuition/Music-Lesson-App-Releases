@@ -10,6 +10,7 @@ import { uid, getInstColor } from "../utils/helpers";
 import { parseTeacherCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 import { supabase, createIsolatedAuthClient } from "../supabaseClient";
+import { rowToInterruption } from "../utils/interruptionsDB";
 import { deleteSlip } from "../data/slipsDB";
 import { SlipEditModal } from "./SlipEditModal";
 
@@ -83,7 +84,7 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
   const [interruptions, setInterruptions] = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [expanded,      setExpanded]      = useState(new Set());
-  const [invSlips,      setInvSlips]      = useState({}); // { invoiceId: [slips] }
+  const [invSlips,      setInvSlips]      = useState({}); // { invoiceId: { status: "loading"|"loaded"|"error", rows: [slips] } }
   const [deleteConfirm, setDeleteConfirm] = useState(null); // invoice object
   const [deleting,      setDeleting]      = useState(false);
   const [editingSlip,   setEditingSlip]   = useState(null); // slip object being edited
@@ -106,7 +107,11 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
       ]);
       setInvoices(invRes.data || []);
       setCurrentSlips(slipRes.data || []);
-      setInterruptions(intrRes.data || []);
+      // Map raw rows to the app-standard shape so endDate (DB: end_date) is
+      // populated — _getTermWeekNum reads tb.endDate. Without this the snake_case
+      // end_date is missed, every term break collapses to its start day, and
+      // Term-2 week labels come out a fortnight high.
+      setInterruptions((intrRes.data || []).map(rowToInterruption));
     } catch (e) {
       console.error("TeacherInvoiceSection load error:", e);
     } finally {
@@ -120,10 +125,19 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
       next.delete(inv.id);
     } else {
       next.add(inv.id);
-      // Load slips for this invoice if not already loaded
+      // Load slips for this invoice if not already loaded. Track distinct
+      // states (loading / loaded / error) so the render can tell an empty
+      // result or a failed query apart from a still-pending one — otherwise
+      // both spin "Loading slips…" forever.
       if (!invSlips[inv.id]) {
-        const { data } = await supabase.from("day_slips").select("*").eq("invoice_id", inv.id).order("slip_date");
-        setInvSlips(prev => ({ ...prev, [inv.id]: data || [] }));
+        setInvSlips(prev => ({ ...prev, [inv.id]: { status: "loading", rows: [] } }));
+        const { data, error } = await supabase.from("day_slips").select("*").eq("invoice_id", inv.id).order("slip_date");
+        if (error) {
+          console.error("Invoice slips load error:", error);
+          setInvSlips(prev => ({ ...prev, [inv.id]: { status: "error", rows: [] } }));
+        } else {
+          setInvSlips(prev => ({ ...prev, [inv.id]: { status: "loaded", rows: data || [] } }));
+        }
       }
     }
     setExpanded(next);
@@ -275,9 +289,13 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
                   {/* Expanded slips */}
                   {expanded.has(inv.id) && (
                     <div>
-                      {(invSlips[inv.id] || []).length === 0 ? (
+                      {(invSlips[inv.id]?.status || "loading") === "loading" ? (
                         <div style={{ padding: "10px 28px", fontSize: 12, color: colors.textMuted }}>Loading slips…</div>
-                      ) : (invSlips[inv.id] || []).map((slip, si) => (
+                      ) : invSlips[inv.id].status === "error" ? (
+                        <div style={{ padding: "10px 28px", fontSize: 12, color: colors.danger }}>Couldn't load slips</div>
+                      ) : (invSlips[inv.id].rows || []).length === 0 ? (
+                        <div style={{ padding: "10px 28px", fontSize: 12, color: colors.textMuted }}>No slips found</div>
+                      ) : (invSlips[inv.id].rows || []).map((slip, si) => (
                         <div key={slip.id} style={{ ...slipRow(si % 2 === 0), paddingLeft: 28, background: si % 2 === 0 ? (colors.blueLight || "rgba(59,130,246,0.04)") : colors.bg }}>
                           <div style={{ width: 120, flexShrink: 0 }}>
                             <div style={{ fontWeight: 600, color: colors.text }}>{_fmtShort(slip.slip_date)}</div>
