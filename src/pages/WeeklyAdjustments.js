@@ -994,15 +994,54 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     })
   ), [selectedSchool, catchups, enrolments, teacherCoverage, teachers, students, schools]);
 
+  // GAP 2 — group catch-up shape for the grid/popover/cascade pool. A catch-up
+  // whose enrolment is a group is reshaped to mirror a regular group lesson
+  // (isGroup/groupId/studentIds/studentNames + a collapsed group label), so
+  // buildPopoverInfo takes its isGroup branch and HoverInfoCard lists every
+  // member, the card name line shows the group, and the multi-select email
+  // cascade can resolve all members' recipients.
+  //
+  // Deliberately derived as a SEPARATE pool rather than folded into
+  // enrichedCatchups: enrichedCatchups also feeds catchupWarnings (and the
+  // missed/export merges), and checkConstraints branches on lesson.isGroup —
+  // so stamping isGroup there would change constraint-warning behaviour for
+  // group catch-ups, which is out of scope for this change. Mirrors the
+  // single-catchup menu's enrolment → group → members derivation.
+  const gridCatchups = useMemo(() => (
+    (enrichedCatchups || []).map(c => {
+      const en = (enrolments || []).find(e => e.id === c.enrolmentId);
+      if (!en || en.isGroup !== true) return c;
+      const group = (groups || []).find(g => g.id === en.groupId);
+      if (!group) return c;
+      const memberIds = (group.members?.length
+        ? group.members.map(m => m.studentId)
+        : (group.studentIds || [])).filter(Boolean);
+      const memberNames = memberIds
+        .map(sid => students.find(s => s.id === sid)?.name || "")
+        .filter(Boolean);
+      const label = group.name || memberNames.join(", ");
+      return {
+        ...c,
+        isGroup: true,
+        groupId: en.groupId,
+        studentIds: memberIds,
+        studentNames: memberNames,
+        groupName: label,
+        studentName: label,
+      };
+    })
+  ), [enrichedCatchups, enrolments, groups, students]);
+
   // Perf (perf-wtt-memo, Commit 1): the merged catch-up-inclusive lesson pool
   // for the grid. Previously rebuilt inline inside the grid render IIFE on every
   // render — including every pointer event (dragOver / hover / contextMenu) —
   // even though its inputs don't change during pointer interaction. Hoisted to a
   // component-scope memo so the per-cell and per-card pipeline below reuse one
-  // stable array. Same call, same args, same output as the old inline build.
+  // stable array. Uses gridCatchups (group-shaped) so group catch-ups render
+  // and select like regular group lessons.
   const wLessons = useMemo(
-    () => mergeCatchupsIntoLessons(displayLessons, enrichedCatchups, weekKey),
-    [displayLessons, enrichedCatchups, weekKey]
+    () => mergeCatchupsIntoLessons(displayLessons, gridCatchups, weekKey),
+    [displayLessons, gridCatchups, weekKey]
   );
 
   // Perf (perf-wtt-memo, Commit 2): pre-group wLessons once into per-cell slices
@@ -1271,6 +1310,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const handleCatchupCardRightClick = (e, catchup) => {
     e.preventDefault();
     e.stopPropagation();
+    // GAP 1 — when this catch-up is part of a multi-selection, show the same
+    // group-email cascade regular cards use (Parents / Class Teachers / Staff)
+    // instead of the single-catchup menu. The isMulti branch reads only
+    // selectedIds, so a minimal context suffices; the cascade gathers recipients
+    // from the merged grid pool (wLessons), expanding catch-up groups to members.
+    if (selectedCards.size > 1 && selectedCards.has(catchup.id)) {
+      setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null);
+      setContextMenu({
+        x: e.clientX, y: e.clientY,
+        isMulti: true,
+        selectedIds: [...selectedCards],
+      });
+      return;
+    }
     setContextMenu({
       x: e.clientX, y: e.clientY,
       isCatchupAction: true,
@@ -4288,15 +4341,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     cluster 6c's Substitute Teacher flow on the day header instead. */}
                 {/* 6: Bulk actions when multiple selected */}
                 {contextMenu.isMulti && (() => {
-                  const selLessons = (weeklyData?.lessons || []).filter(l => contextMenu.selectedIds.includes(l.id));
+                  // GAP 1 — gather from the merged grid pool so multi-selected
+                  // catch-up cards are included (their ids live in wLessons, not
+                  // weeklyData.lessons). Regular lessons are the same objects in
+                  // both pools, so regular-card recipient resolution is unchanged.
+                  const selLessons = (wLessons || []).filter(l => contextMenu.selectedIds.includes(l.id));
                   const schoolSender = schools.find(s => s.id === selectedSchool)?.senderEmail || "";
+
+                  // Students a selected card contributes recipients for. Catch-up
+                  // group cards (gridCatchups) carry studentIds → expand to every
+                  // member; everything else keeps its single-student resolution.
+                  const sidsOf = (l) => (l.__isCatchup && Array.isArray(l.studentIds) && l.studentIds.length)
+                    ? l.studentIds
+                    : (l.studentId ? [l.studentId] : []);
 
                   // Aggregate parent emails
                   const parentMap = {};
                   selLessons.forEach(l => {
-                    const st = students.find(s => s.id === l.studentId);
-                    if (!st) return;
-                    (st.parents || []).forEach(p => { if (p.email) parentMap[p.email] = p.name || p.email; }); const _tE = (st.parentEmail || "").trim(); if (_tE && !Object.keys(parentMap).some(k => k.toLowerCase() === _tE.toLowerCase())) parentMap[_tE] = st.parentName || _tE;
+                    sidsOf(l).forEach(sid => {
+                      const st = students.find(s => s.id === sid);
+                      if (!st) return;
+                      (st.parents || []).forEach(p => { if (p.email) parentMap[p.email] = p.name || p.email; }); const _tE = (st.parentEmail || "").trim(); if (_tE && !Object.keys(parentMap).some(k => k.toLowerCase() === _tE.toLowerCase())) parentMap[_tE] = st.parentName || _tE;
+                    });
                   });
                   const allParentEmails = Object.keys(parentMap);
                   const parentRows = Object.entries(parentMap).map(([email, name]) => ({ email, name }));
@@ -4304,10 +4370,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Aggregate class teachers
                   const ctMap = {};
                   selLessons.forEach(l => {
-                    const st = students.find(s => s.id === l.studentId);
-                    if (!st) return;
-                    const ct = getClassTeacher(st, contacts || []);
-                    if (ct && ct.email) ctMap[ct.email] = ct.name || ct.email;
+                    sidsOf(l).forEach(sid => {
+                      const st = students.find(s => s.id === sid);
+                      if (!st) return;
+                      const ct = getClassTeacher(st, contacts || []);
+                      if (ct && ct.email) ctMap[ct.email] = ct.name || ct.email;
+                    });
                   });
                   const allCtEmails = Object.keys(ctMap);
                   const ctRows = Object.entries(ctMap).map(([email, name]) => ({ email, name }));
