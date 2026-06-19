@@ -52,11 +52,15 @@ function _getTermWeekNum(dateStr, interruptions) {
   return Math.max(1, diffWeeks + 1);
 }
 
-function _invoiceWeekLabel(periodStart, periodEnd, interruptions) {
-  const w1 = _getTermWeekNum(periodStart, interruptions);
-  const w2 = _getTermWeekNum(periodEnd, interruptions);
-  if (w1 === w2) return `Week ${w1}`;
-  return `Week ${w1} & ${w2}`;
+function _invoiceWeekLabel(periodStart, interruptions) {
+  // Invoice fortnights are odd-first within a term (1/2, 3/4, …). Derive the
+  // pair from period_start alone — period_end is unreliable (legacy rows store
+  // the next fortnight's Monday, i.e. term-week N+2, which is what produced the
+  // overlapping "N & N+2" labels). Snap period_start's term week down to the odd
+  // week that begins its fortnight, then render the two-week span.
+  const w = _getTermWeekNum(periodStart, interruptions);
+  const w1 = (w % 2 === 1) ? w : w - 1;
+  return `Week ${w1}/${w1 + 1}`;
 }
 
 function _fmtShort(dateStr) {
@@ -247,7 +251,7 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
                     }
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
-                        {_invoiceWeekLabel(inv.period_start, inv.period_end, interruptions)}
+                        {_invoiceWeekLabel(inv.period_start, interruptions)}
                       </div>
                       <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
                         Submitted {new Date(inv.submitted_at).toLocaleDateString("en-AU")}
@@ -307,7 +311,7 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
           <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: 380, maxWidth: "90vw", padding: 24, fontFamily: "inherit" }}>
             <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
               <RotateCcw size={16} color={colors.danger} />
-              Delete {_invoiceWeekLabel(deleteConfirm.period_start, deleteConfirm.period_end, interruptions)}?
+              Delete {_invoiceWeekLabel(deleteConfirm.period_start, interruptions)}?
             </div>
             <p style={{ fontSize: 13, color: colors.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
               The invoice will be deleted and all slips restored. The teacher will be able to resubmit.
