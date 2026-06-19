@@ -10,7 +10,7 @@ export const INSTRUMENTS = [
   "Ukulele", "Recorder", "Bass Guitar"
 ];
 
-export const APP_VERSION = "2.27.0";
+export const APP_VERSION = "2.27.1";
 export const HEADER_HEIGHT = 90; // Height of page banners and logo box
 export const TIMEZONE = "Australia/Melbourne";
 
