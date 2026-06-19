@@ -9,7 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor } from "../utils/helpers";
 import { parseTeacherCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
-import { supabase } from "../supabaseClient";
+import { supabase, createIsolatedAuthClient } from "../supabaseClient";
 import { deleteSlip } from "../data/slipsDB";
 import { SlipEditModal } from "./SlipEditModal";
 
@@ -452,7 +452,12 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
     const tempPassword = Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
     setInviteResult({ loading: true, teacher: t, password: null, error: null });
     try {
-      const { error } = await supabase.auth.signUp({ email: t.email, password: tempPassword });
+      // Sign up on an isolated, non-persisting client so creating the
+      // teacher's account never replaces the admin's active session. Using
+      // the main `supabase` client here would swap the session to the new
+      // teacher and re-stamp teachers.user_id under their identity.
+      const authClient = createIsolatedAuthClient();
+      const { error } = await authClient.auth.signUp({ email: t.email, password: tempPassword });
       if (error) {
         setInviteResult({ loading: false, teacher: t, password: null, error: error.message });
       } else {

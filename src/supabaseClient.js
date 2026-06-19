@@ -160,3 +160,21 @@ function wrapClient(client) {
 
 export const supabase =
   process.env.NODE_ENV === 'development' ? wrapClient(realClient) : realClient;
+
+// Build a throwaway auth client that reuses the same URL + anon key but
+// NEVER persists a session. Used for admin-side teacher account creation:
+// calling supabase.auth.signUp() on the main client replaces the active
+// session with the newly-created teacher's (persistSession: true) and never
+// restores it — which then re-stamps teachers.user_id under the teacher's
+// identity via the teachers sync effect (see
+// TeachersManager.createTeacherAccount). Running signUp on this isolated,
+// non-persisting client leaves the main client's admin session untouched.
+export function createIsolatedAuthClient() {
+  return createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
