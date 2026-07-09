@@ -12,7 +12,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 // v2.18.0 — term detection relocated verbatim to utils/invoiceTerms.js so the
 // Dashboard alert chip can share it; imported back here, single definition.
-import { detectTerms, _sortedBreaks, _toDS, _addDays, _today } from "../utils/invoiceTerms";
+import { detectTerms, detectAllTerms, _sortedBreaks, _toDS, _addDays, _today } from "../utils/invoiceTerms";
 // v2.18.0 — uninvoiced-students derivation relocated verbatim to
 // utils/uninvoicedDerive.js, shared with the Dashboard alert chip.
 // _primaryParent moved with it; imported back here, single definition.
@@ -709,17 +709,44 @@ export function InvoicingManager({
   const [confirmRegen, setConfirmRegen] = useState(false);
 
   // ── Term selection ────────────────────────────────────────
-  const terms = useMemo(() => detectTerms(interruptions), [interruptions]);
+  // v2.28.0 — invoices now accumulate across terms, so the dropdown offers
+  // past terms (view-only) APPENDED after the future set detectTerms returns.
+  // Appending keeps terms[0] — and therefore the default selection (selIdx 0)
+  // — exactly what it was before: the current/upcoming term. Past terms are
+  // sorted newest-first so last term sits right below the future entries.
+  const terms = useMemo(() => {
+    const future = detectTerms(interruptions);
+    const today = _today();
+    const past = detectAllTerms(interruptions)
+      .filter(t => t.end < today)
+      .sort((a, b) => b.start.localeCompare(a.start));
+    return [...future, ...past];
+  }, [interruptions]);
   const [selIdx, setSelIdx] = useState(0);
   const selTerm = terms[selIdx] || null;
+  // Same past-term semantics as the dropdown split above (end < today).
+  const isPastTerm = !!selTerm && selTerm.end < _today();
   const [invoiceDate, setInvoiceDate] = useState(() => _today());
   const [dueDate, setDueDate]         = useState(() => selTerm ? _getFridayOfWeek2(selTerm.start) : "");
 
   useEffect(() => {
+    setConfirmRegen(false); // a pending Regenerate confirm must not carry across terms
     if (!selTerm) return;
     setInvoiceDate(_today());
     setDueDate(_getFridayOfWeek2(selTerm.start));
   }, [selIdx]);
+
+  // v2.28.0 — the invoice list, counters and bulk actions all operate on the
+  // SELECTED term's invoices only. Term identity is termLabel vs selTerm.label
+  // (the same comparison doCreateSupplementary and the sent-skip guard use).
+  // Legacy invoices with no termLabel were visible under every term before
+  // this filter existed, so they stay visible under every term rather than
+  // vanishing from all views. The Supabase budget sync deliberately does NOT
+  // use this — it must keep mirroring the full `invoices` array.
+  const termInvoices = useMemo(() => {
+    if (!selTerm) return invoices;
+    return invoices.filter(inv => !inv.termLabel || inv.termLabel === selTerm.label);
+  }, [invoices, selTerm]);
 
   // ── Generation scope ──────────────────────────────────────
   // scopeType: "all" | "school" | "parent"
@@ -908,6 +935,7 @@ export function InvoicingManager({
   // ── Generate ──────────────────────────────────────────────
   const doGenerate = () => {
     if (!selTerm) { notify("Select a term first — add term breaks in the Calendar tab", "warning"); return; }
+    if (isPastTerm) { notify("Viewing past term — invoices are read-only for generation.", "warning"); return; }
 
     // Rate validation (only for "all" scope or "school" scope)
     if (scopeType !== "parent") {
@@ -963,16 +991,24 @@ export function InvoicingManager({
     //     for this term (un-mark first if you really want to regenerate)
     //   - a notify message surfaces how many were skipped
     const affectedKeys = new Set(newInvs.map(i => (i.parentEmail || i.parentName).toLowerCase().trim()));
+    // v2.28.0 — the skip guard is term-scoped (termLabel vs selTerm.label, the
+    // doCreateSupplementary idiom). Invoices now accumulate across terms, so
+    // an unscoped guard would skip every parent billed in ANY prior term the
+    // first time a new term is generated.
     const sentParentKeys = new Set(
       invoices
-        .filter(inv => inv.status === "sent")
+        .filter(inv => inv.status === "sent" && inv.termLabel === selTerm.label)
         .map(inv => (inv.parentEmail || inv.parentName).toLowerCase().trim())
     );
     const skipped = newInvs.filter(inv => sentParentKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim()));
     const toAdd = newInvs.filter(inv => !sentParentKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim()));
     setInvoices(prev => {
+      // The delete-and-reinsert merge is term-scoped too: regenerating the
+      // selected term must never remove another term's drafts for the same
+      // parent (past terms are permanent records now).
       const unchanged = prev.filter(inv =>
         inv.status === "sent" ||
+        inv.termLabel !== selTerm.label ||
         !affectedKeys.has((inv.parentEmail || inv.parentName).toLowerCase().trim())
       );
       return [...unchanged, ...toAdd];
@@ -988,7 +1024,7 @@ export function InvoicingManager({
     setConfirmRegen(false);
     setView("invoices");
     const msg = skipped.length > 0
-      ? `Generated ${toAdd.length} invoice${toAdd.length !== 1 ? "s" : ""} for ${selTerm.label}. Skipped ${skipped.length} parent${skipped.length !== 1 ? "s" : ""} with existing sent invoice${skipped.length !== 1 ? "s" : ""} — un-mark to regenerate.`
+      ? `Generated ${toAdd.length} invoice${toAdd.length !== 1 ? "s" : ""} for ${selTerm.label}. Skipped ${skipped.length} parent${skipped.length !== 1 ? "s" : ""} with an invoice already sent for ${selTerm.label} — un-mark to regenerate.`
       : `Generated ${newInvs.length} invoice${newInvs.length !== 1 ? "s" : ""} for ${selTerm.label}`;
     notify(msg);
   };
@@ -1003,6 +1039,7 @@ export function InvoicingManager({
   // touches nothing existing, so there is no double-billing of covered kids.
   const doCreateSupplementary = () => {
     if (!selTerm) { notify("Select a term first", "warning"); return; }
+    if (isPastTerm) { notify("Viewing past term — invoices are read-only for generation.", "warning"); return; }
     if (scopeType !== "parent" || !scopeParentKey) return;
 
     const parentLabel = allParents.find(p => p.key === scopeParentKey)?.name || "this parent";
@@ -1076,6 +1113,7 @@ export function InvoicingManager({
   // ── Create blank invoices (no auto-calculation — Matt fills in manually) ──
   const doCreateBlank = () => {
     if (!selTerm) { notify("Select a term first", "warning"); return; }
+    if (isPastTerm) { notify("Viewing past term — invoices are read-only for generation.", "warning"); return; }
     // Part B: create EXACTLY ONE blank draft, APPENDED alongside any existing
     // invoices (never replacing). In parent scope pre-assign the selected
     // parent; otherwise leave it unassigned for the card's parent selector.
@@ -1110,7 +1148,10 @@ export function InvoicingManager({
   };
 
   const handleGenerate = () => {
+    // Term-scoped (same termLabel comparison as the skip guard): existing
+    // invoices from OTHER terms must not trigger the Regenerate confirm.
     const willReplace = invoices.some(inv => {
+      if (inv.termLabel !== selTerm?.label) return false;
       if (scopeType === "all") return true;
       if (scopeType === "school") {
         const studentsAtSchool = students.filter(s => s.schoolId === scopeSchoolId);
@@ -1454,12 +1495,12 @@ export function InvoicingManager({
               </div>
               <div style={row}>
                 <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, minWidth: 130 }}>Invoice date</span>
-                <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} style={inp}/>
+                <input type="date" value={invoiceDate} disabled={isPastTerm} onChange={e => setInvoiceDate(e.target.value)} style={{ ...inp, opacity: isPastTerm ? 0.5 : 1 }}/>
                 <span style={{ fontSize: 12, color: colors.textMuted }}>(auto: today)</span>
               </div>
               <div style={rowLast}>
                 <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, minWidth: 130 }}>Due date</span>
-                <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} style={inp}/>
+                <input type="date" value={dueDate} disabled={isPastTerm} onChange={e => setDueDate(e.target.value)} style={{ ...inp, opacity: isPastTerm ? 0.5 : 1 }}/>
                 <span style={{ fontSize: 12, color: colors.textMuted }}>(auto: Friday of Week 2)</span>
               </div>
             </>
@@ -1474,7 +1515,9 @@ export function InvoicingManager({
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: scopeType !== "all" ? 10 : 0 }}>
           {[["all","All parents"],["school","By school"],["parent","Specific parent"]].map(([val, label]) => (
-            <button key={val} style={radio(scopeType === val)} onClick={() => { setScopeType(val); setConfirmRegen(false); }}>
+            <button key={val} disabled={isPastTerm}
+              style={{ ...radio(scopeType === val), ...(isPastTerm ? { opacity: 0.5, cursor: "default" } : {}) }}
+              onClick={() => { setScopeType(val); setConfirmRegen(false); }}>
               {label}
             </button>
           ))}
@@ -1555,7 +1598,7 @@ export function InvoicingManager({
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <Btn variant="primary"
-              disabled={scopeType === "school" && !scopeSchoolId || scopeType === "parent" && !scopeParentKey}
+              disabled={isPastTerm || scopeType === "school" && !scopeSchoolId || scopeType === "parent" && !scopeParentKey}
               onClick={handleGenerate}
               style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 24px", fontSize: 14 }}>
               <RefreshCw size={14}/>
@@ -1564,15 +1607,20 @@ export function InvoicingManager({
                "Generate Invoices"}
             </Btn>
             <Btn variant="secondary"
-              disabled={scopeType === "school" && !scopeSchoolId || scopeType === "parent" && !scopeParentKey}
+              disabled={isPastTerm || scopeType === "school" && !scopeSchoolId || scopeType === "parent" && !scopeParentKey}
               onClick={doCreateBlank}
               style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 20px", fontSize: 14 }}
               title="Create a blank invoice to fill in manually — no auto-calculation">
               + Create Blank
             </Btn>
-            {invoices.length > 0 && (
+            {isPastTerm && (
+              <span style={{ fontSize: 12, color: colors.textMuted }}>
+                Viewing past term — invoices are read-only for generation.
+              </span>
+            )}
+            {termInvoices.length > 0 && (
               <button onClick={() => setView("invoices")} style={{ fontSize: 13, color: colors.accent, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
-                View {invoices.length} invoice{invoices.length !== 1 ? "s" : ""} →
+                View {termInvoices.length} invoice{termInvoices.length !== 1 ? "s" : ""} →
               </button>
             )}
           </div>
@@ -1780,13 +1828,17 @@ export function InvoicingManager({
   const _invTotal = (inv) => inv.lines.reduce((s, l) => s + (l.subtotal || 0), 0);
 
   const renderInvoices = () => {
-    const sentN      = invoices.filter(i => i.status === "sent").length;
-    const allTotal   = invoices.reduce((s, inv) => s + _invTotal(inv), 0);
-    const sentTotal  = invoices.filter(i => i.status === "sent").reduce((s, inv) => s + _invTotal(inv), 0);
+    // v2.28.0 — everything in this view (groups, counters, bulk actions,
+    // search, footer) derives from termInvoices, the selected term's slice.
+    // The Supabase budget sync is NOT downstream of this — it reads the full
+    // `invoices` state directly.
+    const sentN      = termInvoices.filter(i => i.status === "sent").length;
+    const allTotal   = termInvoices.reduce((s, inv) => s + _invTotal(inv), 0);
+    const sentTotal  = termInvoices.filter(i => i.status === "sent").reduce((s, inv) => s + _invTotal(inv), 0);
     const unsentTotal = allTotal - sentTotal;
 
     // Sort alphabetically for stable order within each group
-    const sorted = [...invoices].sort((a, b) => a.parentName.localeCompare(b.parentName));
+    const sorted = [...termInvoices].sort((a, b) => a.parentName.localeCompare(b.parentName));
 
     // Derive which school(s) each invoice covers from its line schoolNames.
     // Per Matt: in practice each invoice belongs to exactly one school (or Private).
@@ -1924,12 +1976,12 @@ export function InvoicingManager({
             ← Draft
           </button>
           <div style={{ width: 1, height: 16, background: colors.border }}/>
-          <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{invoices[0]?.termLabel || ""}</span>
-          {invoices[0]?.invoiceDate && <span style={{ fontSize: 12, color: colors.textMuted }}>Invoice date: {_fmtLong(invoices[0].invoiceDate)}</span>}
-          {invoices[0]?.dueDate     && <span style={{ fontSize: 12, color: colors.textMuted }}>Due: {_fmtLong(invoices[0].dueDate)}</span>}
+          <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{selTerm?.label || termInvoices[0]?.termLabel || ""}</span>
+          {termInvoices[0]?.invoiceDate && <span style={{ fontSize: 12, color: colors.textMuted }}>Invoice date: {_fmtLong(termInvoices[0].invoiceDate)}</span>}
+          {termInvoices[0]?.dueDate     && <span style={{ fontSize: 12, color: colors.textMuted }}>Due: {_fmtLong(termInvoices[0].dueDate)}</span>}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 12, color: colors.success }}>{sentN} / {invoices.length} sent</span>
-            {invoices.some(i => i.status !== "sent") && (
+            <span style={{ fontSize: 12, color: colors.success }}>{sentN} / {termInvoices.length} sent</span>
+            {termInvoices.some(i => i.status !== "sent") && (
               <button
                 onClick={() => {
                   // Session 95: Delete all only removes DRAFTS — sent invoices
@@ -1937,9 +1989,12 @@ export function InvoicingManager({
                   // shared Supabase invoices table once marked sent). Those
                   // must only be deleted one at a time via the per-row delete
                   // button. Count + confirm phrased to reflect drafts only.
-                  const draftCount = invoices.filter(i => i.status !== "sent").length;
-                  if (window.confirm(`Delete all ${draftCount} invoice draft${draftCount === 1 ? "" : "s"}? Sent invoices are preserved. This cannot be undone.`)) {
-                    setInvoices(prev => prev.filter(i => i.status === "sent"));
+                  // v2.28.0 — deletes only the DISPLAYED term's drafts, by id.
+                  const termDraftIds = new Set(termInvoices.filter(i => i.status !== "sent").map(i => i.id));
+                  const draftCount = termDraftIds.size;
+                  const termName = selTerm?.label || "this term";
+                  if (window.confirm(`Delete all ${draftCount} ${termName} invoice draft${draftCount === 1 ? "" : "s"}? Sent invoices and other terms are preserved. This cannot be undone.`)) {
+                    setInvoices(prev => prev.filter(i => !termDraftIds.has(i.id)));
                   }
                 }}
                 style={{ fontSize: 12, color: colors.textMuted, background: "none", border: `1px solid ${colors.border}`, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}
@@ -1951,8 +2006,8 @@ export function InvoicingManager({
           </div>
         </div>
 
-        {/* Search — auto-expands all folders when active */}
-        {invoices.length > 0 && (
+        {/* Search — auto-expands all folders when active (selected term only) */}
+        {termInvoices.length > 0 && (
           <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
             <input
               value={invSearch} onChange={e => setInvSearch(e.target.value)}
@@ -1962,13 +2017,15 @@ export function InvoicingManager({
           </div>
         )}
 
-        {invoices.length === 0 && (
+        {termInvoices.length === 0 && (
           <div style={{ textAlign: "center", padding: "60px 20px", color: colors.textMuted, fontSize: 14 }}>
-            No invoices yet. Go back to Setup and click Generate.
+            {isPastTerm
+              ? `No invoices for ${selTerm?.label || "this term"}.`
+              : `No invoices for ${selTerm?.label || "this term"} yet. Go back to Setup and click Generate.`}
           </div>
         )}
 
-        {invoices.length > 0 && visibleGroups.length === 0 && (
+        {termInvoices.length > 0 && visibleGroups.length === 0 && (
           <div style={{ textAlign: "center", padding: "40px 20px", color: colors.textMuted, fontSize: 13 }}>
             No invoices match your search.
           </div>
@@ -2101,7 +2158,7 @@ export function InvoicingManager({
                           <button
                             onClick={() => {
                               const n = sentInvs.length;
-                              if (window.confirm(`Revert all ${n} sent invoice${n === 1 ? "" : "s"} for ${group.name} back to draft?\n\nThis clears the sent timestamps but keeps the invoices. Use this when you need to resend (e.g. with a new template).`)) {
+                              if (window.confirm(`Revert all ${n} sent ${selTerm?.label || ""} invoice${n === 1 ? "" : "s"} for ${group.name} back to draft?\n\nThis clears the sent timestamps but keeps the invoices. Use this when you need to resend (e.g. with a new template).`)) {
                                 sentInvs.forEach(inv => toggleSent(inv.id));
                                 notify(`Reverted ${n} invoice${n === 1 ? "" : "s"} to draft`, "success", 3500);
                               }
@@ -2122,8 +2179,8 @@ export function InvoicingManager({
           );
         })}
 
-        {/* Grand total footer */}
-        {invoices.length > 0 && (
+        {/* Grand total footer — selected term only */}
+        {termInvoices.length > 0 && (
           <div style={{ marginTop: 14, padding: "16px 20px", background: colors.sidebar, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
             <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
               <div>
@@ -2136,14 +2193,14 @@ export function InvoicingManager({
                   <div style={{ fontSize: 20, fontWeight: 700, color: colors.success }}>{_fmtMoney(sentTotal)}</div>
                 </div>
               )}
-              {sentN < invoices.length && (
+              {sentN < termInvoices.length && (
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: "rgba(255,255,255,.45)", marginBottom: 3 }}>Unsent ({invoices.length - sentN})</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".07em", color: "rgba(255,255,255,.45)", marginBottom: 3 }}>Unsent ({termInvoices.length - sentN})</div>
                   <div style={{ fontSize: 20, fontWeight: 700, color: colors.accent }}>{_fmtMoney(unsentTotal)}</div>
                 </div>
               )}
             </div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,.35)" }}>{invoices.length} invoice{invoices.length !== 1 ? "s" : ""}</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,.35)" }}>{termInvoices.length} invoice{termInvoices.length !== 1 ? "s" : ""}</div>
           </div>
         )}
       </div>

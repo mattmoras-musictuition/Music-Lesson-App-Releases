@@ -32,7 +32,11 @@ export function _sortedBreaks(interruptions) {
     .sort((a, b) => a.start.localeCompare(b.start));
 }
 
-export function detectTerms(interruptions) {
+// Full labeled term list, past terms included — no today-filter, no cap.
+// v2.28.0: the Invoicing "Invoicing for" dropdown appends past terms (view-only)
+// after the future set; detectTerms below keeps its filtered contract so the
+// Dashboard's resolveCurrentTerm and Invoicing's default selection are unchanged.
+export function detectAllTerms(interruptions) {
   const breaks = _sortedBreaks(interruptions);
   if (!breaks.length) return [];
   const today = _today();
@@ -63,7 +67,12 @@ export function detectTerms(interruptions) {
     return { ...term, label: `Term ${num} ${yr}${term.isEst ? " (est.)" : ""}` };
   });
 
-  return labeled.filter(t => t.end >= today).slice(0, 6);
+  return labeled;
+}
+
+export function detectTerms(interruptions) {
+  const today = _today();
+  return detectAllTerms(interruptions).filter(t => t.end >= today).slice(0, 6);
 }
 
 // Reproduces Invoicing's default term selection exactly: detectTerms
