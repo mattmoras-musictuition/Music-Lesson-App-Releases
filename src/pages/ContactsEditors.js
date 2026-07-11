@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Plus, Trash2, Bot, Download, X, Star, Link as LinkIcon, Paperclip, FileText, ChevronDown, ChevronRight } from "lucide-react";
-import { STORAGE_KEYS, ALL_MERGE_FIELDS, EMAIL_TRIGGERS, TRIGGER_MAP } from "../constants";
+import { STORAGE_KEYS, ALL_MERGE_FIELDS, EMAIL_TRIGGERS, TRIGGER_MAP, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
@@ -881,7 +881,7 @@ export function AiImportContacts({ schools, contacts, setContacts, notify }) {
         method: "POST",
         headers: getAnthropicHeaders(),
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: ANTHROPIC_MODEL,
           max_tokens: 1000,
           messages: [{
             role: "user",

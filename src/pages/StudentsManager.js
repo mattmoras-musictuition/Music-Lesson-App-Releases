@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus, ClipboardList, ChevronUp, ChevronDown, Archive, RotateCcw, ChevronRight } from "lucide-react";
-import { instruments_colors } from "../constants";
+import { instruments_colors, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor, getInitials, openCompose, getStudentMTTTeacher, buildStudentMTTTeacherIndex } from "../utils/helpers";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
@@ -615,7 +615,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
           method: "POST",
           headers: getAnthropicHeaders(),
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
+            model: ANTHROPIC_MODEL,
             max_tokens: 16000,
             messages: [{
               role: "user",
@@ -655,7 +655,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
             method: "POST",
             headers: getAnthropicHeaders(),
             body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
+              model: ANTHROPIC_MODEL,
               max_tokens: 16000,
               messages: [{
                 role: "user",

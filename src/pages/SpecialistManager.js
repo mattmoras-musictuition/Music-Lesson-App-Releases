@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Building2, Palette, ChevronUp, ChevronDown, StickyNote, Pencil, X, Trash2, RefreshCw, ClipboardList, FileText } from "lucide-react";
-import { DAYS, SLOT_TYPES, SLOT_TYPE_LABELS, HEADER_HEIGHT } from "../constants";
+import { DAYS, SLOT_TYPES, SLOT_TYPE_LABELS, HEADER_HEIGHT, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
@@ -178,7 +178,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         method: "POST",
         headers: getAnthropicHeaders(),
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: ANTHROPIC_MODEL,
           max_tokens: 16000,
           messages: [{
             role: "user",
@@ -277,7 +277,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
           method: "POST",
           headers: getAnthropicHeaders(),
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
+            model: ANTHROPIC_MODEL,
             max_tokens: 16000,
             messages: [{
               role: "user",
@@ -360,7 +360,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         const base64 = await toBase64(file);
         const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 4000,
             messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: updatePrompt }] }] })
         });
         const data = await resp.json();
@@ -373,7 +373,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         const rawData = SheetJS.utils.sheet_to_json(ws);
         const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 4000,
             messages: [{ role: "user", content: updatePrompt + " Data: " + JSON.stringify(rawData) }] })
         });
         const data = await resp.json();
@@ -438,7 +438,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          model: ANTHROPIC_MODEL, max_tokens: 4000,
           tools: [{ type: "web_search_20250305", name: "web_search" }],
           messages: [{ role: "user", content: urlPrompt }]
         })

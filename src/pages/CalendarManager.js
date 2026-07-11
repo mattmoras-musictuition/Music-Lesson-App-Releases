@@ -7,6 +7,7 @@ import { ChevronUp, ChevronDown, Printer, PalmtreeIcon, X, AlertTriangle } from 
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
+import { ANTHROPIC_MODEL } from "../constants";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
@@ -193,7 +194,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
       const response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
         method: "POST", headers: getAnthropicHeaders(),
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 4000,
+          model: ANTHROPIC_MODEL, max_tokens: 4000,
           tools: [{ type: "web_search_20250305", name: "web_search" }],
           messages: [{ role: "user", content:
             `Search for Victorian (Australia) school term dates for ${yr} and ${yr+1}, plus all Victorian public holidays for those years.\n\nReturn ONLY a JSON array, no other text, no markdown backticks. Each entry:\n- date: "YYYY-MM-DD"\n- endDate: "YYYY-MM-DD" (same as date for single-day events; full break span for term breaks)\n- title: descriptive name\n- type: "public_holiday" or "term_break"\n\nFor term breaks, use the full holiday period between terms. Return the JSON array only.`

@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
-import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR } from "../constants";
+import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, isPastWeek as isWeekKeyPast, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
@@ -1753,7 +1753,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           method: "POST",
           headers: getAnthropicHeaders(),
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514", max_tokens: 2000,
+            model: ANTHROPIC_MODEL, max_tokens: 2000,
             messages: [{ role: "user", content: buildWeeklyAIPrompt({ school: currentSchool, weekLabel, weekDates, todayDay, todayDate, classNames, teacherList, groupList, studentList, adjustmentNotes }) }],
           })
         });
@@ -2000,7 +2000,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           method: "POST",
           headers: getAnthropicHeaders(),
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514", max_tokens: 2000,
+            model: ANTHROPIC_MODEL, max_tokens: 2000,
             messages: [{ role: "user", content: buildWeeklyAIPrompt({ school: currentSchool, weekLabel, weekDates, todayDay, todayDate, classNames, teacherList, groupList: groupList2, studentList, adjustmentNotes, targetDay }) }],
           })
         });

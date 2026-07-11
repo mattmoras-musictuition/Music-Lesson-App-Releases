@@ -3,8 +3,9 @@
 // Previously duplicated inside handleGenerateTimetable and handleGenerateSchool in App.js.
 
 import { anthropicFetch, getAnthropicHeaders } from "./api";
+import { ANTHROPIC_MODEL } from "../constants";
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = ANTHROPIC_MODEL;
 
 // ---------------------------------------------------------------------------
 // parseSpecialistNotes
