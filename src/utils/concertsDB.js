@@ -1,6 +1,7 @@
 // ============================================================
-// concertsDB.js — Supabase data-access for `concerts` and
-// `concert_items` (Concerts workstream, cluster 2).
+// concertsDB.js — Supabase data-access for `concerts`,
+// `concert_items` and `concert_item_attachments`
+// (Concerts workstream, clusters 2 and 3).
 //
 // PER-ROW reads and writes throughout. Deliberately NOT the
 // whole-list upsert + delete-not-in-list sweep that bandsDB /
@@ -16,11 +17,15 @@
 // teacherCoverageDB cautionary case) — so if the schema gains
 // a column, both fromRow and toRow must learn about it.
 //
-// RLS on both tables is FOR ALL TO authenticated USING (true)
-// WITH CHECK (true) — flat permissions, intentional (§4.4).
+// RLS on all three tables is FOR ALL TO authenticated USING
+// (true) WITH CHECK (true) — flat permissions, intentional
+// (§4.4). concert_item_attachments.created_by is display-only
+// and must NEVER gate an action; the author-only model on
+// student_attachments is deliberately NOT ported.
 // ============================================================
 
 import { supabase } from "../supabaseClient";
+import { BUCKET_RESOURCES, uploadToBucket, deleteFromBucket, signedUrlFor } from "./storageHelpers";
 
 // ── Normalisation ────────────────────────────────────────────
 
@@ -365,4 +370,408 @@ export async function clearConcertItems(concertId) {
     .eq("concert_id", concertId);
   if (error) throw new Error(error.message);
   return true;
+}
+
+// ════════════════════════════════════════════════════════════
+// ATTACHMENTS — concert_item_attachments (cluster 3)
+// ════════════════════════════════════════════════════════════
+//
+// Concerts have their own attachment table rather than reusing
+// student_attachments, which carries three things incompatible
+// with §4.4: CHECK (subject_type IN ('student','group')),
+// author-only RLS on update/delete, and a NOT NULL author_id
+// FK to teachers (an admin may have no teacher record).
+//
+// Files live in the shared `resources` bucket under a
+// concert-attachments/ prefix so they are identifiable
+// alongside teaching-material uploads.
+//
+// NOTE: `resources` is a PUBLIC bucket. Signing an object in it
+// is defence-in-depth, not access control — the same property
+// student-notes attachments already have. Do not treat a
+// concert attachment as private.
+//
+// Three row shapes, enforced by the CHECK constraint
+// concert_attachment_kind_fields_match:
+//   • file      — storage_path + file_name set, link columns null
+//   • link      — url set, file columns AND resource_id null
+//   • reference — every payload column null, resource_id set
+// Unused payload columns must be NULL, never '' — an empty
+// string is not null and would violate the constraint.
+//
+// There is deliberately NO publish-to-library path here. See the
+// comment on addLibraryReference.
+
+const ATTACHMENTS_BUCKET = BUCKET_RESOURCES;
+const ATTACHMENTS_PREFIX = "concert-attachments";
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10 MB, matching student notes
+
+// Mirrors studentNotesDB.sanitizeFileName — the stored object name
+// is ASCII-safe and length-capped; the original name is preserved
+// verbatim in the file_name column for display.
+function sanitizeFileName(name) {
+  return (name || "file")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "_")
+    .slice(0, 80);
+}
+
+/**
+ * Derive an attachment's kind from its row shape, so UI code never
+ * re-derives it. Mirrors studentNotesDB.classifyAttachment.
+ *
+ * A reference stays a reference even after its library item is
+ * deleted (the FK clears resource_id) — it owns no payload either
+ * way. `inLibrary` says whether the link is still intact.
+ */
+export function classifyConcertAttachment(att) {
+  const isFile      = !!att.storagePath;
+  const isLink      = !att.storagePath && !!att.url;
+  const isReference = !att.storagePath && !att.url;
+  const inLibrary   = !!att.resourceId;
+  return { isFile, isLink, isReference, inLibrary };
+}
+
+function attachmentFromRow(row) {
+  const att = {
+    id:            row.id,
+    concertItemId: row.concert_item_id || "",
+    kind:          row.kind            || "",
+    storagePath:   row.storage_path    || null,
+    fileName:      row.file_name       || null,
+    fileSizeBytes: row.file_size_bytes ?? null,
+    mimeType:      row.mime_type       || null,
+    url:           row.url             || null,
+    pageTitle:     row.page_title      || null,
+    ogImageUrl:    row.og_image_url    || null,
+    displayLabel:  row.display_label   || null,
+    resourceId:    row.resource_id     || null,
+    createdBy:     row.created_by      || null,
+    createdAt:     row.created_at      || "",
+  };
+  return { ...att, ...classifyConcertAttachment(att) };
+}
+
+/**
+ * In-memory attachment → DB row, allow-listed and shaped to the
+ * CHECK constraint. Branches on kind rather than emitting one
+ * generic object, because "unused" is null here and a stray ''
+ * in a payload column would be rejected.
+ *
+ * id and created_at are omitted — both have DB defaults.
+ */
+function attachmentToRow(att) {
+  const base = {
+    concert_item_id: att.concertItemId,
+    kind:            att.kind,
+    display_label:   att.displayLabel || null,
+    created_by:      att.createdBy    || null,
+    resource_id:     att.resourceId   || null,
+  };
+
+  if (att.storagePath) {
+    // File row: file columns set, link columns null. May also carry
+    // resource_id in principle, though concerts never set both.
+    return {
+      ...base,
+      storage_path:    att.storagePath,
+      file_name:       att.fileName || null,
+      file_size_bytes: att.fileSizeBytes ?? null,
+      mime_type:       att.mimeType || null,
+      url:             null,
+      page_title:      null,
+      og_image_url:    null,
+    };
+  }
+
+  if (att.url) {
+    // Link row: url set, file columns null, and resource_id MUST be
+    // null — the constraint does not allow a link to also be a
+    // library reference.
+    return {
+      ...base,
+      resource_id:     null,
+      storage_path:    null,
+      file_name:       null,
+      file_size_bytes: null,
+      mime_type:       null,
+      url:             att.url,
+      page_title:      att.pageTitle  || null,
+      og_image_url:    att.ogImageUrl || null,
+    };
+  }
+
+  // Reference row: every payload column null; resource_id carries it.
+  return {
+    ...base,
+    storage_path:    null,
+    file_name:       null,
+    file_size_bytes: null,
+    mime_type:       null,
+    url:             null,
+    page_title:      null,
+    og_image_url:    null,
+  };
+}
+
+/**
+ * All attachments for one piece, oldest first.
+ *
+ * @param {string} concertItemId
+ * @returns {Promise<Array>} mapped attachments
+ */
+export async function getAttachmentsForItem(concertItemId) {
+  if (!concertItemId) return [];
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .select("*")
+    .eq("concert_item_id", concertItemId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map(attachmentFromRow);
+}
+
+/**
+ * Attachments for many pieces in ONE query, so rendering N rows
+ * costs one request rather than N.
+ *
+ * @param {Array<string>} concertItemIds
+ * @returns {Promise<Map<string, Array>>} item id → its attachments
+ *   (oldest first). Items with none are absent from the map; callers
+ *   should treat a miss as an empty list.
+ */
+export async function getAttachmentsForItems(concertItemIds) {
+  const ids = (concertItemIds || []).filter(Boolean);
+  const byItem = new Map();
+  if (ids.length === 0) return byItem;
+
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .select("*")
+    .in("concert_item_id", ids)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  for (const row of data || []) {
+    const att = attachmentFromRow(row);
+    const list = byItem.get(att.concertItemId);
+    if (list) list.push(att);
+    else byItem.set(att.concertItemId, [att]);
+  }
+  return byItem;
+}
+
+/**
+ * Upload a file and attach it to a piece.
+ *
+ * The row id is generated client-side so it can name the storage
+ * object, keeping blob and row trivially correlated. If the row
+ * insert fails after a successful upload, the object is removed —
+ * otherwise a failed attach would silently leave an orphan blob in
+ * the bucket that nothing references and nobody can find.
+ *
+ * @param {string} concertItemId
+ * @param {File} file
+ * @param {{displayLabel?: string, createdBy?: string}} opts
+ * @returns {Promise<Object>} the inserted attachment
+ */
+export async function uploadFileAttachment(concertItemId, file, opts = {}) {
+  if (!concertItemId) throw new Error("No concert piece");
+  if (!file) throw new Error("No file provided");
+  if (file.size > MAX_ATTACHMENT_BYTES) throw new Error("File too large — 10 MB max");
+
+  const id = crypto.randomUUID();
+  const storagePath = `${ATTACHMENTS_PREFIX}/${concertItemId}/${id}-${sanitizeFileName(file.name)}`;
+
+  // uploadToBucket swallows its error and returns null rather than
+  // throwing (see storageHelpers) — so a null result IS the failure.
+  const uploaded = await uploadToBucket(ATTACHMENTS_BUCKET, storagePath, file);
+  if (!uploaded) throw new Error("Upload failed — try again");
+
+  const row = attachmentToRow({
+    concertItemId,
+    kind: "file",
+    storagePath,
+    fileName: file.name,
+    fileSizeBytes: file.size,
+    mimeType: file.type || null,
+    displayLabel: (opts.displayLabel || "").trim() || null,
+    createdBy: opts.createdBy || null,
+  });
+
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .insert({ id, ...row })
+    .select("*")
+    .single();
+
+  if (error) {
+    // Roll the upload back so the bucket doesn't accumulate blobs no
+    // row points at. Best-effort: deleteFromBucket is non-fatal, and
+    // the insert error is the one worth surfacing either way.
+    await deleteFromBucket(ATTACHMENTS_BUCKET, storagePath);
+    throw new Error(error.message);
+  }
+  return attachmentFromRow(data);
+}
+
+/**
+ * Attach a pasted link.
+ *
+ * pageTitle / ogImageUrl are accepted from the caller rather than
+ * fetched here — the fetch-page-meta enrichment student notes uses
+ * is not wired up for concerts, and a link attachment is perfectly
+ * usable without it.
+ *
+ * @param {string} concertItemId
+ * @param {string} url
+ * @param {{displayLabel?: string, pageTitle?: string, ogImageUrl?: string, createdBy?: string}} opts
+ * @returns {Promise<Object>} the inserted attachment
+ */
+export async function addLinkAttachment(concertItemId, url, opts = {}) {
+  if (!concertItemId) throw new Error("No concert piece");
+  const trimmed = (url || "").trim();
+  if (!trimmed) throw new Error("No URL provided");
+  try { new URL(trimmed); } catch { throw new Error("Invalid URL"); }
+
+  const row = attachmentToRow({
+    concertItemId,
+    kind: "link",
+    url: trimmed,
+    pageTitle:    (opts.pageTitle  || "").trim() || null,
+    ogImageUrl:   opts.ogImageUrl  || null,
+    displayLabel: (opts.displayLabel || "").trim() || null,
+    createdBy:    opts.createdBy   || null,
+  });
+
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .insert(row)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return attachmentFromRow(data);
+}
+
+/**
+ * Attach something already in the Resource Library by reference.
+ * A payload-empty row carrying only resource_id — no file is copied
+ * and no bytes are uploaded.
+ *
+ * `kind` still has to satisfy the NOT NULL CHECK (kind IN
+ * ('file','link')), so it describes what the referenced resource IS
+ * (for the icon), not what this row owns.
+ *
+ * There is deliberately no inverse of this — concerts never publish
+ * INTO the library. publishUploadToLibrary hardcodes
+ * source: "student_note" and writes source_subject_type from its
+ * caller, so a concert publish would create a library row
+ * mislabelled as originating from Student Notes, whose subject then
+ * resolves to nothing. Widening the library's source taxonomy for a
+ * marginal feature isn't worth it; concerts simply don't publish.
+ *
+ * @param {string} concertItemId
+ * @param {string} resourceId
+ * @param {{displayLabel?: string, createdBy?: string, kind?: 'file'|'link'}} opts
+ * @returns {Promise<Object>} the inserted attachment
+ */
+export async function addLibraryReference(concertItemId, resourceId, opts = {}) {
+  if (!concertItemId) throw new Error("No concert piece");
+  if (!resourceId) throw new Error("No resource provided");
+
+  const row = attachmentToRow({
+    concertItemId,
+    kind: opts.kind === "link" ? "link" : "file",
+    resourceId,
+    displayLabel: (opts.displayLabel || "").trim() || null,
+    createdBy:    opts.createdBy || null,
+  });
+
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .insert(row)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return attachmentFromRow(data);
+}
+
+/**
+ * Override (or clear) an attachment's displayed label. Empty clears
+ * back to the default (file name, page title, or the library item's
+ * own label).
+ *
+ * @param {string} attachmentId
+ * @param {string|null} displayLabel
+ * @returns {Promise<Object>} the updated attachment
+ */
+export async function renameAttachment(attachmentId, displayLabel) {
+  const trimmed = (displayLabel || "").trim();
+  const { data, error } = await supabase
+    .from("concert_item_attachments")
+    .update({ display_label: trimmed || null })
+    .eq("id", attachmentId)
+    .select("*")
+    .single();
+  if (error) throw new Error(error.message);
+  return attachmentFromRow(data);
+}
+
+/**
+ * Delete an attachment, and its stored file when it owns one.
+ *
+ * The row is re-read rather than trusted from caller state, so the
+ * storage decision is made against what the database actually holds.
+ *
+ * Shared-file safety: a concert file object is EXCLUSIVELY owned.
+ * Its path is minted here (concert-attachments/<item>/<uuid>-…) and
+ * concerts never publish to the library, so no `resources` row can
+ * ever point at it — unlike student-notes published uploads, where
+ * attachment and library row share one blob. A library REFERENCE
+ * owns no storage at all (storage_path null), so the guard below
+ * also stops it deleting the library's file. Deleting the referenced
+ * resource itself is never in scope here.
+ *
+ * Available to anyone — §4.4. created_by is not consulted.
+ *
+ * @param {string} attachmentId
+ * @returns {Promise<boolean>}
+ */
+export async function deleteAttachment(attachmentId) {
+  if (!attachmentId) return false;
+
+  const { data: existing, error: readErr } = await supabase
+    .from("concert_item_attachments")
+    .select("storage_path")
+    .eq("id", attachmentId)
+    .maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+
+  const { error } = await supabase
+    .from("concert_item_attachments")
+    .delete()
+    .eq("id", attachmentId);
+  if (error) throw new Error(error.message);
+
+  // Row first, blob second: a leftover blob is tolerable, a row
+  // pointing at a deleted blob is not. Non-fatal by design.
+  if (existing?.storage_path) {
+    await deleteFromBucket(ATTACHMENTS_BUCKET, existing.storage_path);
+  }
+  return true;
+}
+
+/**
+ * Short-lived signed URL for a stored file, renewed per click.
+ *
+ * signedUrlFor defaults its bucket to teacher-documents, so the
+ * bucket MUST be passed explicitly here.
+ *
+ * @param {string} storagePath
+ * @param {number} expiresIn  seconds; 60 matches student notes
+ * @returns {Promise<string|null>} null when signing fails
+ */
+export async function getAttachmentSignedUrl(storagePath, expiresIn = 60) {
+  if (!storagePath) return null;
+  return signedUrlFor(storagePath, expiresIn, ATTACHMENTS_BUCKET);
 }
