@@ -8,18 +8,17 @@
 import React from "react";
 import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, uid as makeId, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
   exportLessons, exportTeacherSchedules,
   electronPrintToPdf, buildExportFilename
 } from "../data/exportHelpers";
-// Session 96: upload exported timetables to the public resources bucket and
+// Session 96: upload exported timetables to the private documents bucket and
 // register them as Documents so Matt can pick them up later when emailing.
-import {
-  BUCKET_DOCUMENTS, makeStoragePath, uploadToBucket,
-} from "../utils/storageHelpers";
+// Shared with the concert program export since Concerts cluster 5.
+import { uploadExportToDocuments as uploadExportToDocumentsShared } from "../utils/exportToDocuments";
 import { Btn } from "./ui/SharedUI";
 
 export const ExportIcon = (
@@ -238,45 +237,25 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
     });
   }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, teacherCoverage]);
 
-  // Session 96: helper — upload a base64 PDF to the private documents bucket
-  // and register it as a Document so it appears in the Documents tab and
-  // becomes attachable in emails via the template editor's auto-attach picker.
+  // Session 96: upload a base64 PDF to the private documents bucket and
+  // register it as a Document so it appears in the Documents tab and becomes
+  // attachable in emails via the template editor's auto-attach picker.
+  //
+  // The implementation moved to utils/exportToDocuments.js (Concerts cluster
+  // 5) so the concert program can file itself the same way under a different
+  // type and school. This wrapper keeps the local (pdfBase64, filename, label)
+  // signature both call sites below already use, and omits `type` and
+  // `schoolId` so they take the shared helper's defaults — "Timetable" and ""
+  // — which are exactly what was hardcoded here before.
+  //
   // Non-fatal on failure: local save path still runs independently (caller
   // doesn't await success). setDocuments is optional — if the caller didn't
-  // pass it through, we skip the Documents-tab registration.
-  const uploadExportToDocuments = React.useCallback(async (pdfBase64, filename, label) => {
-    if (!setDocuments || !pdfBase64) return;
-    try {
-      // Convert base64 → Blob for Supabase upload. The storage SDK accepts
-      // Blob/File/ArrayBuffer; a Blob is simplest here since we already have
-      // the data as base64 and don't need to touch the filesystem.
-      const byteChars = atob(pdfBase64);
-      const bytes = new Uint8Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) bytes[i] = byteChars.charCodeAt(i);
-      const blob = new Blob([bytes], { type: "application/pdf" });
-      const docId = makeId();
-      const storagePath = makeStoragePath(docId, filename);
-      const res = await uploadToBucket(BUCKET_DOCUMENTS, storagePath, blob);
-      if (!res) return;
-      const today = new Date().toISOString().slice(0, 10);
-      const newDoc = {
-        id: docId,
-        label: label || filename.replace(/\.pdf$/, ""),
-        type: "Timetable",
-        teacherId: "", schoolId: "",
-        expiryDate: "",
-        url: "",
-        notes: `Exported ${today}`,
-        storage_path: storagePath,
-        filename,
-        size_bytes: blob.size,
-        mime_type: "application/pdf",
-      };
-      setDocuments(prev => [newDoc, ...prev]);
-    } catch (e) {
-      console.warn("[export] Supabase upload failed:", e?.message || e);
-    }
-  }, [setDocuments]);
+  // pass it through, the helper skips the Documents-tab registration.
+  const uploadExportToDocuments = React.useCallback(
+    (pdfBase64, filename, label) =>
+      uploadExportToDocumentsShared({ pdfBase64, filename, label, setDocuments }),
+    [setDocuments]
+  );
 
   const doExport = async (saveToFile) => {
     setExporting(true);
