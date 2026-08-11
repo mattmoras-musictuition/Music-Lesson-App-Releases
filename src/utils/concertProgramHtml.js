@@ -31,6 +31,7 @@
 // ============================================================
 
 import { abbreviateInstrument } from "./resourcesDB";
+import { preferredDisplayName } from "./studentName";
 
 // ── Page geometry ───────────────────────────────────────────
 // A4 portrait. Margins chosen deliberately: 18mm top/bottom and 16mm
@@ -93,11 +94,20 @@ function lookupStudent(studentsById, id) {
 // the student left the school and was deleted — falls back to any name
 // stored on the row, and if there is none the performer is dropped
 // entirely by buildProgramRows rather than printing a blank or an id.
+//
+// A resolved student name goes through preferredDisplayName, so
+// "Megumi (Meg) Van Haven" prints as "Meg Van Haven" — the name the child
+// is actually called in front of an audience. The same helper runs on the
+// list rows in ConcertsManager, so screen and paper always agree.
+//
+// A free-text performer is NOT transformed: that field is labelled "Name as
+// it should print", so what was typed is what was meant.
 function performerName(p, studentsById) {
   const stored = (p?.name || "").trim();
   if (p?.studentId) {
     const full = (lookupStudent(studentsById, p.studentId)?.name || "").trim();
-    return full || stored;
+    if (full) return (preferredDisplayName(full) || full).trim();
+    return stored;
   }
   return stored;
 }

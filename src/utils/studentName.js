@@ -23,7 +23,13 @@ export function preferredDisplayName(name) {
   if (!m) return name;
   const pref = m[2].trim();
   const rest = m[3].trim();
-  return rest ? `${pref} ${rest}` : pref;
+  if (rest) return `${pref} ${rest}`;
+  // `pref` can still be blank when the brackets hold only whitespace
+  // ("Megumi (   )"): [^)]+ matches, .trim() empties it, and returning it
+  // would turn a real name into "". Fall back to the original string — a
+  // name must never render as nothing. Only reachable when the result
+  // would otherwise be empty, so no working case changes.
+  return pref || name;
 }
 
 // Preferred first name only:

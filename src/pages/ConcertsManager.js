@@ -28,6 +28,7 @@ import { useTheme } from "../context/ThemeContext";
 import { Card, PageTitle, NavButtons, EmptyState, Btn } from "../components/ui/SharedUI";
 import { fetchResourceTaxonomies, fetchInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
 import { getSchoolAcronym } from "../utils/helpers";
+import { preferredDisplayName } from "../utils/studentName";
 // The program export (§4.7). electronPrintToPdf is used as-is — the PDF's
 // portrait orientation comes from the document's own @page rule, not from
 // bridge options, which preload.js drops.
@@ -263,8 +264,15 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
   }, [instAbbrevs]);
 
   // ── Display helpers ─────────────────────────────────────────
+  // A linked student shows their preferred name — "Megumi (Meg) Van Haven"
+  // reads as "Meg Van Haven", matching what the printed program does through
+  // the same helper. A free-text performer is left verbatim: that field is
+  // labelled "Name as it should print".
   const performerLabel = useCallback((p) => {
-    const name = p.studentId ? (studentsById.get(p.studentId)?.name || "Unknown student") : (p.name || "");
+    const stored = p.studentId ? (studentsById.get(p.studentId)?.name || "") : "";
+    const name = p.studentId
+      ? ((preferredDisplayName(stored) || stored).trim() || "Unknown student")
+      : (p.name || "");
     if (!name) return "";
     return p.instrument ? `${name} (${p.instrument})` : name;
   }, [studentsById]);
