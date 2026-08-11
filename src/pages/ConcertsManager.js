@@ -19,7 +19,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil, Paperclip } from "lucide-react";
+import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil, Paperclip, FileDown, Minus } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 // PAGE_COLORS deliberately not imported: it has no `concerts` key, and the
 // four other keyless pages (Messages, Calendar, Student Notes, Invoicing)
@@ -27,6 +27,17 @@ import { useTheme } from "../context/ThemeContext";
 // — which is the value every PAGE_COLORS entry already holds.
 import { Card, PageTitle, NavButtons, EmptyState, Btn } from "../components/ui/SharedUI";
 import { fetchResourceTaxonomies, fetchInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
+import { getSchoolAcronym } from "../utils/helpers";
+// The program export (§4.7). electronPrintToPdf is used as-is — the PDF's
+// portrait orientation comes from the document's own @page rule, not from
+// bridge options, which preload.js drops.
+import { electronPrintToPdf } from "../data/exportHelpers";
+import { uploadExportToDocuments } from "../utils/exportToDocuments";
+import {
+  buildConcertProgramHtml, buildProgramRows, estimateProgramPages,
+  autoFitProgramScale, clampProgramScale,
+  MIN_PROGRAM_SCALE, MAX_PROGRAM_SCALE, PROGRAM_SCALE_STEP,
+} from "../utils/concertProgramHtml";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ConcertAttachmentsPanel } from "../components/ConcertAttachmentsPanel";
 import {
@@ -65,7 +76,14 @@ function copyFromBand(band) {
   return { performers, personnel, bandId: band.id };
 }
 
-export function ConcertsManager({ schools, students, teachers, bands, notify, goBack, goForward, historyCursor, pageHistory }) {
+// NOTE ON setDocuments: the program files itself into the Documents tab, and
+// documents are whole-list synced from App.js — a row written directly to
+// Supabase is deleted by the next sync's delete-not-in-list sweep, so
+// setDocuments is the only correct path. App.js does not currently pass it to
+// this page; until it does, the export renders the PDF and then reports that
+// it couldn't be filed rather than failing silently. One prop closes the gap:
+//   <ConcertsManager … documents={documents} setDocuments={setDocuments} />
+export function ConcertsManager({ schools, students, teachers, bands, notify, goBack, goForward, historyCursor, pageHistory, setDocuments }) {
   const { colors } = useTheme();
 
   const [selectedSchool, setSelectedSchool] = useState("");
@@ -91,6 +109,11 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
   const [attachmentsByItem, setAttachmentsByItem] = useState(() => new Map());
   const [attachmentsFor, setAttachmentsFor] = useState(null); // the piece whose panel is open
   const [browserLink, setBrowserLink] = useState(null);       // { url, title } for the in-app browser
+
+  // ── Program export (§4.7) ───────────────────────────────────
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportScale, setExportScale] = useState(1);
+  const [exportBusy, setExportBusy] = useState(false);
 
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteRow, setConfirmDeleteRow] = useState(null); // item pending delete from the list
@@ -358,6 +381,88 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     setConfirmClear(false);
   };
 
+  // ── Program export (§4.7) ───────────────────────────────────
+  // The heading prints what's on screen: titleDraft is committed to
+  // concerts.title on blur, but clicking Export blurs and saves in the same
+  // beat, so reading the draft avoids printing a title one edit behind.
+  const programTitle = (titleDraft || "").trim() || (concert?.title || "").trim();
+
+  const programRows = useMemo(
+    () => buildProgramRows(items, studentsById, instAbbrevs),
+    [items, studentsById, instAbbrevs]
+  );
+
+  // Page count for the "before saving" report. Recomputed as the nudge moves,
+  // from the same layout model the builder uses, so the number shown and the
+  // document produced can't disagree.
+  const exportPages = useMemo(
+    () => estimateProgramPages({ title: programTitle, rows: programRows, scale: exportScale }),
+    [programTitle, programRows, exportScale]
+  );
+
+  // buildExportFilename is not reused here: it is week-centric and always
+  // produces a "Master"/"Week N" head, which would label a concert program
+  // "Master - MPS". Built locally instead — school acronym plus the concert's
+  // own title, stripped of characters that are illegal in a filename.
+  const programFilename = useMemo(() => {
+    const school = (schools || []).find(s => s.id === selectedSchool);
+    const acronym = school ? getSchoolAcronym(school) : "";
+    return [acronym, programTitle || "Concert Program"]
+      .filter(Boolean).join(" - ")
+      .replace(/[/\\:*?"<>|]/g, "").replace(/\s+/g, " ").trim() || "Concert Program";
+  }, [schools, selectedSchool, programTitle]);
+
+  const openExport = () => {
+    // Guard: an empty concert would produce a page with a heading and nothing
+    // under it. Warn rather than render it.
+    if (items.length === 0) {
+      notify && notify("Add at least one piece before exporting the program", "warning");
+      return;
+    }
+    setExportScale(autoFitProgramScale({ title: programTitle, rows: programRows }));
+    setExportOpen(true);
+  };
+
+  const nudgeScale = (delta) =>
+    setExportScale(s => Math.round(clampProgramScale(s + delta) * 100) / 100);
+
+  const runExport = async () => {
+    if (!concert || items.length === 0) return;
+    setExportBusy(true);
+    try {
+      const html = buildConcertProgramHtml({
+        title: programTitle, items, studentsById,
+        abbreviations: instAbbrevs, scale: exportScale,
+      });
+      const pdfBase64 = await electronPrintToPdf(html);
+      if (!pdfBase64) {
+        notify && notify("PDF generation unavailable — program not saved", "danger");
+        return;
+      }
+      // Filed through setDocuments, never a direct row write: the documents
+      // whole-list sync deletes any row that isn't in the in-memory list.
+      const doc = await uploadExportToDocuments({
+        pdfBase64,
+        filename: `${programFilename}.pdf`,
+        label: programFilename,
+        setDocuments,
+        type: "Concert",
+        schoolId: selectedSchool,
+      });
+      if (doc) {
+        notify && notify(`Program saved to Documents — ${exportPages} page${exportPages === 1 ? "" : "s"}`);
+        setExportOpen(false);
+      } else {
+        notify && notify("Couldn't file the program in Documents", "danger");
+      }
+    } catch (err) {
+      console.error("[concerts] export failed:", err);
+      notify && notify("Export failed: " + (err?.message || "unknown error"), "danger");
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
   // ── Band copy (§4.1) ────────────────────────────────────────
   const applyBandCopy = (band) => {
     const copy = copyFromBand(band);
@@ -424,14 +529,23 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
 
   // A confirmation dialog. Matches the app's existing modal shape
   // (fixed overlay, centred card, explicit confirm button).
-  const confirmDialog = ({ heading, body, confirmLabel, onConfirm, onCancel }) => (
+  // `extraAction` is an optional non-destructive escape hatch, rendered away
+  // from the confirm button on the opposite side so it can't be mistaken for
+  // the default. Used by clear-all to offer the export first (§4.5).
+  const confirmDialog = ({ heading, body, confirmLabel, onConfirm, onCancel, extraAction }) => (
     <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
       onClick={onCancel}>
       <div style={{ background: colors.cardBg, borderRadius: 14, padding: 28, maxWidth: 460, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
         onClick={e => e.stopPropagation()}>
         <div style={{ fontWeight: 700, fontSize: 15, color: colors.danger, marginBottom: 10 }}>{heading}</div>
         <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 20 }}>{body}</div>
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center" }}>
+          {extraAction && (
+            <button onClick={extraAction.onClick}
+              style={{ marginRight: "auto", padding: "8px 14px", background: "none", color: colors.text, border: `1px solid ${colors.border}`, borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {extraAction.icon}{extraAction.label}
+            </button>
+          )}
           <Btn variant="secondary" onClick={onCancel}>Cancel</Btn>
           <button onClick={onConfirm}
             style={{ padding: "8px 16px", border: "none", borderRadius: 8, background: colors.danger, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
@@ -643,6 +757,11 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
         action={
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {items.length > 0 && (
+              <Btn variant="secondary" onClick={openExport}>
+                <FileDown size={13} /> Export program
+              </Btn>
+            )}
+            {items.length > 0 && (
               <Btn variant="danger" onClick={() => setConfirmClear(true)}>
                 <Trash2 size={13} /> Clear all items
               </Btn>
@@ -797,11 +916,79 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
 
       {confirmClear && confirmDialog({
         heading: "Clear every piece for this school?",
-        body: <>This permanently deletes all <strong>{items.length}</strong> {items.length === 1 ? "piece" : "pieces"} for this school's concert. They cannot be recovered. The concert title is kept.</>,
+        body: <>This permanently deletes all <strong>{items.length}</strong> {items.length === 1 ? "piece" : "pieces"} for this school's concert. They cannot be recovered. The concert title is kept. Export the program first if you want a copy of this year's running order.</>,
         confirmLabel: "Delete all pieces",
         onConfirm: doClearAll,
         onCancel: () => setConfirmClear(false),
+        // §4.5: offer the export before deleting. Deliberately NOT the default
+        // — it opens the export dialog and leaves the pieces alone, so coming
+        // back to delete is a fresh, deliberate confirmation. Declining it and
+        // deleting straight away is still permitted.
+        extraAction: {
+          label: "Export program first",
+          icon: <FileDown size={13} />,
+          onClick: () => { setConfirmClear(false); openExport(); },
+        },
       })}
+
+      {/* ── Export dialog — reports the page count BEFORE saving (§4.7) ── */}
+      {exportOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => { if (!exportBusy) setExportOpen(false); }}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, padding: 28, maxWidth: 460, width: "90%", boxShadow: "0 8px 32px rgba(0,0,0,0.18)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 10, display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <FileDown size={15} /> Export the program
+            </div>
+            <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.65, marginBottom: 18 }}>
+              A4 portrait, {items.length} {items.length === 1 ? "piece" : "pieces"}, saved to Documents as
+              {" "}<strong>{programFilename}.pdf</strong>.
+            </div>
+
+            <div style={{ background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 10, padding: "14px 16px", marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: colors.text }}>
+                    {exportPages} page{exportPages === 1 ? "" : "s"}
+                  </div>
+                  <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                    Text size {Math.round(exportScale * 100)}%
+                    {exportScale <= MIN_PROGRAM_SCALE + 1e-9 && " — smallest readable"}
+                    {exportScale >= MAX_PROGRAM_SCALE - 1e-9 && " — largest"}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button onClick={() => nudgeScale(-PROGRAM_SCALE_STEP)}
+                    disabled={exportScale <= MIN_PROGRAM_SCALE + 1e-9}
+                    title="Smaller"
+                    style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${colors.border}`, background: colors.cardBg, color: colors.text, cursor: exportScale <= MIN_PROGRAM_SCALE + 1e-9 ? "not-allowed" : "pointer", opacity: exportScale <= MIN_PROGRAM_SCALE + 1e-9 ? 0.4 : 1, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                    <Minus size={14} />
+                  </button>
+                  <button onClick={() => nudgeScale(PROGRAM_SCALE_STEP)}
+                    disabled={exportScale >= MAX_PROGRAM_SCALE - 1e-9}
+                    title="Larger"
+                    style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${colors.border}`, background: colors.cardBg, color: colors.text, cursor: exportScale >= MAX_PROGRAM_SCALE - 1e-9 ? "not-allowed" : "pointer", opacity: exportScale >= MAX_PROGRAM_SCALE - 1e-9 ? 0.4 : 1, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+                    <Plus size={14} />
+                  </button>
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+                The page count is an estimate from the text, so a program right on a
+                boundary can land a line either way. It won't shrink below the smallest
+                readable size — past that it runs onto another page instead.
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setExportOpen(false)} disabled={exportBusy}>Cancel</Btn>
+              <button onClick={runExport} disabled={exportBusy}
+                style={{ padding: "8px 16px", border: "none", borderRadius: 8, background: colors.accent, color: colors.cardBg, fontSize: 13, fontWeight: 700, cursor: exportBusy ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: exportBusy ? 0.6 : 1 }}>
+                {exportBusy ? "Exporting…" : "Save to Documents"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {attachmentsFor && (
         <ConcertAttachmentsPanel
