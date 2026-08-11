@@ -12,9 +12,10 @@
 // RLS behind it is USING (true) WITH CHECK (true), and client-side
 // gating that isn't backed by RLS is explicitly out of scope.
 //
-// Attachments (cluster 3), the instrument-abbreviation editor
-// (cluster 4) and the printed program export (cluster 5) are NOT
-// part of this file yet.
+// Instrument abbreviations (cluster 4) are EDITED in Settings, not
+// here; this file only reads them so the short form that will print
+// is visible at the point of choosing an instrument. The printed
+// program export (cluster 5) is NOT part of this file yet.
 // ============================================================
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
@@ -25,7 +26,7 @@ import { useTheme } from "../context/ThemeContext";
 // simply omit `pageColor` and let PageTitle fall back to colors.sidebarActive
 // — which is the value every PAGE_COLORS entry already holds.
 import { Card, PageTitle, NavButtons, EmptyState, Btn } from "../components/ui/SharedUI";
-import { fetchResourceTaxonomies } from "../utils/resourcesDB";
+import { fetchResourceTaxonomies, fetchInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ConcertAttachmentsPanel } from "../components/ConcertAttachmentsPanel";
 import {
@@ -75,6 +76,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
 
   const [titleDraft, setTitleDraft] = useState("");
   const [taxInstruments, setTaxInstruments] = useState([]);
+  const [instAbbrevs, setInstAbbrevs] = useState({});
 
   const [form, setForm] = useState(null);          // the piece being edited
   const [editing, setEditing] = useState(null);    // "new" | item id
@@ -131,11 +133,16 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     setSelectedSchool(schools[0].id);
   }, [schools, selectedSchool]);
 
-  // ── Instrument taxonomy (managed in Settings) ───────────────
+  // ── Instrument taxonomy + abbreviations (managed in Settings) ─
+  // Two separate app_settings rows, read independently: the names come
+  // from `instruments`, the short forms from `instrument_abbreviations`.
   useEffect(() => {
     fetchResourceTaxonomies()
       .then(tax => setTaxInstruments(tax?.instruments || []))
       .catch(() => { /* dropdown falls back to whatever the row already holds */ });
+    // Never throws (missing row → {}); an empty map just means every
+    // option shows its computed short form.
+    fetchInstrumentAbbreviations().then(setInstAbbrevs);
   }, []);
 
   // ── Load the selected school's concert + items ──────────────
@@ -217,6 +224,16 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     if (current && !list.includes(current)) return [...list, current];
     return list;
   }, [taxInstruments]);
+
+  // Option label only — "Guitar (Gtr)" — so the abbreviation that will print
+  // is visible at the point of choosing. What's STORED stays the instrument
+  // name alone; the <option value> is untouched. An off-taxonomy value like
+  // the band-copied "Bass" resolves through the same helper and falls back to
+  // a computed short form when the map has no entry for it.
+  const instrumentOptionLabel = useCallback((name) => {
+    const ab = abbreviateInstrument(name, instAbbrevs);
+    return ab ? `${name} (${ab})` : name;
+  }, [instAbbrevs]);
 
   // ── Display helpers ─────────────────────────────────────────
   const performerLabel = useCallback((p) => {
@@ -528,7 +545,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
                   <select style={{ ...inputStyle, flex: 1 }} value={p.instrument}
                     onChange={e => setPerformer(idx, { instrument: e.target.value })}>
                     <option value="">No instrument</option>
-                    {instrumentOptions(p.instrument).map(i => <option key={i} value={i}>{i}</option>)}
+                    {instrumentOptions(p.instrument).map(i => <option key={i} value={i}>{instrumentOptionLabel(i)}</option>)}
                   </select>
 
                   <button onClick={() => setForm(prev => ({ ...prev, performers: prev.performers.filter((_, i) => i !== idx) }))}
@@ -561,7 +578,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
                 <select style={{ ...inputStyle, flex: 1 }} value={p.instrument}
                   onChange={e => setTeacherRow(idx, { instrument: e.target.value })}>
                   <option value="">Not performing</option>
-                  {instrumentOptions(p.instrument).map(i => <option key={i} value={i}>{i}</option>)}
+                  {instrumentOptions(p.instrument).map(i => <option key={i} value={i}>{instrumentOptionLabel(i)}</option>)}
                 </select>
                 <button onClick={() => setForm(prev => ({ ...prev, personnel: prev.personnel.filter((_, i) => i !== idx) }))}
                   title="Remove teacher"
