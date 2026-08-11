@@ -344,8 +344,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
       .map((it, i) => (it.position === i ? null : { id: it.id, position: i }))
       .filter(Boolean);
 
-    // Optimistic: the list reorders under the cursor immediately and
-    // rolls back if the write fails.
+    // Optimistic: the list reorders under the cursor immediately.
     setItems(next.map((it, i) => ({ ...it, position: i })));
     setDraggingIdx(null); setDragOverIdx(null);
 
@@ -354,8 +353,18 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
       await reorderConcertItems(changed);
     } catch (err) {
       console.error("[concerts] reorder failed:", err);
-      setItems(previous);
       notify && notify("Couldn't save the new order", "danger");
+      // The writes go out in parallel, so a failure can leave SOME rows
+      // moved. Re-reading is the only way to show what the database
+      // actually holds — reverting to the pre-drag snapshot would
+      // display an order that may no longer be true. Fall back to that
+      // snapshot only if the re-read itself fails.
+      try {
+        setItems(await getConcertItems(concert.id));
+      } catch (reloadErr) {
+        console.error("[concerts] reorder reload failed:", reloadErr);
+        setItems(previous);
+      }
     }
   };
 
