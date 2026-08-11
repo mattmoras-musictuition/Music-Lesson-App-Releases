@@ -18,8 +18,9 @@
 // program export (cluster 5) is NOT part of this file yet.
 // ============================================================
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil, Paperclip, FileDown, Minus } from "lucide-react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
+import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil, Paperclip, FileDown, Minus, Library } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 // PAGE_COLORS deliberately not imported: it has no `concerts` key, and the
 // four other keyless pages (Messages, Calendar, Student Notes, Invoicing)
@@ -45,7 +46,9 @@ import {
   getOrCreateConcertForSchool, updateConcertTitle, getConcertItems,
   createConcertItem, updateConcertItem, deleteConcertItem,
   reorderConcertItems, clearConcertItems, getAttachmentsForItems,
+  resolveAttachmentTarget,
 } from "../utils/concertsDB";
+import { iconForFileName } from "../utils/resourceTypeIcons";
 
 // A blank performer row. Exactly one of studentId / name carries a
 // value in a saved row (§5.2); `mode` is editor-only state and is
@@ -119,6 +122,44 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
   const [exportOpen, setExportOpen] = useState(false);
   const [exportScale, setExportScale] = useState(1);
   const [exportBusy, setExportBusy] = useState(false);
+
+  // ── Paperclip hover list ────────────────────────────────────
+  // { itemId, rect } — the anchor's viewport rect, captured on enter.
+  const [hoverAtts, setHoverAtts] = useState(null);
+  const hoverTimer = useRef(null);
+
+  const cancelHoverClose = () => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
+  };
+  // A short grace period so the pointer can travel from the paperclip into
+  // the popover without it vanishing underneath.
+  const closeHoverSoon = () => {
+    cancelHoverClose();
+    hoverTimer.current = setTimeout(() => setHoverAtts(null), 140);
+  };
+  const openHover = (e, itemId) => {
+    // Reads the already-batched map — hovering never triggers a fetch. No
+    // attachments means no popover at all, rather than an empty one.
+    if ((attachmentsByItem.get(itemId) || []).length === 0) return;
+    cancelHoverClose();
+    setHoverAtts({ itemId, rect: e.currentTarget.getBoundingClientRect() });
+  };
+
+  // The anchor rect is captured once, so scrolling would leave the popover
+  // floating over unrelated rows. Close instead of chasing it — a hover
+  // affordance shouldn't outlive the hover.
+  useEffect(() => {
+    if (!hoverAtts) return undefined;
+    const close = () => setHoverAtts(null);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [hoverAtts]);
+
+  useEffect(() => () => cancelHoverClose(), []);
 
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteRow, setConfirmDeleteRow] = useState(null); // item pending delete from the list
@@ -490,6 +531,36 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
       notify && notify("Export failed: " + (err?.message || "unknown error"), "danger");
     } finally {
       setExportBusy(false);
+    }
+  };
+
+  // Label for a hover-list row. The panel resolves a reference's label from
+  // its loaded library Map; here displayLabel already holds it (addLibraryReference
+  // stores resource.label at attach time), so the list needs no library load.
+  const attachmentLabel = useCallback((att) => {
+    if (att.displayLabel) return att.displayLabel;
+    if (att.isFile) return att.fileName || "File";
+    if (att.isReference) return "Library item";
+    if (att.pageTitle) return att.pageTitle;
+    try { return new URL(att.url).hostname || att.url; } catch { return att.url || "Link"; }
+  }, []);
+
+  // Opens by exactly the panel's rules — both go through resolveAttachmentTarget.
+  const openAttachmentFromHover = async (att) => {
+    try {
+      const target = await resolveAttachmentTarget(att);
+      if (!target) {
+        notify && notify(
+          att.isReference ? "That library item is no longer available" : "Couldn't open that file",
+          att.isReference ? "warning" : "danger"
+        );
+        return;
+      }
+      setHoverAtts(null);
+      setBrowserLink({ url: target, title: attachmentLabel(att) });
+    } catch (err) {
+      console.error("[concerts] hover open failed:", err);
+      notify && notify("Couldn't open that attachment", "danger");
     }
   };
 
@@ -922,6 +993,8 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
                         single place they are managed. The piece editor has
                         no attachment control at all. */}
                     <button onClick={e => { e.stopPropagation(); setAttachmentsFor(item); }}
+                      onMouseEnter={e => openHover(e, item.id)}
+                      onMouseLeave={closeHoverSoon}
                       title={attachCount ? `${attachCount} attachment${attachCount === 1 ? "" : "s"}` : "Attachments"}
                       style={{ border: "none", background: "none", color: attachCount ? colors.text : colors.textMuted, cursor: "pointer", padding: 5, display: "inline-flex", alignItems: "center", gap: 3 }}>
                       <Paperclip size={14} />
@@ -1043,6 +1116,51 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
           onClose={() => setAttachmentsFor(null)}
         />
       )}
+
+      {/* ── Paperclip hover list ──
+          Portalled to document.body so a Card's overflow can never clip it,
+          right-aligned under the paperclip and clamped inside the viewport —
+          the same placement rule the Resource Library's PortalPopover uses.
+          Additive: clicking the paperclip still opens the full panel. */}
+      {hoverAtts && (() => {
+        const list = attachmentsByItem.get(hoverAtts.itemId) || [];
+        if (list.length === 0) return null;
+        const W = 268, margin = 8;
+        const left = Math.max(margin, Math.min(hoverAtts.rect.right - W, window.innerWidth - W - margin));
+        const top  = Math.min(hoverAtts.rect.bottom + 6, window.innerHeight - margin);
+        // A long list would otherwise run off the bottom edge; cap it and scroll.
+        const maxHeight = Math.max(96, window.innerHeight - top - margin);
+        return createPortal(
+          <div
+            onMouseEnter={cancelHoverClose}
+            onMouseLeave={closeHoverSoon}
+            style={{ position: "fixed", zIndex: 9995, top, left, width: W, maxHeight, overflowY: "auto",
+              background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 10,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: 5 }}>
+            {list.map(att => {
+              const AttIcon = att.isReference ? Library : iconForFileName({ fileName: att.fileName, url: att.url });
+              return (
+                <button key={att.id}
+                  onClick={e => { e.stopPropagation(); openAttachmentFromHover(att); }}
+                  title={attachmentLabel(att)}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 8px",
+                    background: "none", border: "none", borderRadius: 6, cursor: "pointer",
+                    fontFamily: "inherit", fontSize: 12.5, color: colors.text, textAlign: "left" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = colors.bg; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                  <span style={{ flexShrink: 0, display: "flex", color: colors.textMuted }}>
+                    <AttIcon size={14} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {attachmentLabel(att)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>,
+          document.body
+        );
+      })()}
 
       {browserLink && (
         <LinkBrowser initialUrl={browserLink.url} title={browserLink.title}

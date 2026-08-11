@@ -775,3 +775,40 @@ export async function getAttachmentSignedUrl(storagePath, expiresIn = 60) {
   if (!storagePath) return null;
   return signedUrlFor(storagePath, expiresIn, ATTACHMENTS_BUCKET);
 }
+
+/**
+ * Resolve the URL an attachment should open at.
+ *
+ * One implementation for every surface that opens an attachment — the panel
+ * and the paperclip hover list on the piece rows — so the two can't drift
+ * apart on, say, which field a library reference opens from.
+ *
+ *   file      → a fresh short-lived signed URL
+ *   link      → the stored url
+ *   reference → the referenced resource's url, else its file_url
+ *
+ * The panel already holds the whole library in a Map and passes the row in
+ * via `opts.resource`, costing no query. Callers that don't (the hover list,
+ * which deliberately loads nothing) omit it and this fetches the single row
+ * on click — never on hover.
+ *
+ * @param {Object} att            a classified attachment (attachmentFromRow)
+ * @param {Object} [opts]
+ * @param {Object} [opts.resource] pre-resolved resources row, when the caller has one
+ * @returns {Promise<string|null>} null when there is nothing to open
+ */
+export async function resolveAttachmentTarget(att, opts = {}) {
+  if (!att) return null;
+  if (att.isReference) {
+    let resource = opts.resource || null;
+    if (!resource && att.resourceId) {
+      const { data, error } = await supabase
+        .from("resources").select("url,file_url").eq("id", att.resourceId).maybeSingle();
+      if (error) throw new Error(error.message);
+      resource = data || null;
+    }
+    return resource?.url || resource?.file_url || null;
+  }
+  if (att.isFile) return getAttachmentSignedUrl(att.storagePath);
+  return att.url || null;
+}

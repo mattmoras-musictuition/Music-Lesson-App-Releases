@@ -28,7 +28,7 @@ import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons
 import { LibraryPicker } from "./LibraryPicker";
 import {
   uploadFileAttachment, addLinkAttachment, addLibraryReference,
-  renameAttachment, deleteAttachment, getAttachmentSignedUrl,
+  renameAttachment, deleteAttachment, resolveAttachmentTarget,
 } from "../utils/concertsDB";
 
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -116,17 +116,22 @@ export function ConcertAttachmentsPanel({
   const push = (next) => onChange(item.id, next);
 
   // ── Open ────────────────────────────────────────────────────
+  // Target resolution lives in concertsDB (resolveAttachmentTarget) so the
+  // paperclip hover list on the piece rows opens attachments by exactly the
+  // same rules. The already-loaded resources Map is handed in, so a reference
+  // still costs no extra query here.
   const openAttachment = async (att) => {
     try {
-      if (att.isReference) {
-        const resource = resourcesById.get(att.resourceId);
-        const target = resource?.url || resource?.file_url || null;
-        if (!target) { notify && notify("That library item is no longer available", "warning"); return; }
-        onOpenLink({ url: target, title: labelFor(att) });
+      const target = await resolveAttachmentTarget(att, {
+        resource: att.isReference ? resourcesById.get(att.resourceId) : null,
+      });
+      if (!target) {
+        notify && notify(
+          att.isReference ? "That library item is no longer available" : "Couldn't open that file",
+          att.isReference ? "warning" : "danger"
+        );
         return;
       }
-      const target = att.isFile ? await getAttachmentSignedUrl(att.storagePath) : att.url;
-      if (!target) { notify && notify("Couldn't open that file", "danger"); return; }
       onOpenLink({ url: target, title: labelFor(att) });
     } catch (err) {
       console.error("[concert-attachments] open failed:", err);
