@@ -277,11 +277,19 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     return p.instrument ? `${name} (${p.instrument})` : name;
   }, [studentsById]);
 
-  const teacherLabel = useCallback((p) => {
-    const name = teachersById.get(p.teacherId)?.name || "";
-    if (!name) return "";
-    return p.instrument ? `${name} (${p.instrument})` : name;
-  }, [teachersById]);
+  // Structured rather than a joined string, so the NAME alone can carry the
+  // teacher's own colour while "with" and the instrument parenthetical keep
+  // the row's muted styling. `color` is teachers.color — the same hex the
+  // Teachers page, Dashboard chips and Calendar read — and is "" when unset,
+  // which the renderer treats as "leave it alone".
+  const teacherParts = useCallback((personnel) => (
+    (personnel || []).map(p => {
+      const t = teachersById.get(p.teacherId);
+      const name = t?.name || "";
+      if (!name) return null;
+      return { id: p.teacherId, name, color: t?.color || "", instrument: p.instrument || "" };
+    }).filter(Boolean)
+  ), [teachersById]);
 
   // ── Piece editor open / close ───────────────────────────────
   const newPiece = () => {
@@ -855,7 +863,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {items.map((item, idx) => {
             const performerText = (item.performers || []).map(performerLabel).filter(Boolean).join(", ");
-            const teacherText = (item.personnel || []).map(teacherLabel).filter(Boolean).join(", ");
+            const teachersOnPiece = teacherParts(item.personnel);
             const attachCount = (attachmentsByItem.get(item.id) || []).length;
             return (
               <Card key={item.id}
@@ -894,9 +902,17 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
                     <div style={{ fontSize: 12.5, color: performerText ? colors.textLight : colors.textMuted, fontStyle: performerText ? "normal" : "italic", lineHeight: 1.5 }}>
                       {performerText || "No performers"}
                     </div>
-                    {teacherText && (
+                    {teachersOnPiece.length > 0 && (
                       <div style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 3 }}>
-                        with {teacherText}
+                        with {teachersOnPiece.map((t, i) => (
+                          <React.Fragment key={`${t.id}-${i}`}>
+                            {i > 0 && ", "}
+                            {/* Only the name is tinted. No colour set → inherits
+                                the row's muted styling, exactly as before. */}
+                            <span style={t.color ? { color: t.color } : undefined}>{t.name}</span>
+                            {t.instrument ? ` (${t.instrument})` : ""}
+                          </React.Fragment>
+                        ))}
                       </div>
                     )}
                   </div>
