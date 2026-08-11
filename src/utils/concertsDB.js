@@ -26,6 +26,7 @@
 
 import { supabase } from "../supabaseClient";
 import { BUCKET_RESOURCES, uploadToBucket, deleteFromBucket, signedUrlFor } from "./storageHelpers";
+import { insertResource } from "./resourcesDB";
 
 // ── Normalisation ────────────────────────────────────────────
 
@@ -599,9 +600,51 @@ export async function uploadFileAttachment(concertItemId, file, opts = {}) {
     createdBy: opts.createdBy || null,
   });
 
+  // Opt-in publish to the shared Resource Library. ONE upload, TWO
+  // references: the resources row's file_url points at the object just
+  // written above, so the file is never stored twice. resource_id on the
+  // attachment is what makes that sharing visible to the delete paths.
+  let resourceId = null;
+  let published  = false;
+  if (opts.publish) {
+    try {
+      const { data: pub } = supabase.storage.from(ATTACHMENTS_BUCKET).getPublicUrl(storagePath);
+      const p = opts.publish;
+      const resource = await insertResource({
+        id:        crypto.randomUUID(),
+        label:     (p.label || "").trim() || file.name,
+        file_url:  pub?.publicUrl || null,
+        file_name: file.name,
+        // Newly permitted by resources_source_check. Deliberately NOT
+        // 'student_note' — a concert upload did not come from Student Notes,
+        // and publishUploadToLibrary hardcodes that value, which is why this
+        // path exists instead of reusing it.
+        source:      "concert",
+        school_id:   p.schoolId   || null,
+        instrument:  p.instrument || null,
+        skill_level: p.skillLevel || null,
+        // category is text NOT NULL DEFAULT '' — '' means "no type", never null.
+        category:    (p.category || "").trim(),
+        // source_subject_type/id are left null: the DB change covered
+        // resources_source_check only, and writing an unverified value like
+        // 'concert_item' into a column that may carry its own CHECK would be
+        // guessing at schema. `source: 'concert'` already marks provenance.
+      });
+      resourceId = resource?.id || null;
+      published  = !!resourceId;
+    } catch (e) {
+      // Non-fatal, matching the Student Notes publish flow: the teacher keeps
+      // their attachment over the file already uploaded, just unpublished.
+      // Log the full Supabase error so the real cause is diagnosable.
+      console.error("[concerts] library publish failed — keeping the attachment unpublished.", {
+        code: e?.code, message: e?.message, details: e?.details, hint: e?.hint, error: e,
+      });
+    }
+  }
+
   const { data, error } = await supabase
     .from("concert_item_attachments")
-    .insert({ id, ...row })
+    .insert({ id, ...row, resource_id: resourceId })
     .select("*")
     .single();
 
@@ -609,10 +652,18 @@ export async function uploadFileAttachment(concertItemId, file, opts = {}) {
     // Roll the upload back so the bucket doesn't accumulate blobs no
     // row points at. Best-effort: deleteFromBucket is non-fatal, and
     // the insert error is the one worth surfacing either way.
+    //
+    // If the library row landed first, roll that back too — otherwise it
+    // would be left pointing at a blob about to be removed. Deleting it
+    // here is safe precisely because no attachment row exists yet.
+    if (resourceId) {
+      try { await supabase.from("resources").delete().eq("id", resourceId); }
+      catch (e) { console.warn("[concerts] publish rollback failed:", e?.message || e); }
+    }
     await deleteFromBucket(ATTACHMENTS_BUCKET, storagePath);
     throw new Error(error.message);
   }
-  return attachmentFromRow(data);
+  return { ...attachmentFromRow(data), published };
 }
 
 /**
@@ -718,19 +769,33 @@ export async function renameAttachment(attachmentId, displayLabel) {
 }
 
 /**
- * Delete an attachment, and its stored file when it owns one.
+ * Delete an attachment, and its stored file ONLY when it exclusively owns it.
  *
  * The row is re-read rather than trusted from caller state, so the
  * storage decision is made against what the database actually holds.
  *
- * Shared-file safety: a concert file object is EXCLUSIVELY owned.
- * Its path is minted here (concert-attachments/<item>/<uuid>-…) and
- * concerts never publish to the library, so no `resources` row can
- * ever point at it — unlike student-notes published uploads, where
- * attachment and library row share one blob. A library REFERENCE
- * owns no storage at all (storage_path null), so the guard below
- * also stops it deleting the library's file. Deleting the referenced
- * resource itself is never in scope here.
+ * Shared-file safety — REVISED. This previously asserted a concert file
+ * object is exclusively owned, on the grounds that concerts never publish to
+ * the library. Publishing now exists (see uploadFileAttachment's `publish`
+ * option), so that assumption is dead and the guard is a real check:
+ *
+ *   storage_path null           → nothing to delete. A link owns no file, and
+ *                                 a library REFERENCE owns none either, so
+ *                                 this still stops a reference deleting the
+ *                                 library's file.
+ *   storage_path + resource_id  → PUBLISHED. The resources row's file_url
+ *                                 points at this same object, so the blob is
+ *                                 KEPT and only the attachment row goes. The
+ *                                 library item stays whole.
+ *   storage_path, no resource_id→ exclusively owned; blob deleted as before.
+ *
+ * resource_id is confirmed to still resolve before it is trusted, so this is
+ * correct whether or not the FK clears it when a library row is deleted: if
+ * the resources row is gone, nothing shares the blob and it is removed.
+ *
+ * Errors while checking are treated as "shared" — erring toward a leaked blob
+ * rather than deleting a file the library still serves. Same bias as the
+ * Student Notes equivalent in resourcesDB.deleteResourceSharedFileSafe.
  *
  * Available to anyone — §4.4. created_by is not consulted.
  *
@@ -742,10 +807,24 @@ export async function deleteAttachment(attachmentId) {
 
   const { data: existing, error: readErr } = await supabase
     .from("concert_item_attachments")
-    .select("storage_path")
+    .select("storage_path,resource_id")
     .eq("id", attachmentId)
     .maybeSingle();
   if (readErr) throw new Error(readErr.message);
+
+  // Decided BEFORE the row is deleted — afterwards resource_id is gone.
+  let sharedWithLibrary = false;
+  if (existing?.storage_path && existing?.resource_id) {
+    try {
+      const { data, error } = await supabase
+        .from("resources").select("id").eq("id", existing.resource_id).maybeSingle();
+      if (error) throw error;
+      sharedWithLibrary = !!data;
+    } catch (e) {
+      console.error("[concerts] shared-file check failed — keeping the file:", e);
+      sharedWithLibrary = true;
+    }
+  }
 
   const { error } = await supabase
     .from("concert_item_attachments")
@@ -755,7 +834,7 @@ export async function deleteAttachment(attachmentId) {
 
   // Row first, blob second: a leftover blob is tolerable, a row
   // pointing at a deleted blob is not. Non-fatal by design.
-  if (existing?.storage_path) {
+  if (existing?.storage_path && !sharedWithLibrary) {
     await deleteFromBucket(ATTACHMENTS_BUCKET, existing.storage_path);
   }
   return true;

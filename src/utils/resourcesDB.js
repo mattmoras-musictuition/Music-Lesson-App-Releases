@@ -165,22 +165,35 @@ export async function deleteResource(id) {
   if (error) throw new Error(error.message);
 }
 
-// Shared-file safety (cluster 8.3b): true when a teacher-app "published
-// upload" still shares this resource's stored file — a student_attachments
-// row with resource_id = this resource AND a non-null storage_path. The
-// caller uses this to decide whether deleting the resources row may also
-// remove the storage object. Throws on query error so the caller can err
-// safe (keep the file). The student_attachments SELECT policy is open to
-// any authenticated user, so this read is permitted from the admin app.
+// Shared-file safety (cluster 8.3b): true when a "published upload"
+// elsewhere still shares this resource's stored file — a row with
+// resource_id = this resource AND a non-null storage_path. The caller uses
+// this to decide whether deleting the resources row may also remove the
+// storage object. Throws on query error so the caller can err safe (keep
+// the file). Both SELECT policies are open to any authenticated user, so
+// these reads are permitted from the admin app.
+//
+// TWO referrer tables, not one. student_attachments was the only publisher
+// until concerts gained an opt-in publish path (concertsDB.uploadFileAttachment,
+// source: 'concert'), which shares one blob between a concert attachment and
+// a resources row exactly as the teacher app does. Both apps upload into the
+// same `resources` bucket, so a concert-published file matches the file_url
+// pattern deleteResourceSharedFileSafe removes — omitting this table would
+// let tidying the library delete a file a concert piece still serves.
+const SHARED_FILE_TABLES = ["student_attachments", "concert_item_attachments"];
+
 export async function resourceFileSharedByUpload(resourceId) {
-  const { data, error } = await supabase
-    .from("student_attachments")
-    .select("id")
-    .eq("resource_id", resourceId)
-    .not("storage_path", "is", null)
-    .limit(1);
-  if (error) throw new Error(error.message);
-  return (data || []).length > 0;
+  for (const table of SHARED_FILE_TABLES) {
+    const { data, error } = await supabase
+      .from(table)
+      .select("id")
+      .eq("resource_id", resourceId)
+      .not("storage_path", "is", null)
+      .limit(1);
+    if (error) throw new Error(error.message);
+    if ((data || []).length > 0) return true;
+  }
+  return false;
 }
 
 // ── Resource Library view helpers (taxonomy + subject names) ──
@@ -427,25 +440,23 @@ export function findResourcesByName(resources, name) {
 
 // Shared-file-safe delete of a resources row (8.3a logic, extracted in 8.4 so
 // the Resources tab and the Student-Notes "remove from library" path share it).
-// Before removing the storage object, check for a teacher-app published upload
-// that still shares this file — a student_attachments row with resource_id =
-// this resource AND a non-null storage_path. If one exists, KEEP the file (only
-// the resources row is deleted; the FK then clears resource_id on referrers). If
+// Before removing the storage object, check for a published upload that still
+// shares this file — a row in EITHER referrer table with resource_id = this
+// resource AND a non-null storage_path. If one exists, KEEP the file (only the
+// resources row is deleted; the FK then clears resource_id on referrers). If
 // the referrer check itself errors, err safe and keep the file. Then delete the
 // resources row.
+//
+// The concert publish path (concertsDB, source: 'concert') shares one blob the
+// same way the teacher app does, into the same bucket, so it must be consulted
+// here too — hence resourceFileSharedByUpload rather than a local
+// student_attachments-only query.
 export async function deleteResourceSharedFileSafe(resource) {
   if (!resource?.id) return;
   if (resource.file_url) {
     let sharedByUpload = false;
     try {
-      const { data, error } = await supabase
-        .from("student_attachments")
-        .select("id")
-        .eq("resource_id", resource.id)
-        .not("storage_path", "is", null)
-        .limit(1);
-      if (error) throw error;
-      sharedByUpload = (data || []).length > 0;
+      sharedByUpload = await resourceFileSharedByUpload(resource.id);
     } catch (e) {
       console.error("[resources delete] shared-file check failed — keeping file:", e);
       sharedByUpload = true;

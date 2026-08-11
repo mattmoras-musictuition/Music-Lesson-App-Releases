@@ -1107,6 +1107,8 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
           attachments={attachmentsByItem.get(attachmentsFor.id) || []}
           teachersById={teachersById}
           notify={notify}
+          // Pre-fills the school on a library publish — inferred, not asked for.
+          schoolId={selectedSchool}
           onOpenLink={setBrowserLink}
           onChange={(itemId, next) => setAttachmentsByItem(prev => {
             const updated = new Map(prev);

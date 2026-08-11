@@ -23,7 +23,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { X, Link2, Upload, Library, Pencil, Check } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { supabase } from "../supabaseClient";
-import { loadResources } from "../utils/resourcesDB";
+import { loadResources, fetchResourceTaxonomies } from "../utils/resourcesDB";
 import { iconForResourceType, iconForFileName } from "../utils/resourceTypeIcons";
 import { LibraryPicker } from "./LibraryPicker";
 import {
@@ -51,7 +51,7 @@ function safeHostname(url) {
 }
 
 export function ConcertAttachmentsPanel({
-  item, attachments, teachersById, onChange, onOpenLink, onClose, notify,
+  item, attachments, teachersById, onChange, onOpenLink, onClose, notify, schoolId,
 }) {
   const { colors } = useTheme();
 
@@ -68,6 +68,26 @@ export function ConcertAttachmentsPanel({
   const [renaming, setRenaming] = useState(null);   // attachment being renamed
   const [renameDraft, setRenameDraft] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(null);
+
+  // ── Staged file upload + opt-in library publish ──────────────
+  // A picked file is held here rather than uploaded straight away, so the
+  // publish choice and its metadata can be made BEFORE the single upload.
+  const [pendingFile, setPendingFile] = useState(null);
+  const [publish, setPublish] = useState(false);          // opt-IN, per Student Notes
+  const [pubLabel, setPubLabel] = useState("");
+  const [pubCategory, setPubCategory] = useState("");
+  const [pubInstrument, setPubInstrument] = useState("");
+  const [pubSkill, setPubSkill] = useState("");
+  const [tax, setTax] = useState({ resourceTypes: [], skillLevels: [], instruments: [] });
+
+  useEffect(() => {
+    fetchResourceTaxonomies().then(setTax).catch(() => { /* dropdowns degrade to free of options */ });
+  }, []);
+
+  const resetStagedFile = () => {
+    setPendingFile(null); setPublish(false);
+    setPubLabel(""); setPubCategory(""); setPubInstrument(""); setPubSkill("");
+  };
 
   const list = useMemo(() => attachments || [], [attachments]);
 
@@ -140,16 +160,41 @@ export function ConcertAttachmentsPanel({
   };
 
   // ── Add: file ───────────────────────────────────────────────
-  const onPickFile = async (e) => {
+  // Picking only STAGES the file. The upload happens on confirm, once the
+  // publish choice is known, so a published file is uploaded exactly once
+  // and both the attachment and the library row point at that one object.
+  const onPickFile = (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";              // allow re-picking the same file
     if (!file) return;
     if (file.size > MAX_BYTES) { setError("File too large — 10 MB max"); return; }
+    setError("");
+    setPendingFile(file);
+    setPubLabel(file.name);           // sensible default; editable before attaching
+  };
+
+  const confirmUpload = async () => {
+    if (!pendingFile) return;
     setBusy(true); setError("");
     try {
-      const att = await uploadFileAttachment(item.id, file, { createdBy });
+      const { published, ...att } = await uploadFileAttachment(item.id, pendingFile, {
+        createdBy,
+        // Omitted entirely when unticked — no library row is written at all.
+        publish: publish ? {
+          label:      pubLabel,
+          category:   pubCategory,
+          instrument: pubInstrument,
+          skillLevel: pubSkill,
+          // Inferred from the concert's school rather than asked for.
+          schoolId:   schoolId || "",
+        } : null,
+      });
       push([...list, att]);
-      notify && notify("File attached");
+      resetStagedFile();
+      // Publishing is best-effort by design: the attachment is kept either
+      // way, so say plainly when the library half didn't land.
+      if (publish && !published) notify && notify("File attached, but adding it to the library failed", "warning");
+      else notify && notify(published ? "File attached and added to the library" : "File attached");
     } catch (err) {
       console.error("[concert-attachments] upload failed:", err);
       setError(err?.message || "Upload failed — try again");
@@ -339,7 +384,65 @@ export function ConcertAttachmentsPanel({
           <div style={{ fontSize: 12, color: colors.danger, fontWeight: 600, marginBottom: 10 }}>{error}</div>
         )}
 
-        {linkMode ? (
+        {pendingFile ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 0 4px", borderTop: `1px solid ${colors.borderLight}` }}>
+            <div style={{ fontSize: 12.5, color: colors.text }}>
+              <strong>{pendingFile.name}</strong>
+              <span style={{ color: colors.textMuted }}> · {fmtBytes(pendingFile.size)}</span>
+            </div>
+
+            {/* Opt-IN, unticked by default — matches Student Notes. */}
+            <label style={{ display: "inline-flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, color: colors.text, cursor: "pointer" }}>
+              <input type="checkbox" checked={publish} onChange={e => setPublish(e.target.checked)}
+                style={{ marginTop: 2, cursor: "pointer" }} />
+              <span>
+                Add this to the Resource Library
+                <span style={{ display: "block", fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
+                  One file, two places — the library item and this attachment share it.
+                </span>
+              </span>
+            </label>
+
+            {publish && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 24 }}>
+                <input value={pubLabel} placeholder="Name in the library"
+                  onChange={e => setPubLabel(e.target.value)}
+                  style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text, outline: "none" }} />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <select value={pubCategory} onChange={e => setPubCategory(e.target.value)}
+                    style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                    <option value="">Type…</option>
+                    {(tax.resourceTypes || []).map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <select value={pubInstrument} onChange={e => setPubInstrument(e.target.value)}
+                    style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                    <option value="">Instrument…</option>
+                    {(tax.instruments || []).map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <select value={pubSkill} onChange={e => setPubSkill(e.target.value)}
+                  style={{ padding: "7px 10px", border: `1px solid ${colors.inputBorder}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, color: colors.text }}>
+                  <option value="">Skill level…</option>
+                  {(tax.skillLevels || []).map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: colors.textMuted }}>
+                  Filed against this concert's school.
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={confirmUpload} disabled={busy}
+                style={{ padding: "6px 14px", background: colors.sidebarActive, color: colors.cardBg, border: "none", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: busy ? 0.6 : 1 }}>
+                {busy ? "Uploading…" : "Attach file"}
+              </button>
+              <button onClick={() => { resetStagedFile(); setError(""); }} disabled={busy}
+                style={{ padding: "6px 14px", background: colors.bg, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: busy ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : linkMode ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "12px 0 4px", borderTop: `1px solid ${colors.borderLight}` }}>
             <input value={urlDraft} autoFocus placeholder="https://…"
               onChange={e => setUrlDraft(e.target.value)}
