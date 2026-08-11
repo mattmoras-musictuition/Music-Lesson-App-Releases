@@ -79,10 +79,14 @@ function copyFromBand(band) {
 // NOTE ON setDocuments: the program files itself into the Documents tab, and
 // documents are whole-list synced from App.js — a row written directly to
 // Supabase is deleted by the next sync's delete-not-in-list sweep, so
-// setDocuments is the only correct path. App.js does not currently pass it to
-// this page; until it does, the export renders the PDF and then reports that
-// it couldn't be filed rather than failing silently. One prop closes the gap:
-//   <ConcertsManager … documents={documents} setDocuments={setDocuments} />
+// setDocuments is the only correct path. App.js passes it at the ConcertsManager
+// render alongside `documents`, the same pair ExportDialog receives.
+//
+// It stays optional here rather than required: the export is one action on this
+// page, and a page that renders nothing because a Documents prop went missing
+// would be a worse failure than an export that can't file its output. If it ever
+// does go missing that is a wiring regression, not a user-facing state, so
+// runExport logs it to the console instead of blaming the upload.
 export function ConcertsManager({ schools, students, teachers, bands, notify, goBack, goForward, historyCursor, pageHistory, setDocuments }) {
   const { colors } = useTheme();
 
@@ -441,6 +445,14 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
       }
       // Filed through setDocuments, never a direct row write: the documents
       // whole-list sync deletes any row that isn't in the in-memory list.
+      //
+      // App.js passes setDocuments, so a missing one here means the prop was
+      // dropped from the render — a wiring regression the user can do nothing
+      // about. Name it in the console rather than reporting it as a failed
+      // upload, which is what the message below now describes.
+      if (!setDocuments) {
+        console.error("[concerts] setDocuments prop missing — the program cannot be filed in Documents");
+      }
       const doc = await uploadExportToDocuments({
         pdfBase64,
         filename: `${programFilename}.pdf`,
@@ -453,7 +465,9 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
         notify && notify(`Program saved to Documents — ${exportPages} page${exportPages === 1 ? "" : "s"}`);
         setExportOpen(false);
       } else {
-        notify && notify("Couldn't file the program in Documents", "danger");
+        // Reached when the upload to the documents bucket fails — the PDF
+        // rendered, but nothing was filed, so nothing is left half-saved.
+        notify && notify("Couldn't upload the program to Documents — try again", "danger");
       }
     } catch (err) {
       console.error("[concerts] export failed:", err);
