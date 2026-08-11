@@ -218,6 +218,89 @@ export async function fetchResourceTaxonomies() {
   }
 }
 
+// ── Instrument abbreviations (Concerts §4.8) ────────────────────
+//
+// Short forms printed beside each performer's name on the concert
+// program ("Alice Walker (Gtr)"). Managed centrally in Settings so
+// they stay consistent across every program and every year.
+//
+// Stored in its OWN app_settings row — key 'instrument_abbreviations',
+// value a jsonb OBJECT keyed by instrument name — exactly as
+// instrument_colors already is. Deliberately NOT folded into the
+// `instruments` array: both copies of _taxArray (above, and the one in
+// SettingsManager.js) hard-filter `typeof v === "string"`, so turning
+// that array into objects would silently empty it — the taxonomy would
+// appear deleted with no error raised anywhere. The instruments array
+// keeps its plain-string shape and is untouched by this feature.
+//
+// Keying by NAME means a rename in Settings must carry the
+// abbreviation across in the same save, or it is orphaned. That is
+// handled in ResourceTaxonomyPanel.saveEdit.
+const INSTRUMENT_ABBREV_KEY = "instrument_abbreviations";
+
+// Coerce a stored value (jsonb object, JSON string, or null) into a plain
+// name→abbreviation object. Non-string or blank keys/values are dropped, so
+// a malformed row degrades to {} rather than poisoning the resolver.
+// Never throws.
+function _abbrevMap(value) {
+  let v = value;
+  if (typeof v === "string") { try { v = JSON.parse(v); } catch { v = null; } }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out = {};
+  for (const [k, val] of Object.entries(v)) {
+    if (typeof k === "string" && k.trim() && typeof val === "string" && val.trim()) out[k] = val;
+  }
+  return out;
+}
+
+// Fetch the instrument abbreviation map. A missing row (a fresh environment
+// where nobody has saved one yet) yields {} — never throws, so a failure
+// here costs the stored abbreviations, not the screen that asked for them.
+export async function fetchInstrumentAbbreviations() {
+  try {
+    const { data, error } = await supabase
+      .from("app_settings").select("value").eq("key", INSTRUMENT_ABBREV_KEY);
+    if (error) throw error;
+    return _abbrevMap((data || [])[0]?.value);
+  } catch (err) {
+    console.warn("[resources] instrument abbreviations load failed:", err?.message);
+    return {};
+  }
+}
+
+// Persist the whole abbreviation map (one app_settings row). Upserts on
+// `key` so the row is CREATED on first write — the seeded row must not be
+// assumed present. Returns the cleaned map actually written; throws on
+// failure so the caller can tell the user the save didn't land.
+export async function saveInstrumentAbbreviations(map) {
+  const clean = _abbrevMap(map);
+  const { error } = await supabase
+    .from("app_settings").upsert({ key: INSTRUMENT_ABBREV_KEY, value: clean }, { onConflict: "key" });
+  if (error) throw new Error(error.message);
+  return clean;
+}
+
+// Resolve one instrument name to the short form the program prints.
+// Consumed by the Settings editor, the concert piece editor, and (next)
+// the program export — one resolver so all three agree.
+//
+//   blank name        → "" (the caller omits the parenthetical entirely;
+//                       "()" must never be printed — spec §4.8)
+//   set in the map    → that value
+//   otherwise         → first three characters, title-cased ("Mandolin" → "Man")
+//
+// Never returns null or undefined. The lookup uses the trimmed name because
+// the taxonomy stores trimmed entries, so a stray-whitespace value (e.g. one
+// copied in from a band) still resolves to its stored abbreviation.
+export function abbreviateInstrument(name, map) {
+  const raw = typeof name === "string" ? name.trim() : "";
+  if (!raw) return "";
+  const stored = (map && typeof map === "object" && !Array.isArray(map)) ? map[raw] : undefined;
+  if (typeof stored === "string" && stored.trim()) return stored.trim();
+  const head = raw.slice(0, 3);
+  return head.charAt(0).toUpperCase() + head.slice(1).toLowerCase();
+}
+
 // ── Folder overrides (shared sidebar aliases + hidden folders) ──
 //
 // The Finder-style sidebars (Resources and Documents) auto-generate one folder
