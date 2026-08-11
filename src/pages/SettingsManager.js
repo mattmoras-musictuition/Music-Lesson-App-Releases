@@ -10,6 +10,7 @@ import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 import { setInstColorOverrides } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { fetchInstrumentAbbreviations, saveInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
 import { supabase } from "../supabaseClient";
 // Session 95: EmailTemplatesEditor lives in ContactsEditors but is no longer
 // reached from the Contacts page — it's now a Settings section.
@@ -55,8 +56,14 @@ function SectionPanel({ isOpen, danger = false, colors, children }) {
 // Instrument / Type / Skill-level pickers and filters. Each row is a jsonb
 // array of strings. Editing a list does NOT cascade: resources already tagged
 // with a removed value keep that value (no migration, no row rewrites).
+//
+// Instruments additionally carry an abbreviation — the short form printed on
+// concert programs (Concerts §4.8). Those live in a SEPARATE app_settings row
+// ('instrument_abbreviations', a jsonb object keyed by instrument name) and are
+// never folded into the instruments array, whose plain-string shape _taxArray
+// below depends on. Types and skill levels have no abbreviation.
 const RESOURCE_TAXONOMIES = [
-  { key: "instruments",    label: "Instruments",  noun: "instrument",  sub: "Instrument options for tagging and filtering resources." },
+  { key: "instruments",    label: "Instruments",  noun: "instrument",  sub: "Instrument options for tagging and filtering resources. The short form beside each is what prints on concert programs — click it to change it." },
   { key: "resource_types", label: "Types",        noun: "type",        sub: "Resource types — the Type field (stored on the resources.category column)." },
   { key: "skill_levels",   label: "Skill levels", noun: "skill level", sub: "Skill-level options for tagging and filtering resources." },
 ];
@@ -78,6 +85,10 @@ function ResourceTaxonomyPanel({ colors, notify }) {
   const [drafts, setDrafts] = React.useState({});   // { key: "new entry draft" }
   const [editing, setEditing] = React.useState(null); // { key, idx }
   const [editVal, setEditVal] = React.useState("");
+  // Abbreviations: the separate 'instrument_abbreviations' row, instruments only.
+  const [abbrevs, setAbbrevs] = React.useState({});      // { "Guitar": "Gtr", … }
+  const [abbrevEditing, setAbbrevEditing] = React.useState(null); // instrument name
+  const [abbrevVal, setAbbrevVal] = React.useState("");
 
   React.useEffect(() => {
     (async () => {
@@ -93,6 +104,9 @@ function ResourceTaxonomyPanel({ colors, notify }) {
         setLoadErr(true);
       }
     })();
+    // Separate row, separate read: it never throws (missing row → {}), and a
+    // failure here must not blank the lists the panel is really for.
+    fetchInstrumentAbbreviations().then(setAbbrevs);
   }, []);
 
   // Save the full array back to the app_settings row (stored as a jsonb array).
@@ -106,21 +120,69 @@ function ResourceTaxonomyPanel({ colors, notify }) {
     }
   };
 
+  // Save the whole abbreviation map back to its OWN app_settings row. Always a
+  // separate write from persist() above — the two rows never merge.
+  const persistAbbrevs = async (next) => {
+    setAbbrevs(next);
+    try { await saveInstrumentAbbreviations(next); }
+    catch { notify && notify("Couldn't save the short form — try again", "danger"); }
+  };
+
   const addEntry = (key) => {
     const v = (drafts[key] || "").trim();
     if (!v) return;
     const arr = lists[key] || [];
+    // A new instrument needs no abbreviation — it falls back to the computed
+    // short form until someone sets one, so nothing is written here.
     if (!arr.some(x => x.toLowerCase() === v.toLowerCase())) persist(key, [...arr, v]);
     setDrafts(d => ({ ...d, [key]: "" }));
   };
-  const removeEntry = (key, idx) => persist(key, (lists[key] || []).filter((_, i) => i !== idx));
+  const removeEntry = (key, idx) => {
+    const arr = lists[key] || [];
+    const removed = arr[idx];
+    persist(key, arr.filter((_, i) => i !== idx));
+    // Removing an instrument removes its abbreviation too, so the map doesn't
+    // accumulate keys for instruments that no longer exist.
+    if (key === "instruments" && removed && removed in abbrevs) {
+      const next = { ...abbrevs };
+      delete next[removed];
+      persistAbbrevs(next);
+    }
+  };
   const startEdit = (key, idx) => { setEditing({ key, idx }); setEditVal((lists[key] || [])[idx] || ""); };
   const saveEdit = () => {
     if (!editing) return;
     const v = editVal.trim();
     const { key, idx } = editing;
-    if (v) { const arr = [...(lists[key] || [])]; arr[idx] = v; persist(key, arr); }
+    if (v) {
+      const arr = [...(lists[key] || [])];
+      const before = arr[idx];
+      arr[idx] = v;
+      persist(key, arr);
+      // The abbreviation map is keyed by instrument NAME, so a rename has to
+      // carry the abbreviation to the new key and drop the old one in the SAME
+      // save. Without this the abbreviation is orphaned against a name that no
+      // longer exists and the renamed instrument silently falls back.
+      if (key === "instruments" && before && before !== v && before in abbrevs) {
+        const next = { ...abbrevs };
+        next[v] = abbrevs[before];
+        delete next[before];
+        persistAbbrevs(next);
+      }
+    }
     setEditing(null);
+  };
+
+  const startAbbrevEdit = (name) => { setAbbrevEditing(name); setAbbrevVal(abbrevs[name] || ""); };
+  const saveAbbrevEdit = () => {
+    if (!abbrevEditing) return;
+    const v = abbrevVal.trim();
+    const next = { ...abbrevs };
+    // Clearing it DELETES the key rather than storing "" — an empty string
+    // would be a stored value that suppresses the computed fallback.
+    if (v) next[abbrevEditing] = v; else delete next[abbrevEditing];
+    persistAbbrevs(next);
+    setAbbrevEditing(null);
   };
 
   if (loadErr) return <div style={{ padding: "16px 18px", fontSize: 13, color: colors.textMuted, fontStyle: "italic" }}>Couldn't load the lists. Restart the app if this persists.</div>;
@@ -151,6 +213,30 @@ function ResourceTaxonomyPanel({ colors, notify }) {
                 ) : (
                   <span key={idx} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", borderRadius: 16, background: colors.bg, border: `1px solid ${colors.border}`, fontSize: 12, color: colors.text }}>
                     {entry}
+                    {/* Abbreviation — instruments only, and always subordinate to the
+                        name. A stored value reads solid; the computed fallback is
+                        italic and dimmer so it's visibly a default, not data. */}
+                    {tx.key === "instruments" && (
+                      abbrevEditing === entry ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <input value={abbrevVal} onChange={e => setAbbrevVal(e.target.value)} autoFocus
+                            onKeyDown={e => { if (e.key === "Enter") saveAbbrevEdit(); if (e.key === "Escape") setAbbrevEditing(null); }}
+                            placeholder={abbreviateInstrument(entry, {})}
+                            style={{ padding: "2px 6px", border: `1px solid ${colors.border}`, borderRadius: 5, fontSize: 11, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none", width: 54 }} />
+                          <button onClick={saveAbbrevEdit} style={{ background: colors.accent, color: "#fff", border: "none", borderRadius: 5, padding: "2px 7px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>Save</button>
+                          <button onClick={() => setAbbrevEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex", padding: 0 }}><X size={12} /></button>
+                        </span>
+                      ) : (
+                        <button onClick={() => startAbbrevEdit(entry)}
+                          title={entry in abbrevs ? `Short form "${abbrevs[entry]}" — click to change` : "No short form set — click to set one"}
+                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 11,
+                            color: entry in abbrevs ? colors.textLight : colors.textMuted,
+                            fontStyle: entry in abbrevs ? "normal" : "italic",
+                            opacity: entry in abbrevs ? 1 : 0.75 }}>
+                          {abbreviateInstrument(entry, abbrevs)}
+                        </button>
+                      )
+                    )}
                     <button onClick={() => startEdit(tx.key, idx)} title="Rename" style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex", padding: 0 }}><Sparkles size={12} /></button>
                     <button onClick={() => removeEntry(tx.key, idx)} title="Remove" style={{ background: "none", border: "none", cursor: "pointer", color: colors.textMuted, display: "inline-flex", padding: 0 }}><Trash2 size={12} /></button>
                   </span>
