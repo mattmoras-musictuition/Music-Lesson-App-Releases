@@ -18,7 +18,7 @@
 // ============================================================
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil } from "lucide-react";
+import { X, Trash2, Music, GripVertical, StickyNote, Plus, Pencil, Paperclip } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 // PAGE_COLORS deliberately not imported: it has no `concerts` key, and the
 // four other keyless pages (Messages, Calendar, Student Notes, Invoicing)
@@ -26,10 +26,12 @@ import { useTheme } from "../context/ThemeContext";
 // — which is the value every PAGE_COLORS entry already holds.
 import { Card, PageTitle, NavButtons, EmptyState, Btn } from "../components/ui/SharedUI";
 import { fetchResourceTaxonomies } from "../utils/resourcesDB";
+import { LinkBrowser } from "../components/LinkBrowser";
+import { ConcertAttachmentsPanel } from "../components/ConcertAttachmentsPanel";
 import {
   getOrCreateConcertForSchool, updateConcertTitle, getConcertItems,
   createConcertItem, updateConcertItem, deleteConcertItem,
-  reorderConcertItems, clearConcertItems,
+  reorderConcertItems, clearConcertItems, getAttachmentsForItems,
 } from "../utils/concertsDB";
 
 // A blank performer row. Exactly one of studentId / name carries a
@@ -81,6 +83,12 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
 
   const [draggingIdx, setDraggingIdx] = useState(null);
   const [dragOverIdx, setDragOverIdx] = useState(null);
+
+  // itemId → its attachments. Fetched in one batched query with the
+  // list; the paperclip on each row reads its count from here.
+  const [attachmentsByItem, setAttachmentsByItem] = useState(() => new Map());
+  const [attachmentsFor, setAttachmentsFor] = useState(null); // the piece whose panel is open
+  const [browserLink, setBrowserLink] = useState(null);       // { url, title } for the in-app browser
 
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDeleteRow, setConfirmDeleteRow] = useState(null); // item pending delete from the list
@@ -145,12 +153,26 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
         const list = await getConcertItems(row.id);
         if (cancelled) return;
         setItems(list);
+
+        // One batched query for the whole list rather than one per row.
+        // Non-fatal: a failure here costs the paperclip counts, not the
+        // concert, so the page still renders.
+        try {
+          const byItem = await getAttachmentsForItems(list.map(it => it.id));
+          if (!cancelled) setAttachmentsByItem(byItem);
+        } catch (attErr) {
+          if (!cancelled) {
+            console.warn("[concerts] attachment counts failed:", attErr?.message || attErr);
+            setAttachmentsByItem(new Map());
+          }
+        }
       } catch (err) {
         if (cancelled) return;
         console.error("[concerts] load failed:", err);
         setLoadError(err?.message || "Couldn't load this school's concert.");
         setConcert(null);
         setItems([]);
+        setAttachmentsByItem(new Map());
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -285,6 +307,14 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     try {
       await deleteConcertItem(itemId);
       setItems(prev => prev.filter(it => it.id !== itemId));
+      // The attachment rows cascade in the database (ON DELETE CASCADE);
+      // drop the local entry so a re-created id can't inherit a count.
+      setAttachmentsByItem(prev => {
+        if (!prev.has(itemId)) return prev;
+        const next = new Map(prev);
+        next.delete(itemId);
+        return next;
+      });
       notify && notify("Piece removed");
       if (form && form.id === itemId) closeForm();
     } catch (err) {
@@ -302,6 +332,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
     try {
       await clearConcertItems(concert.id);
       setItems([]);
+      setAttachmentsByItem(new Map());   // rows cascaded with their pieces
       notify && notify("All pieces cleared");
     } catch (err) {
       console.error("[concerts] clear failed:", err);
@@ -667,6 +698,7 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
           {items.map((item, idx) => {
             const performerText = (item.performers || []).map(performerLabel).filter(Boolean).join(", ");
             const teacherText = (item.personnel || []).map(teacherLabel).filter(Boolean).join(", ");
+            const attachCount = (attachmentsByItem.get(item.id) || []).length;
             return (
               <Card key={item.id}
                 draggable
@@ -711,7 +743,16 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
                     )}
                   </div>
 
-                  <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 2, flexShrink: 0, alignItems: "center" }}>
+                    {/* Attachments live here, on the row — deliberately the
+                        single place they are managed. The piece editor has
+                        no attachment control at all. */}
+                    <button onClick={e => { e.stopPropagation(); setAttachmentsFor(item); }}
+                      title={attachCount ? `${attachCount} attachment${attachCount === 1 ? "" : "s"}` : "Attachments"}
+                      style={{ border: "none", background: "none", color: attachCount ? colors.text : colors.textMuted, cursor: "pointer", padding: 5, display: "inline-flex", alignItems: "center", gap: 3 }}>
+                      <Paperclip size={14} />
+                      {attachCount > 0 && <span style={{ fontSize: 11, fontWeight: 700 }}>{attachCount}</span>}
+                    </button>
                     <button onClick={e => { e.stopPropagation(); editPiece(item); }} title="Edit piece"
                       style={{ border: "none", background: "none", color: colors.textMuted, cursor: "pointer", padding: 5, display: "inline-flex", alignItems: "center" }}><Pencil size={14} /></button>
                     <button onClick={e => { e.stopPropagation(); setConfirmDeleteRow(item); }} title="Delete piece"
@@ -744,6 +785,27 @@ export function ConcertsManager({ schools, students, teachers, bands, notify, go
         onConfirm: doClearAll,
         onCancel: () => setConfirmClear(false),
       })}
+
+      {attachmentsFor && (
+        <ConcertAttachmentsPanel
+          item={attachmentsFor}
+          attachments={attachmentsByItem.get(attachmentsFor.id) || []}
+          teachersById={teachersById}
+          notify={notify}
+          onOpenLink={setBrowserLink}
+          onChange={(itemId, next) => setAttachmentsByItem(prev => {
+            const updated = new Map(prev);
+            updated.set(itemId, next);
+            return updated;
+          })}
+          onClose={() => setAttachmentsFor(null)}
+        />
+      )}
+
+      {browserLink && (
+        <LinkBrowser initialUrl={browserLink.url} title={browserLink.title}
+          onClose={() => setBrowserLink(null)} />
+      )}
     </div>
   );
 }
