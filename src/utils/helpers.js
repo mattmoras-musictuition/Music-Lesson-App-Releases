@@ -50,7 +50,10 @@ export const melbourneNow = () => {
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   }).formatToParts(now);
   const get = (t) => parseInt(parts.find(p => p.type === t)?.value || "0", 10);
-  return new Date(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  // ICU h24 midnight case: Chromium resolves hour12:false to hourCycle h24 for en-AU, so
+  // 00:00–00:59 formats as hour "24" and would roll the Date forward a whole day. Normalise to 0.
+  const hour = get("hour") % 24;
+  return new Date(get("year"), get("month") - 1, get("day"), hour, get("minute"), get("second"));
 };
 
 export const melbourneToday = () => toLocalDateStr(melbourneNow());
