@@ -9,7 +9,7 @@ import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 import { useTheme } from "../context/ThemeContext";
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
+import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
@@ -305,8 +305,8 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const _tdow = today.getDay(); const _tHour = today.getHours();
   const _rollFwd = (_tdow === 5 && _tHour >= 18) || _tdow === 6 || _tdow === 0;
   const effectiveTodayStr = _rollFwd ? toLocalDateStr(monday) : todayStr;
-  const dow = today.getDay();
-  const todayDayName = DAYS[dow === 0 ? 6 : dow - 1];
+  // Shared helper rather than DAYS, which is Mon–Fri only and gave undefined on the weekend.
+  const todayDayName = melbourneDayName();
   const weekDates = DAYS.map((d, i) => {
     const date = new Date(monday);
     date.setDate(monday.getDate() + i);
