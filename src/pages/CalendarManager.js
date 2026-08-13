@@ -211,10 +211,20 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
       catch { const last = clean.lastIndexOf("}"); if (last > 0) { let rec = clean.slice(0, last+1); if (!rec.trim().endsWith("]")) rec += "]"; if (!rec.trim().startsWith("[")) rec = "[" + rec; entries = JSON.parse(rec); } else throw new Error("Could not parse response"); }
       if (!Array.isArray(entries) || !entries.length) { notify("Could not find term dates. Try again later.", "warning"); return; }
       const today = new Date().toISOString().slice(0, 10);
-      const existing = new Set(interruptions.map(i => `${i.date}|${i.title}`));
+      // Identity is the type plus the date span, never the title: titles come back from a
+      // web search and are not stable wording, so "Spring Break" and "Spring School
+      // Holidays" for the same dates used to survive as two rows. Accepted keys are added
+      // as we go, so a single run returning both wordings now inserts only one.
+      const existing = new Set(interruptions.map(i => `${i.type}|${i.date}|${i.endDate || i.date}`));
       const newEntries = entries
         .map(e => ({ id: uid(), schoolId: "all", date: e.date||"", endDate: e.endDate||e.date||"", title: e.title||"", type: e.type||"public_holiday", affectsClasses: "all", startTime: "", endTime: "", notes: "", source: "auto-fetched" }))
-        .filter(e => e.date && !existing.has(`${e.date}|${e.title}`) && (e.endDate||e.date) >= today);
+        .filter(e => {
+          if (!e.date || (e.endDate || e.date) < today) return false;
+          const key = `${e.type}|${e.date}|${e.endDate || e.date}`;
+          if (existing.has(key)) return false;
+          existing.add(key);
+          return true;
+        });
       if (!newEntries.length) { notify("Term dates and holidays are already up to date!", "success"); return; }
       setInterruptions(prev => [...prev, ...newEntries]);
       const termCount = newEntries.filter(e => e.type === "term_break").length;
