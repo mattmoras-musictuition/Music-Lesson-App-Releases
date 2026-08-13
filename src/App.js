@@ -40,7 +40,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
-import { uid, melbourneNow, melbourneToday, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
+import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
@@ -5954,7 +5954,7 @@ export default function MusicTimetableApp() {
           {/* Day + term week */}
           {(() => {
             const now = melbourneNow();
-            const dayName = now.toLocaleDateString("en-AU", { weekday: "long", timeZone: TIMEZONE });
+            const dayName = melbourneDayName();
             const todayStr = toLocalDateStr(now);
             const termBreaks = interruptions.filter(i => i.type === "term_break")
               .reduce((acc, i) => { if (!acc.find(x => x.date === i.date)) acc.push(i); return acc; }, [])

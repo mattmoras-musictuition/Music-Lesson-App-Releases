@@ -3,7 +3,7 @@
 // General-purpose utility functions used across the app.
 // ============================================================
 
-import { DAYS, instruments_colors } from "../constants";
+import { instruments_colors } from "../constants";
 import { supabase } from "../supabaseClient";
 import { getCardTeacherId } from "./teacherCoverageDB";
 
@@ -57,7 +57,10 @@ export const melbourneNow = () => {
 };
 
 export const melbourneToday = () => toLocalDateStr(melbourneNow());
-export const melbourneDayName = () => DAYS[((melbourneNow().getDay() + 6) % 7)]; // Mon=0
+// Full weekday name in the configured timezone. Keeps its own Mon-first list rather than
+// the shared DAYS constant, which is Mon–Fri only and returns undefined on the weekend.
+const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+export const melbourneDayName = () => WEEKDAY_NAMES[((melbourneNow().getDay() + 6) % 7)]; // Mon=0
 
 // Get Monday of the "current" working week.
 // Rolls forward to NEXT Monday after 6pm Friday (i.e. the weekend shows next week).
