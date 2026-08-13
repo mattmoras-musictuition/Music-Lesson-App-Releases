@@ -376,13 +376,17 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   const termStartInfo = useMemo(() => {
     const set = new Set();
     const map = {};
-    termBreaks.forEach((tb, i) => {
+    termBreaks.forEach((tb) => {
       const ds = addDays(tb.endDate || tb.date, 1);
       set.add(ds);
-      map[ds] = i + 2;
+      // Number comes from termPeriods, which restarts at 1 each calendar year. A running
+      // index over the whole break list never restarts, so it drifted a term further out
+      // with every year of history. No matching period → no number rather than a guess.
+      const period = termPeriods.find(t => t.start === ds);
+      if (period) map[ds] = period.termNum;
     });
     return { set, map };
-  }, [termBreaks]);
+  }, [termBreaks, termPeriods]);
 
   // ---- Event map ----
   const eventMap = useMemo(() => {
@@ -1011,7 +1015,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                       </div>
 
                       {/* Term label */}
-                      {isTermStart && isCurrMonth && (
+                      {isTermStart && isCurrMonth && termNum && (
                         <div style={{ fontSize:8, fontWeight:700, color:CORAL, letterSpacing:0.5,
                           textTransform:"uppercase", marginBottom:2, opacity:0.8 }}>
                           Term {termNum}
