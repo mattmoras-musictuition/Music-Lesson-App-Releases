@@ -279,8 +279,13 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   }, []);
 
   // ---- Computed: term breaks ----
+  // De-duplicated by date span, matching Dashboard.js and the sidebar clock. A holiday
+  // recorded twice would otherwise open a phantom zero-length term between the copies and
+  // shift every term start after it. Sorted before the reduce so "keep the first" is stable.
   const termBreaks = useMemo(() =>
-    interruptions.filter(i => i.type === "term_break").sort((a, b) => a.date.localeCompare(b.date)),
+    interruptions.filter(i => i.type === "term_break")
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .reduce((acc, i) => { if (!acc.find(x => x.date === i.date && (x.endDate || x.date) === (i.endDate || i.date))) acc.push(i); return acc; }, []),
     [interruptions]
   );
   const getTermBreak = ds => termBreaks.find(tb => ds >= tb.date && ds <= (tb.endDate || tb.date));
