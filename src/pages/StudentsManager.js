@@ -75,6 +75,12 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const [isAddingEnrolment, setIsAddingEnrolment] = useState(false);
   const [newEnrolmentDraft, setNewEnrolmentDraft] = useState({ instrument: "", isGroup: false });
   const [endingEnrolment, setEndingEnrolment] = useState(null);
+  // In-progress start-date edit: { id, value }. Held separately from
+  // formEnrolments so the field can be momentarily blank while the user
+  // retypes WITHOUT a blank ever reaching the enrolment. Only non-empty
+  // values are committed; blur clears the draft, so a field left empty
+  // snaps back to the committed value. See the input at the enrolment row.
+  const [startDateDraft, setStartDateDraft] = useState(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
   const setFilter = (v) => setViewState(prev => ({ ...prev, filter: typeof v === "function" ? v(prev.filter || {}) : v }));
@@ -177,6 +183,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     setIsAddingEnrolment(false);
     setNewEnrolmentDraft({ instrument: "", isGroup: false });
     setEndingEnrolment(null);
+    setStartDateDraft(null);
     setHistoryExpanded(form?.status === "archived");
   }, [form?.id]);
 
@@ -1200,7 +1207,30 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                         </>
                       ) : (
                         <>
-                          <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)}</span>
+                          {/* Start date — editable. Writes through formEnrolments,
+                              exactly like the End-enrolment affordance below, so
+                              commitSaveStudent persists it with the rest of the
+                              slice. type="date" yields a plain YYYY-MM-DD string:
+                              no Date round-trip, so no timezone day-shift. An
+                              empty value is never committed (see startDateDraft),
+                              which keeps start_date non-null for every row. */}
+                          <label style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                            <span>Started</span>
+                            <input
+                              type="date"
+                              value={startDateDraft && startDateDraft.id === e.id ? startDateDraft.value : (e.startDate || "")}
+                              onChange={ev => {
+                                const v = ev.target.value;
+                                setStartDateDraft({ id: e.id, value: v });
+                                // Commit only a real date. A blank stays in the
+                                // draft and never reaches the enrolment.
+                                if (v) setFormEnrolments(prev => prev.map(x => x.id === e.id ? { ...x, startDate: v } : x));
+                              }}
+                              onBlur={() => setStartDateDraft(null)}
+                              title="The date lessons actually began. Used by the tally and by invoicing."
+                              style={{ padding: "3px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 11, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }}
+                            />
+                          </label>
                           <button onClick={() => setEndingEnrolment(e)}
                             style={{ padding: "4px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: "none", color: colors.danger, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
                             onMouseEnter={ev => { ev.currentTarget.style.background = colors.redLight; ev.currentTarget.style.borderColor = colors.danger; }}
