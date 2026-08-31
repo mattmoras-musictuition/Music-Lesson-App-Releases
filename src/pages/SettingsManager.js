@@ -10,6 +10,7 @@ import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 import { setInstColorOverrides } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { _addDays } from "../utils/invoiceTerms";
 import { fetchInstrumentAbbreviations, saveInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
 import { supabase } from "../supabaseClient";
 // Session 95: EmailTemplatesEditor lives in ContactsEditors but is no longer
@@ -596,6 +597,70 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
   const [catEditName, setCatEditName] = React.useState("");
   const [catEditColor, setCatEditColor] = React.useState("");
   const toggleSection = (key) => setOpenSections(prev => ({ ...SECTIONS_ALL_CLOSED, [key]: !prev[key] }));
+
+  // ── Data health: suspect enrolment start dates ────────────
+  // start_date has always meant "the day the record was typed in", so a student
+  // entered weeks before their first lesson carries a start date that is too
+  // early. That misreads the tally (Unmarked instead of the Inactive dash) and,
+  // before the invoicing clamp, over-billed them.
+  //
+  // Flags any enrolment whose stored start date precedes its FIRST week of real
+  // WTT activity by more than a week. Read-only: Matt corrects these by hand on
+  // the student form, which is now the only place a start date can be edited.
+  // A one-week tolerance absorbs the ordinary case of being entered a few days
+  // before term, which is not worth flagging.
+  //
+  // Independent of the orphaned-lesson check — it derives here rather than
+  // joining App.js's reconciliation effect, so that effect is untouched.
+  const suspectStartDates = React.useMemo(() => {
+    const list = enrolments || [];
+    if (list.length === 0) return [];
+    // Same lessonKey shape tallyDerive uses to tie WTT entries to enrolments.
+    const keyOf = (isGroup, groupId, studentId, instrument) =>
+      isGroup ? `group|${groupId}` : `${studentId}|${instrument}`;
+
+    const byId = new Map();
+    const byKey = new Map();
+    for (const e of list) {
+      byId.set(e.id, e);
+      byKey.set(keyOf(e.isGroup, e.groupId, e.studentId, e.instrument), e);
+    }
+
+    // Earliest week each enrolment shows any real activity, lesson or missed.
+    const firstWeek = new Map();
+    for (const [sk, wd] of Object.entries(weeklyTimetables || {})) {
+      const weekKey = (sk.split("|")[0]) || "";
+      if (!weekKey) continue;
+      for (const item of [...((wd && wd.lessons) || []), ...((wd && wd.missed) || [])]) {
+        if (!item || item.isBandSession) continue; // band entries carry no enrolment identity
+        const match = (item.enrolmentId && byId.get(item.enrolmentId))
+          || byKey.get(keyOf(item.isGroup, item.groupId, item.studentId, item.instrument));
+        if (!match) continue;
+        const seen = firstWeek.get(match.id);
+        if (!seen || weekKey < seen) firstWeek.set(match.id, weekKey);
+      }
+    }
+
+    const rows = [];
+    for (const e of list) {
+      const first = firstWeek.get(e.id);
+      if (!e.startDate || !first) continue;
+      // More than one week early. _addDays is the repo's existing date helper —
+      // no new arithmetic here.
+      if (_addDays(e.startDate, 7) >= first) continue;
+      const student = (students || []).find(st => st.id === e.studentId);
+      rows.push({
+        id: e.id,
+        studentId: e.studentId,
+        studentName: student ? student.name : "(unknown student)",
+        instrument: e.instrument || "(no instrument)",
+        startDate: e.startDate,
+        firstWeek: first,
+      });
+    }
+    rows.sort((a, b) => (a.studentName || "").localeCompare(b.studentName || ""));
+    return rows;
+  }, [enrolments, students, weeklyTimetables]);
 
   // ── Instrument colours ────────────────────────────────────
   const [customInstColors, setCustomInstColors] = React.useState(() => {
@@ -1247,15 +1312,15 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
             record without updating the timetable. Each row offers two
             resolutions: jump to the student record (if they still exist) to
             fix the linkage, or delete the lesson outright. */}
-        <SectionBanner sectionKey="datahealth" label={`Data Health${orphanedLessons.length > 0 ? ` — ${orphanedLessons.length} orphaned` : ""}`} icon={<AlertTriangle size={14} />} isOpen={openSections.datahealth} onToggle={toggleSection} colors={colors} danger={orphanedLessons.length > 0} />
+        <SectionBanner sectionKey="datahealth" label={`Data Health${orphanedLessons.length > 0 ? ` — ${orphanedLessons.length} orphaned` : ""}${suspectStartDates.length > 0 ? ` — ${suspectStartDates.length} suspect start date${suspectStartDates.length === 1 ? "" : "s"}` : ""}`} icon={<AlertTriangle size={14} />} isOpen={openSections.datahealth} onToggle={toggleSection} colors={colors} danger={orphanedLessons.length > 0} />
         <SectionPanel isOpen={openSections.datahealth} colors={colors}>
-          {orphanedLessons.length === 0 ? (
+          {orphanedLessons.length === 0 && suspectStartDates.length === 0 ? (
             <div style={{ ...rowLast, display: "block" }}>
               <div style={{ fontSize: 13, color: colors.textMuted, fontStyle: "italic", padding: "4px 0" }}>
-                No orphaned lessons. Your timetable data is clean.
+                No orphaned lessons and no suspect start dates. Your timetable data is clean.
               </div>
             </div>
-          ) : (
+          ) : orphanedLessons.length === 0 ? null : (
             <div style={{ ...rowLast, display: "block" }}>
               <div style={{ fontSize: 12, color: colors.textLight, marginBottom: 12, lineHeight: 1.5 }}>
                 These lessons reference a student, teacher, or instrument that no longer exists or isn't linked correctly. Either open the student record and fix the linkage, or delete the lesson if it's no longer needed.
@@ -1309,6 +1374,44 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* Suspect enrolment start dates — read-only listing, no auto-fix. */}
+          {suspectStartDates.length > 0 && (
+            <div style={{ ...rowLast, display: "block" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, marginBottom: 4 }}>
+                Suspect enrolment start dates
+              </div>
+              <div style={{ fontSize: 12, color: colors.textLight, marginBottom: 12, lineHeight: 1.5 }}>
+                These enrolments start more than a week before the first lesson actually recorded for them — usually because the student was entered well before they began. The stored date drives the tally's Inactive dash and the invoice week count. Open the student and correct the start date on the enrolment row.
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {suspectStartDates.map(row => (
+                  <div key={row.id}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 8, background: colors.bg, border: `1px solid ${colors.border}` }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{row.studentName}</span>
+                        <span style={{ fontSize: 11, color: colors.textMuted }}>·</span>
+                        <span style={{ fontSize: 12, color: colors.textLight }}>{row.instrument}</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: colors.textMuted }}>
+                        Stored start <strong style={{ color: colors.danger }}>{row.startDate}</strong>
+                        {" · first lesson recorded in the week of "}
+                        <strong style={{ color: colors.text }}>{row.firstWeek}</strong>
+                      </div>
+                    </div>
+                    {onGoToOrphanStudent && row.studentId && (
+                      <button onClick={() => onGoToOrphanStudent(row.studentId)}
+                        title="Open student record to correct the start date"
+                        style={{ padding: "6px 12px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, color: colors.textLight, fontSize: 12, fontFamily: "inherit", fontWeight: 600, cursor: "pointer", flexShrink: 0 }}>
+                        Go to student
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}
