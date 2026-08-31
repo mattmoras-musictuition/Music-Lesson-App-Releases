@@ -4716,13 +4716,13 @@ export default function MusicTimetableApp() {
           }
         };
       });
-      // WTT placement carries its own week — stamp that week's Monday.
-      setEnrolments(prev => stampFirstPlacementStart({
-        enrolments: prev,
-        enrolmentId: lesson.enrolmentId,
-        weekMonday: weekKey,
-        timetableLessons: (timetable?.lessons || []),
-      }));
+      // Deliberately NO start-date stamp here. v2.31.0 stamped from this branch
+      // too, but a weekly placement is a single week — a trial slot or a temp
+      // waiting-list slot — not the start of an enrolment. Stamping from it
+      // asserted more than the action means, and left a start date behind for a
+      // trial that never converted. Only MASTER placements stamp; the guard in
+      // stampFirstPlacementStart ("no existing MTT card") cannot distinguish
+      // the two on its own, because a WTT-only placement satisfies it trivially.
     }
   };
 
