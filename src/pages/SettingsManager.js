@@ -79,7 +79,7 @@ function _taxArray(value) {
   return [];
 }
 
-function ResourceTaxonomyPanel({ colors, notify }) {
+function ResourceTaxonomyPanel({ colors, notify, teachers, enrolments }) {
   const [lists, setLists]   = React.useState(null); // { instruments: [], resource_types: [], skill_levels: [] }
   const [loadErr, setLoadErr] = React.useState(false);
   const [drafts, setDrafts] = React.useState({});   // { key: "new entry draft" }
@@ -137,9 +137,34 @@ function ResourceTaxonomyPanel({ colors, notify }) {
     if (!arr.some(x => x.toLowerCase() === v.toLowerCase())) persist(key, [...arr, v]);
     setDrafts(d => ({ ...d, [key]: "" }));
   };
+  // How many live records currently carry this instrument name. Exact string
+  // equality, matching how instruments are compared everywhere else in the app
+  // (the enrolment guard, the tally lessonKey, the colour and abbreviation
+  // maps are all name-keyed and case-sensitive). Enrolments count as "active"
+  // when they have no endDate, the same rule activeEnrolmentsFor uses.
+  const instrumentUsage = (name) => ({
+    teachers: (teachers || []).filter(t => (t.instruments || []).some(i => i.name === name)).length,
+    enrolments: (enrolments || []).filter(e => e.instrument === name && !e.endDate).length,
+  });
+
   const removeEntry = (key, idx) => {
     const arr = lists[key] || [];
     const removed = arr[idx];
+    // Instruments only: this list now feeds the Staff tab's teacher-instrument
+    // picker, so a removal is visible beyond the Resource Library. Say what
+    // still uses the name and say plainly that nothing existing changes —
+    // the Staff dropdown preserves a pruned name on any teacher who has it,
+    // so removal is genuinely option-only. Types and skill levels keep their
+    // existing no-confirm behaviour.
+    if (key === "instruments" && removed) {
+      const { teachers: tCount, enrolments: eCount } = instrumentUsage(removed);
+      const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+      const usage = (tCount === 0 && eCount === 0)
+        ? `"${removed}" isn't currently used by any teacher or active enrolment.`
+        : `"${removed}" is currently used by ${plural(tCount, "teacher")} and ${plural(eCount, "active enrolment")}.`;
+      const msg = `Remove "${removed}" from the instrument list?\n\n${usage}\n\nThis does not change any existing record. Teachers keep the instruments they already have and enrolments are untouched — it only removes "${removed}" as an option in future pickers.`;
+      if (!window.confirm(msg)) return;
+    }
     persist(key, arr.filter((_, i) => i !== idx));
     // Removing an instrument removes its abbreviation too, so the map doesn't
     // accumulate keys for instruments that no longer exist.
@@ -973,7 +998,7 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
         {/* ── RESOURCE LIBRARY LISTS ── */}
         <SectionBanner sectionKey="resourceLists" label="Resource Library Lists" icon={<Folder size={14} />} isOpen={openSections.resourceLists} onToggle={toggleSection} colors={colors} />
         <SectionPanel isOpen={openSections.resourceLists} colors={colors}>
-          <ResourceTaxonomyPanel colors={colors} notify={notify} />
+          <ResourceTaxonomyPanel colors={colors} notify={notify} teachers={teachers} enrolments={enrolments} />
         </SectionPanel>
 
         {/* ── SOUNDS ── */}
