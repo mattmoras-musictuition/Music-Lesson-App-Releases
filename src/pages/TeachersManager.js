@@ -12,6 +12,7 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, P
 import { supabase, createIsolatedAuthClient } from "../supabaseClient";
 import { rowToInterruption } from "../utils/interruptionsDB";
 import { deleteSlip } from "../data/slipsDB";
+import { fetchResourceTaxonomies } from "../utils/resourcesDB";
 import { SlipEditModal } from "./SlipEditModal";
 
 // ── Term week helpers (standalone, no props needed) ────────────────────────
@@ -421,6 +422,22 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   const [draggingIdx, setDraggingIdx] = useState(null);
   const [dragOverIdx, setDragOverIdx] = useState(null);
 
+  // ── Instrument options (managed in Settings > Resource Library Lists) ──
+  // Single source of truth is the app_settings `instruments` row, read through
+  // the same fetchResourceTaxonomies helper every other consumer uses. null =
+  // not loaded yet; [] = loaded-but-empty or the read failed.
+  const [taxInstruments, setTaxInstruments] = useState(null);
+  useEffect(() => {
+    fetchResourceTaxonomies()
+      .then(tax => setTaxInstruments(tax?.instruments || []))
+      .catch(() => setTaxInstruments([]));
+  }, []);
+  // Fallback is deliberate and load-bearing: an empty or failed read must never
+  // yield an empty dropdown, because this select is the only way to give a
+  // teacher an instrument. Falling back to the INSTRUMENTS constant keeps the
+  // form usable when the managed row is missing or Supabase is unreachable.
+  const instrumentOptions = (taxInstruments && taxInstruments.length) ? taxInstruments : INSTRUMENTS;
+
   useEffect(() => {
     if (!teacherCtxMenu) return;
     const close = (e) => {
@@ -575,7 +592,15 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
                 <div style={{ flex: 1 }}>
                   <select value={inst.name} onChange={e => updateInstrument(i, "name", e.target.value)} style={{ width: "100%", padding: "6px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}>
                     <option value="">Select instrument...</option>
-                    {INSTRUMENTS.map(n => <option key={n} value={n}>{n}</option>)}
+                    {instrumentOptions.map(n => <option key={n} value={n}>{n}</option>)}
+                    {/* Stale value preservation: a stored name that has since been
+                        pruned from the managed list is rendered as an extra option
+                        on its own row, so the select still displays it and saving
+                        the form doesn't silently blank or rewrite the teacher's
+                        instrument. This is what makes pruning in Settings safe. */}
+                    {inst.name && !instrumentOptions.includes(inst.name) && (
+                      <option value={inst.name}>{inst.name}</option>
+                    )}
                   </select>
                 </div>
                 {i > 0 && iconBtn(() => setForm(p => ({ ...p, instruments: p.instruments.filter((_, idx) => idx !== i) })), <X size={14} />, colors.danger, "Remove instrument")}
