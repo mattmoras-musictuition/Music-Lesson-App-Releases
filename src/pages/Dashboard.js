@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, Mail, Reply, Copy, Search, UserPlus, Plus, Zap, Bell, CalendarOff, AlertTriangle, RefreshCw, CalendarDays, ExternalLink, RotateCcw, Music, Building2, Pencil, Pin, ChevronLeft, ChevronRight, CalendarCheck, Loader2, CircleDot, Circle, Paperclip, ChevronUp, ChevronDown, Folder, ArrowUp, Download, FolderInput, Guitar } from "lucide-react";
-import { DAYS, STORAGE_KEYS, INSTRUMENTS, APP_VERSION, instruments_colors, BAND_COLOR } from "../constants";
+import { DAYS, STORAGE_KEYS, APP_VERSION, instruments_colors, BAND_COLOR } from "../constants";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 import { useTheme } from "../context/ThemeContext";
