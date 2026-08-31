@@ -1955,13 +1955,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
+    // Say what was left out. Silent skipping would repeat the original fault:
+    // the app quietly disagreeing with itself about which lessons exist.
+    const skipNote = result.skippedInactiveCount > 0
+      ? ` (${result.skippedInactiveCount} not started yet)`
+      : "";
     if (targetDay) {
-      notify(`Imported ${result.importedCount} lessons for ${targetDay}`);
+      notify(`Imported ${result.importedCount} lessons for ${targetDay}${skipNote}`);
     } else {
       const extraNote = result.preservedBandCount > 0
         ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
         : "";
-      notify(`Imported ${result.importedCount} lessons for the week${extraNote}`);
+      notify(`Imported ${result.importedCount} lessons for the week${extraNote}${skipNote}`);
     }
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
@@ -1981,19 +1986,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const weekKeyAll = weekDates[0].date;
     const guardAllActive = !!weekKeyAll && !isWeekKeyPast(weekKeyAll) && (enrolments || []).length > 0;
     const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
+    let skippedAllCount = 0;
     for (const school of schools) {
       const sk = weekDates[0].date + "|" + school.id;
       const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
       const mttLessons = guardAllActive
         ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
         : candidateLessons;
+      skippedAllCount += candidateLessons.length - mttLessons.length;
       const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
       setWeeklyTimetables(prev => ({
         ...prev,
         [sk]: { lessons: importedLessons, missed: [], generatedAt: new Date().toISOString() }
       }));
     }
-    notify("Imported from MTT for all schools");
+    const skipNoteAll = skippedAllCount > 0 ? ` (${skippedAllCount} not started yet)` : "";
+    notify(`Imported from MTT for all schools${skipNoteAll}`);
     setConfirmImportAllWeeks(false);
   };
 
