@@ -810,6 +810,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // root of the constraint-warning render loop.
   const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset, getWeekDates]);
   const weekKey = weekDates[0].date;
+
+  // ── Read-side enrolment-activity resolver ─────────────────────────────
+  // The write paths (generation + the three MTT imports) already refuse to
+  // copy a card into a week its enrolment was not active for. The read
+  // surfaces never learned the same rule, so a student who has not started is
+  // still REPORTED as unscheduled — and part one makes that more visible, not
+  // less, because the imports now correctly leave those cards out.
+  //
+  // Reuses utils/enrolmentActivity, the same module the write paths use, so
+  // the two sides cannot disagree about who is active when. Built once per
+  // enrolments change and shared by both read surfaces.
+  //
+  // NOTE — no past-week exemption here, unlike the write paths. Skipping a
+  // write to a delivered week would rewrite history; suppressing a banner ROW
+  // does not. The banner reports on ITS week, so a student who had not started
+  // then should not be listed then either.
+  //
+  // Fails open exactly where the write paths do: an unresolvable enrolment,
+  // an empty enrolments list, or a falsy startDate all leave the student
+  // LISTED. Ambiguity never hides anyone.
+  const enrolmentResolver = useMemo(() => makeEnrolmentResolver(enrolments), [enrolments]);
   const weekDateMap = useMemo(() => {
     const m = {};
     for (const wd of weekDates) m[wd.day] = wd.date;
@@ -4815,6 +4836,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               // module-level isLessonPresentThisWeek helper. A placed GROUP card
               // does NOT cover a separate INDIVIDUAL lesson; band coverage is kept.
               const present = isLessonPresentThisWeek(ml, wttLessons, wttMissed);
+              // Not started yet (or already ended) for THIS week — not a real
+              // absence, so not a banner row. The heading count derives from
+              // `missing`, so suppressing here corrects the number too.
+              if (isCardInactiveForWeek(ml, enrolmentResolver, weekKey)) continue;
               if (!present) {
                 const label = ml.isGroup
                   ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group")
@@ -4829,6 +4854,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const key = `${u.student.id}|${u.instrument}`;
               if (seen.has(key)) continue;
               seen.add(key);
+              // Same suppression for the Unassigned rows — they appear in the
+              // same banner, so they get the same rule. Shaped as a card so the
+              // shared resolver can key on it.
+              if (isCardInactiveForWeek({ studentId: u.student.id, instrument: u.instrument }, enrolmentResolver, weekKey)) continue;
               missing.push({ key, label: `${u.student.name} (${u.instrument} — Unassigned)`, instrument: u.instrument, isGroup: false, isUnassigned: true });
             }
             if (missing.length === 0) return null;
