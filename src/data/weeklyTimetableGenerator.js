@@ -5,7 +5,7 @@
 // ============================================================
 
 import { timeToMin, groupDisplayName, isPastWeek } from "../utils/helpers";
-import { deriveTallyCell } from "../utils/tallyDerive";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
 import { getCardTeacherId, findLaneId } from "../utils/teacherCoverageDB";
@@ -57,29 +57,14 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
   // Fails open in every ambiguous case: no week key, a past week, a card whose
   // enrolment cannot be resolved, or a falsy startDate all copy as they do
   // today. Band sessions are never guarded — they carry no enrolment identity.
+  // Resolver + predicate now live in utils/enrolmentActivity so the import
+  // paths share one implementation. The past-week test stays HERE, because the
+  // exemption belongs with whoever knows which week is being written.
   const _weekKey = (weekDates && weekDates[0] && weekDates[0].date) || "";
   const _guardActive = !!_weekKey && !isPastWeek(_weekKey) && (enrolments || []).length > 0;
-
-  const _enrolmentForCard = (() => {
-    if (!_guardActive) return null;
-    const byId = new Map();
-    const byKey = new Map();
-    for (const e of enrolments) {
-      byId.set(e.id, e);
-      byKey.set(e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`, e);
-    }
-    return (l) => (l.enrolmentId && byId.get(l.enrolmentId))
-      || byKey.get(l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`)
-      || null;
-  })();
-
-  const _isCardInactiveThisWeek = (l) => {
-    if (!_guardActive) return false;
-    if (l.isBandSession) return false;              // standing rule: bands exempt
-    const enrolment = _enrolmentForCard(l);
-    if (!enrolment) return false;                   // unresolvable never means excluded
-    return deriveTallyCell({ enrolment, week: { weekKey: _weekKey }, wttEntry: null }) === "inactive";
-  };
+  const _resolver = _guardActive ? makeEnrolmentResolver(enrolments) : null;
+  const _isCardInactiveThisWeek = (l) =>
+    _guardActive && isCardInactiveForWeek(l, _resolver, _weekKey);
 
   const schoolLessons = masterLessons.filter(l => l.schoolId === school.id && !_isCardInactiveThisWeek(l));
   const weekDateMap = {};

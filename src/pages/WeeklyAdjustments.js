@@ -25,6 +25,7 @@ import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../ut
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -809,6 +810,27 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // root of the constraint-warning render loop.
   const weekDates = useMemo(() => getWeekDates(weekOffset), [weekOffset, getWeekDates]);
   const weekKey = weekDates[0].date;
+
+  // ── Read-side enrolment-activity resolver ─────────────────────────────
+  // The write paths (generation + the three MTT imports) already refuse to
+  // copy a card into a week its enrolment was not active for. The read
+  // surfaces never learned the same rule, so a student who has not started is
+  // still REPORTED as unscheduled — and part one makes that more visible, not
+  // less, because the imports now correctly leave those cards out.
+  //
+  // Reuses utils/enrolmentActivity, the same module the write paths use, so
+  // the two sides cannot disagree about who is active when. Built once per
+  // enrolments change and shared by both read surfaces.
+  //
+  // NOTE — no past-week exemption here, unlike the write paths. Skipping a
+  // write to a delivered week would rewrite history; suppressing a banner ROW
+  // does not. The banner reports on ITS week, so a student who had not started
+  // then should not be listed then either.
+  //
+  // Fails open exactly where the write paths do: an unresolvable enrolment,
+  // an empty enrolments list, or a falsy startDate all leave the student
+  // LISTED. Ambiguity never hides anyone.
+  const enrolmentResolver = useMemo(() => makeEnrolmentResolver(enrolments), [enrolments]);
   const weekDateMap = useMemo(() => {
     const m = {};
     for (const wd of weekDates) m[wd.day] = wd.date;
@@ -1950,16 +1972,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       weekDates,
       existingEntry: weeklyTimetables[storageKey] || null,
       targetDay,
+      enrolments,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
+    // Say what was left out. Silent skipping would repeat the original fault:
+    // the app quietly disagreeing with itself about which lessons exist.
+    const skipNote = result.skippedInactiveCount > 0
+      ? ` (${result.skippedInactiveCount} not started yet)`
+      : "";
     if (targetDay) {
-      notify(`Imported ${result.importedCount} lessons for ${targetDay}`);
+      notify(`Imported ${result.importedCount} lessons for ${targetDay}${skipNote}`);
     } else {
       const extraNote = result.preservedBandCount > 0
         ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
         : "";
-      notify(`Imported ${result.importedCount} lessons for the week${extraNote}`);
+      notify(`Imported ${result.importedCount} lessons for the week${extraNote}${skipNote}`);
     }
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
@@ -1969,16 +1997,32 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!timetable) { notify("No master timetable to import from", "warning"); return; }
     const weekDateMap = {};
     for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+    // Same inactive-enrolment guard weekly generation and the single-school
+    // import already apply, via the same shared helper. This path has its own
+    // week key, so it does its own past-week test rather than importing one:
+    // "Import all schools" is reachable on a PAST week through the per-week
+    // Edit unlock, and a past week must import exactly as it does today.
+    // Fails open on an empty enrolments list, a band session, or a card whose
+    // enrolment cannot be resolved.
+    const weekKeyAll = weekDates[0].date;
+    const guardAllActive = !!weekKeyAll && !isWeekKeyPast(weekKeyAll) && (enrolments || []).length > 0;
+    const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
+    let skippedAllCount = 0;
     for (const school of schools) {
       const sk = weekDates[0].date + "|" + school.id;
-      const mttLessons = timetable.lessons.filter(l => l.schoolId === school.id);
+      const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
+      const mttLessons = guardAllActive
+        ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
+        : candidateLessons;
+      skippedAllCount += candidateLessons.length - mttLessons.length;
       const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
       setWeeklyTimetables(prev => ({
         ...prev,
         [sk]: { lessons: importedLessons, missed: [], generatedAt: new Date().toISOString() }
       }));
     }
-    notify("Imported from MTT for all schools");
+    const skipNoteAll = skippedAllCount > 0 ? ` (${skippedAllCount} not started yet)` : "";
+    notify(`Imported from MTT for all schools${skipNoteAll}`);
     setConfirmImportAllWeeks(false);
   };
 
@@ -3554,6 +3598,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // isLessonPresentThisWeek helper. A placed GROUP card does NOT cover a
             // separate INDIVIDUAL lesson; band coverage is kept.
             const missing = mttLessons.filter(ml => !isLessonPresentThisWeek(ml, wttLessons, wttMissed));
+            // contextMenu.weekKey is the composite `${weekKey}|${schoolId}` storage
+            // key; the activity test needs the PLAIN Monday date. Same split
+            // placeLesson performs below.
+            const plainMenuWeekKey = (contextMenu.weekKey || "").split("|")[0];
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -3810,12 +3858,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.sidebarActive)}>Add unscheduled</div>
                           {missing.map((ml, mi) => {
                             const label = ml.isGroup ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group") : ml.studentName;
+                            // Annotated, NOT suppressed. This menu is the only route
+                            // to placing one of these cards, and there are legitimate
+                            // reasons to want one — an early one-off lesson, or a
+                            // start date that is itself wrong and needs a lesson
+                            // recorded before it is corrected.
+                            //
+                            // Label-only: placeOne is called with the unmodified ml,
+                            // so selecting the entry places exactly the card it does
+                            // today. One neutral wording covers both the not-started
+                            // and already-ended cases — telling them apart would mean
+                            // re-resolving the enrolment and comparing dates here, for
+                            // a distinction the menu does not act on.
+                            const inactive = isCardInactiveForWeek(ml, enrolmentResolver, plainMenuWeekKey);
+                            const secondary = [ml.isGroup ? "" : ml.instrument, inactive ? "not active this week" : ""]
+                              .filter(Boolean).join(" · ");
                             return (
                               <button key={mi} onClick={() => placeOne(ml)} style={subBtnStyle}
+                                title={inactive ? "This student's enrolment doesn't cover this week — placing a lesson here will still count in the tally." : undefined}
                                 onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                                 onMouseLeave={e => e.currentTarget.style.background = "none"}>
                                 <span>{ml.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{label}</span>
-                                <span style={{ fontSize: 11, color: colors.textMuted }}>{ml.isGroup ? "" : ml.instrument}</span>
+                                <span style={{ fontSize: 11, color: inactive ? colors.accentDark : colors.textMuted }}>{secondary}</span>
                               </button>
                             );
                           })}
@@ -4792,6 +4856,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               // module-level isLessonPresentThisWeek helper. A placed GROUP card
               // does NOT cover a separate INDIVIDUAL lesson; band coverage is kept.
               const present = isLessonPresentThisWeek(ml, wttLessons, wttMissed);
+              // Not started yet (or already ended) for THIS week — not a real
+              // absence, so not a banner row. The heading count derives from
+              // `missing`, so suppressing here corrects the number too.
+              if (isCardInactiveForWeek(ml, enrolmentResolver, weekKey)) continue;
               if (!present) {
                 const label = ml.isGroup
                   ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group")
@@ -4806,6 +4874,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const key = `${u.student.id}|${u.instrument}`;
               if (seen.has(key)) continue;
               seen.add(key);
+              // Same suppression for the Unassigned rows — they appear in the
+              // same banner, so they get the same rule. Shaped as a card so the
+              // shared resolver can key on it.
+              if (isCardInactiveForWeek({ studentId: u.student.id, instrument: u.instrument }, enrolmentResolver, weekKey)) continue;
               missing.push({ key, label: `${u.student.name} (${u.instrument} — Unassigned)`, instrument: u.instrument, isGroup: false, isUnassigned: true });
             }
             if (missing.length === 0) return null;

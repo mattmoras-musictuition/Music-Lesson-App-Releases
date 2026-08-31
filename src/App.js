@@ -4316,6 +4316,7 @@ export default function MusicTimetableApp() {
       schoolId: school.id,
       weekDates,
       existingEntry: weeklyTimetables[storageKey] || null,
+      enrolments,
     });
     if (!result) {
       notify("No master timetable to import from", "warning");
@@ -4325,7 +4326,11 @@ export default function MusicTimetableApp() {
     const extraNote = result.preservedBandCount > 0
       ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
       : "";
-    notify(`Imported ${result.importedCount} lessons for ${school.name}${extraNote}`);
+    // Mirrors the weekly page's parenthetical, using this handler's own notify.
+    const skipNote = result.skippedInactiveCount > 0
+      ? ` (${result.skippedInactiveCount} not started yet)`
+      : "";
+    notify(`Imported ${result.importedCount} lessons for ${school.name}${extraNote}${skipNote}`);
   };
 
   // Session 6 / Phase 3 — Dashboard school-name click → WTT pre-positioned
