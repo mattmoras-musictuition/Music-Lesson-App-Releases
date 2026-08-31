@@ -3598,6 +3598,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // isLessonPresentThisWeek helper. A placed GROUP card does NOT cover a
             // separate INDIVIDUAL lesson; band coverage is kept.
             const missing = mttLessons.filter(ml => !isLessonPresentThisWeek(ml, wttLessons, wttMissed));
+            // contextMenu.weekKey is the composite `${weekKey}|${schoolId}` storage
+            // key; the activity test needs the PLAIN Monday date. Same split
+            // placeLesson performs below.
+            const plainMenuWeekKey = (contextMenu.weekKey || "").split("|")[0];
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -3854,12 +3858,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.sidebarActive)}>Add unscheduled</div>
                           {missing.map((ml, mi) => {
                             const label = ml.isGroup ? (ml.groupName || ml.studentNames?.map(n => n.split(" ")[0]).join(", ") || ml.studentName || "Group") : ml.studentName;
+                            // Annotated, NOT suppressed. This menu is the only route
+                            // to placing one of these cards, and there are legitimate
+                            // reasons to want one — an early one-off lesson, or a
+                            // start date that is itself wrong and needs a lesson
+                            // recorded before it is corrected.
+                            //
+                            // Label-only: placeOne is called with the unmodified ml,
+                            // so selecting the entry places exactly the card it does
+                            // today. One neutral wording covers both the not-started
+                            // and already-ended cases — telling them apart would mean
+                            // re-resolving the enrolment and comparing dates here, for
+                            // a distinction the menu does not act on.
+                            const inactive = isCardInactiveForWeek(ml, enrolmentResolver, plainMenuWeekKey);
+                            const secondary = [ml.isGroup ? "" : ml.instrument, inactive ? "not active this week" : ""]
+                              .filter(Boolean).join(" · ");
                             return (
                               <button key={mi} onClick={() => placeOne(ml)} style={subBtnStyle}
+                                title={inactive ? "This student's enrolment doesn't cover this week — placing a lesson here will still count in the tally." : undefined}
                                 onMouseEnter={e => e.currentTarget.style.background = colors.blueLight}
                                 onMouseLeave={e => e.currentTarget.style.background = "none"}>
                                 <span>{ml.isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3, flexShrink: 0 }} />}{label}</span>
-                                <span style={{ fontSize: 11, color: colors.textMuted }}>{ml.isGroup ? "" : ml.instrument}</span>
+                                <span style={{ fontSize: 11, color: inactive ? colors.accentDark : colors.textMuted }}>{secondary}</span>
                               </button>
                             );
                           })}
