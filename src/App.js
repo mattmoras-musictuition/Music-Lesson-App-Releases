@@ -45,6 +45,7 @@ import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
 import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
+import { stampFirstPlacementStart } from "./utils/enrolmentPlacement";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
@@ -4544,6 +4545,7 @@ export default function MusicTimetableApp() {
     // When called from right-click with (studentId, schoolId, day, time, instrument) — place directly
     if (day && time) {
       const studentId = schoolIdOrStudentId;
+      const weekKeyForStamp = toLocalDateStr(getCurrentWeekMonday());
       const student = students.find(s => s.id === studentId);
       if (!student) { notify("Student not found", "warning"); return; }
       const school = schools.find(s => s.id === student.schoolId);
@@ -4600,6 +4602,15 @@ export default function MusicTimetableApp() {
       } else {
         setTimetable(prev => ({ ...prev, lessons: [...prev.lessons, lesson] }));
       }
+      // First placement stamps the enrolment's real start date (Monday of this
+      // week). Guarded to first placement only — see stampFirstPlacementStart.
+      // `timetable` is read pre-placement, which is what the guard needs.
+      setEnrolments(prev => stampFirstPlacementStart({
+        enrolments: prev,
+        enrolmentId: lesson.enrolmentId,
+        weekMonday: weekKeyForStamp,
+        timetableLessons: (timetable?.lessons || []),
+      }));
       // Keep student as pending — they are scheduled but still on the waiting list until explicitly activated
       return;
     }
@@ -4679,6 +4690,13 @@ export default function MusicTimetableApp() {
       } else {
         setTimetable(prev => ({ ...prev, lessons: [...prev.lessons, lesson] }));
       }
+      // MTT placement has no week of its own — anchor to the current week.
+      setEnrolments(prev => stampFirstPlacementStart({
+        enrolments: prev,
+        enrolmentId: lesson.enrolmentId,
+        weekMonday: weekKey,
+        timetableLessons: (timetable?.lessons || []),
+      }));
     } else if (target === "weekly") {
       const storageKey = `${weekKey}|${student.schoolId}`;
       const dayDate = DAYS.map((d, di) => {
@@ -4698,6 +4716,13 @@ export default function MusicTimetableApp() {
           }
         };
       });
+      // WTT placement carries its own week — stamp that week's Monday.
+      setEnrolments(prev => stampFirstPlacementStart({
+        enrolments: prev,
+        enrolmentId: lesson.enrolmentId,
+        weekMonday: weekKey,
+        timetableLessons: (timetable?.lessons || []),
+      }));
     }
   };
 
@@ -6308,6 +6333,16 @@ export default function MusicTimetableApp() {
               lessons: [...prev.lessons, lesson],
               unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrumentName))
             }) : ({ lessons: [lesson], unscheduled: [] }));
+            // First placement stamps the enrolment's real start date (Monday of
+            // this week). Guarded to first placement only — see
+            // stampFirstPlacementStart. `timetable` here is the pre-placement
+            // snapshot, which is what the guard needs to read.
+            setEnrolments(prev => stampFirstPlacementStart({
+              enrolments: prev,
+              enrolmentId: lesson.enrolmentId,
+              weekMonday: toLocalDateStr(getCurrentWeekMonday()),
+              timetableLessons: (timetable?.lessons || []),
+            }));
           }} onPlacePending={(data, day, time) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
             // Pending placements still snapshot unconditionally (preserving pre-10b
@@ -6369,6 +6404,16 @@ export default function MusicTimetableApp() {
               unscheduled: (prev || { unscheduled: [] }).unscheduled,
             }));
             setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: "active" } : s));
+            // First placement stamps the enrolment's real start date (Monday of
+            // this week). Guarded to first placement only — see
+            // stampFirstPlacementStart. `timetable` here is the pre-placement
+            // snapshot, which is what the guard needs to read.
+            setEnrolments(prev => stampFirstPlacementStart({
+              enrolments: prev,
+              enrolmentId: lesson.enrolmentId,
+              weekMonday: toLocalDateStr(getCurrentWeekMonday()),
+              timetableLessons: (timetable?.lessons || []),
+            }));
           }} onAllocatePlace={(studentId, instrument, kind, armedLane) => {
             // "Allocate to [teacher]" click-to-place: drop the student into the
             // armed lane's earliest open, policy-allowed class slot.
@@ -6432,6 +6477,16 @@ export default function MusicTimetableApp() {
                 unscheduled: prev.unscheduled.filter(u => !(u.student.id === studentId && (u.instrument || instrumentsFromEnrolments(u.student.id, enrolments)[0]?.name) === instrument))
               }) : ({ lessons: [lesson], unscheduled: [] }));
             }
+            // First placement stamps the enrolment's real start date (Monday of
+            // this week). Guarded to first placement only — see
+            // stampFirstPlacementStart. `timetable` here is the pre-placement
+            // snapshot, which is what the guard needs to read.
+            setEnrolments(prev => stampFirstPlacementStart({
+              enrolments: prev,
+              enrolmentId: lesson.enrolmentId,
+              weekMonday: toLocalDateStr(getCurrentWeekMonday()),
+              timetableLessons: (timetable?.lessons || []),
+            }));
           }} onUndo={undoTimetablePage} onRedo={redoTimetablePage} undoCount={ttPageUndoCount()} redoCount={ttPageRedoCount()} onDismissUnscheduled={(studentId, instrument) => {
               setTimetable(prev => ({
                 ...prev,
