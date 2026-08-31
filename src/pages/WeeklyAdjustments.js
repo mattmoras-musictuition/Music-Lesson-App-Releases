@@ -1840,7 +1840,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const bandStudentIds = new Set(existingBandSessions.flatMap(l => (l.members || []).map(m => m.studentId)));
     const filteredMasterLessons = timetable.lessons.filter(l => !bandStudentIds.has(l.studentId));
     const result = generateWeeklyTimetable(
-      filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage
+      filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage, enrolments
     );
 
     // Skip students with a pre-marked informed_absence for this week — remove from
@@ -1907,7 +1907,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const bandStudentIdsAll = new Set(existingBandSessionsAll.flatMap(l => (l.members || []).map(m => m.studentId)));
       const filteredAll = timetable.lessons.filter(l => !bandStudentIdsAll.has(l.studentId));
       const result = generateWeeklyTimetable(
-        filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage
+        filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage, enrolments
       );
       const _allPreAbsentEntries = getMissedEntries({
         weeklyTimetables,
@@ -2084,7 +2084,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const bandStudentIdsDay = new Set(existingBandSessionsDay.flatMap(l => (l.members || []).map(m => m.studentId)));
     const filteredMasterDay = timetable.lessons.filter(l => !bandStudentIdsDay.has(l.studentId));
     const result = generateWeeklyTimetable(
-      filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage
+      filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage, enrolments
     );
 
     // Skip students with a pre-marked informed_absence for this week

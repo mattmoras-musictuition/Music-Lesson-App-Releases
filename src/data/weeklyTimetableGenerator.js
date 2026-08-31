@@ -4,7 +4,8 @@
 // AI hint processing, and print/preview functions.
 // ============================================================
 
-import { timeToMin, groupDisplayName } from "../utils/helpers";
+import { timeToMin, groupDisplayName, isPastWeek } from "../utils/helpers";
+import { deriveTallyCell } from "../utils/tallyDerive";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
 import { getCardTeacherId, findLaneId } from "../utils/teacherCoverageDB";
@@ -33,8 +34,54 @@ export function buildWeeklyAIPrompt({ school, weekLabel, weekDates, todayDay, to
 
 // ── generateWeeklyTimetable ───────────────────────────────────────────────────
 
-export function generateWeeklyTimetable(masterLessons, school, students, teachers, specialists, interruptions, weekDates, aiHints = [], masterBreaksForSchool = [], teacherCoverage = []) {
-  const schoolLessons = masterLessons.filter(l => l.schoolId === school.id);
+export function generateWeeklyTimetable(masterLessons, school, students, teachers, specialists, interruptions, weekDates, aiHints = [], masterBreaksForSchool = [], teacherCoverage = [], enrolments = []) {
+  // ── Inactive-enrolment guard ────────────────────────────────────────────
+  // Generation used to be entirely enrolment-date-blind, so regenerating a week
+  // copied every master card into it regardless of whether that enrolment had
+  // started. For a student who joined mid-term the tally then read the copied
+  // card as a completed lesson, asserting a lesson that never happened.
+  //
+  // The predicate is not re-derived here — deriveTallyCell IS the predicate.
+  // Called with no WTT entry it returns "inactive" for exactly the weeks
+  // tallyDerive dashes (startDate after the week's Sunday, or endDate before
+  // its Monday) and "blank" otherwise, so the generator and the tally cannot
+  // drift apart. tallyDerive is imported, never modified.
+  //
+  // PAST WEEKS ARE EXEMPT. The target week is derived here from weekDates, not
+  // passed in from the caller — a caller's isPastWeek is UI state and the three
+  // call sites would drift. A past week regenerates exactly as it does today:
+  // retroactively dropping cards from an already-delivered week is a different
+  // decision, and this guard does not take it. The CURRENT week counts as not
+  // past (isPastWeek is a strict <), so it is guarded.
+  //
+  // Fails open in every ambiguous case: no week key, a past week, a card whose
+  // enrolment cannot be resolved, or a falsy startDate all copy as they do
+  // today. Band sessions are never guarded — they carry no enrolment identity.
+  const _weekKey = (weekDates && weekDates[0] && weekDates[0].date) || "";
+  const _guardActive = !!_weekKey && !isPastWeek(_weekKey) && (enrolments || []).length > 0;
+
+  const _enrolmentForCard = (() => {
+    if (!_guardActive) return null;
+    const byId = new Map();
+    const byKey = new Map();
+    for (const e of enrolments) {
+      byId.set(e.id, e);
+      byKey.set(e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`, e);
+    }
+    return (l) => (l.enrolmentId && byId.get(l.enrolmentId))
+      || byKey.get(l.isGroup ? `group|${l.groupId}` : `${l.studentId}|${l.instrument}`)
+      || null;
+  })();
+
+  const _isCardInactiveThisWeek = (l) => {
+    if (!_guardActive) return false;
+    if (l.isBandSession) return false;              // standing rule: bands exempt
+    const enrolment = _enrolmentForCard(l);
+    if (!enrolment) return false;                   // unresolvable never means excluded
+    return deriveTallyCell({ enrolment, week: { weekKey: _weekKey }, wttEntry: null }) === "inactive";
+  };
+
+  const schoolLessons = masterLessons.filter(l => l.schoolId === school.id && !_isCardInactiveThisWeek(l));
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
 
