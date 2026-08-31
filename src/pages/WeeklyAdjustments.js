@@ -25,6 +25,7 @@ import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../ut
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -1970,9 +1971,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!timetable) { notify("No master timetable to import from", "warning"); return; }
     const weekDateMap = {};
     for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+    // Same inactive-enrolment guard weekly generation and the single-school
+    // import already apply, via the same shared helper. This path has its own
+    // week key, so it does its own past-week test rather than importing one:
+    // "Import all schools" is reachable on a PAST week through the per-week
+    // Edit unlock, and a past week must import exactly as it does today.
+    // Fails open on an empty enrolments list, a band session, or a card whose
+    // enrolment cannot be resolved.
+    const weekKeyAll = weekDates[0].date;
+    const guardAllActive = !!weekKeyAll && !isWeekKeyPast(weekKeyAll) && (enrolments || []).length > 0;
+    const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
     for (const school of schools) {
       const sk = weekDates[0].date + "|" + school.id;
-      const mttLessons = timetable.lessons.filter(l => l.schoolId === school.id);
+      const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
+      const mttLessons = guardAllActive
+        ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
+        : candidateLessons;
       const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
       setWeeklyTimetables(prev => ({
         ...prev,
