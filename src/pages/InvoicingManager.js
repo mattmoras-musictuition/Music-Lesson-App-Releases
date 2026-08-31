@@ -166,6 +166,27 @@ function _findPrevTerm(interruptions, termStart) {
   };
 }
 
+// Narrow a term's [start, end] to the window an enrolment was actually active
+// for. Billing a mid-term starter for the whole term was the second symptom of
+// the wrong-start-date defect; this is the invoicing-side clamp for it.
+//
+// Deliberately conservative in both directions:
+//   - a missing or falsy startDate clamps to termInfo.start, i.e. exactly
+//     today's behaviour, so no enrolment can ever bill FEWER weeks than it
+//     does now purely because a date is absent;
+//   - a start earlier than the term, or an end later than it, clamps to the
+//     term, so an enrolment spanning the whole term is untouched.
+//
+// When the enrolment ended before the term began (or started after it ended),
+// start > end and _countWeekday's own guard returns 0 — never a negative.
+function _enrolmentRange(termInfo, enrolment) {
+  const start = (enrolment && enrolment.startDate && enrolment.startDate > termInfo.start)
+    ? enrolment.startDate : termInfo.start;
+  const end = (enrolment && enrolment.endDate && enrolment.endDate < termInfo.end)
+    ? enrolment.endDate : termInfo.end;
+  return { start, end };
+}
+
 function _countWeekday(dowNum, start, end) {
   if (!start || !end || start > end) return 0;
   let n = 0;
@@ -255,8 +276,15 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
       }
 
       for (const [instr, days] of Object.entries(byInstr)) {
+        // Resolved once and reused by the deduction block below — same
+        // enrolmentIdFor call that was already there, just hoisted, so there is
+        // still exactly one resolution strategy in this function.
+        const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
+        const enrolment = enrolmentId ? (enrolments || []).find(x => x.id === enrolmentId) : null;
+        const { start: effStart, end: effEnd } = _enrolmentRange(termInfo, enrolment);
+
         let termN = 0;
-        for (const day of days) termN += _countWeekday(_dowNum(day), termInfo.start, termInfo.end);
+        for (const day of days) termN += _countWeekday(_dowNum(day), effStart, effEnd);
 
         const billable = termN;
 
@@ -265,7 +293,6 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
             description: `${instr} Lessons`, qty: billable, rate: indRate, subtotal: billable * indRate, schoolName });
 
         if (prevTerm && indRate > 0) {
-          const enrolmentId = enrolmentIdFor(student.id, instr, enrolments);
           const { deductions, extras } = getEnrolmentTermDeductionMath({
             weeklyTimetables,
             catchups,
@@ -298,13 +325,18 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         // A week counts if it contains at least one term day — handles terms
         // that start or end mid-week (e.g. Tuesday public-holiday delay).
         const _toMon = (ds) => { const d = new Date(ds + "T00:00:00"); while (d.getDay() !== 1) d.setDate(d.getDate() - 1); return d; };
-        const startMon = _toMon(termInfo.start);
-        const endMon = _toMon(termInfo.end);
-        const termWeeksCount = Math.round((endMon.getTime() - startMon.getTime()) / (7 * 86400000)) + 1;
 
         const privEnrolments = (enrolments || []).filter(en => en.studentId === student.id && !en.isGroup);
         for (const en of privEnrolments) {
           const instr = en.instrument;
+          // Same clamp as the MTT path, applied to this path's Monday-anchored
+          // count. The enrolment is already in hand here, so no lookup is needed.
+          const { start: effStart, end: effEnd } = _enrolmentRange(termInfo, en);
+          const startMon = _toMon(effStart);
+          const endMon = _toMon(effEnd);
+          const termWeeksCount = effStart > effEnd
+            ? 0
+            : Math.round((endMon.getTime() - startMon.getTime()) / (7 * 86400000)) + 1;
           if (termWeeksCount > 0) {
             lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
               description: `${instr} Lessons`, qty: termWeeksCount, rate: indRate,
@@ -371,7 +403,10 @@ function buildInvoices({ students, enrolments, groups, timetable, weeklyTimetabl
         for (const [instr, dayCounts] of Object.entries(schedByInstr)) {
           const topDay = Object.entries(dayCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
           if (!topDay) continue;
-          const termN = _countWeekday(_dowNum(topDay), termInfo.start, termInfo.end);
+          const projEnrolmentId = enrolmentIdFor(student.id, instr, enrolments);
+          const projEnrolment = projEnrolmentId ? (enrolments || []).find(x => x.id === projEnrolmentId) : null;
+          const { start: projStart, end: projEnd } = _enrolmentRange(termInfo, projEnrolment);
+          const termN = _countWeekday(_dowNum(topDay), projStart, projEnd);
           if (termN > 0)
             lines.push({ id: uid(), type: "lesson", studentName: student.name, studentId: student.id,
               description: `${instr} Lessons`, qty: termN, rate: indRate, subtotal: termN * indRate, schoolName });
