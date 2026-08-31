@@ -4316,6 +4316,7 @@ export default function MusicTimetableApp() {
       schoolId: school.id,
       weekDates,
       existingEntry: weeklyTimetables[storageKey] || null,
+      enrolments,
     });
     if (!result) {
       notify("No master timetable to import from", "warning");

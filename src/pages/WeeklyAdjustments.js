@@ -1950,6 +1950,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       weekDates,
       existingEntry: weeklyTimetables[storageKey] || null,
       targetDay,
+      enrolments,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));

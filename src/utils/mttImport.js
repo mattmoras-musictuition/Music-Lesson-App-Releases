@@ -12,7 +12,8 @@
 //
 // Returns null if `mtt` is missing/empty so callers can short-circuit.
 
-import { uid } from "./helpers";
+import { uid, isPastWeek } from "./helpers";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -20,15 +21,41 @@ export function buildMttImportForWeekSchool({
   weekDates,
   existingEntry = null,
   targetDay = null,
+  enrolments = [],
 }) {
   if (!mtt || !Array.isArray(mtt.lessons)) return null;
 
   const weekDateMap = {};
   for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
 
-  const mttLessons = mtt.lessons.filter(l =>
+  // ── Inactive-enrolment guard ──────────────────────────────────────────
+  // Importing was enrolment-date-blind, so it copied every master card into
+  // the target week regardless of whether that enrolment had started. The
+  // tally then read the copied card as a real lesson — and it was billable.
+  // Same rule weekly GENERATION has carried since v2.31.0, via the same
+  // shared helper, so the two cannot disagree.
+  //
+  // The past-week test lives here rather than at the callers: the week is
+  // derived from the weekDates this function already receives, matching how
+  // the generator derives it, so a caller's UI state can never drift from it.
+  // Both of this helper's callers can reach a past week, and retroactively
+  // dropping cards from an already-delivered week is a different decision
+  // that this guard does not take.
+  //
+  // Fails open throughout: no week key, a past week, empty enrolments, a band
+  // session, or a card whose enrolment cannot be resolved all import exactly
+  // as they do today.
+  const weekKey = (weekDates && weekDates[0] && weekDates[0].date) || "";
+  const guardActive = !!weekKey && !isPastWeek(weekKey) && (enrolments || []).length > 0;
+  const resolver = guardActive ? makeEnrolmentResolver(enrolments) : null;
+
+  const candidateLessons = mtt.lessons.filter(l =>
     l.schoolId === schoolId && (!targetDay || l.day === targetDay)
   );
+  const mttLessons = guardActive
+    ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolver, weekKey))
+    : candidateLessons;
+  const skippedInactiveCount = candidateLessons.length - mttLessons.length;
   const importedLessons = mttLessons.map(l => ({
     ...l,
     id: uid(),
@@ -51,6 +78,7 @@ export function buildMttImportForWeekSchool({
       },
       importedCount: importedLessons.length,
       preservedBandCount: preservedDayExtras.length,
+      skippedInactiveCount,
     };
   }
 
@@ -65,5 +93,6 @@ export function buildMttImportForWeekSchool({
     },
     importedCount: importedLessons.length,
     preservedBandCount: preservedExtras.length,
+    skippedInactiveCount,
   };
 }
