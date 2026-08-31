@@ -21,7 +21,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -3792,38 +3792,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.danger)}>Temp slot (waiting list)</div>
                           {students.filter(s => s.schoolId === sId && s.status === "pending").sort((a, b) => a.name.localeCompare(b.name)).map(s => (
                             <button key={s.id} onClick={() => {
-                              const activeEnrolment = (enrolments || []).find(e =>
-                                e.studentId === s.id && !e.endDate && !e.isGroup
-                              );
-                              if (!activeEnrolment) {
-                                if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
-                                return;
-                              }
-                              const teacherForTemp = activeEnrolment.teacherId
-                                ? teachers.find(t => t.id === activeEnrolment.teacherId) : null;
-                              // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-                              const tempBucketId = activeEnrolment.teacherId
-                                ? findLaneId(teacherCoverage, sId, wkDay, activeEnrolment.teacherId)
-                                : null;
-                              if (!tempBucketId) {
-                                const sName = schools.find(sc => sc.id === sId)?.name || sId;
-                                if (notify) notify(`No covering lane for ${teacherForTemp?.name || "(unassigned)"} at ${sName} on ${wkDay}. Add staff first.`, "warning");
-                                return;
-                              }
-                              const newLesson = {
-                                id: uid(), studentId: s.id, studentName: s.name,
-                                schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                                instrument: activeEnrolment.instrument,
-                                bucket_id: tempBucketId,
-                                enrolmentId: activeEnrolment.id,
-                                day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
-                              };
-                              const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
-                              setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
-                              const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
-                              if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
-                              setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                              // Routed through placeLesson so the destination lane comes
+                              // from the DROP TARGET, like every other add path. This
+                              // branch used to read activeEnrolment.teacherId — a field
+                              // removed from the data layer in Session 3 / C7 (see
+                              // enrolmentsDB.js) — so it was always undefined and the
+                              // refusal fired unconditionally. Lane coverage was never
+                              // the problem; the path had been dead for every pending
+                              // student since C7.
+                              //
+                              // placeLesson keeps the "no active enrolment" bail, which
+                              // is a real precondition, and supplies day/start/end from
+                              // contextMenu — wkDay/wkTime are literal aliases of those
+                              // (see their declarations above), so nothing shifts.
+                              placeLesson(s, { weekDate: wkDate, adjusted: false, isTemp: true });
                             }} style={subBtnStyle}
                               onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
