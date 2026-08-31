@@ -9,12 +9,13 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, toLocalDateStr, melbourneNow, to12h, getInstColor, clampMenuPos, getTermWeekLabel } from "../utils/helpers";
 import { Tag, PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
 // `embedded` (Waiting List folded into the Students page as a third toggle tab):
 // when true, the component's own sticky PageTitle banner is suppressed — the
 // host Students page already shows the banner + the toggle. All controls,
 // actions, and logic are otherwise identical to the standalone page.
-export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory, embedded = false }) {
+export function PendingManager({ students, setStudents, schools, timetable, interruptions, weeklyTimetables, setWeeklyTimetables, enrolments, teacherCoverage = [], teachers = [], laneOverrides = [], viewedLanes = {}, temporaryLanes = [], onSchedulePending, onViewStudent, onManualSchedule, notify, goBack, goForward, historyCursor, pageHistory, embedded = false }) {
   const { colors } = useTheme();
   const pendingStudents = students.filter(s => s.status === "pending" || s.status === "trial");
   const [manualSched, setManualSched] = useState({});
@@ -79,11 +80,18 @@ export function PendingManager({ students, setStudents, schools, timetable, inte
       const slot = (school.slots || []).find(sl => sl.start === ms.time);
       const endTime = slot ? slot.end : ms.time;
       const storageKey = ms.weekKey + "|" + student.schoolId;
-      // Session 3 / C7 — trial lessons no longer carry an enrolment-derived
-      // teacher stamp. Lesson-level teacher resolution at render time happens
-      // via bucket_id (trial-lesson bucket_id stamping is a pre-existing gap,
-      // separate concern).
-      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", teacherName: "", enrolmentId: enrolmentIdFor(student.id, inst.name || "", enrolments), day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
+      // Destination lane comes from the target (school, day) — the same
+      // getDayLaneTeacher call every other placement uses, override- and
+      // temp-lane aware. Teacher attribution is lane-derived: the teacher app
+      // resolves ownership from bucket_id alone and returns null without one,
+      // so a card placed here with no bucket_id would be invisible to the
+      // teacher. Refusing is better than placing a lesson nobody is told about.
+      const destLane = getDayLaneTeacher(teacherCoverage, teachers, student.schoolId, ms.day, laneOverrides, ms.weekKey, viewedLanes, temporaryLanes);
+      if (!destLane || !destLane.lane) {
+        notify(`No covering lane for ${school.name} on ${ms.day}. Add staff first.`, "warning");
+        return;
+      }
+      const newLesson = { id: uid(), studentId: student.id, studentName: student.name, schoolId: student.schoolId, schoolName: school.name, instrument: inst.name || "", bucket_id: destLane.lane.id, teacherName: destLane.teacher?.name || "", enrolmentId: enrolmentIdFor(student.id, inst.name || "", enrolments), day: ms.day, start: ms.time, end: endTime, isTrial: true, pinned: true };
       setWeeklyTimetables(prev => { const existing = prev[storageKey] || { lessons: [], missed: [] }; return { ...prev, [storageKey]: { ...existing, lessons: [...(existing.lessons || []), newLesson] } }; });
       setManualSched(prev => { const n = { ...prev }; delete n[studentId]; return n; });
       notify("Trial lesson scheduled for " + student.name);

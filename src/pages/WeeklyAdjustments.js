@@ -21,7 +21,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { findLaneId, getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -411,6 +411,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [confirmImportExpanded, setConfirmImportExpanded] = useState(false);
   const [showInterruptions, setShowInterruptions] = useState(false);
   const [editUnlocked, setEditUnlocked] = useState(false);
+  // Post-placement promotion prompt: { studentId, studentName } or null.
+  // The card is already placed by the time this is set — answering only
+  // decides the student's status, never whether the lesson stays.
+  const [promotePrompt, setPromotePrompt] = useState(null);
   // ── Confirmed days (teacher-locked day slips) ─────────────
   const [confirmedDaysMap, setConfirmedDaysMap] = useState({}); // { dateStr: [{id, teacherId}] }
   const [resettingDay,  setResettingDay]  = useState(null);  // dateStr being reset
@@ -2255,6 +2259,29 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
   const hideHoverPanel = () => { if (hoverPanelRef.current) hoverPanelRef.current.style.display = "none"; };
 
+  // Ask whether to promote, AFTER a card has been placed for a waiting-list or
+  // trial student. Silent promotion is deliberately not used here: the tally
+  // excludes pending and trial students outright, so flipping status quietly
+  // would pull the student into the tally and into invoicing off a single card,
+  // with nothing on screen to say so. Active students are never prompted.
+  const maybePromptPromote = (studentId) => {
+    if (!studentId) return;
+    const st = (students || []).find(x => x.id === studentId);
+    if (!st) return;
+    if (st.status !== "pending" && st.status !== "trial") return;
+    setPromotePrompt({ studentId: st.id, studentName: st.name });
+  };
+
+  // Same write shape App.js already uses for the MTT drag placements — a status
+  // patch through setStudents. No new write path.
+  const confirmPromote = () => {
+    if (!promotePrompt) return;
+    const { studentId, studentName } = promotePrompt;
+    setStudents(prev => prev.map(x => x.id === studentId ? { ...x, status: "active" } : x));
+    setPromotePrompt(null);
+    if (notify) notify(`${studentName} is now active`);
+  };
+
   const handleWeeklyMoveLesson = (lessonId, newDay, newTime) => {
     if (!weeklyData || !currentSchool) return;
     const slot = currentSchool.slots.find(s => s.start === newTime);
@@ -3570,6 +3597,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                  // Card is placed and stays placed; the prompt only offers promotion.
+                  maybePromptPromote(s.id);
                 };
                 // Cascading submenus — open to the right at same Y as hovered item
                 const subMenuW = 216;
@@ -3647,6 +3676,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                  // Individual rows only — a group card has no single student whose
+                  // status could be promoted.
+                  if (!ml.isGroup) maybePromptPromote(ml.studentId);
                 };
                 const subHdr = (color) => ({ padding: "6px 12px", fontSize: 11, color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` });
                 const subBtnStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", textAlign: "left" };
@@ -3792,38 +3824,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={subHdr(colors.danger)}>Temp slot (waiting list)</div>
                           {students.filter(s => s.schoolId === sId && s.status === "pending").sort((a, b) => a.name.localeCompare(b.name)).map(s => (
                             <button key={s.id} onClick={() => {
-                              const activeEnrolment = (enrolments || []).find(e =>
-                                e.studentId === s.id && !e.endDate && !e.isGroup
-                              );
-                              if (!activeEnrolment) {
-                                if (notify) notify(`${s.name} has no active enrolment — can't place lesson`, "warning");
-                                return;
-                              }
-                              const teacherForTemp = activeEnrolment.teacherId
-                                ? teachers.find(t => t.id === activeEnrolment.teacherId) : null;
-                              // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-                              const tempBucketId = activeEnrolment.teacherId
-                                ? findLaneId(teacherCoverage, sId, wkDay, activeEnrolment.teacherId)
-                                : null;
-                              if (!tempBucketId) {
-                                const sName = schools.find(sc => sc.id === sId)?.name || sId;
-                                if (notify) notify(`No covering lane for ${teacherForTemp?.name || "(unassigned)"} at ${sName} on ${wkDay}. Add staff first.`, "warning");
-                                return;
-                              }
-                              const newLesson = {
-                                id: uid(), studentId: s.id, studentName: s.name,
-                                schoolId: sId, schoolName: schools.find(sc => sc.id === sId)?.name || "",
-                                instrument: activeEnrolment.instrument,
-                                bucket_id: tempBucketId,
-                                enrolmentId: activeEnrolment.id,
-                                day: wkDay, start: wkTime, end: wkTime, weekDate: wkDate, adjusted: false, isTemp: true,
-                              };
-                              const wkData = weeklyTimetables[contextMenu.weekKey] || { lessons: [], missed: [] };
-                              setWeeklyTimetables(prev => ({ ...prev, [contextMenu.weekKey]: { ...wkData, lessons: [...(wkData.lessons || []), newLesson] } }));
-                              const cuSlot = (currentSchool?.slots || []).find(sl => sl.start === wkTime) || { start: wkTime, end: wkTime };
-                              const cuWarnings = checkConstraints(newLesson, wkDay, cuSlot, undefined, { weekKey, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons });
-                              if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
-                              setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                              // Routed through placeLesson so the destination lane comes
+                              // from the DROP TARGET, like every other add path. This
+                              // branch used to read activeEnrolment.teacherId — a field
+                              // removed from the data layer in Session 3 / C7 (see
+                              // enrolmentsDB.js) — so it was always undefined and the
+                              // refusal fired unconditionally. Lane coverage was never
+                              // the problem; the path had been dead for every pending
+                              // student since C7.
+                              //
+                              // placeLesson keeps the "no active enrolment" bail, which
+                              // is a real precondition, and supplies day/start/end from
+                              // contextMenu — wkDay/wkTime are literal aliases of those
+                              // (see their declarations above), so nothing shifts.
+                              placeLesson(s, { weekDate: wkDate, adjusted: false, isTemp: true });
                             }} style={subBtnStyle}
                               onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"}
                               onMouseLeave={e => e.currentTarget.style.background = "none"}>
@@ -5975,6 +5989,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               >
                 <RotateCcw size={13} /> Reset Day
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── Promote-to-active prompt ──────────────────────────────
+          Shown after a card has ALREADY been placed for a waiting-list or
+          trial student. Declining changes nothing: the lesson stays exactly
+          where it was put. Follows this file's existing overlay-modal idiom
+          (fixed backdrop + cardBg panel + Btn pair) rather than a browser
+          confirm, which cannot label its buttons. */}
+      {promotePrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setPromotePrompt(null)}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, padding: 22, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,0.22)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 8 }}>
+              Mark {promotePrompt.studentName} as active?
+            </div>
+            <div style={{ fontSize: 13, color: colors.textLight, lineHeight: 1.6, marginBottom: 18 }}>
+              Their lessons will now appear in the tally and be included in invoicing.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setPromotePrompt(null)}>Not yet</Btn>
+              <Btn onClick={confirmPromote}>Mark active</Btn>
             </div>
           </div>
         </div>
