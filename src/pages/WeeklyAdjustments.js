@@ -411,6 +411,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [confirmImportExpanded, setConfirmImportExpanded] = useState(false);
   const [showInterruptions, setShowInterruptions] = useState(false);
   const [editUnlocked, setEditUnlocked] = useState(false);
+  // Post-placement promotion prompt: { studentId, studentName } or null.
+  // The card is already placed by the time this is set — answering only
+  // decides the student's status, never whether the lesson stays.
+  const [promotePrompt, setPromotePrompt] = useState(null);
   // ── Confirmed days (teacher-locked day slips) ─────────────
   const [confirmedDaysMap, setConfirmedDaysMap] = useState({}); // { dateStr: [{id, teacherId}] }
   const [resettingDay,  setResettingDay]  = useState(null);  // dateStr being reset
@@ -2255,6 +2259,29 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   };
   const hideHoverPanel = () => { if (hoverPanelRef.current) hoverPanelRef.current.style.display = "none"; };
 
+  // Ask whether to promote, AFTER a card has been placed for a waiting-list or
+  // trial student. Silent promotion is deliberately not used here: the tally
+  // excludes pending and trial students outright, so flipping status quietly
+  // would pull the student into the tally and into invoicing off a single card,
+  // with nothing on screen to say so. Active students are never prompted.
+  const maybePromptPromote = (studentId) => {
+    if (!studentId) return;
+    const st = (students || []).find(x => x.id === studentId);
+    if (!st) return;
+    if (st.status !== "pending" && st.status !== "trial") return;
+    setPromotePrompt({ studentId: st.id, studentName: st.name });
+  };
+
+  // Same write shape App.js already uses for the MTT drag placements — a status
+  // patch through setStudents. No new write path.
+  const confirmPromote = () => {
+    if (!promotePrompt) return;
+    const { studentId, studentName } = promotePrompt;
+    setStudents(prev => prev.map(x => x.id === studentId ? { ...x, status: "active" } : x));
+    setPromotePrompt(null);
+    if (notify) notify(`${studentName} is now active`);
+  };
+
   const handleWeeklyMoveLesson = (lessonId, newDay, newTime) => {
     if (!weeklyData || !currentSchool) return;
     const slot = currentSchool.slots.find(s => s.start === newTime);
@@ -3570,6 +3597,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                  // Card is placed and stays placed; the prompt only offers promotion.
+                  maybePromptPromote(s.id);
                 };
                 // Cascading submenus — open to the right at same Y as hovered item
                 const subMenuW = 216;
@@ -3647,6 +3676,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   setAckedConstraints(prev => { const next = new Set(prev); next.delete(newLesson.id); return next; });
                   if (cuWarnings.length > 0) { setConstraintWarnings(prev => ({ ...prev, [newLesson.id]: cuWarnings })); setExpandedWarnings(prev => { const next = new Set(prev); next.add(newLesson.id); return next; }); }
                   setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+                  // Individual rows only — a group card has no single student whose
+                  // status could be promoted.
+                  if (!ml.isGroup) maybePromptPromote(ml.studentId);
                 };
                 const subHdr = (color) => ({ padding: "6px 12px", fontSize: 11, color, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` });
                 const subBtnStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, fontFamily: "inherit", textAlign: "left" };
@@ -5957,6 +5989,30 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               >
                 <RotateCcw size={13} /> Reset Day
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── Promote-to-active prompt ──────────────────────────────
+          Shown after a card has ALREADY been placed for a waiting-list or
+          trial student. Declining changes nothing: the lesson stays exactly
+          where it was put. Follows this file's existing overlay-modal idiom
+          (fixed backdrop + cardBg panel + Btn pair) rather than a browser
+          confirm, which cannot label its buttons. */}
+      {promotePrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setPromotePrompt(null)}>
+          <div style={{ background: colors.cardBg, borderRadius: 14, padding: 22, width: 360, boxShadow: "0 20px 60px rgba(0,0,0,0.22)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 8 }}>
+              Mark {promotePrompt.studentName} as active?
+            </div>
+            <div style={{ fontSize: 13, color: colors.textLight, lineHeight: 1.6, marginBottom: 18 }}>
+              Their lessons will now appear in the tally and be included in invoicing.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setPromotePrompt(null)}>Not yet</Btn>
+              <Btn onClick={confirmPromote}>Mark active</Btn>
             </div>
           </div>
         </div>
