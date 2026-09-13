@@ -6,7 +6,7 @@ import React, { useState, useEffect } from "react";
 import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil, KeyRound, AlertTriangle, Info, Lock, Eye, EyeOff, AtSign } from "lucide-react";
 import { INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, getInstColor } from "../utils/helpers";
+import { uid, getInstColor, staffContactEmail } from "../utils/helpers";
 import { parseTeacherCSV } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 import { supabase, createIsolatedAuthClient } from "../supabaseClient";
@@ -1366,8 +1366,20 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
               <div style={{ padding: "10px 14px" }}>
                 {(t.email || t.personalEmail || t.phone) && (
                   <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    {t.email && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Mail size={12} /> {t.email}</span>}
-                    {t.personalEmail && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Mail size={12} style={{ opacity: 0.5 }} /> {t.personalEmail}</span>}
+                    {(() => {
+                      // The address staff mail actually goes to reads as
+                      // primary; the App Email is a login identity that may
+                      // not be a live mailbox, so it reads as secondary.
+                      // One address on record → show it plain, no dimmed row.
+                      // Field LABELS are unchanged everywhere — the owner may
+                      // restore a mailbox later and they must stay accurate.
+                      const primary = staffContactEmail(t);
+                      const secondary = (t.personalEmail || "").trim() ? (t.email || "").trim() : "";
+                      return (<>
+                        {primary && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Mail size={12} /> {primary}</span>}
+                        {secondary && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Mail size={12} style={{ opacity: 0.5 }} /> {secondary}</span>}
+                      </>);
+                    })()}
                     {t.phone && <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Phone size={12} /> {t.phone}</span>}
                   </div>
                 )}
