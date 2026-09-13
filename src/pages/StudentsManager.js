@@ -312,9 +312,14 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     // Find enrolments that are newly-ended by this save — they need a card
     // cascade. Ignore ones that were already ended before the form opened.
     const priorEnrolments = allEnrolmentsFor(cleanRecord.id, enrolments);
-    const newlyEndedIds = effectiveFormEnrolments
+    // v2.34.0 — carry the end date alongside the id. The cascade now clears
+    // weekly cards only from the end date forward, so it needs to know when
+    // "forward" starts; App state does not yet hold the new endDate at the
+    // moment the cascade fires, so reading it back there would find the row
+    // still un-ended.
+    const newlyEnded = effectiveFormEnrolments
       .filter(e => e.endDate && !priorEnrolments.find(p => p.id === e.id)?.endDate)
-      .map(e => e.id);
+      .map(e => ({ id: e.id, endDate: e.endDate }));
 
     // Student writeback
     if (editing === "new") {
@@ -335,8 +340,8 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     if (isBecomingArchived) {
       onArchiveStudent(cleanRecord.id);
     } else {
-      for (const endedId of newlyEndedIds) {
-        if (onEndEnrolment) onEndEnrolment(endedId);
+      for (const ended of newlyEnded) {
+        if (onEndEnrolment) onEndEnrolment(ended.id, ended.endDate);
       }
     }
 

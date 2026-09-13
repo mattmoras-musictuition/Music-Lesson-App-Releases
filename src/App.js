@@ -6138,11 +6138,15 @@ export default function MusicTimetableApp() {
                 }
                 return next;
               });
-            }} onEndEnrolment={(enrolmentId) => {
+            }} onEndEnrolment={(enrolmentId, endDate) => {
               // Clear MTT + WTT cards stamped with this enrolmentId. Per Spec §17,
               // post-migration cards carry enrolmentId; the five WTT creation sites
               // deferred to Commit 4 may still produce enrolmentId:undefined cards,
               // which this filter won't clear — expected until Commit 4 stamps them.
+              //
+              // The MASTER timetable is forward-looking by nature — it is the
+              // template, not a record of what was taught — so ending an enrolment
+              // still clears its master card outright.
               if (timetable) {
                 setTimetable(prev => ({
                   ...prev,
@@ -6150,11 +6154,33 @@ export default function MusicTimetableApp() {
                   unscheduled: (prev.unscheduled || []).filter(u => u.enrolmentId !== enrolmentId),
                 }));
               }
+              // v2.34.0 — the WEEKLY purge is now bounded. It used to strip
+              // matching lessons and missed entries from EVERY week, including
+              // weeks already taught and already invoiced, destroying tally marks
+              // as a side effect of ending an enrolment. Only weeks that start
+              // strictly after the end date are cleared.
+              //
+              // The boundary week — the week CONTAINING the end date — is KEPT in
+              // full. This code operates at week granularity (entries carry a day
+              // NAME, not a date, so a part-week purge is not expressible here),
+              // and keeping it is both the safe direction and the one that agrees
+              // with the tally: deriveTallyCell dashes a week only when
+              // `week.weekKey > enrolment.endDate`, so the boundary week still
+              // renders as active there. Clearing it would leave an active-looking
+              // week blank for lessons that were genuinely taught.
+              //
+              // Same comparison, same week-key idiom already used at App.js:2441 —
+              // the storage key's leading segment IS the Monday, and both sides are
+              // YYYY-MM-DD, so a plain string compare is the date compare.
               setWeeklyTimetables(prev => {
                 const next = { ...prev };
                 for (const key of Object.keys(next)) {
                   const entry = next[key];
                   if (!entry) continue;
+                  const weekKey = key.split("|")[0]; // monday of that week
+                  // No end date supplied → fall back to the old clear-everything
+                  // behaviour rather than silently skipping the cascade.
+                  if (endDate && !(weekKey > endDate)) continue;
                   next[key] = {
                     ...entry,
                     lessons: (entry.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
