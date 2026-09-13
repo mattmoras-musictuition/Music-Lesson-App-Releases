@@ -20,6 +20,7 @@
 // ============================================================
 
 import { deriveTallyCell } from "./tallyDerive";
+import { pickEnrolment } from "./enrolmentPreference";
 
 // Build a card → enrolment resolver over one enrolments array.
 //
@@ -29,14 +30,31 @@ import { deriveTallyCell } from "./tallyDerive";
 // nothing matches, which every caller treats as "leave the card alone".
 //
 // Returns a function so the two Maps are built once per pass, not per card.
+// v2.34.0 — the key lookup no longer takes whichever row happened to be LAST.
+// byKey.set in a loop silently meant last-wins, which was the exact opposite of
+// what deriveTallyRows did with the same duplicate set. Because this resolver
+// gates weekly generation, a dead row selected here excluded the student's card
+// from the generated week AND suppressed them from the amber "not scheduled
+// this week" banner that exists to catch precisely that.
+//
+// Now every row sharing a key is collected and pickEnrolment chooses, so this
+// resolver and the tally agree by construction.
+//
+// The enrolmentId fast path is unchanged: ids are unique, so that lookup is
+// unambiguous by construction and needs no preference rule.
 export function makeEnrolmentResolver(enrolments) {
   const list = enrolments || [];
   const byId = new Map();
-  const byKey = new Map();
+  const candidatesByKey = new Map();
   for (const e of list) {
     byId.set(e.id, e);
-    byKey.set(e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`, e);
+    const k = e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`;
+    if (!candidatesByKey.has(k)) candidatesByKey.set(k, []);
+    candidatesByKey.get(k).push(e);
   }
+  const byKey = new Map();
+  for (const [k, candidates] of candidatesByKey) byKey.set(k, pickEnrolment(candidates));
+
   return (l) => (l && l.enrolmentId && byId.get(l.enrolmentId))
     || byKey.get(l && l.isGroup ? `group|${l.groupId}` : `${l && l.studentId}|${l && l.instrument}`)
     || null;
