@@ -87,6 +87,18 @@ function rowToEnrolment(row) {
 }
 
 // ── camelCase JS object → DB row ─────────────────────────────
+// v2.34.0 — updated_at is now stamped on write. Without it the column was
+// only ever set by its insert default, so ending an enrolment left rows whose
+// end_date was LATER than their own updated_at, which made the five-duplicate
+// incident only partly reconstructable.
+//
+// Stamped unconditionally, matching the two closest analogues in the codebase
+// (schoolsDB toRow and teachersDB toRow, both bulk upsert-all syncs of this
+// same shape). As there, the column therefore means "last written by a sync"
+// rather than "last content change", and fromRow does not read it back. That
+// is enough to make end_date > updated_at impossible, which is the defect;
+// true per-row change forensics would need dirty-tracking against loaded
+// state, which would change this module's sync contract.
 function enrolmentToRow(enrolment, userId) {
   return {
     id:         enrolment.id,
@@ -97,6 +109,7 @@ function enrolmentToRow(enrolment, userId) {
     group_id:   enrolment.groupId    || null,
     start_date: enrolment.startDate,
     end_date:   enrolment.endDate    || null,
+    updated_at: new Date().toISOString(),
   };
 }
 
