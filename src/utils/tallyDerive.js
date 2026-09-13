@@ -20,6 +20,7 @@
 // ============================================================
 
 import { getTermWeekLabel } from "./helpers";
+import { orderByPreference } from "./enrolmentPreference";
 import { isDayPast6pm } from "./tallyHelpers";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell } from "../data/catchupsDerive";
 
@@ -162,7 +163,19 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
   const termStart = termWeeks[0].weekKey;
   const termEnd = termWeeks[termWeeks.length - 1].weekKey;
 
-  for (const e of (enrolments || [])) {
+  // v2.34.0 — when a student holds several enrolments for one instrument, walk
+  // the preferred one FIRST. This loop claims a lessonKey (seen.add) only after
+  // the inclusion check below passes, so ordering rather than collapsing keeps
+  // that fallback intact: if the preferred row turns out to have neither an MTT
+  // card nor WTT data, the next-best row still gets its turn.
+  //
+  // The key expression below is a deliberate mirror of the loop's own
+  // lessonKey, which is frozen by dispatch and must not be refactored. Keep the
+  // two in step if either ever changes.
+  const ordered = orderByPreference(enrolments || [],
+    (e) => (e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`));
+
+  for (const e of ordered) {
     const lessonKey = e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`;
     if (seen.has(lessonKey)) continue;
 
@@ -352,7 +365,15 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
   const termStart = termWeeks[0].weekKey;
   const termEnd = termWeeks[termWeeks.length - 1].weekKey;
 
-  for (const e of (enrolments || [])) {
+  // v2.34.0 — same preference ordering as deriveTallyRows above. This deriver
+  // claims its lessonKey unconditionally after the cell loop, so ordering is
+  // what decides which duplicate renders. Group rows are skipped by the loop
+  // itself, so they are keyed here by a value that cannot collide with a
+  // private student's `studentId|instrument`.
+  const ordered = orderByPreference(enrolments || [],
+    (e) => (e.isGroup ? `group|${e.groupId}` : `${e.studentId}|${e.instrument}`));
+
+  for (const e of ordered) {
     if (e.isGroup) continue; // private students are solo by design
     const lessonKey = `${e.studentId}|${e.instrument}`;
     if (seen.has(lessonKey)) continue;

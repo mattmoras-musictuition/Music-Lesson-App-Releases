@@ -75,3 +75,44 @@ export function pickEnrolment(candidates) {
   }
   return best;
 }
+
+// Reorder a list so that, within each group of rows sharing a key, the
+// preferred row comes FIRST. Rows keep their original relative order
+// otherwise, and groups appear in first-seen order.
+//
+// This exists for consumers that walk enrolments in order and claim a key the
+// first time one passes some further test of their own — the tally derivers do
+// exactly that, and they must keep their fallback: if the preferred row fails
+// that test, the next-best row still gets its turn. Collapsing each group to a
+// single row would silently drop that second chance.
+//
+// `keyOf` is supplied by the caller because different consumers group
+// differently (the main tally keys group rows by groupId, the private tally
+// has no group concept at all). This module deliberately does not know how any
+// of them build a key.
+//
+// A list with no duplicate keys is returned in its EXACT original order, which
+// is what makes this a no-op for the overwhelming majority of students.
+export function orderByPreference(list, keyOf) {
+  const rows = list || [];
+  if (rows.length < 2) return rows;
+
+  const groups = new Map();
+  const order = [];
+  for (const row of rows) {
+    const k = keyOf(row);
+    if (!groups.has(k)) { groups.set(k, []); order.push(k); }
+    groups.get(k).push(row);
+  }
+  if (groups.size === rows.length) return rows;  // no duplicates — untouched
+
+  const out = [];
+  for (const k of order) {
+    const group = groups.get(k);
+    if (group.length === 1) { out.push(group[0]); continue; }
+    const best = pickEnrolment(group);
+    out.push(best);
+    for (const row of group) if (row !== best) out.push(row);
+  }
+  return out;
+}
