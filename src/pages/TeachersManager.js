@@ -718,6 +718,165 @@ function RemoveAccountModal({ teacher, account, colors, onClose, onDone }) {
   );
 }
 
+// Readable-in-a-phone-call alphabet: no I/l/1/O/0.
+function _genPassword() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
+// ── CreateAccountModal ─────────────────────────────────────────────────────
+//
+// signUp on an isolated, non-persisting client so creating a teacher's account
+// never replaces the admin's session (which would re-stamp teachers.user_id
+// under the teacher's identity via the teachers sync effect).
+//
+// The result handling is the fix for the 9 Sep incident. signUp reports success
+// in two cases where the teacher still cannot log in:
+//
+//   1. The address is already registered. Supabase deliberately obfuscates this
+//      to stop address enumeration: no error, a user object, and an EMPTY
+//      identities array. Read as success, the owner hands over a password that
+//      was never set on the existing account.
+//   2. The account is created unconfirmed. Sign-in then fails with "invalid
+//      login credentials", which reads to everyone as a wrong password. This is
+//      what happened to the account created on 9 Sep.
+//
+// So: an empty identities array is reported as "already exists", and a genuine
+// new account is confirmed immediately via admin_confirm_teacher_account. If
+// that confirm fails, the modal says the account exists but is not usable yet
+// rather than declaring success.
+
+function CreateAccountModal({ teacher, colors, notify, onClose, onCreated, onRefreshAccounts }) {
+  const [email, setEmail] = useState(teacher.email || "");
+  const [password, setPassword] = useState(_genPassword);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [warning, setWarning] = useState(null); // created but not usable
+  const [done, setDone] = useState(null);
+
+  const trimmed = email.trim();
+  const emailLooksOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
+  const canSubmit = emailLooksOk && password.length >= 8 && !busy;
+
+  async function submit() {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError(null);
+    setWarning(null);
+
+    let data, signUpError;
+    try {
+      const authClient = createIsolatedAuthClient();
+      ({ data, error: signUpError } = await authClient.auth.signUp({ email: trimmed, password }));
+    } catch (err) {
+      setBusy(false);
+      setError(err?.message || String(err));
+      return;
+    }
+
+    if (signUpError) {
+      setBusy(false);
+      setError(signUpError.message);
+      return;
+    }
+
+    const user = data?.user;
+    if (user && Array.isArray(user.identities) && user.identities.length === 0) {
+      setBusy(false);
+      setError(`An account already exists for ${trimmed}. Nothing was created. Use Change login address or Set password on that account instead.`);
+      onRefreshAccounts();
+      return;
+    }
+
+    if (!user?.id) {
+      setBusy(false);
+      setError("Supabase returned no account for that address. Nothing was created — check the address and try again.");
+      return;
+    }
+
+    // Confirm immediately, so the account works regardless of the project's
+    // confirm-email setting.
+    const confirmRes = await confirmTeacherAccount(user.id);
+    setBusy(false);
+
+    if (!confirmRes.ok) {
+      setWarning(confirmRes.message);
+      onRefreshAccounts();
+      return;
+    }
+
+    setDone(trimmed);
+    onCreated(teacher.id, trimmed);
+    onRefreshAccounts();
+    notify("Teacher account created");
+  }
+
+  return (
+    <LoginModalShell colors={colors} onClose={onClose} busy={busy} icon={<UserPlus size={16} color={colors.accent} />} title={done ? `Account created for ${teacher.name}` : `Create a login for ${teacher.name}`}>
+      {done ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            {teacher.name.split(" ")[0]} can sign in to the teacher app now. Read these details back to them — the password is not stored anywhere.
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Login address</div>
+            <div style={{ fontSize: 13, color: colors.text, padding: "8px 12px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}` }}>{done}</div>
+          </div>
+          <PasswordField colors={colors} notify={notify} value={password} onChange={() => {}} />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+            <Btn onClick={onClose}>Done</Btn>
+          </div>
+        </>
+      ) : warning ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5, marginBottom: 14 }}>
+            The account for <strong>{trimmed}</strong> was created, but confirming it failed — so {teacher.name.split(" ")[0]} cannot log in yet. Use <strong>Confirm account</strong> on the panel to finish it.
+          </div>
+          <ModalError colors={colors} message={warning} />
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={onClose}>Close</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            This is the address {teacher.name.split(" ")[0]} will type in to log in, and the password they will start with. It is also the address that links them to their own students and history, so it should match their staff record.
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Login address</div>
+          <input
+            type="email"
+            value={email}
+            autoFocus={!teacher.email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="name@mattmorasmusic.com"
+            style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 14, fontFamily: "inherit", color: colors.text, background: colors.bg, boxSizing: "border-box", marginBottom: 4 }}
+          />
+          <div style={{ fontSize: 12, color: (trimmed && !emailLooksOk) ? colors.danger : colors.textMuted, marginBottom: 14 }}>
+            {(trimmed && !emailLooksOk) ? "That does not look like an email address." : " "}
+          </div>
+          <PasswordField colors={colors} notify={notify} value={password} onChange={setPassword} label="Starting password" />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6, marginBottom: 16 }}>
+            <span style={{ fontSize: 12, color: password.length < 8 ? colors.danger : colors.textMuted }}>
+              {password.length < 8 ? "Use at least 8 characters." : "At least 8 characters."}
+            </span>
+            <button
+              onClick={() => setPassword(_genPassword())}
+              style={{ fontSize: 12, color: colors.accent, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0, fontFamily: "inherit" }}
+            >
+              Generate another
+            </button>
+          </div>
+          <ModalError colors={colors} message={error} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn onClick={submit} disabled={!canSubmit}>{busy ? "Creating…" : "Create account"}</Btn>
+          </div>
+        </>
+      )}
+    </LoginModalShell>
+  );
+}
+
 // ── TeacherLoginPanel ──────────────────────────────────────────────────────
 //
 // Live view of a teacher's auth account, plus the actions that manage it.
@@ -726,9 +885,9 @@ function RemoveAccountModal({ teacher, account, colors, onClose, onDone }) {
 // optimistically at creation time and stayed true for accounts that could not
 // actually be signed into.
 
-function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, colors, notify, onCreate, onRefreshAccounts, onEmailChanged }) {
+function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, colors, notify, onRefreshAccounts, onEmailChanged, onAccountCreated }) {
   const [open, setOpen] = useState(false);
-  const [modal, setModal] = useState(null); // "password" | "email"
+  const [modal, setModal] = useState(null); // "create" | "password" | "email" | "confirm" | "remove"
 
   const summary = loading ? "Checking…"
     : loadError ? "Couldn't check"
@@ -778,7 +937,7 @@ function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, col
                   <Lock size={12} /> Manage your own login in the Supabase dashboard.
                 </div>
               ) : (
-                <Btn onClick={() => onCreate(teacher)} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <Btn onClick={() => setModal("create")}>
                   <UserPlus size={13} /> Create account
                 </Btn>
               )}
@@ -836,6 +995,16 @@ function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, col
         </div>
       )}
 
+      {modal === "create" && !account && (
+        <CreateAccountModal
+          teacher={teacher}
+          colors={colors}
+          notify={notify}
+          onClose={() => setModal(null)}
+          onCreated={onAccountCreated}
+          onRefreshAccounts={onRefreshAccounts}
+        />
+      )}
       {modal === "password" && account && (
         <SetPasswordModal
           teacher={teacher}
@@ -890,7 +1059,6 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
   const [teacherCtxMenu, setTeacherCtxMenu] = useState(null); // { x, y, teacher }
-  const [inviteResult, setInviteResult] = useState(null); // { loading, teacher, password, error }
   const teacherCtxRef = React.useRef(null);
   const [draggingIdx, setDraggingIdx] = useState(null);
   const [dragOverIdx, setDragOverIdx] = useState(null);
@@ -968,6 +1136,14 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
     setTeachers(prev => prev.map(x => x.id === teacherId ? { ...x, email } : x));
   };
 
+  // A new account's address becomes the teacher's record address, for the same
+  // RLS reason as applyTeacherEmail. hasAccount is still written here so the
+  // stored column keeps tracking reality, but nothing reads it for status any
+  // more — the panel derives that from auth.users.
+  const applyAccountCreated = (teacherId, email) => {
+    setTeachers(prev => prev.map(x => x.id === teacherId ? { ...x, email, hasAccount: true } : x));
+  };
+
   const isOwnRow = (t, acct) => {
     if (acct && acct.user_id === ADMIN_USER_ID) return true;
     const k = _normEmail(t.email);
@@ -1019,29 +1195,6 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
     if (imported.length === 0) { notify("No valid teachers found in file", "warning"); return; }
     setTeachers(prev => [...prev, ...imported]);
     notify(`Imported ${imported.length} teachers from ${filename}`);
-  };
-
-  const createTeacherAccount = async (t) => {
-    if (!t.email) { notify("This teacher has no email address set. Add one first.", "warning"); return; }
-    const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    const tempPassword = Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-    setInviteResult({ loading: true, teacher: t, password: null, error: null });
-    try {
-      // Sign up on an isolated, non-persisting client so creating the
-      // teacher's account never replaces the admin's active session. Using
-      // the main `supabase` client here would swap the session to the new
-      // teacher and re-stamp teachers.user_id under their identity.
-      const authClient = createIsolatedAuthClient();
-      const { error } = await authClient.auth.signUp({ email: t.email, password: tempPassword });
-      if (error) {
-        setInviteResult({ loading: false, teacher: t, password: null, error: error.message });
-      } else {
-        setTeachers(prev => prev.map(x => x.id === t.id ? { ...x, hasAccount: true } : x));
-        setInviteResult({ loading: false, teacher: t, password: tempPassword, error: null });
-      }
-    } catch (err) {
-      setInviteResult({ loading: false, teacher: t, password: null, error: err.message });
-    }
   };
 
   const addInstrument = () => setForm(prev => ({ ...prev, instruments: [...prev.instruments, { name: "" }] }));
@@ -1246,9 +1399,9 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
                   readOnly={isOwnRow(t, accountFor(t))}
                   colors={colors}
                   notify={notify}
-                  onCreate={createTeacherAccount}
                   onRefreshAccounts={refreshAccounts}
                   onEmailChanged={applyTeacherEmail}
+                  onAccountCreated={applyAccountCreated}
                 />
               </div>
             </Card>
@@ -1295,50 +1448,6 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
         );
       })()}
 
-      {/* Create account result modal */}
-      {inviteResult && (
-        <>
-          <div onClick={() => !inviteResult.loading && setInviteResult(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 10000 }} />
-          <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width: 420, maxWidth: "90vw", padding: 28, fontFamily: "inherit" }}>
-            {inviteResult.loading ? (
-              <div style={{ textAlign: "center", padding: "20px 0", color: colors.textMuted, fontSize: 14 }}>Creating account…</div>
-            ) : inviteResult.error ? (
-              <>
-                <div style={{ fontWeight: 700, fontSize: 16, color: colors.danger, marginBottom: 10 }}>Account creation failed</div>
-                <div style={{ fontSize: 13, color: colors.text, marginBottom: 20, background: colors.bg, borderRadius: 8, padding: "10px 14px" }}>{inviteResult.error}</div>
-                <Btn onClick={() => setInviteResult(null)}>Close</Btn>
-              </>
-            ) : (
-              <>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 16, color: colors.text, marginBottom: 6 }}>
-                  <CheckCircle size={18} color={colors.success || "#3a9e6e"} />
-                  Account created for {inviteResult.teacher.name}
-                </div>
-                <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 18 }}>
-                  Share these login details with {inviteResult.teacher.name.split(" ")[0]}. They can change their password once they're logged in.
-                </div>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Email</div>
-                  <div style={{ fontSize: 13, color: colors.text, padding: "8px 12px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}` }}>{inviteResult.teacher.email}</div>
-                </div>
-                <div style={{ marginBottom: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Temporary Password</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ flex: 1, fontSize: 15, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, color: colors.text, padding: "8px 12px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}` }}>{inviteResult.password}</div>
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(inviteResult.password); notify("Password copied!"); }}
-                      title="Copy password"
-                      style={{ padding: "8px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.bg, cursor: "pointer", color: colors.textMuted, display: "inline-flex", alignItems: "center" }}>
-                      <Copy size={14} />
-                    </button>
-                  </div>
-                </div>
-                <Btn onClick={() => setInviteResult(null)}>Done</Btn>
-              </>
-            )}
-          </div>
-        </>
-      )}
     </div>
   );
 }
