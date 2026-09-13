@@ -18,7 +18,7 @@ import { getUserTemplates, applyMergeCtx, schoolAcronym, schoolIdForSenderEmail,
 // they get picked up by the normal send path.
 import { BUCKET_DOCUMENTS, downloadAsBase64 } from "../utils/storageHelpers";
 import { resolveSenderHeaders, getPrimaryAddress, buildLessonReferenceRows } from "../utils/emailHelpers";
-import { getCurrentWeekMonday, toLocalDateStr } from "../utils/helpers";
+import { getCurrentWeekMonday, toLocalDateStr, staffContactEmail } from "../utils/helpers";
 
 export function ComposeModal({ initial, schools, students, teachers, contacts, resources = [], documents = [], timetable = null, weeklyTimetables = {}, onClose, onCancelAll, notify, queueRemaining = 0, onSoundPlay, onSent }) {
   // Session 89 — v6 (HTML DOM-based stripping of quoted replies from initial.body)
@@ -224,14 +224,17 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     parentMap.forEach(({ email, name, studentNames }) => {
       add(email, name || email, studentNames.join(", "));
     });
-    // Teachers / staff — searchable by name and instrument. Session 97: also
-    // surface `personalEmail` (added session 87) so the chip resolves to the
-    // teacher's name when Matt types either address.
+    // Teachers / staff — searchable by name and instrument. ONE entry each, at
+    // the address that actually reaches them (staffContactEmail: personal
+    // first, App Email as fallback). Session 97 offered both addresses under
+    // the same display name; now that several App Emails are dead mailboxes
+    // that is a trap — two identical-looking "Philip" rows, one of which goes
+    // nowhere. Teachers with neither address on record are skipped.
     (teachers || []).forEach(t => {
       const instruments = (t.instruments || []).map(i => i.name).filter(Boolean).join(", ");
       const sub = instruments || "Staff";
-      if (t.email) add(t.email, t.name || t.email, sub);
-      if (t.personalEmail) add(t.personalEmail, t.name || t.personalEmail, sub);
+      const em = staffContactEmail(t);
+      if (em) add(em, t.name || em, sub);
     });
     // School contacts — searchable by name and role
     (contacts || []).forEach(c => {

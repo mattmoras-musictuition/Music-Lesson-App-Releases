@@ -3051,14 +3051,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
               const t = teachers.find(x => x.id === tid);
               if (!t) return;
-              // Add BOTH the app email and the personal email as recipients;
-              // skip whichever is blank so we never add an empty recipient.
-              [t.email, t.personalEmail].forEach(em => {
-                if (em && !staffEmailSet.has(em)) {
-                  staffEmailSet.add(em);
-                  staffRows.push({ name: t.name || em, email: em, color: t.color || null });
-                }
-              });
+              // ONE contact address per teacher (staffContactEmail: personal
+              // first, App Email as fallback). This used to add both, which
+              // now means a duplicate into a dead mailbox and a bounce per
+              // send. Blank is skipped so we never add an empty recipient.
+              const contactEm = staffContactEmail(t);
+              if (contactEm && !staffEmailSet.has(contactEm)) {
+                staffEmailSet.add(contactEm);
+                staffRows.push({ name: t.name || contactEm, email: contactEm, color: t.color || null });
+              }
             });
             const allStaffEmails = [...staffEmailSet];
 
@@ -4466,10 +4467,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const tid = getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                     const t = teachers.find(x => x.id === tid);
                     if (!t) return;
-                    // Add BOTH app + personal email; skip blanks (no empty recipient).
-                    [t.email, t.personalEmail].forEach(email => {
-                      if (email && !staffMap[email]) staffMap[email] = { name: t.name || email, color: t.color || null };
-                    });
+                    // ONE contact address per teacher (staffContactEmail:
+                    // personal first, App Email as fallback). Adding both meant
+                    // a duplicate into a dead mailbox and a bounce per send.
+                    // Blank is skipped so we never add an empty recipient.
+                    const contactEm = staffContactEmail(t);
+                    if (contactEm && !staffMap[contactEm]) staffMap[contactEm] = { name: t.name || contactEm, color: t.color || null };
                   });
                   const allStaffEmails = Object.keys(staffMap);
                   const staffRows = Object.entries(staffMap).map(([email, { name, color }]) => ({ email, name, color }));
