@@ -14,7 +14,7 @@ import { rowToInterruption } from "../utils/interruptionsDB";
 import { deleteSlip } from "../data/slipsDB";
 import { fetchResourceTaxonomies } from "../utils/resourcesDB";
 import { SlipEditModal } from "./SlipEditModal";
-import { listTeacherAccounts, setTeacherPassword, setTeacherLoginEmail, ADMIN_USER_ID } from "../utils/teacherAuthAdmin";
+import { listTeacherAccounts, setTeacherPassword, setTeacherLoginEmail, confirmTeacherAccount, deleteTeacherAccount, ADMIN_USER_ID } from "../utils/teacherAuthAdmin";
 
 // ── Term week helpers (standalone, no props needed) ────────────────────────
 
@@ -617,6 +617,107 @@ function ChangeEmailModal({ teacher, account, colors, onClose, onDone }) {
   );
 }
 
+function ConfirmAccountModal({ teacher, account, colors, onClose, onDone }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    const res = await confirmTeacherAccount(account.user_id);
+    setBusy(false);
+    if (res.ok) setDone(res.value);
+    else setError(res.message);
+    onDone();
+  }
+
+  return (
+    <LoginModalShell colors={colors} onClose={onClose} busy={busy} icon={<CheckCircle size={16} color={colors.success || "#3a9e6e"} />} title={done ? "Account confirmed" : `Confirm ${teacher.name}'s account`}>
+      {done ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5, marginBottom: 20 }}>
+            <strong>{done}</strong> is confirmed and can sign in now. Their password is unchanged.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={onClose}>Done</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            This account was created but never confirmed, which is why signing in fails with "invalid login credentials" even when the password is right. Confirming it makes <strong>{account.login_email}</strong> usable straight away. The password is not changed and nobody is signed out.
+          </div>
+          <ModalError colors={colors} message={error} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn onClick={submit} disabled={busy}>{busy ? "Confirming…" : "Confirm account"}</Btn>
+          </div>
+        </>
+      )}
+    </LoginModalShell>
+  );
+}
+
+function RemoveAccountModal({ teacher, account, colors, onClose, onDone }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+
+  const matches = typed.trim().toLowerCase() === (teacher.name || "").trim().toLowerCase();
+
+  async function submit() {
+    if (!matches) return;
+    setBusy(true);
+    setError(null);
+    const res = await deleteTeacherAccount(account.user_id);
+    setBusy(false);
+    if (res.ok) setDone(res.value);
+    else setError(res.message);
+    onDone();
+  }
+
+  return (
+    <LoginModalShell colors={colors} onClose={onClose} busy={busy} icon={<Trash2 size={16} color={colors.danger} />} title={done ? "Login removed" : `Remove ${teacher.name}'s login?`}>
+      {done ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5, marginBottom: 20 }}>
+            The login for <strong>{done}</strong> has been removed. {teacher.name}'s staff record, students and history are untouched — create a new account for them whenever you need to.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={onClose}>Done</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 14 }}>
+            This deletes {teacher.name.split(" ")[0]}'s ability to log in to the teacher app. They will not be able to sign in with <strong>{account.login_email}</strong> again.
+          </div>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            It does <strong>not</strong> delete their staff record, their students, or any of their lessons, invoices or history — all of that stays exactly as it is. You can create a new account for them afterwards.
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+            Type {teacher.name} to confirm
+          </div>
+          <input
+            value={typed}
+            autoFocus
+            onChange={e => setTyped(e.target.value)}
+            placeholder={teacher.name}
+            style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 14, fontFamily: "inherit", color: colors.text, background: colors.bg, boxSizing: "border-box", marginBottom: 16 }}
+          />
+          <ModalError colors={colors} message={error} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn variant="danger" onClick={submit} disabled={busy || !matches}>{busy ? "Removing…" : "Remove login"}</Btn>
+          </div>
+        </>
+      )}
+    </LoginModalShell>
+  );
+}
+
 // ── TeacherLoginPanel ──────────────────────────────────────────────────────
 //
 // Live view of a teacher's auth account, plus the actions that manage it.
@@ -720,6 +821,14 @@ function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, col
                   <Btn variant="secondary" onClick={() => setModal("email")}>
                     <AtSign size={13} /> Change login address
                   </Btn>
+                  {!account.confirmed_at && (
+                    <Btn variant="success" onClick={() => setModal("confirm")}>
+                      <CheckCircle size={13} /> Confirm account
+                    </Btn>
+                  )}
+                  <Btn variant="danger" onClick={() => setModal("remove")}>
+                    <Trash2 size={13} /> Remove account
+                  </Btn>
                 </div>
               )}
             </>
@@ -744,6 +853,24 @@ function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, col
           colors={colors}
           onClose={() => setModal(null)}
           onDone={(newEmail) => { onEmailChanged(teacher.id, newEmail); onRefreshAccounts(); }}
+        />
+      )}
+      {modal === "confirm" && account && (
+        <ConfirmAccountModal
+          teacher={teacher}
+          account={account}
+          colors={colors}
+          onClose={() => setModal(null)}
+          onDone={onRefreshAccounts}
+        />
+      )}
+      {modal === "remove" && account && (
+        <RemoveAccountModal
+          teacher={teacher}
+          account={account}
+          colors={colors}
+          onClose={() => setModal(null)}
+          onDone={onRefreshAccounts}
         />
       )}
     </div>
