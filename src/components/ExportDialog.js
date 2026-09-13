@@ -8,7 +8,7 @@
 import React from "react";
 import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, getLiveTeacherName, getSchoolAcronym } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, getLiveTeacherName, getSchoolAcronym, staffContactEmail } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
@@ -159,7 +159,12 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   const schoolContacts = (contacts || []).filter(c => !activeSchoolId || c.schoolId === activeSchoolId);
   const classTeacherContacts = schoolContacts.filter(c => c.role === "Classroom Teacher" && c.email && (!className || c.className === className));
   const adminContacts = schoolContacts.filter(c => c.email && c.role !== "Classroom Teacher" && c.role !== "Specialist Teacher");
-  const allStaffObjects = teachers.filter(t => t.email);
+  // Staff send targets, carrying the CONTACT address (see staffContactEmail)
+  // rather than the App Email. The overwritten `email` is local to this dialog
+  // and is never written back — teachers.email is untouched.
+  const allStaffObjects = teachers
+    .map(t => ({ ...t, email: staffContactEmail(t) }))
+    .filter(t => t.email);
   const parentStudentIds = [...new Set(previewLessons.map(l => l.studentId).filter(Boolean))];
   const parentStudents = students.filter(s => parentStudentIds.includes(s.id));
   const allParentEmails = [...new Set(parentStudents.flatMap(s => getParentEmails(s)).filter(Boolean))];
@@ -194,7 +199,9 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
       if (c.email) pool.push({ name: c.name || c.email, email: c.email, type: c.role || "contact", schoolName: (schools.find(s => s.id === c.schoolId) || {}).name });
     });
     (teachers || []).forEach(t => {
-      if (t.email) pool.push({ name: t.name || t.email, email: t.email, type: "Staff" });
+      // Contact address, not the App Email — see staffContactEmail.
+      const em = staffContactEmail(t);
+      if (em) pool.push({ name: t.name || em, email: em, type: "Staff" });
     });
     const seen = new Set();
     return pool.filter(c => { if (seen.has(c.email)) return false; seen.add(c.email); return true; });

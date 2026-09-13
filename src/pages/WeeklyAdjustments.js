@@ -6,7 +6,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Printer, Trash2, RefreshCw, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, Users, Check, X, AlertTriangle, ChevronRight, ChevronUp, ChevronDown, Send, Music, Guitar, Mail, RotateCcw, Building2, StickyNote, Download } from "lucide-react";
 import { DAYS, STORAGE_KEYS, instruments_colors, HEADER_HEIGHT, BAND_COLOR, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, isPastWeek as isWeekKeyPast, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym } from "../utils/helpers";
+import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, isPastWeek as isWeekKeyPast, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries, findOpenCatchups, getOpenCatchupRows } from "../utils/tallyDerive";
@@ -4211,7 +4211,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Cluster 12a: helper handles null lesson — drop the redundant ternary.
                   const _wttResolvedTid = getLiveTeacherId(_wttLesson, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                   const lessonTeacher = _wttResolvedTid ? teachers.find(t => t.id === _wttResolvedTid) : null;
-                  const lessonTeacherEmail = lessonTeacher?.email || null;
+                  // Contact address, not the App Email — see staffContactEmail.
+                  const lessonTeacherEmail = staffContactEmail(lessonTeacher) || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
                   const lessonTeacherFirst = lessonTeacher ? lessonTeacher.name.split(" ")[0] : null;
                   const specSubject = _wttLesson ? getLiveSpecialistTag(_wttLesson) : false;

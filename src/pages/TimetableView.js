@@ -8,7 +8,7 @@ import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getDayLaneTeacher, lessonBelongsToViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
-import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher } from "../utils/helpers";
+import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printMasterTimetable, printWeeklyTimetable } from "../data/weeklyTimetableGenerator";
@@ -954,7 +954,9 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const staffRows = [];
             dayLessons.forEach(l => {
               const t = teachers.find(x => x.id === getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage));
-              if (t?.email && !staffEmailSet.has(t.email)) { staffEmailSet.add(t.email); staffRows.push({ name: t.name || t.email, email: t.email, color: t.color || null }); }
+              // Contact address, not the App Email — see staffContactEmail.
+              const contactEm = staffContactEmail(t);
+              if (contactEm && !staffEmailSet.has(contactEm)) { staffEmailSet.add(contactEm); staffRows.push({ name: t.name || contactEm, email: contactEm, color: t.color || null }); }
             });
             const allStaffEmails = [...staffEmailSet];
             const schoolSender = schools.find(s => s.id === selectedSchool)?.senderEmail || "";
@@ -1232,7 +1234,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                   // Cluster 12a: helper handles null lesson — drop the redundant ternary.
                   const _mttResolvedTid = getLiveTeacherId(_mttLesson, allStu2 || students, enrolments, teacherCoverage);
                   const lessonTeacher = _mttResolvedTid ? teachers.find(t => t.id === _mttResolvedTid) : null;
-                  const lessonTeacherEmail = lessonTeacher?.email || null;
+                  // Contact address, not the App Email — see staffContactEmail.
+                  const lessonTeacherEmail = staffContactEmail(lessonTeacher) || null;
                   const lessonTeacherColor = lessonTeacher?.color || colors.sidebarActive;
                   const lessonTeacherFirst = lessonTeacher ? lessonTeacher.name.split(" ")[0] : null;
                   const specSubject = _mttLesson ? getLiveSpecialistTag(_mttLesson) : false;

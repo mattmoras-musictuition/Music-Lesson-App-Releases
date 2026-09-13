@@ -40,7 +40,7 @@ import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } fr
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
-import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot } from "./utils/helpers";
+import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot, staffContactEmail } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
@@ -3578,7 +3578,10 @@ export default function MusicTimetableApp() {
           const schoolName = schools.find(s => s.id === l.schoolId)?.name || l.schoolId;
           return `${l.day} @ ${schoolName}`;
         }).join(", ");
-      lines.push(`Teacher: ${t.name} (id: ${t.id})${t.email ? ` <${t.email}>` : ""}`);
+      // The only teacher address the assistant sees, and it feeds draft_email
+      // directly — so it must be the contact address, not the App Email.
+      const contactEmail = staffContactEmail(t);
+      lines.push(`Teacher: ${t.name} (id: ${t.id})${contactEmail ? ` <${contactEmail}>` : ""}`);
       if (instrs) lines.push(`  Instruments: ${instrs}`);
       if (teaches) lines.push(`  Teaches: ${teaches}`);
     });
