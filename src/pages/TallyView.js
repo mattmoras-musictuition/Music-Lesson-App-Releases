@@ -2,7 +2,7 @@
 // TALLYVIEW — extracted from App.js
 // ============================================================
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send, History } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive, uid } from "../utils/helpers";
@@ -116,19 +116,42 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // Value is a minimal entry-shape so the downstream tooltip read
   // ("Holiday — Completed") hits the entry.status === "completed" branch.
   // enrolments provides the join from catchup.enrolmentId → studentId/groupId.
+  //
+  // v2.34.0 — degrade instead of dropping. This used to `continue` the moment
+  // catchup.enrolmentId failed to resolve, which silently removed the green
+  // completed tick from a holiday cell while the catchup row sat intact in the
+  // database. A catchup row carries no studentId, groupId or isGroup of its
+  // own, so the student identity really is unrecoverable without SOME enrolment
+  // — but a catchup carries TWO enrolment ids, and the second one is a free
+  // second chance: resolvesEnrolmentId points at the missed lesson this catchup
+  // was scheduled against, and it commonly survives when enrolmentId does not
+  // (and vice versa). Only when BOTH fail is the tick genuinely unplaceable.
+  //
+  // Note the lessonKey is duplicate-insensitive — every duplicate enrolment for
+  // one student+instrument yields the same `studentId|instrument` — so
+  // resolving to ANY row in a duplicate set produces the correct key. Matching
+  // on c.instrument alone is deliberately NOT attempted as a third fallback: it
+  // would land the tick on some other student's row, which is worse than
+  // leaving the cell blank.
+  const resolveCatchupEnrolment = useCallback((c) => (
+    (enrolments || []).find(e => e.id === c.enrolmentId)
+    || (c.resolvesEnrolmentId ? (enrolments || []).find(e => e.id === c.resolvesEnrolmentId) : null)
+    || null
+  ), [enrolments]);
+
   const holidayCatchupsMap = useMemo(() => {
     const map = {};
     const holidayWeekKeys = new Set(termWeeks.filter(w => w.isHoliday).map(w => w.weekKey));
     if (holidayWeekKeys.size === 0) return map;
     for (const c of (catchups || [])) {
       if (!holidayWeekKeys.has(c.weekKey)) continue;
-      const en = (enrolments || []).find(e => e.id === c.enrolmentId);
-      if (!en) continue;
+      const en = resolveCatchupEnrolment(c);
+      if (!en) continue; // student identity unrecoverable — see note above
       const lessonKey = en.isGroup ? `group|${en.groupId}` : `${en.studentId}|${c.instrument}`;
       map[`${lessonKey}|${c.weekKey}`] = { status: "completed", isHolidayCatchup: true };
     }
     return map;
-  }, [catchups, enrolments, termWeeks]);
+  }, [catchups, termWeeks, resolveCatchupEnrolment]);
 
   // Spec 3 cluster 8 — banking index for blue-tick "caught up" render.
   // Declared above the summary stats so the tile aggregation and the cell
@@ -423,8 +446,9 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     if (prevHolidayWeekKeys.size > 0) {
       for (const c of (catchups || [])) {
         if (!prevHolidayWeekKeys.has(c.weekKey)) continue;
-        const en = (enrolments || []).find(e => e.id === c.enrolmentId);
-        if (!en) continue;
+        // Same degrade-don't-drop chain as the live map above.
+        const en = resolveCatchupEnrolment(c);
+        if (!en) continue; // student identity unrecoverable — see note above
         const lessonKey = en.isGroup ? `group|${en.groupId}` : `${en.studentId}|${c.instrument}`;
         prevHolidayCatchupsMap[`${lessonKey}|${c.weekKey}`] = { status: "completed", isHolidayCatchup: true };
       }

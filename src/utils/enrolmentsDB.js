@@ -7,6 +7,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
+import { pickEnrolment } from "./enrolmentPreference";
 
 // ── Match a card's identity to an enrolment ──────────────────
 // Returns the matching enrolment.id or null. Matching rule per
@@ -25,19 +26,31 @@ import { supabase } from "../supabaseClient";
 // isGroup flag — the earlier defensive filter on that flag excluded
 // legitimate "Group" instrument records (isGroup:true + groupId:null +
 // real studentId), which the pre-patch shape handled correctly.
+// v2.34.0: when more than one row matches, the choice is no longer array
+// position. Both branches now collect every match and hand the set to
+// pickEnrolment, which prefers a live row over an ended one. The MATCHING
+// RULES ABOVE ARE UNCHANGED — only the choice among multiple matches is.
+//
+// This is the highest-leverage site in the app: several of its ~25 callers
+// WRITE the returned id onto a card (new placements at App.js, the mark-missed
+// handler in WeeklyAdjustments, which re-stamps over whatever the card already
+// carried). While this returned the first array match it was minting ids of
+// ended enrolments onto freshly created cards.
 export function enrolmentIdFor(studentId, instrument, enrolments, groupId) {
   if (groupId) {
-    const groupMatch = (enrolments || []).find(e =>
+    const groupMatches = (enrolments || []).filter(e =>
       e.isGroup === true &&
       e.groupId === groupId &&
       e.instrument === instrument
     );
+    const groupMatch = pickEnrolment(groupMatches);
     return groupMatch ? groupMatch.id : null;
   }
-  const match = (enrolments || []).find(e =>
+  const matches = (enrolments || []).filter(e =>
     e.studentId === studentId &&
     e.instrument === instrument
   );
+  const match = pickEnrolment(matches);
   return match ? match.id : null;
 }
 
@@ -87,6 +100,18 @@ function rowToEnrolment(row) {
 }
 
 // ── camelCase JS object → DB row ─────────────────────────────
+// v2.34.0 — updated_at is now stamped on write. Without it the column was
+// only ever set by its insert default, so ending an enrolment left rows whose
+// end_date was LATER than their own updated_at, which made the five-duplicate
+// incident only partly reconstructable.
+//
+// Stamped unconditionally, matching the two closest analogues in the codebase
+// (schoolsDB toRow and teachersDB toRow, both bulk upsert-all syncs of this
+// same shape). As there, the column therefore means "last written by a sync"
+// rather than "last content change", and fromRow does not read it back. That
+// is enough to make end_date > updated_at impossible, which is the defect;
+// true per-row change forensics would need dirty-tracking against loaded
+// state, which would change this module's sync contract.
 function enrolmentToRow(enrolment, userId) {
   return {
     id:         enrolment.id,
@@ -97,6 +122,7 @@ function enrolmentToRow(enrolment, userId) {
     group_id:   enrolment.groupId    || null,
     start_date: enrolment.startDate,
     end_date:   enrolment.endDate    || null,
+    updated_at: new Date().toISOString(),
   };
 }
 
