@@ -365,6 +365,31 @@ export const getClassTeacher = (student, contacts) => {
   ) || null;
 };
 
+// The address to CONTACT a music teacher on.
+//
+// teachers.email ("App Email") is a login identity — it is what the teacher
+// app's RLS matches against lower(auth.email()) — and is NOT guaranteed to be
+// a live mailbox. Several staff App Emails are @mattmorasmusic.com addresses
+// whose Google Workspace seats have been cancelled; Supabase keeps its own
+// copy of the address and password, so those logins still work while the
+// mailbox behind them is gone.
+//
+// So: prefer personalEmail, fall back to the App Email for staff whose App
+// Email IS their personal address (Sophie today — she has no personalEmail).
+//
+// THE FALLBACK DIRECTION IS LOAD-BEARING. Reversing it (email || personalEmail)
+// silently re-routes staff mail back to the dead mailboxes.
+//
+// Restoring a teacher to their App Email later is a DATA change, not a code
+// change: clear that teacher's personalEmail and this helper resolves to the
+// App Email again. Never "fix" it by editing teachers.email — that is the
+// login identity and moving it breaks the teacher's RLS link to their records.
+//
+// Returns "" when neither field is set; every call site must skip empty
+// values rather than adding an empty recipient.
+export const staffContactEmail = (t) =>
+  (t?.personalEmail || "").trim() || (t?.email || "").trim();
+
 // Open the in-app email compose modal.
 // Falls back to Gmail web URL if Electron API not available.
 export const openCompose = (emails, { subject = "", from = "", body = "", triggerId = null, mergeCtx = null, attachments = null, offeredAttachment = null, bccGroup = false, forceTo = false, threadMessages = null, replyThreadId = null } = {}) => {
