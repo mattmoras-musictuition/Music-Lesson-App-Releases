@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
-import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil, KeyRound, AlertTriangle, Info, Lock } from "lucide-react";
+import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil, KeyRound, AlertTriangle, Info, Lock, Eye, EyeOff, AtSign } from "lucide-react";
 import { INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor } from "../utils/helpers";
@@ -14,7 +14,7 @@ import { rowToInterruption } from "../utils/interruptionsDB";
 import { deleteSlip } from "../data/slipsDB";
 import { fetchResourceTaxonomies } from "../utils/resourcesDB";
 import { SlipEditModal } from "./SlipEditModal";
-import { listTeacherAccounts, ADMIN_USER_ID } from "../utils/teacherAuthAdmin";
+import { listTeacherAccounts, setTeacherPassword, setTeacherLoginEmail, ADMIN_USER_ID } from "../utils/teacherAuthAdmin";
 
 // ── Term week helpers (standalone, no props needed) ────────────────────────
 
@@ -433,6 +433,190 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
   );
 }
 
+// ── Login modal pieces ─────────────────────────────────────────────────────
+//
+// Same backdrop + centred card the invoice and slip modals in this file use,
+// factored out because the login actions need four of them.
+
+function LoginModalShell({ colors, onClose, busy, icon, title, children, width = 420 }) {
+  return (
+    <>
+      <div onClick={() => !busy && onClose()} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 10000 }} />
+      <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.22)", width, maxWidth: "90vw", padding: 24, fontFamily: "inherit" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 15, color: colors.text, marginBottom: 12 }}>
+          {icon}{title}
+        </div>
+        {children}
+      </div>
+    </>
+  );
+}
+
+// A password the owner has to read back to a teacher over the phone, so it is
+// shown in full on request and copyable — hidden by default in case anyone is
+// looking over the shoulder.
+function PasswordField({ colors, notify, value, onChange, label = "Password", autoFocus }) {
+  const [shown, setShown] = useState(false);
+  const btn = { padding: "8px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.bg, cursor: "pointer", color: colors.textMuted, display: "inline-flex", alignItems: "center" };
+  return (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input
+          type={shown ? "text" : "password"}
+          value={value}
+          autoFocus={autoFocus}
+          onChange={e => onChange(e.target.value)}
+          style={{ flex: 1, padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 15, fontFamily: "monospace", letterSpacing: 1, color: colors.text, background: colors.bg, boxSizing: "border-box" }}
+        />
+        <button onClick={() => setShown(v => !v)} title={shown ? "Hide password" : "Show password"} style={btn}>
+          {shown ? <EyeOff size={14} /> : <Eye size={14} />}
+        </button>
+        <button
+          onClick={() => { navigator.clipboard.writeText(value); notify("Password copied!"); }}
+          title="Copy password"
+          style={btn}
+        >
+          <Copy size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Shared by every login modal: the raw Postgres message, verbatim.
+function ModalError({ colors, message }) {
+  if (!message) return null;
+  return (
+    <div style={{ fontSize: 13, color: colors.danger, background: colors.bg, border: `1px solid ${colors.danger}40`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, lineHeight: 1.45 }}>
+      {message}
+    </div>
+  );
+}
+
+function SignOutWarning({ colors, name }) {
+  return (
+    <div style={{ fontSize: 12, color: "#b45309", background: "rgba(245,158,11,0.1)", borderRadius: 8, padding: "9px 12px", marginBottom: 16, lineHeight: 1.45, display: "flex", gap: 7 }}>
+      <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+      <span>This signs {name} out on every device. They will need to log in again with the new password.</span>
+    </div>
+  );
+}
+
+function SetPasswordModal({ teacher, account, colors, notify, onClose, onDone }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null); // email returned by the function
+
+  const tooShort = password.length > 0 && password.length < 8;
+
+  async function submit() {
+    if (password.length < 8) return;
+    setBusy(true);
+    setError(null);
+    const res = await setTeacherPassword(account.user_id, password);
+    setBusy(false);
+    if (res.ok) { setDone(res.value); notify("Password updated"); }
+    else setError(res.message);
+    onDone();
+  }
+
+  return (
+    <LoginModalShell colors={colors} onClose={onClose} busy={busy} icon={<KeyRound size={16} color={colors.accent} />} title={done ? "Password updated" : `Set a new password for ${teacher.name}`}>
+      {done ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5, marginBottom: 16 }}>
+            The new password is now active for <strong>{done}</strong>. Read it back to {teacher.name.split(" ")[0]} before closing this — it is not stored anywhere.
+          </div>
+          <PasswordField colors={colors} notify={notify} value={password} onChange={() => {}} label="New password" />
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+            <Btn onClick={onClose}>Done</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            Type the password you want to give {teacher.name.split(" ")[0]} for <strong>{account.login_email}</strong>. You will need to read it back to them, so use the eye and copy buttons.
+          </div>
+          <SignOutWarning colors={colors} name={teacher.name} />
+          <PasswordField colors={colors} notify={notify} value={password} onChange={setPassword} label="New password" autoFocus />
+          <div style={{ fontSize: 12, color: tooShort ? colors.danger : colors.textMuted, marginTop: 6, marginBottom: 16 }}>
+            {tooShort ? "Use at least 8 characters." : "At least 8 characters."}
+          </div>
+          <ModalError colors={colors} message={error} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn onClick={submit} disabled={busy || password.length < 8}>{busy ? "Setting…" : "Set password"}</Btn>
+          </div>
+        </>
+      )}
+    </LoginModalShell>
+  );
+}
+
+function ChangeEmailModal({ teacher, account, colors, onClose, onDone }) {
+  const [email, setEmail] = useState(account.login_email || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [done, setDone] = useState(null);
+
+  const changed = _normEmail(email) !== _normEmail(account.login_email);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    const res = await setTeacherLoginEmail(account.user_id, teacher.id, email.trim());
+    setBusy(false);
+    if (res.ok) {
+      setDone(res.value);
+      // Push the new address into the teachers array as well. The teachers sync
+      // effect writes the whole row back on change, so leaving the old address
+      // in local state would overwrite what the function just set and break the
+      // lower(teachers.email) = lower(auth.email()) link the teacher app's RLS
+      // policies depend on.
+      onDone(res.value);
+    } else {
+      setError(res.message);
+    }
+  }
+
+  return (
+    <LoginModalShell colors={colors} onClose={onClose} busy={busy} icon={<AtSign size={16} color={colors.accent} />} title={done ? "Login address changed" : `Change login address for ${teacher.name}`}>
+      {done ? (
+        <>
+          <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5, marginBottom: 20 }}>
+            {teacher.name.split(" ")[0]} now logs in with <strong>{done}</strong>. Their password is unchanged, and their records moved across with them.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={onClose}>Done</Btn>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
+            This is the address {teacher.name.split(" ")[0]} types in to log in to the teacher app. Changing it here changes their login <em>and</em> the address on their staff record together — that pair is what connects them to their own students, lessons and invoices, so the two must never drift apart.
+          </div>
+          <SignOutWarning colors={colors} name={teacher.name} />
+          <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Login address</div>
+          <input
+            type="email"
+            value={email}
+            autoFocus
+            onChange={e => setEmail(e.target.value)}
+            style={{ width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 14, fontFamily: "inherit", color: colors.text, background: colors.bg, boxSizing: "border-box", marginBottom: 16 }}
+          />
+          <ModalError colors={colors} message={error} />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn onClick={submit} disabled={busy || !email.trim() || !changed}>{busy ? "Changing…" : "Change address"}</Btn>
+          </div>
+        </>
+      )}
+    </LoginModalShell>
+  );
+}
+
 // ── TeacherLoginPanel ──────────────────────────────────────────────────────
 //
 // Live view of a teacher's auth account, plus the actions that manage it.
@@ -441,8 +625,9 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
 // optimistically at creation time and stayed true for accounts that could not
 // actually be signed into.
 
-function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, colors, onCreate }) {
+function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, colors, notify, onCreate, onRefreshAccounts, onEmailChanged }) {
   const [open, setOpen] = useState(false);
+  const [modal, setModal] = useState(null); // "password" | "email"
 
   const summary = loading ? "Checking…"
     : loadError ? "Couldn't check"
@@ -527,10 +712,39 @@ function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, col
                 <div style={{ fontSize: 12, color: colors.textMuted, display: "inline-flex", alignItems: "center", gap: 5, marginTop: 4 }}>
                   <Lock size={12} /> Manage your own login in the Supabase dashboard.
                 </div>
-              ) : null}
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                  <Btn variant="secondary" onClick={() => setModal("password")}>
+                    <KeyRound size={13} /> Set password
+                  </Btn>
+                  <Btn variant="secondary" onClick={() => setModal("email")}>
+                    <AtSign size={13} /> Change login address
+                  </Btn>
+                </div>
+              )}
             </>
           )}
         </div>
+      )}
+
+      {modal === "password" && account && (
+        <SetPasswordModal
+          teacher={teacher}
+          account={account}
+          colors={colors}
+          notify={notify}
+          onClose={() => setModal(null)}
+          onDone={onRefreshAccounts}
+        />
+      )}
+      {modal === "email" && account && (
+        <ChangeEmailModal
+          teacher={teacher}
+          account={account}
+          colors={colors}
+          onClose={() => setModal(null)}
+          onDone={(newEmail) => { onEmailChanged(teacher.id, newEmail); onRefreshAccounts(); }}
+        />
       )}
     </div>
   );
@@ -617,6 +831,14 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   const accountFor = (t) => {
     const k = _normEmail(t.email);
     return k ? (accountByEmail.get(k) || null) : null;
+  };
+
+  // Keep the teachers array in step with an address the RPC just changed.
+  // admin_set_teacher_login_email updates public.teachers.email itself; without
+  // this the next teachers sync would write the stale address back over it and
+  // break the teacher's RLS link to their own records.
+  const applyTeacherEmail = (teacherId, email) => {
+    setTeachers(prev => prev.map(x => x.id === teacherId ? { ...x, email } : x));
   };
 
   const isOwnRow = (t, acct) => {
@@ -896,7 +1118,10 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
                   loadError={accountsError}
                   readOnly={isOwnRow(t, accountFor(t))}
                   colors={colors}
+                  notify={notify}
                   onCreate={createTeacherAccount}
+                  onRefreshAccounts={refreshAccounts}
+                  onEmailChanged={applyTeacherEmail}
                 />
               </div>
             </Card>
