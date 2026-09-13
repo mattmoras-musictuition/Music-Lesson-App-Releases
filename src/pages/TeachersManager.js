@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
-import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil } from "lucide-react";
+import { Guitar, Mail, Phone, Coffee, X, Copy, Plus, Download, Palette, ClipboardList, Trash2, Music, Mic, Piano, UserPlus, CheckCircle, ChevronDown, ChevronRight, FileText, RotateCcw, Pencil, KeyRound, AlertTriangle, Info, Lock } from "lucide-react";
 import { INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid, getInstColor } from "../utils/helpers";
@@ -14,6 +14,7 @@ import { rowToInterruption } from "../utils/interruptionsDB";
 import { deleteSlip } from "../data/slipsDB";
 import { fetchResourceTaxonomies } from "../utils/resourcesDB";
 import { SlipEditModal } from "./SlipEditModal";
+import { listTeacherAccounts, ADMIN_USER_ID } from "../utils/teacherAuthAdmin";
 
 // ── Term week helpers (standalone, no props needed) ────────────────────────
 
@@ -75,6 +76,34 @@ function _fmt12(t) {
   if (!t) return "—";
   const [h, m] = t.split(":").map(Number);
   return `${h % 12 || 12}:${String(m).padStart(2, "0")}${h >= 12 ? "pm" : "am"}`;
+}
+
+// ── Login account helpers ───────────────────────────────────────────
+
+// The RLS link between a teacher and their records is
+// lower(teachers.email) = lower(auth.email()), so auth accounts are matched to
+// teacher rows the same way: trimmed and lower-cased.
+function _normEmail(e) {
+  return (e || "").trim().toLowerCase();
+}
+
+// hour12 on purpose: Electron's ICU renders midnight as hour "24" under the
+// default locale settings, which reads as a bug to anyone looking at it.
+function _fmtStamp(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-AU", {
+    day: "numeric", month: "short", year: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  });
+}
+
+function _fmtDay(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
 }
 
 // ── TeacherInvoiceSection ──────────────────────────────────────────────────
@@ -404,6 +433,109 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
   );
 }
 
+// ── TeacherLoginPanel ──────────────────────────────────────────────────────
+//
+// Live view of a teacher's auth account, plus the actions that manage it.
+// Everything shown here comes from admin_list_teacher_accounts (auth.users),
+// never from the persisted hasAccount flag — that flag was written
+// optimistically at creation time and stayed true for accounts that could not
+// actually be signed into.
+
+function TeacherLoginPanel({ teacher, account, loading, loadError, readOnly, colors, onCreate }) {
+  const [open, setOpen] = useState(false);
+
+  const summary = loading ? "Checking…"
+    : loadError ? "Couldn't check"
+    : !account ? "No login account"
+    : !account.confirmed_at ? "Unconfirmed"
+    : "Active";
+
+  const summaryColor = loading ? colors.textMuted
+    : loadError ? colors.danger
+    : !account ? colors.textMuted
+    : !account.confirmed_at ? "#f59e0b"
+    : (colors.success || "#3a9e6e");
+
+  const label = { fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.5 };
+  const value = { fontSize: 13, color: colors.text, marginTop: 2, wordBreak: "break-all" };
+  const field = { marginBottom: 10 };
+
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.border}` }} onClick={e => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", color: colors.text }}
+      >
+        {open ? <ChevronDown size={13} color={colors.textMuted} /> : <ChevronRight size={13} color={colors.textMuted} />}
+        <KeyRound size={13} color={colors.textMuted} />
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Login &amp; Access</span>
+        <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 500, color: summaryColor, display: "inline-flex", alignItems: "center", gap: 5 }}>
+          {!loading && !loadError && account && account.confirmed_at && <CheckCircle size={13} />}
+          {!loading && !loadError && account && !account.confirmed_at && <AlertTriangle size={13} />}
+          {summary}
+        </span>
+      </button>
+
+      {open && (
+        <div style={{ marginTop: 10, padding: "12px 14px", background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 8 }}>
+          {loading ? (
+            <div style={{ fontSize: 13, color: colors.textMuted }}>Checking login accounts…</div>
+          ) : loadError ? (
+            <div style={{ fontSize: 13, color: colors.danger }}>{loadError}</div>
+          ) : !account ? (
+            <>
+              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: readOnly ? 0 : 12 }}>
+                No login account. {teacher.name.split(" ")[0]} cannot sign in to the teacher app.
+              </div>
+              {readOnly ? (
+                <div style={{ fontSize: 12, color: colors.textMuted, display: "inline-flex", alignItems: "center", gap: 5, marginTop: 10 }}>
+                  <Lock size={12} /> Manage your own login in the Supabase dashboard.
+                </div>
+              ) : (
+                <Btn onClick={() => onCreate(teacher)} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <UserPlus size={13} /> Create account
+                </Btn>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={field}>
+                <div style={label}>Login address</div>
+                <div style={value}>{account.login_email}</div>
+              </div>
+              <div style={field}>
+                <div style={label}>Confirmed</div>
+                <div style={{ ...value, color: account.confirmed_at ? colors.text : "#f59e0b" }}>
+                  {account.confirmed_at ? `Yes — ${_fmtDay(account.confirmed_at)}` : "No — they cannot sign in yet"}
+                </div>
+              </div>
+              <div style={field}>
+                <div style={{ ...label, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                  Last password sign-in
+                  <span title="Only updates when they type their password in. Staying logged in on a device does not change this." style={{ display: "inline-flex", cursor: "help" }}>
+                    <Info size={11} />
+                  </span>
+                </div>
+                <div style={value}>{account.last_password_sign_in ? _fmtStamp(account.last_password_sign_in) : "never"}</div>
+              </div>
+              <div style={field}>
+                <div style={label}>Created</div>
+                <div style={value}>{_fmtDay(account.created)}</div>
+              </div>
+
+              {readOnly ? (
+                <div style={{ fontSize: 12, color: colors.textMuted, display: "inline-flex", alignItems: "center", gap: 5, marginTop: 4 }}>
+                  <Lock size={12} /> Manage your own login in the Supabase dashboard.
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const INSTRUMENT_ICON = (name = "", size = 15) => {
   const n = name.toLowerCase();
   if (/guitar|bass|ukulele/.test(n)) return <Guitar size={size} />;
@@ -437,6 +569,61 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
   // teacher an instrument. Falling back to the INSTRUMENTS constant keeps the
   // form usable when the managed row is missing or Supabase is unreachable.
   const instrumentOptions = (taxInstruments && taxInstruments.length) ? taxInstruments : INSTRUMENTS;
+
+  // ── Teacher login accounts ──────────────────────────────────────────────
+  // Read once on mount and after every successful mutation. This is the only
+  // source of truth for whether a teacher can actually sign in — the persisted
+  // hasAccount flag is deliberately not consulted (a teacher created on 9 Sep
+  // showed "account active" for an unconfirmed account that always failed
+  // login with "invalid login credentials").
+  const [accounts, setAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState(null);
+
+  const refreshAccounts = React.useCallback(async () => {
+    setAccountsLoading(true);
+    const res = await listTeacherAccounts();
+    if (res.ok) {
+      setAccounts(res.value || []);
+      setAccountsError(null);
+    } else {
+      setAccounts([]);
+      setAccountsError(res.message);
+    }
+    setAccountsLoading(false);
+  }, []);
+
+  useEffect(() => { refreshAccounts(); }, [refreshAccounts]);
+
+  // The signed-in admin's own address. Used alongside ADMIN_USER_ID so Matt's
+  // own row renders read-only — the RPCs refuse to act on the admin account,
+  // and an action that can only ever fail should not be offered.
+  const [adminEmail, setAdminEmail] = useState("");
+  useEffect(() => {
+    supabase.auth.getUser()
+      .then(({ data }) => setAdminEmail(data?.user?.email || ""))
+      .catch(() => {});
+  }, []);
+
+  const accountByEmail = React.useMemo(() => {
+    const m = new Map();
+    for (const a of accounts) {
+      const k = _normEmail(a.login_email);
+      if (k) m.set(k, a);
+    }
+    return m;
+  }, [accounts]);
+
+  const accountFor = (t) => {
+    const k = _normEmail(t.email);
+    return k ? (accountByEmail.get(k) || null) : null;
+  };
+
+  const isOwnRow = (t, acct) => {
+    if (acct && acct.user_id === ADMIN_USER_ID) return true;
+    const k = _normEmail(t.email);
+    return !!k && k === _normEmail(adminEmail);
+  };
 
   useEffect(() => {
     if (!teacherCtxMenu) return;
@@ -701,31 +888,16 @@ export function TeachersManager({ teachers, setTeachers, schools, notify, resetK
                   </div>
                 )}
 
-                {/* Teacher account status / create button */}
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.border}`, display: "flex", justifyContent: "flex-end" }} onClick={e => e.stopPropagation()}>
-                  {t.hasAccount ? (
-                    <span style={{ fontSize: 12, color: colors.success || "#3a9e6e", display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 500 }}>
-                      <CheckCircle size={13} /> Teacher account active
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => createTeacherAccount(t)}
-                      title={t.email ? "Create a login account for this staff member" : "Add an email address to this staff member first"}
-                      style={{
-                        display: "inline-flex", alignItems: "center", gap: 6,
-                        padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-                        border: `1px solid ${t.email ? colors.accent : colors.border}`,
-                        background: "none",
-                        color: t.email ? colors.accent : colors.textMuted,
-                        cursor: t.email ? "pointer" : "default",
-                        opacity: t.email ? 1 : 0.5,
-                      }}
-                    >
-                      <UserPlus size={13} />
-                      Create Teacher Account
-                    </button>
-                  )}
-                </div>
+                {/* Login & Access — live auth account state */}
+                <TeacherLoginPanel
+                  teacher={t}
+                  account={accountFor(t)}
+                  loading={accountsLoading}
+                  loadError={accountsError}
+                  readOnly={isOwnRow(t, accountFor(t))}
+                  colors={colors}
+                  onCreate={createTeacherAccount}
+                />
               </div>
             </Card>
           ))}
