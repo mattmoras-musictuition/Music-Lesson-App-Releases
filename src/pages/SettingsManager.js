@@ -10,6 +10,7 @@ import { GmailSettingsCard } from "./GmailSettingsCard";
 import { Card, PageTitle, NavButtons, Btn, Input, Checkbox, Tag, EmptyState, AddMemoryInput, PAGE_COLORS } from "../components/ui/SharedUI";
 import { setInstColorOverrides } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { pickEnrolment } from "../utils/enrolmentPreference";
 import { _addDays } from "../utils/invoiceTerms";
 import { fetchInstrumentAbbreviations, saveInstrumentAbbreviations, abbreviateInstrument } from "../utils/resourcesDB";
 import { supabase } from "../supabaseClient";
@@ -619,12 +620,19 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
     const keyOf = (isGroup, groupId, studentId, instrument) =>
       isGroup ? `group|${groupId}` : `${studentId}|${instrument}`;
 
+    // v2.34.0 — the key fallback used to take whichever row came LAST. Collect
+    // every row sharing a key and let pickEnrolment choose, so unstamped WTT
+    // activity is attributed to the enrolment that is actually current.
     const byId = new Map();
-    const byKey = new Map();
+    const candidatesByKey = new Map();
     for (const e of list) {
       byId.set(e.id, e);
-      byKey.set(keyOf(e.isGroup, e.groupId, e.studentId, e.instrument), e);
+      const k = keyOf(e.isGroup, e.groupId, e.studentId, e.instrument);
+      if (!candidatesByKey.has(k)) candidatesByKey.set(k, []);
+      candidatesByKey.get(k).push(e);
     }
+    const byKey = new Map();
+    for (const [k, candidates] of candidatesByKey) byKey.set(k, pickEnrolment(candidates));
 
     // Earliest week each enrolment shows any real activity, lesson or missed.
     const firstWeek = new Map();
@@ -643,6 +651,13 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
 
     const rows = [];
     for (const e of list) {
+      // v2.34.0 — an ended enrolment is history and is never worth reporting.
+      // Its start date cannot be corrected in any case: the student form
+      // renders the start-date editor only for ACTIVE enrolments, while ended
+      // ones sit read-only in the History subsection. Before this skip, an
+      // entry raised against an ended row stayed on the Data Health list
+      // permanently with no UI path to clear it.
+      if (e.endDate) continue;
       const first = firstWeek.get(e.id);
       if (!e.startDate || !first) continue;
       // More than one week early. _addDays is the repo's existing date helper —
