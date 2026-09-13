@@ -121,18 +121,26 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // catchup.enrolmentId failed to resolve, which silently removed the green
   // completed tick from a holiday cell while the catchup row sat intact in the
   // database. A catchup row carries no studentId, groupId or isGroup of its
-  // own, so the student identity really is unrecoverable without SOME enrolment
-  // — but a catchup carries TWO enrolment ids, and the second one is a free
-  // second chance: resolvesEnrolmentId points at the missed lesson this catchup
-  // was scheduled against, and it commonly survives when enrolmentId does not
-  // (and vice versa). Only when BOTH fail is the tick genuinely unplaceable.
+  // own, so student identity is unrecoverable without joining through some
+  // enrolment — hence the fallback to resolvesEnrolmentId below.
   //
-  // Note the lessonKey is duplicate-insensitive — every duplicate enrolment for
-  // one student+instrument yields the same `studentId|instrument` — so
-  // resolving to ANY row in a duplicate set produces the correct key. Matching
-  // on c.instrument alone is deliberately NOT attempted as a third fallback: it
-  // would land the tick on some other student's row, which is worse than
-  // leaving the cell blank.
+  // Be clear about how much that fallback buys, because it is less than it
+  // looks. Every write path sets both ids from a single variable, so the two
+  // are normally the same value and go stale together — a dead enrolmentId
+  // usually means a dead resolvesEnrolmentId. What it genuinely recovers is the
+  // narrow case where enrolment_id is null or empty in the database (fromRow
+  // coerces that to "", which matches nothing) while resolves_enrolment_id is
+  // set. A robustness improvement, not a general recovery path.
+  //
+  // It cannot put a tick on the wrong student: those two ids always name the
+  // same enrolment, so the fallback can only land where enrolmentId would have.
+  // Matching on c.instrument alone is deliberately NOT attempted as a third
+  // fallback — that could land the tick on someone else's row, which is worse
+  // than leaving the cell blank.
+  //
+  // The lessonKey is duplicate-insensitive — every duplicate enrolment for one
+  // student+instrument yields the same `studentId|instrument` — so resolving to
+  // ANY row in a duplicate set produces the correct key.
   const resolveCatchupEnrolment = useCallback((c) => (
     (enrolments || []).find(e => e.id === c.enrolmentId)
     || (c.resolvesEnrolmentId ? (enrolments || []).find(e => e.id === c.resolvesEnrolmentId) : null)
