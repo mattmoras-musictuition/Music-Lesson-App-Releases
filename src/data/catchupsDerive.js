@@ -244,17 +244,29 @@ export function isHiddenBehindBandCard(catchup, weekLessons) {
  * invoicing reads: doing so would silently re-open misses that have
  * genuinely been made up.
  *
+ * `presenceLessons` exists because the array being RENDERED is not always
+ * the array that says what EXISTS. The grid merges into a lane-filtered
+ * list while the catch-ups merged in are not lane-filtered, so with the
+ * band's lane deselected the band would be absent and its linked catch-up
+ * would draw as a stray card. Callers holding a filtered list pass the
+ * unfiltered week lessons here; it is used ONLY for the band-presence
+ * test, never merged or returned. Omitted, it defaults to `lessons`, so
+ * callers already passing an unfiltered list need no change.
+ *
  * @param {Array} lessons     Existing weekly lessons (period-grid shape).
  * @param {Catchup[]|null|undefined} catchups
  * @param {string|null|undefined} weekKey
+ * @param {Array|null|undefined} [presenceLessons]  Unfiltered week lessons
+ *        for the band-presence test. Defaults to `lessons`.
  * @returns {Array} `[...lessons, ...weekCatchups]`. lessons untouched
  *                  if catchups/weekKey falsy.
  */
-export function mergeCatchupsIntoLessons(lessons, catchups, weekKey) {
+export function mergeCatchupsIntoLessons(lessons, catchups, weekKey, presenceLessons) {
   const safeLessons = Array.isArray(lessons) ? lessons : [];
   if (!catchups || !weekKey) return safeLessons;
+  const presence = Array.isArray(presenceLessons) ? presenceLessons : safeLessons;
   const weekCatchups = catchups
-    .filter((c) => c.weekKey === weekKey && !isHiddenBehindBandCard(c, safeLessons))
+    .filter((c) => c.weekKey === weekKey && !isHiddenBehindBandCard(c, presence))
     .map((c) => ({ ...c, start: c.time, __isCatchup: true }));
   return [...safeLessons, ...weekCatchups];
 }

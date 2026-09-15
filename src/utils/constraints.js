@@ -10,6 +10,7 @@
 import { hasMissedEntry } from "./tallyDerive";
 import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
+import { suppressesSameDayClash } from "../data/bandMemberStates";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
 
 // Single source of truth for the unassigned-teacher warning string. Exported so
@@ -211,6 +212,15 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
     for (const mid of memberIds) {
+      // Band Session Attribution cluster 3a — a member attributed "catchup" or
+      // "free" is taking the band slot as an EXTRA, so their regular lesson
+      // standing on the same day is correct rather than a clash. Unattributed
+      // members keep the warning (it is the prompt to attribute them), and so
+      // do members attributed "regular", whose card should have been removed —
+      // a surviving one there is a real problem. Legacy bands are unaffected.
+      // Only this same-day warning is suppressed; the teacher-clash and
+      // interruption checks below still run for every member.
+      if (suppressesSameDayClash(lesson, mid)) continue;
       const memberLesson = lessonsToCheck.find(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession && l.studentId === mid);
       if (memberLesson) {
         const memberStudent = students.find(s => s.id === mid);

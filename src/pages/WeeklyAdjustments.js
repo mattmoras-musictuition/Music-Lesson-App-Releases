@@ -27,7 +27,7 @@ import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard } from "../data/catchupsDerive";
-import { hasMemberStates, buildMemberStates } from "../data/bandMemberStates";
+import { hasMemberStates, buildMemberStates, isExcludedByBands } from "../data/bandMemberStates";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1067,8 +1067,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // stable array. Uses gridCatchups (group-shaped) so group catch-ups render
   // and select like regular group lessons.
   const wLessons = useMemo(
-    () => mergeCatchupsIntoLessons(displayLessons, gridCatchups, weekKey),
-    [displayLessons, gridCatchups, weekKey]
+    // Band Session Attribution cluster 3a — displayLessons is lane-filtered but
+    // the catch-ups merged into it are not, so with the band's lane deselected
+    // the band card is absent while its linked catch-up would still draw. The
+    // question is whether the band EXISTS in the week, not whether it is drawn,
+    // so the unfiltered week lessons are passed as the presence array.
+    () => mergeCatchupsIntoLessons(displayLessons, gridCatchups, weekKey, weeklyData?.lessons || []),
+    [displayLessons, gridCatchups, weekKey, weeklyData]
   );
 
   // Perf (perf-wtt-memo, Commit 2): pre-group wLessons once into per-cell slices
@@ -1880,8 +1885,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const schoolMasterBreaks2 = (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
     // Preserve existing band sessions; skip their members from generation
     const existingBandSessions = (weeklyData?.lessons || []).filter(l => l.isBandSession);
-    const bandStudentIds = new Set(existingBandSessions.flatMap(l => (l.members || []).map(m => m.studentId)));
-    const filteredMasterLessons = timetable.lessons.filter(l => !bandStudentIds.has(l.studentId));
+    // Band Session Attribution cluster 3a — attribution-aware exclusion.
+    // Legacy bands still exclude the whole student; new bands exclude only
+    // the cards attributed "regular", so a member attributed catchup/free —
+    // or not yet attributed at all — keeps their regular lesson. Shared with
+    // the other two regenerate paths via isExcludedByBands so they cannot
+    // drift. Today no entry is regular, so new-band members' cards generate,
+    // which is what placement already does.
+    const filteredMasterLessons = timetable.lessons.filter(l => !isExcludedByBands(l, existingBandSessions, enrolmentResolver));
     const result = generateWeeklyTimetable(
       filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage, enrolments
     );
@@ -1947,8 +1958,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const schoolBreaks = (masterBreaks || []).filter(b => b.schoolId === school.id);
       const sk = weekDates[0].date + "|" + school.id;
       const existingBandSessionsAll = ((weeklyTimetables[sk] || {}).lessons || []).filter(l => l.isBandSession);
-      const bandStudentIdsAll = new Set(existingBandSessionsAll.flatMap(l => (l.members || []).map(m => m.studentId)));
-      const filteredAll = timetable.lessons.filter(l => !bandStudentIdsAll.has(l.studentId));
+      const filteredAll = timetable.lessons.filter(l => !isExcludedByBands(l, existingBandSessionsAll, enrolmentResolver));
       const result = generateWeeklyTimetable(
         filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage, enrolments
       );
@@ -2146,8 +2156,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Generate the full week to get correct results for the target day
     const schoolMasterBreaks3 = (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
     const existingBandSessionsDay = (weeklyData?.lessons || []).filter(l => l.isBandSession);
-    const bandStudentIdsDay = new Set(existingBandSessionsDay.flatMap(l => (l.members || []).map(m => m.studentId)));
-    const filteredMasterDay = timetable.lessons.filter(l => !bandStudentIdsDay.has(l.studentId));
+    const filteredMasterDay = timetable.lessons.filter(l => !isExcludedByBands(l, existingBandSessionsDay, enrolmentResolver));
     const result = generateWeeklyTimetable(
       filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage, enrolments
     );

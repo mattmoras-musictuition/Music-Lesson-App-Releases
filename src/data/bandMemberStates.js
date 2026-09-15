@@ -37,6 +37,7 @@
  * Band Session Attribution phase 1 cluster 2 — see spec §4.1.
  */
 
+import { DAYS } from "../constants";
 import { pickEnrolment } from "../utils/enrolmentPreference";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 
@@ -159,14 +160,24 @@ export function buildMemberStates(members, enrolments, weekKey) {
 
     let added = 0;
     for (const [inst, candidates] of byInstrument) {
-      const enrolment = pickEnrolment(candidates);
+      // FILTER THEN PICK, not the other way round. pickEnrolment prefers a
+      // live row over an ended one and then the LATEST startDate, so picking
+      // first can hand back a row that has not started yet in this week and
+      // drop a member who is perfectly active on an older row sitting one
+      // index away. Narrowing to the week's active rows first means the
+      // preference rule only ever chooses between rows that are genuinely
+      // available, which is what it is for.
+      //
+      // Week activity uses the shared predicate rather than a re-derived date
+      // test, so this agrees with the tally by construction. The probe is a
+      // synthetic non-band card: isCardInactiveForWeek exempts band sessions
+      // outright, and the resolver's enrolmentId fast path makes the lookup
+      // unambiguous.
+      const active = candidates.filter(
+        (e) => !isCardInactiveForWeek({ studentId, instrument: inst, enrolmentId: e.id }, resolver, weekKey)
+      );
+      const enrolment = pickEnrolment(active);
       if (!enrolment || seenEnrolmentIds.has(enrolment.id)) continue;
-      // Week activity via the shared predicate rather than a re-derived
-      // date test, so this agrees with the tally by construction. The
-      // probe is a synthetic non-band card: isCardInactiveForWeek exempts
-      // band sessions outright, and the enrolmentId fast path in the
-      // resolver makes the lookup unambiguous.
-      if (isCardInactiveForWeek({ studentId, instrument: inst, enrolmentId: enrolment.id }, resolver, weekKey)) continue;
       seenEnrolmentIds.add(enrolment.id);
       out.push({
         enrolmentId: enrolment.id,
@@ -192,4 +203,370 @@ export function buildMemberStates(members, enrolments, weekKey) {
   }
 
   return out;
+}
+
+// ── Attribution helpers (cluster 3a) ────────────────────────────────
+//
+// ONE CONSUMPTION PER STUDENT. The attribution window shows one row per
+// member student, but the data stays per enrolment, because billing and
+// the tally are per enrolment. The rule that reconciles the two: at most
+// ONE of a student's entries may carry a non-null consumption, and a
+// student counts as attributed when one of them does. Every helper below
+// upholds that.
+
+/**
+ * True if `lesson` is a card that can be attributed to a member entry —
+ * an ordinary solo lesson. Band sessions carry no top-level enrolment,
+ * merged catch-ups are a render artefact rather than a scheduled card,
+ * and group cards belong to a group enrolment which buildMemberStates
+ * excludes by design.
+ *
+ * @param {Object|null|undefined} lesson
+ * @returns {boolean}
+ */
+function isAttributableCard(lesson) {
+  return !!(lesson && !lesson.isBandSession && !lesson.__isCatchup && !lesson.isGroup);
+}
+
+/**
+ * True if `lesson` is the card belonging to `entry`'s enrolment.
+ *
+ * enrolmentId is the canonical link and is tried first. Cards predating
+ * enrolmentId stamping carry only studentId + instrument, so the
+ * fallback hands the card to the resolver and compares the enrolment it
+ * maps to — rather than string-matching the pair, which would ignore the
+ * duplicate-enrolment preference rule and could match a row that ended.
+ *
+ * @param {Object} lesson
+ * @param {MemberState} entry
+ * @param {Function|null} resolver  From makeEnrolmentResolver(enrolments).
+ * @returns {boolean}
+ */
+function cardMatchesEntry(lesson, entry, resolver) {
+  if (!lesson || !entry || !entry.enrolmentId) return false;
+  if (lesson.enrolmentId) return lesson.enrolmentId === entry.enrolmentId;
+  const resolved = resolver ? resolver(lesson) : null;
+  return !!resolved && resolved.id === entry.enrolmentId;
+}
+
+/**
+ * Collapse memberStates into one row per student, for the attribution
+ * window. Rows come back in memberStates order (first appearance of each
+ * studentId); a student's entries keep their relative order.
+ *
+ * `departed` marks a row whose ATTRIBUTED entry no longer appears in a
+ * fresh build — the student has left the band, or that enrolment ended,
+ * but the attribution is still standing and the owner should clear it
+ * deliberately rather than have it vanish. Departed status is computed
+ * from the ids passed in, never stored on the entry.
+ *
+ * @param {MemberState[]|null|undefined} memberStates
+ * @param {Array<string>|Set<string>|null} [departedEnrolmentIds]
+ *        From reconcileMemberStates.
+ * @returns {Array<{studentId: string, entries: MemberState[],
+ *   attributedEntry: MemberState|null, isAttributed: boolean,
+ *   hasMultipleInstruments: boolean, departed: boolean}>}
+ */
+export function studentRows(memberStates, departedEnrolmentIds) {
+  const departed = departedEnrolmentIds instanceof Set
+    ? departedEnrolmentIds
+    : new Set(departedEnrolmentIds || []);
+  const byStudent = new Map();
+  for (const entry of (memberStates || [])) {
+    if (!entry || !entry.studentId) continue;
+    if (!byStudent.has(entry.studentId)) byStudent.set(entry.studentId, []);
+    byStudent.get(entry.studentId).push(entry);
+  }
+  const rows = [];
+  for (const [studentId, entries] of byStudent) {
+    const attributedEntry = entries.find((e) => e.consumption != null) || null;
+    rows.push({
+      studentId,
+      entries,
+      attributedEntry,
+      isAttributed: !!attributedEntry,
+      hasMultipleInstruments: entries.length > 1,
+      departed: !!attributedEntry && departed.has(attributedEntry.enrolmentId),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Attribute ONE of a student's enrolments, returning a new array.
+ *
+ * The student's other entries are cleared — consumption, catchupId and
+ * consumedWeekKey — so the one-consumption-per-student rule holds by
+ * construction rather than by the caller remembering it. Passing
+ * `consumption` null clears the student entirely, including the target.
+ *
+ * Never mutates. Never touches another student's entries, and never
+ * touches fee, attended or writerTeacherId on any entry — those are
+ * owned by other paths and are not part of choosing a consumption.
+ *
+ * catchupId is deliberately NOT set here: the catchups row does not
+ * exist until the save path inserts it. The save path writes the id back.
+ *
+ * @param {MemberState[]|null|undefined} memberStates
+ * @param {string} studentId
+ * @param {string} enrolmentId  Which of that student's entries to attribute.
+ * @param {string|null} consumption  One of CONSUMPTION, or null to clear.
+ * @param {string|null} [consumedWeekKey]
+ * @returns {MemberState[]} A new array.
+ */
+export function applyStudentAttribution(memberStates, studentId, enrolmentId, consumption, consumedWeekKey) {
+  return (memberStates || []).map((entry) => {
+    if (!entry || entry.studentId !== studentId) return entry;
+    const isTarget = entry.enrolmentId === enrolmentId;
+    if (isTarget && consumption != null) {
+      return { ...entry, consumption, consumedWeekKey: consumedWeekKey != null ? consumedWeekKey : null };
+    }
+    // Every other entry of this student — and the target itself when
+    // clearing — goes back to unattributed.
+    if (entry.consumption == null && entry.catchupId == null && entry.consumedWeekKey == null) return entry;
+    return { ...entry, consumption: null, catchupId: null, consumedWeekKey: null };
+  });
+}
+
+/**
+ * Position of a day name in the school week, for ordering misses.
+ * Reuses the shared DAYS constant rather than defining another order.
+ * An unknown day (a weekend, or malformed data) sorts last so it can
+ * never masquerade as the oldest miss.
+ *
+ * @param {string} day
+ * @returns {number}
+ */
+function dayRank(day) {
+  const i = DAYS.indexOf(day);
+  return i === -1 ? DAYS.length : i;
+}
+
+/**
+ * Propose a default attribution for every student who has none yet.
+ *
+ * Per student:
+ *   • If any of that student's enrolments has an open miss, default to
+ *     "catchup" on the enrolment of the OLDEST open miss across all of
+ *     them — week, then day, then time — so the band slot settles the
+ *     longest-standing debt first.
+ *   • Otherwise default to "regular" on the first-enrolled instrument:
+ *     the entry whose enrolment has the earliest startDate, tie-broken
+ *     by memberStates order.
+ *
+ * Students who already have an attributed entry are skipped entirely —
+ * a default never overrides a decision the owner has made.
+ *
+ * Returns proposals only. Nothing is applied; the caller decides, and
+ * applies each through applyStudentAttribution.
+ *
+ * @param {MemberState[]|null|undefined} memberStates
+ * @param {{openMisses: Array, enrolments: Array}} ctx
+ *        openMisses are picker-shaped candidates carrying enrolmentId,
+ *        weekKey, day and start/time.
+ * @returns {Array<{studentId: string, enrolmentId: string,
+ *   consumption: string, settlesMiss: Object|null}>}
+ */
+export function defaultAttributions(memberStates, { openMisses, enrolments } = {}) {
+  const missList = openMisses || [];
+  const enrolmentList = enrolments || [];
+  const out = [];
+
+  for (const row of studentRows(memberStates)) {
+    if (row.isAttributed) continue;
+
+    const entryIds = new Set(row.entries.map((e) => e.enrolmentId));
+    const mine = missList.filter((m) => m && entryIds.has(m.enrolmentId));
+
+    if (mine.length > 0) {
+      let oldest = mine[0];
+      for (const m of mine) {
+        if (compareMisses(m, oldest) < 0) oldest = m;
+      }
+      out.push({
+        studentId: row.studentId,
+        enrolmentId: oldest.enrolmentId,
+        consumption: CONSUMPTION.catchup,
+        settlesMiss: oldest,
+      });
+      continue;
+    }
+
+    // No open miss — first-enrolled instrument. A missing startDate sorts
+    // last, so a row carrying a real date always wins; ties keep
+    // memberStates order because the scan only replaces on a strict win.
+    let best = null;
+    let bestStart = null;
+    for (const entry of row.entries) {
+      const en = enrolmentList.find((e) => e && e.id === entry.enrolmentId);
+      const start = (en && en.startDate) || "";
+      if (best === null) { best = entry; bestStart = start; continue; }
+      const bestMissing = bestStart === "";
+      const thisMissing = start === "";
+      if (bestMissing && !thisMissing) { best = entry; bestStart = start; continue; }
+      if (!bestMissing && !thisMissing && start < bestStart) { best = entry; bestStart = start; }
+    }
+    if (!best) continue;
+    out.push({
+      studentId: row.studentId,
+      enrolmentId: best.enrolmentId,
+      consumption: CONSUMPTION.regular,
+      settlesMiss: null,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Order two open misses oldest-first: week, then day, then time.
+ * Picker candidates carry `start` with `time` as the fallback.
+ *
+ * @param {Object} a
+ * @param {Object} b
+ * @returns {number}
+ */
+function compareMisses(a, b) {
+  const aw = a.weekKey || "";
+  const bw = b.weekKey || "";
+  if (aw !== bw) return aw < bw ? -1 : 1;
+  const ad = dayRank(a.day);
+  const bd = dayRank(b.day);
+  if (ad !== bd) return ad - bd;
+  const at = a.start || a.time || "";
+  const bt = b.start || b.time || "";
+  if (at !== bt) return at < bt ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Reconcile a stored memberStates array against a fresh build for the
+ * band's CURRENT members, for when the attribution window reopens.
+ *
+ *   • In fresh, not stored  → added, unattributed.
+ *   • Stored, unattributed, gone from fresh → dropped silently. Nothing
+ *     was decided about it, so nothing is lost.
+ *   • Stored, ATTRIBUTED, gone from fresh → KEPT and reported as
+ *     departed. A standing attribution may already have created a
+ *     catchups row or a fee, so it must not disappear on its own; the
+ *     owner clears it deliberately.
+ *
+ * Output order is stored order, with the new entries appended in fresh
+ * order, so the window does not reshuffle under the owner.
+ *
+ * This never creates the array. A legacy band has no memberStates and
+ * must never acquire one — callers gate on hasMemberStates first.
+ *
+ * @param {MemberState[]|null|undefined} stored
+ * @param {MemberState[]|null|undefined} fresh  From buildMemberStates.
+ * @returns {{memberStates: MemberState[], departedEnrolmentIds: string[]}}
+ */
+export function reconcileMemberStates(stored, fresh) {
+  const storedList = stored || [];
+  const freshList = fresh || [];
+  const freshIds = new Set(freshList.map((e) => e && e.enrolmentId));
+  const storedIds = new Set(storedList.map((e) => e && e.enrolmentId));
+
+  const memberStates = [];
+  const departedEnrolmentIds = [];
+  for (const entry of storedList) {
+    if (!entry) continue;
+    if (freshIds.has(entry.enrolmentId)) { memberStates.push(entry); continue; }
+    if (entry.consumption != null) {
+      memberStates.push(entry);
+      departedEnrolmentIds.push(entry.enrolmentId);
+    }
+    // else: unattributed and gone — dropped.
+  }
+  for (const entry of freshList) {
+    if (!entry || storedIds.has(entry.enrolmentId)) continue;
+    memberStates.push(entry);
+  }
+  return { memberStates, departedEnrolmentIds };
+}
+
+/**
+ * Every regular card in `weekLessons` belonging to this entry's
+ * enrolment. Normally none or one; more than one means a duplicate the
+ * caller should surface rather than silently pick from.
+ *
+ * @param {Array|null|undefined} weekLessons
+ * @param {MemberState} entry
+ * @param {Function|null} resolver  From makeEnrolmentResolver(enrolments).
+ * @returns {Array} Matching cards, in weekLessons order.
+ */
+export function findMemberCards(weekLessons, entry, resolver) {
+  return (weekLessons || []).filter(
+    (l) => isAttributableCard(l) && cardMatchesEntry(l, entry, resolver)
+  );
+}
+
+/**
+ * True if this master-timetable card must NOT be generated into a week,
+ * because a band session in that week already accounts for the student.
+ *
+ * The two band shapes answer differently, and both answers are the point:
+ *
+ *   • LEGACY band (no memberStates) — the whole student is excluded, as
+ *     it has been since v2.9.8. Placement removed their card, so
+ *     regeneration must not put it back.
+ *   • NEW band — only the cards matching an entry attributed "regular"
+ *     are excluded. Everything else generates, because a member
+ *     attributed catchup, free, forward or billed is NOT consuming their
+ *     regular lesson, and an unattributed member has not consumed
+ *     anything yet. This is what makes regeneration agree with
+ *     placement, which already displaces nothing for new bands.
+ *
+ * Shared by all three regenerate sites so they cannot drift apart.
+ *
+ * @param {Object} masterLesson  A master-timetable card.
+ * @param {Array|null|undefined} weekBands  The week's band sessions.
+ * @param {Function|null} resolver  From makeEnrolmentResolver(enrolments).
+ * @returns {boolean}
+ */
+export function isExcludedByBands(masterLesson, weekBands, resolver) {
+  if (!masterLesson) return false;
+  for (const band of (weekBands || [])) {
+    if (!band) continue;
+    if (!hasMemberStates(band)) {
+      // Flat per-student exclusion — identical to the Set membership test
+      // this replaced, including for a card carrying no studentId.
+      if ((band.members || []).some((m) => m && m.studentId === masterLesson.studentId)) return true;
+      continue;
+    }
+    if (!isAttributableCard(masterLesson)) continue;
+    const hit = (band.memberStates || []).some(
+      (e) => e && e.consumption === CONSUMPTION.regular && cardMatchesEntry(masterLesson, e, resolver)
+    );
+    if (hit) return true;
+  }
+  return false;
+}
+
+/**
+ * True if the band card's same-day "already has a lesson" warning should
+ * be suppressed for this member.
+ *
+ * It is suppressed only when the band is a NEW band AND the student is
+ * attributed "catchup" or "free" — both of which mean the band slot is
+ * deliberately EXTRA to their regular lesson, so the regular card
+ * standing alongside it is correct, not a clash.
+ *
+ * It is NOT suppressed for an unattributed student (owner decision — the
+ * warning is the prompt to attribute them), nor for one attributed
+ * "regular", whose card should have been removed: a surviving card there
+ * is a genuine problem and must keep shouting. Legacy bands are
+ * untouched.
+ *
+ * @param {Object} bandLesson
+ * @param {string} studentId
+ * @returns {boolean}
+ */
+export function suppressesSameDayClash(bandLesson, studentId) {
+  if (!hasMemberStates(bandLesson)) return false;
+  const entry = (bandLesson.memberStates || []).find(
+    (e) => e && e.studentId === studentId && e.consumption != null
+  );
+  if (!entry) return false;
+  return entry.consumption === CONSUMPTION.catchup || entry.consumption === CONSUMPTION.free;
 }
