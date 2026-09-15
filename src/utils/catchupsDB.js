@@ -56,6 +56,7 @@ function fromRow(row) {
     resolvesOriginalTime: row.resolves_original_time || null,
     madeUp:               row.made_up                || false,
     notes:                row.notes                  || null,
+    bandLessonId:         row.band_lesson_id         || null,
     createdAt:            row.created_at             || "",
     updatedAt:            row.updated_at             || "",
   };
@@ -85,6 +86,7 @@ function toRow(catchup) {
   if (catchup.resolvesOriginalTime !== undefined) out.resolves_original_time = catchup.resolvesOriginalTime;
   if (catchup.madeUp               !== undefined) out.made_up                = catchup.madeUp;
   if (catchup.notes                !== undefined) out.notes                  = catchup.notes;
+  if (catchup.bandLessonId         !== undefined) out.band_lesson_id         = catchup.bandLessonId;
   return out;
 }
 
@@ -156,6 +158,17 @@ export async function loadCatchupsFromSupabase() {
  *                                 when the slot is marked
  *                                 complete in the UI.
  * @property {string|null} notes   Optional free-text note.
+ * @property {string|null} bandLessonId  Id of the band session
+ *                                 lesson this catchup is attributed
+ *                                 to, when the make-up is being
+ *                                 delivered inside a band session.
+ *                                 null ⇒ a standalone catch-up that
+ *                                 draws its own card. Non-null rows
+ *                                 are real catch-ups in every
+ *                                 respect — they close the miss and
+ *                                 bank in the tally — but the WTT
+ *                                 render skips them because the band
+ *                                 card already occupies the slot.
  * @property {string} createdAt    ISO timestamp; server default
  *                                 now().
  * @property {string} updatedAt    ISO timestamp; app-managed on
@@ -213,6 +226,7 @@ export async function insertCatchup({ userId, id, ...catchupFields }) {
       resolvesOriginalTime: row.resolves_original_time ?? null,
       madeUp: row.made_up ?? false,
       notes: row.notes ?? null,
+      bandLessonId: row.band_lesson_id ?? null,
       createdAt: now,
       updatedAt: now,
     };

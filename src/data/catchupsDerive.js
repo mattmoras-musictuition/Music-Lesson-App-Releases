@@ -201,6 +201,16 @@ export function getCatchupsForGridCell(catchups, weekKey, day, time) {
  * see the catchup at the correct grid cell. The original `time` field
  * is preserved — both keys carry the same value.
  *
+ * Band-linked exclusion: a catchup carrying a truthy `bandLessonId` is
+ * being delivered inside a band session, and the band card is already
+ * drawn in that cell. Merging it too would draw a second card over the
+ * same slot, so it is excluded HERE, at the render merge, and nowhere
+ * else. The row remains a fully real catch-up everywhere that matters —
+ * it still closes its missed lesson, still banks in the tally, still
+ * reaches invoicing. Do NOT copy this filter into buildBankingIndex,
+ * tallyDerive, the completion predicates, or the invoicing reads: doing
+ * so would silently re-open misses that have genuinely been made up.
+ *
  * @param {Array} lessons     Existing weekly lessons (period-grid shape).
  * @param {Catchup[]|null|undefined} catchups
  * @param {string|null|undefined} weekKey
@@ -211,7 +221,7 @@ export function mergeCatchupsIntoLessons(lessons, catchups, weekKey) {
   const safeLessons = Array.isArray(lessons) ? lessons : [];
   if (!catchups || !weekKey) return safeLessons;
   const weekCatchups = catchups
-    .filter((c) => c.weekKey === weekKey)
+    .filter((c) => c.weekKey === weekKey && !c.bandLessonId)
     .map((c) => ({ ...c, start: c.time, __isCatchup: true }));
   return [...safeLessons, ...weekCatchups];
 }
