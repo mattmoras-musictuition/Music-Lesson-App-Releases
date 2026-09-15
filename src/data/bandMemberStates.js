@@ -728,3 +728,114 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
 
   return { inserts, deletes, regularOn, regularOff, memberStates, changed };
 }
+
+// ── Cluster 3b patch 1 ──────────────────────────────────────────────
+
+/**
+ * Which of a student's same-day cards the band card should warn about,
+ * or null for no warning.
+ *
+ * The same-day warning exists to say "this member is already booked that
+ * day". Whether that is a problem depends entirely on how the member is
+ * attributed:
+ *
+ *   • LEGACY band, or a student nobody has attributed → the first
+ *     same-day card, exactly as before. Unchanged behaviour.
+ *   • attributed CATCHUP or FREE → null. The band slot is deliberately
+ *     EXTRA to their regular lesson, so a regular card that day is
+ *     correct rather than a clash.
+ *   • attributed REGULAR → only a card belonging to the REGULAR
+ *     enrolment warrants a warning, because that card should have been
+ *     moved into the ledger and a surviving one is a real problem. A
+ *     card for a DIFFERENT instrument is not: a student attributed
+ *     regular on guitar is expected to still have their piano lesson
+ *     that day. So every same-day card is considered, not just the
+ *     first, and only a guitar one warns.
+ *
+ * Card matching mirrors findMemberCards: enrolmentId when the card
+ * carries one, instrument otherwise (cards predating enrolmentId
+ * stamping). No resolver is threaded here — constraints.js has none, and
+ * an instrument comparison within a single student is unambiguous.
+ *
+ * @param {Object|null} bandLesson
+ * @param {string} studentId
+ * @param {Array|null|undefined} sameDayCards  That student's cards on the
+ *        day in question, in the order the caller found them.
+ * @returns {Object|null} The card to warn about, or null.
+ */
+export function sameDayClashCard(bandLesson, studentId, sameDayCards) {
+  const cards = sameDayCards || [];
+  const first = cards[0] || null;
+  if (!hasMemberStates(bandLesson)) return first;
+
+  const entry = (bandLesson.memberStates || []).find(
+    (e) => e && e.studentId === studentId && e.consumption != null
+  );
+  if (!entry) return first;                                  // unattributed
+  if (entry.consumption !== CONSUMPTION.regular) return null; // catchup / free
+
+  return cards.find((c) => c && (
+    c.enrolmentId ? c.enrolmentId === entry.enrolmentId : c.instrument === entry.instrument
+  )) || null;
+}
+
+/**
+ * Apply a new band's "regular" attributions to a week's lessons: every
+ * regular-attributed entry's card(s) leave the grid and join the ledger.
+ *
+ * This is displacement, but driven by attribution rather than by the old
+ * guitar-preference heuristic — it is what the attribution window's save
+ * does, and what re-placing a band out of staging must redo, since the
+ * ledger is deliberately emptied while a band is parked.
+ *
+ * Pure: returns new arrays and never mutates its inputs. Entries that are
+ * not "regular", and entries whose card is not in the week, contribute
+ * nothing.
+ *
+ * @param {Array} lessons            The week's lessons.
+ * @param {MemberState[]} memberStates
+ * @param {Array} ledger             Existing removedLessons.
+ * @param {Function|null} resolver   From makeEnrolmentResolver(enrolments).
+ * @returns {{lessons: Array, removedLessons: Array}}
+ */
+export function applyRegularDisplacement(lessons, memberStates, ledger, resolver) {
+  let nextLessons = lessons || [];
+  let nextLedger = ledger || [];
+  for (const entry of (memberStates || [])) {
+    if (!entry || entry.consumption !== CONSUMPTION.regular) continue;
+    const cards = findMemberCards(nextLessons, entry, resolver);
+    if (cards.length === 0) continue;
+    const ids = new Set(cards.map((c) => c.id));
+    nextLessons = nextLessons.filter((l) => !ids.has(l.id));
+    nextLedger = [...nextLedger, ...cards];
+  }
+  return { lessons: nextLessons, removedLessons: nextLedger };
+}
+
+/**
+ * Put a band's ledger cards back on the grid, for a band leaving the grid
+ * with its attributions intact (grid → staging).
+ *
+ * A card whose slot is now occupied is NOT restored — the student stays
+ * missing and the unscheduled banner picks them up. That is the same
+ * precedent "Remove band session" already sets, deliberately reused so
+ * the two paths cannot drift.
+ *
+ * The ledger is emptied either way: while a band is parked in staging it
+ * displaces nothing, so holding cards it is not displacing would be a
+ * lie, and re-placing it re-derives the ledger from memberStates via
+ * applyRegularDisplacement.
+ *
+ * @param {Array} lessons        The week's lessons.
+ * @param {Array} ledger         The band's removedLessons.
+ * @returns {Array} lessons with the restorable cards added back.
+ */
+export function restoreLedgerCards(lessons, ledger) {
+  let out = lessons || [];
+  for (const rl of (ledger || [])) {
+    if (!rl) continue;
+    const slotOccupied = out.some((l) => l.day === rl.day && l.start === rl.start);
+    if (!slotOccupied) out = [...out, rl];
+  }
+  return out;
+}

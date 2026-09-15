@@ -11,6 +11,7 @@ import {
   buildMemberStates, applyStudentAttribution, defaultAttributions,
   reconcileMemberStates, findMemberCards, isExcludedByBands, studentRows,
   selectableMissesForStudent, planAttributionSave,
+  sameDayClashCard, applyRegularDisplacement, restoreLedgerCards,
 } from "./bandMemberStates";
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 
@@ -193,6 +194,54 @@ export function runSmokeTests(logErrorFn) {
     [pl.deletes.map(d => d.id), pl.memberStates[0].consumption], [["cu1"], null]);
 
   assert("no-op save reports unchanged", planOf(base(null), base(null)).changed, false);
+
+  // ── Band attribution: same-day warning + staging round trip (patch 1) ──
+  const gtr = { id: "C_G", enrolmentId: "e_amy_gtr_old", studentId: "amy", instrument: "Guitar", day: "Monday", start: "09:00" };
+  const pno = { id: "C_P", enrolmentId: "e_amy_pno", studentId: "amy", instrument: "Piano", day: "Monday", start: "10:00" };
+  const gtrUnstamped = { id: "C_GU", studentId: "amy", instrument: "Guitar", day: "Monday", start: "09:00" };
+  const msRegularGuitar = [{ enrolmentId: "e_amy_gtr_old", studentId: "amy", instrument: "Guitar", consumption: "regular", catchupId: null, consumedWeekKey: null, fee: null, attended: null, writerTeacherId: null }];
+  const bandLegacy = { id: "B0", isBandSession: true, members: [{ studentId: "amy" }] };
+  const bandUnattr = { id: "B1", isBandSession: true, members: [{ studentId: "amy" }], memberStates: built };
+  const bandRegGtr = { id: "B2", isBandSession: true, members: [{ studentId: "amy" }], memberStates: msRegularGuitar };
+  const bandCatchup = { id: "B3", isBandSession: true, members: [{ studentId: "amy" }], memberStates: [{ ...msRegularGuitar[0], consumption: "catchup" }] };
+
+  assert("sameDayClashCard: legacy band returns first same-day card",
+    sameDayClashCard(bandLegacy, "amy", [pno, gtr])?.id, "C_P");
+  assert("sameDayClashCard: unattributed returns first same-day card",
+    sameDayClashCard(bandUnattr, "amy", [pno, gtr])?.id, "C_P");
+  assert("sameDayClashCard: regular on guitar, only a piano card → null",
+    sameDayClashCard(bandRegGtr, "amy", [pno]), null);
+  assert("sameDayClashCard: regular on guitar, stamped guitar card survives → that card",
+    sameDayClashCard(bandRegGtr, "amy", [pno, gtr])?.id, "C_G");
+  assert("sameDayClashCard: regular on guitar, unstamped guitar card matched by instrument",
+    sameDayClashCard(bandRegGtr, "amy", [pno, gtrUnstamped])?.id, "C_GU");
+  assert("sameDayClashCard: catchup → null",
+    sameDayClashCard(bandCatchup, "amy", [pno, gtr]), null);
+  assert("sameDayClashCard: no same-day cards → null",
+    sameDayClashCard(bandRegGtr, "amy", []), null);
+
+  // Re-displacement when a staged band is placed back on the grid.
+  const bobCard = { id: "C_B", enrolmentId: "e_bob_drm", studentId: "bob", instrument: "Drums", day: "Monday", start: "11:00" };
+  const twoRegular = [
+    { ...msRegularGuitar[0] },
+    { enrolmentId: "e_bob_drm", studentId: "bob", instrument: "Drums", consumption: "regular", catchupId: null, consumedWeekKey: null, fee: null, attended: null, writerTeacherId: null },
+  ];
+  const week = [gtr, pno, bobCard];
+  let disp = applyRegularDisplacement(week, twoRegular, [], resolver);
+  assert("applyRegularDisplacement: two regular entries take both cards",
+    [disp.lessons.map(l => l.id), disp.removedLessons.map(l => l.id)], [["C_P"], ["C_G", "C_B"]]);
+  disp = applyRegularDisplacement([pno], twoRegular, [], resolver);
+  assert("applyRegularDisplacement: regular entry with no matching card contributes nothing",
+    [disp.lessons.map(l => l.id), disp.removedLessons.length], [["C_P"], 0]);
+  disp = applyRegularDisplacement(week, [{ ...msRegularGuitar[0], consumption: "catchup" }, { ...msRegularGuitar[0], enrolmentId: "e_amy_pno", instrument: "Piano", consumption: "free" }], [], resolver);
+  assert("applyRegularDisplacement: non-regular entries are ignored",
+    [disp.lessons.length, disp.removedLessons.length], [3, 0]);
+
+  // Ledger restore on the way into staging — occupied slots are skipped.
+  assert("restoreLedgerCards: free slot restores",
+    restoreLedgerCards([pno], [gtr]).map(l => l.id), ["C_P", "C_G"]);
+  assert("restoreLedgerCards: occupied slot is skipped",
+    restoreLedgerCards([{ id: "OTHER", day: "Monday", start: "09:00" }], [gtr]).map(l => l.id), ["OTHER"]);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

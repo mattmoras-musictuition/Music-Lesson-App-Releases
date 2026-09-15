@@ -29,7 +29,7 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
-  planAttributionSave, CONSUMPTION } from "../data/bandMemberStates";
+  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -1557,6 +1557,53 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
   }, [bandAttrModal, catchups, openMissesFlat, students]);
 
+  // A band's linked catch-ups follow it to a new slot. Without this the rows
+  // keep the old day/time, band and catch-ups silently separate, and the
+  // tightened hide test starts rendering them as loose cards at the old cell.
+  //
+  // Shared by BOTH paths that move a band: the grid drag, and placing one out
+  // of staging — the second of which was missed in 3b, so a band parked and
+  // re-dropped elsewhere left its rows behind. weekKey never changes: the move
+  // and the staging area are both scoped to a single weeklyTimetables entry.
+  // Fire-and-report, matching handleCatchupRelocate.
+  const syncBandLinkedCatchups = (band, day, time) => {
+    if (!hasMemberStates(band)) return;
+    const linkedIds = (band.memberStates || []).map(e => e && e.catchupId).filter(Boolean);
+    for (const cid of linkedIds) {
+      const current = (catchups || []).find(c => c.id === cid);
+      if (!current || (current.day === day && current.time === time)) continue;
+      updateCatchup({ id: cid, currentRow: current, day, time })
+        .then(updated => setCatchups(prev => prev.map(c => c.id === cid ? updated : c)))
+        .catch(err => {
+          logError && logError("Failed to move linked catchup", err?.message || String(err));
+          console.error("[band move] linked catchup update failed:", err);
+          if (notify) notify("A linked catch-up could not be moved — it will show at the old slot", "warning");
+        });
+    }
+  };
+
+  // Delete a band's linked catch-up rows, removing them from catchups state
+  // SYNCHRONOUSLY so no frame can render them as loose cards: the moment the
+  // band stops claiming them (or disappears), the tightened hide test would
+  // otherwise draw each one until its delete resolved. On a genuine failure the
+  // row is put back — by id, so a concurrent reload cannot duplicate it — and
+  // then it renders visibly, which is the correct outcome for a row that really
+  // is still there.
+  const deleteBandLinkedCatchups = (rows) => {
+    const list = (rows || []).filter(Boolean);
+    if (list.length === 0) return;
+    const ids = new Set(list.map(r => r.id));
+    setCatchups(prev => prev.filter(c => !ids.has(c.id)));
+    for (const row of list) {
+      deleteCatchup({ id: row.id }).catch(err => {
+        logError && logError("Failed to remove linked catchup", err?.message || String(err));
+        console.error("[band attribution] delete failed:", err);
+        setCatchups(prev => prev.some(c => c.id === row.id) ? prev : [...prev, row]);
+        if (notify) notify("A linked catch-up could not be removed — it will show as a card", "warning");
+      });
+    }
+  };
+
   // Save. Order is fixed and deliberate — see planAttributionSave.
   //   (1) every insert is awaited first; if any fails, the ones that landed in
   //       THIS save are rolled back and nothing else is touched;
@@ -1669,20 +1716,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         : l);
       return { ...prev, [storageKey]: { ...d, lessons } };
     });
-    if (insertedRows.length > 0) setCatchups(prev => [...prev, ...insertedRows.map(r => r.row)]);
+    // Rows entering and leaving catchups state happen in the SAME block as the
+    // band change above. The departing rows are dropped here rather than after
+    // their deletes resolve: memberStates has just stopped claiming them, so
+    // leaving them in state would let the tightened hide test draw each one as
+    // a card for a frame or two before its delete landed.
+    setCatchups(prev => {
+      const goneIds = new Set(plan.deletes.map(r => r.id));
+      const kept = goneIds.size > 0 ? prev.filter(c => !goneIds.has(c.id)) : prev;
+      return insertedRows.length > 0 ? [...kept, ...insertedRows.map(r => r.row)] : kept;
+    });
     setBandAttrModal(null);
     if (notify) notify("Band attribution saved");
 
-    // (3) deletes — fire-and-report.
+    // (3) the deletes themselves — fire-and-report. State already reflects
+    // them; a failure puts the row back so it renders visibly.
     for (const row of plan.deletes) {
-      try {
-        await deleteCatchup({ id: row.id });
-        setCatchups(prev => prev.filter(c => c.id !== row.id));
-      } catch (err) {
+      deleteCatchup({ id: row.id }).catch(err => {
         logError && logError("Failed to remove linked catchup", err?.message || String(err));
         console.error("[band attribution] delete failed:", err);
+        setCatchups(prev => prev.some(c => c.id === row.id) ? prev : [...prev, row]);
         if (notify) notify("A linked catch-up could not be removed — it will show as a card", "warning");
-      }
+      });
     }
   };
 
@@ -2701,26 +2756,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         }
       };
     });
-    // Band Session Attribution cluster 3b — a moved band takes its linked
-    // catch-ups with it. Without this the rows keep the old day/time, the band
-    // and its catch-ups silently separate, and the tightened hide test starts
-    // rendering them as loose cards at the old cell. Fire-and-report, matching
-    // handleCatchupRelocate; weekKey never changes because both the move and
-    // the staging area are scoped to one weeklyTimetables entry.
-    if (hasMemberStates(lesson)) {
-      const linkedIds = (lesson.memberStates || []).map(e => e && e.catchupId).filter(Boolean);
-      for (const cid of linkedIds) {
-        const current = (catchups || []).find(c => c.id === cid);
-        if (!current || (current.day === newDay && current.time === slot.start)) continue;
-        updateCatchup({ id: cid, currentRow: current, day: newDay, time: slot.start })
-          .then(updated => setCatchups(prev => prev.map(c => c.id === cid ? updated : c)))
-          .catch(err => {
-            logError && logError("Failed to move linked catchup", err?.message || String(err));
-            console.error("[band move] linked catchup update failed:", err);
-            if (notify) notify("A linked catch-up could not be moved — it will show at the old slot", "warning");
-          });
-      }
-    }
+    syncBandLinkedCatchups(lesson, newDay, slot.start);
     if (lesson) {
       // Simulate the weekly lesson list after the move for stale-warning re-evaluation
       const currentEntry = weeklyTimetables[`${weekKey}|${selectedSchool}`];
@@ -2857,6 +2893,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         removedLessons: bandRemovedLessons,
       };
       lessons = [...lessons, bandLesson];
+      // Patch 1 — re-apply the band's OWN attributions. A new band's ledger is
+      // emptied while it sits in staging, so placing it back has to redo the
+      // displacement its memberStates already describe: every "regular" member's
+      // card leaves the grid and rejoins the ledger. Driven by attribution, not
+      // by the legacy guitar-preference heuristic, and done here so it lands in
+      // the SAME state update that places the band — no frame shows the band
+      // placed with its members' cards still out.
+      if (hasMemberStates(bandLesson)) {
+        const displaced = applyRegularDisplacement(lessons, bandLesson.memberStates, [], enrolmentResolver);
+        lessons = displaced.lessons.map(l => l.id === bandLesson.id
+          ? { ...l, removedLessons: displaced.removedLessons }
+          : l);
+      }
       setWeeklyTimetables(prev => ({
         ...prev,
         [storageKey]: { ...existingData, lessons, catchupStaged: (existingData.catchupStaged || []).filter(c => c.id !== stagedId) }
@@ -2866,6 +2915,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         setConstraintWarnings(prev => ({ ...prev, [bandLesson.id]: bWarnings }));
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
       }
+      // Patch 1 / Fix 2 — the band has just landed at a possibly different slot
+      // from where it was staged, so its linked rows follow it, exactly as on a
+      // grid drag. Same helper, so the two paths cannot drift.
+      syncBandLinkedCatchups(bandLesson, newDay, slot.start);
       notify(`Band session placed: ${band.name} — ${newDay} ${slot.start}`);
       maybeAutoOpenBandAttribution(bandLesson);
       return;
@@ -4564,15 +4617,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // visibly rather than one silently closing a miss.
                   const removedBand = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
                   if (hasMemberStates(removedBand)) {
-                    for (const cid of (removedBand.memberStates || []).map(e => e && e.catchupId).filter(Boolean)) {
-                      deleteCatchup({ id: cid })
-                        .then(() => setCatchups(prev => prev.filter(c => c.id !== cid)))
-                        .catch(err => {
-                          logError && logError("Failed to remove linked catchup", err?.message || String(err));
-                          console.error("[band remove] linked catchup delete failed:", err);
-                          if (notify) notify("A linked catch-up could not be removed — it will show as a card", "warning");
-                        });
-                    }
+                    const linkedIds = new Set((removedBand.memberStates || []).map(e => e && e.catchupId).filter(Boolean));
+                    deleteBandLinkedCatchups((catchups || []).filter(c => linkedIds.has(c.id)));
                   }
                   setWeeklyTimetables(prev => {
                     const d = prev[storageKey];
@@ -6318,7 +6364,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       // CARRY, never create — this hand-picks fields, so without the
                       // conditional spread a new band would silently lose memberStates
                       // on the way back to staging and be re-stamped as if fresh.
-                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, members: draggedLesson.members || [], ...(hasMemberStates(draggedLesson) ? { memberStates: draggedLesson.memberStates } : {}) };
+                      // Patch 1: removedLessons is deliberately NOT carried. A band
+                      // parked in staging displaces nothing, so its ledger cards go
+                      // back on the grid below and the staged object starts empty.
+                      // memberStates still says who is "regular", and re-placing the
+                      // band re-derives the ledger from it.
+                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, members: draggedLesson.members || [], ...(hasMemberStates(draggedLesson) ? { memberStates: draggedLesson.memberStates, removedLessons: [] } : {}) };
                     } else {
                       restoredCard = {
                         id: draggedLesson.id, studentId: draggedLesson.studentId, studentName: draggedLesson.studentName,
@@ -6329,11 +6380,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     setWeeklyTimetables(prev => {
                       const entry = prev[storageKey];
                       if (!entry) return prev;
+                      let lessons = entry.lessons.filter(l => l.id !== lid);
+                      // Patch 1 — a NEW band in staging displaces nothing, so every
+                      // ledger card comes back, skipping any whose slot is now taken
+                      // (same precedent as "Remove band session"). Without this the
+                      // regular-attributed member's card was lost for good on a
+                      // round trip while memberStates still read "regular". Legacy
+                      // bands keep their existing behaviour untouched.
+                      if (hasMemberStates(draggedLesson)) {
+                        lessons = restoreLedgerCards(lessons, draggedLesson.removedLessons);
+                      }
                       return {
                         ...prev,
                         [storageKey]: {
                           ...entry,
-                          lessons: entry.lessons.filter(l => l.id !== lid),
+                          lessons,
                           catchupStaged: [...(entry.catchupStaged || []), restoredCard],
                         }
                       };
@@ -6361,6 +6422,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         }}>
                         <span
                           onClick={e => { e.stopPropagation();
+                            // Patch 1 — discarding a staged NEW band is "Remove band
+                            // session" semantics: its linked catch-ups go too. The
+                            // ledger is already empty while staged, so there is
+                            // nothing to restore. Legacy bands and catch-up chips
+                            // are unaffected.
+                            if (hasMemberStates(c)) {
+                              const linkedIds = new Set((c.memberStates || []).map(e2 => e2 && e2.catchupId).filter(Boolean));
+                              deleteBandLinkedCatchups((catchups || []).filter(cu => linkedIds.has(cu.id)));
+                            }
                             setWeeklyTimetables(prev => {
                               const entry = prev[storageKey];
                               if (!entry) return prev;

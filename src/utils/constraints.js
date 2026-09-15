@@ -10,7 +10,7 @@
 import { hasMissedEntry } from "./tallyDerive";
 import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
-import { suppressesSameDayClash } from "../data/bandMemberStates";
+import { sameDayClashCard } from "../data/bandMemberStates";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
 
 // Single source of truth for the unassigned-teacher warning string. Exported so
@@ -212,16 +212,17 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
     const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
     for (const mid of memberIds) {
-      // Band Session Attribution cluster 3a — a member attributed "catchup" or
-      // "free" is taking the band slot as an EXTRA, so their regular lesson
-      // standing on the same day is correct rather than a clash. Unattributed
-      // members keep the warning (it is the prompt to attribute them), and so
-      // do members attributed "regular", whose card should have been removed —
-      // a surviving one there is a real problem. Legacy bands are unaffected.
-      // Only this same-day warning is suppressed; the teacher-clash and
-      // interruption checks below still run for every member.
-      if (suppressesSameDayClash(lesson, mid)) continue;
-      const memberLesson = lessonsToCheck.find(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession && l.studentId === mid);
+      // Band Session Attribution — which same-day card (if any) deserves the
+      // warning depends on how the member is attributed, so the choice lives
+      // in sameDayClashCard rather than here. Legacy bands and unattributed
+      // members still get the FIRST same-day card, exactly as before; catchup
+      // and free members get none; a member attributed "regular" gets one only
+      // if a card for THAT enrolment survived — their other instrument's
+      // lesson that day is expected, not a clash. Hence every same-day card is
+      // collected, not just the first. Only this warning is affected; the
+      // teacher-clash and interruption checks below still run for everyone.
+      const sameDayCards = lessonsToCheck.filter(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession && l.studentId === mid);
+      const memberLesson = sameDayClashCard(lesson, mid, sameDayCards);
       if (memberLesson) {
         const memberStudent = students.find(s => s.id === mid);
         warnings.push(`${memberStudent?.name || mid} already has a lesson on ${newDay} (${memberLesson.instrument})`);
