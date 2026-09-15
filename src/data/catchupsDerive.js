@@ -187,6 +187,37 @@ export function getCatchupsForGridCell(catchups, weekKey, day, time) {
 }
 
 /**
+ * True iff this catchup must NOT draw its own card, because the band
+ * session it is attributed to is already drawn in the same cell.
+ *
+ * RENDER-ONLY. Never call this from derive-side code. A band-linked
+ * catch-up is a completely real catch-up: it closes its missed lesson,
+ * it banks in the tally, it reaches invoicing. The ONLY thing it must
+ * not do is draw a second card on top of the band card. Calling this
+ * from banking, completion or invoicing would silently re-open misses
+ * that have genuinely been made up.
+ *
+ * The band must actually be PRESENT in the lessons array being rendered.
+ * An orphaned link — band deleted, moved to another week, or its id
+ * re-minted — deliberately falls back to a visible, ordinary catch-up
+ * card. Visible and obviously wrong beats hidden while still closing a
+ * miss. The same applies when the band card is filtered out of the
+ * array for another reason (a lane the viewer has deselected): if no
+ * band card is drawn, the catch-up is not a duplicate.
+ *
+ * @param {Catchup} catchup
+ * @param {Array|null|undefined} weekLessons  The lessons array actually
+ *        being rendered for that week.
+ * @returns {boolean}
+ */
+export function isHiddenBehindBandCard(catchup, weekLessons) {
+  if (!catchup || !catchup.bandLessonId) return false;
+  return (weekLessons || []).some(
+    (l) => l && l.isBandSession && l.id === catchup.bandLessonId
+  );
+}
+
+/**
  * Merge catchups into the lessons array for a single week's render.
  *
  * lessons pass through untouched. Catchups for `weekKey` are appended,
@@ -201,15 +232,17 @@ export function getCatchupsForGridCell(catchups, weekKey, day, time) {
  * see the catchup at the correct grid cell. The original `time` field
  * is preserved — both keys carry the same value.
  *
- * Band-linked exclusion: a catchup carrying a truthy `bandLessonId` is
- * being delivered inside a band session, and the band card is already
- * drawn in that cell. Merging it too would draw a second card over the
- * same slot, so it is excluded HERE, at the render merge, and nowhere
- * else. The row remains a fully real catch-up everywhere that matters —
- * it still closes its missed lesson, still banks in the tally, still
- * reaches invoicing. Do NOT copy this filter into buildBankingIndex,
- * tallyDerive, the completion predicates, or the invoicing reads: doing
- * so would silently re-open misses that have genuinely been made up.
+ * Band-linked exclusion: a catchup delivered inside a band session is
+ * excluded via isHiddenBehindBandCard, because the band card is already
+ * drawn in that cell. `lessons` — the array being merged into — is the
+ * presence test, so an orphaned bandLessonId still renders a card rather
+ * than vanishing. This exclusion lives HERE, at the render merge, and
+ * nowhere else. The row remains a fully real catch-up everywhere that
+ * matters — it still closes its missed lesson, still banks in the tally,
+ * still reaches invoicing. Do NOT copy this filter into
+ * buildBankingIndex, tallyDerive, the completion predicates, or the
+ * invoicing reads: doing so would silently re-open misses that have
+ * genuinely been made up.
  *
  * @param {Array} lessons     Existing weekly lessons (period-grid shape).
  * @param {Catchup[]|null|undefined} catchups
@@ -221,7 +254,7 @@ export function mergeCatchupsIntoLessons(lessons, catchups, weekKey) {
   const safeLessons = Array.isArray(lessons) ? lessons : [];
   if (!catchups || !weekKey) return safeLessons;
   const weekCatchups = catchups
-    .filter((c) => c.weekKey === weekKey && !c.bandLessonId)
+    .filter((c) => c.weekKey === weekKey && !isHiddenBehindBandCard(c, safeLessons))
     .map((c) => ({ ...c, start: c.time, __isCatchup: true }));
   return [...safeLessons, ...weekCatchups];
 }

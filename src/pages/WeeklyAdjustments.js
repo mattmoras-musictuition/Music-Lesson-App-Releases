@@ -26,7 +26,8 @@ import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLane
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
-import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons } from "../data/catchupsDerive";
+import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard } from "../data/catchupsDerive";
+import { hasMemberStates, buildMemberStates } from "../data/bandMemberStates";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1691,6 +1692,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const baseLessons = weeklyData?.lessons || [];
     for (const c of (enrichedCatchups || [])) {
       if (c.weekKey !== weekKey) continue;
+      // Band Session Attribution cluster 2 — a catch-up hidden behind its band
+      // card draws nothing, so warnings computed for it are unreachable, and
+      // checkConstraints would flag it as double-booked against the very band
+      // session it is being delivered inside.
+      if (isHiddenBehindBandCard(c, baseLessons)) continue;
       const slots = (schools || []).find(s => s.id === c.schoolId)?.slots || [];
       const slot = slots.find(sl => sl.start === c.time) || { start: c.time, end: c.time };
       const merged = { ...c, start: c.time, __isCatchup: true };
@@ -1708,7 +1714,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const existingData = weeklyTimetables[storageKey] || { lessons: [], missed: [] };
     let lessons = [...(existingData.lessons || [])];
     const bandRemovedLessons = [];
-    for (const member of (band.members || [])) {
+    // Band Session Attribution cluster 2 — new bands displace nothing.
+    // Each member is attributed per-enrolment instead, so their regular
+    // card stays on the grid and removedLessons stays empty. Legacy bands
+    // (no memberStates) are untouched and still run the loop below,
+    // guitar-preference heuristic and all. memberStates is built BEFORE
+    // the loop so the guard can read it.
+    const newMemberStates = buildMemberStates(band.members, enrolments, weekKey);
+    // false for every band this path creates — the displacement loop below is
+    // the legacy shape, kept intact so no existing band changes behaviour.
+    const displaceMembers = !Array.isArray(newMemberStates);
+    for (const member of (displaceMembers ? (band.members || []) : [])) {
       const student = students.find(s => s.id === member.studentId);
       if (!student) continue;
       const existingBandCount = lessons.filter(l => l.isBandSession && (l.members || []).some(m => m.studentId === member.studentId)).length;
@@ -1740,6 +1756,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       bucket_id: destLane.lane.id, teacherName: destLane.teacher?.name || "",
       day, start: time, end: time,
       members: band.members || [],
+      memberStates: newMemberStates,
       removedLessons: bandRemovedLessons,
     };
     lessons = [...lessons, bandLesson];
@@ -2468,9 +2485,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       if (!band) return;
       const existingData = weeklyTimetables[storageKey] || { lessons: [], missed: [] };
       let lessons = [...(existingData.lessons || [])];
-      // Remove individual lesson cards for members (same logic as handleAddBandSession)
+      // Remove individual lesson cards for members (same logic as handleAddBandSession).
+      // Band Session Attribution cluster 2 — skipped entirely for a NEW band.
+      // The discriminator is read off `staged`, which carried memberStates from
+      // the staging chip; `band` is the bands[] record and never has the field.
       const bandRemovedLessons = [];
-      for (const member of (band.members || [])) {
+      for (const member of (hasMemberStates(staged) ? [] : (band.members || []))) {
         const matchInst = lessons.find(l => !l.isBandSession && l.studentId === member.studentId && l.instrument === member.instrument && l.day === newDay);
         if (matchInst) { bandRemovedLessons.push(matchInst); lessons = lessons.filter(l => l.id !== matchInst.id); continue; }
         const matchAny = lessons.find(l => !l.isBandSession && l.studentId === member.studentId && l.day === newDay);
@@ -2491,6 +2511,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         day: newDay, start: slot.start, end: slot.end, slotId: slot.id,
         weekDate: dayDate?.date || "", fromStaged: true,
         members: (band.members || []).map(m => ({ id: m.id, studentId: m.studentId, instrument: m.instrument })),
+        // CARRY, never create: the staged chip is where a new band is born, so
+        // memberStates comes across only when it is already there. A legacy band
+        // that round-tripped through staging arrives without it and must stay
+        // without it.
+        ...(hasMemberStates(staged) ? { memberStates: staged.memberStates } : {}),
         removedLessons: bandRemovedLessons,
       };
       lessons = [...lessons, bandLesson];
@@ -3540,7 +3565,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         <button key={band.id} disabled={disabled} onClick={() => {
                           if (disabled) return;
                           // Spec 2 cluster 4c — staged entry: bucket_id deferred until drag-into-slot.
-                          const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, members: band.members || [] };
+                          // Band Session Attribution cluster 2 — the staging chip is
+                          // where a band session first comes into being, so this is
+                          // where memberStates is stamped. Every path downstream
+                          // (drop onto the grid, drag back to staging) only carries it.
+                          const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, members: band.members || [], memberStates: buildMemberStates(band.members, enrolments, weekKey) };
                           setWeeklyTimetables(prev => {
                             const entry = prev[storageKey] || { lessons: [], missed: [] };
                             return { ...prev, [storageKey]: { ...entry, catchupStaged: [...(entry.catchupStaged || []), stagedBand] } };
@@ -5902,7 +5931,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     if (draggedLesson.isBandSession) {
                       // Band de-allocation — staged band cards carry no teacher;
                       // the lane is resolved at drop time.
-                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, members: draggedLesson.members || [] };
+                      // CARRY, never create — this hand-picks fields, so without the
+                      // conditional spread a new band would silently lose memberStates
+                      // on the way back to staging and be re-stamped as if fresh.
+                      restoredCard = { id: draggedLesson.id, isBandSession: true, bandId: draggedLesson.bandId, bandName: draggedLesson.bandName, schoolId: draggedLesson.schoolId, members: draggedLesson.members || [], ...(hasMemberStates(draggedLesson) ? { memberStates: draggedLesson.memberStates } : {}) };
                     } else {
                       restoredCard = {
                         id: draggedLesson.id, studentId: draggedLesson.studentId, studentName: draggedLesson.studentName,
