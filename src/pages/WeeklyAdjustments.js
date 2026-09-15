@@ -26,8 +26,11 @@ import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLane
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
-import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard } from "../data/catchupsDerive";
-import { hasMemberStates, buildMemberStates, isExcludedByBands } from "../data/bandMemberStates";
+import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
+import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, applyStudentAttribution,
+  defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
+  planAttributionSave, CONSUMPTION } from "../data/bandMemberStates";
+import { BandAttributionModal } from "../components/BandAttributionModal";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -491,6 +494,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [selectedMissed, setSelectedMissed] = useState(new Set()); // Set of missed indices
   const [selectedDays, setSelectedDays] = useState(new Set()); // Set of day names selected via header click
   const [missedModal, setMissedModal] = useState(null); // unified single+bulk missed modal
+  // Band Session Attribution cluster 3b — the attribution window. Seeded ONCE
+  // on open (never per render) and discarded on cancel: { lessonId, stored,
+  // working, departedEnrolmentIds, missByEnrolment, saving }. `stored` is the
+  // pre-open array the save diffs against, so a cancelled window leaves nothing.
+  const [bandAttrModal, setBandAttrModal] = useState(null);
   const [rememberedReasons, setRememberedReasons] = useState(() => {
     try { return JSON.parse(localStorage.getItem("mt-missed-reasons") || "[]"); } catch { return []; }
   });
@@ -1059,6 +1067,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     })
   ), [enrichedCatchups, enrolments, groups, students]);
 
+  // Band Session Attribution cluster 3b — what band sessions EXIST in this
+  // week, as opposed to what is drawn. Two things separate the two: the grid's
+  // lane filter, and the staging area. A band waiting in staging is still the
+  // band its catch-ups are attributed to, so its linked rows stay hidden rather
+  // than springing out as loose cards the moment it is dragged off the grid.
+  // Staged entries only count when they are band sessions — a staged catch-up
+  // chip is not one.
+  const bandPresenceLessons = useMemo(() => {
+    const placed = weeklyData?.lessons || [];
+    const stagedBands = (weeklyData?.catchupStaged || []).filter(c => c && c.isBandSession);
+    return stagedBands.length > 0 ? [...placed, ...stagedBands] : placed;
+  }, [weeklyData]);
+
   // Perf (perf-wtt-memo, Commit 1): the merged catch-up-inclusive lesson pool
   // for the grid. Previously rebuilt inline inside the grid render IIFE on every
   // render — including every pointer event (dragOver / hover / contextMenu) —
@@ -1067,13 +1088,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // stable array. Uses gridCatchups (group-shaped) so group catch-ups render
   // and select like regular group lessons.
   const wLessons = useMemo(
-    // Band Session Attribution cluster 3a — displayLessons is lane-filtered but
-    // the catch-ups merged into it are not, so with the band's lane deselected
-    // the band card is absent while its linked catch-up would still draw. The
+    // Band Session Attribution — displayLessons is lane-filtered but the
+    // catch-ups merged into it are not, so with the band's lane deselected the
+    // band card is absent while its linked catch-up would still draw. The
     // question is whether the band EXISTS in the week, not whether it is drawn,
-    // so the unfiltered week lessons are passed as the presence array.
-    () => mergeCatchupsIntoLessons(displayLessons, gridCatchups, weekKey, weeklyData?.lessons || []),
-    [displayLessons, gridCatchups, weekKey, weeklyData]
+    // so bandPresenceLessons (unfiltered, plus staged bands) is passed instead.
+    () => mergeCatchupsIntoLessons(displayLessons, gridCatchups, weekKey, bandPresenceLessons),
+    [displayLessons, gridCatchups, weekKey, bandPresenceLessons]
   );
 
   // Perf (perf-wtt-memo, Commit 2): pre-group wLessons once into per-cell slices
@@ -1361,6 +1382,308 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       isCatchupAction: true,
       targetCatchup: catchup,
     });
+  };
+
+  // ── Band attribution window (cluster 3b) ────────────────────────
+  //
+  // Flat list of every open miss in the term, in the picker's own candidate
+  // shape (enrolmentId, weekKey, day, start, time). Derived from the picker's
+  // memo rather than a second query, so the window and the "Schedule catchup"
+  // menu can never disagree about what is still owed. The picker itself is
+  // untouched.
+  const openMissesFlat = useMemo(
+    () => unresolvedMissedGroups.flatMap(g => g.missedEntries || []),
+    [unresolvedMissedGroups]
+  );
+
+  // Stable key for a miss — its four resolves_* coordinates. Used to match a
+  // chosen miss back to a catch-up row and to cycle the "Settles" line.
+  const missKeyOf = (m) => m
+    ? `${m.enrolmentId}|${m.weekKey}|${m.day}|${m.start || m.time || ""}`
+    : "";
+
+  // Seed the window. Everything here runs ONCE, at open:
+  //   1. the band comes from the RAW week entry, not the weeklyData memo,
+  //      which re-maps lessons and would hand back a derived copy;
+  //   2. fresh memberStates are built from the LIVE band record so a member
+  //      added or removed since placement is picked up;
+  //   3. reconcile keeps standing attributions whose member has departed;
+  //   4. defaults fill in only the students nobody has decided about yet.
+  const openBandAttribution = (lessonId) => {
+    const entry = weeklyTimetables[storageKey];
+    const lesson = (entry?.lessons || []).find(l => l.id === lessonId);
+    if (!lesson || !hasMemberStates(lesson)) return;
+    seedBandAttribution(lesson);
+  };
+
+  const seedBandAttribution = (lesson) => {
+    if (!lesson || !hasMemberStates(lesson)) return;
+    const liveBand = (bands || []).find(b => b.id === lesson.bandId);
+    const fresh = buildMemberStates(liveBand?.members || lesson.members, enrolments, weekKey);
+    const { memberStates: reconciled, departedEnrolmentIds } = reconcileMemberStates(lesson.memberStates, fresh);
+
+    // Selectable misses include the one each existing linked row already
+    // settles — it is closed BECAUSE of this band, so it must stay choosable.
+    const linkedRows = (catchups || []).filter(c => c.bandLessonId === lesson.id);
+    const missByEnrolment = {};
+    for (const row of studentRows(reconciled, departedEnrolmentIds)) {
+      for (const m of selectableMissesForStudent(row.entries, openMissesFlat, linkedRows)) {
+        if (!missByEnrolment[m.enrolmentId]) missByEnrolment[m.enrolmentId] = m;
+      }
+    }
+    // Re-point each already-catchup entry at the miss its row actually settles.
+    for (const e of reconciled) {
+      if (e.consumption !== CONSUMPTION.catchup || !e.catchupId) continue;
+      const row = linkedRows.find(c => c.id === e.catchupId);
+      if (!row || !row.resolvesEnrolmentId) continue;
+      missByEnrolment[e.enrolmentId] = {
+        enrolmentId: row.resolvesEnrolmentId, weekKey: row.resolvesWeekKey,
+        day: row.resolvesOriginalDay, start: row.resolvesOriginalTime,
+        time: row.resolvesOriginalTime, studentId: e.studentId, instrument: e.instrument,
+      };
+    }
+
+    // Defaults for the undecided, applied through applyStudentAttribution so
+    // the one-consumption-per-student rule holds even here.
+    let working = reconciled;
+    for (const p of defaultAttributions(reconciled, { openMisses: openMissesFlat, enrolments })) {
+      working = applyStudentAttribution(working, p.studentId, p.enrolmentId, p.consumption,
+        p.settlesMiss ? p.settlesMiss.weekKey : (p.consumption === CONSUMPTION.regular ? weekKey : null));
+      if (p.settlesMiss) missByEnrolment[p.enrolmentId] = p.settlesMiss;
+    }
+
+    setBandAttrModal({
+      lessonId: lesson.id,
+      stored: lesson.memberStates,
+      working,
+      departedEnrolmentIds,
+      missByEnrolment,
+      saving: false,
+    });
+  };
+
+  // Auto-open on placement, for a band nobody has decided about yet. Takes the
+  // lesson OBJECT rather than an id, because the caller's setWeeklyTimetables
+  // has not committed when this runs. Past weeks are skipped — the window is an
+  // edit surface and honours the same lock as every other WTT edit.
+  const maybeAutoOpenBandAttribution = (lesson) => {
+    if (isLocked) return;
+    if (!lesson || !hasMemberStates(lesson)) return;
+    if ((lesson.memberStates || []).some(e => e && e.consumption != null)) return;
+    seedBandAttribution(lesson);
+  };
+
+  // Row-level edit. Each branch routes through applyStudentAttribution, which
+  // clears the student's other entries, so no combination of clicks can leave
+  // two consumptions on one student.
+  const handleBandAttrChange = (studentId, patch) => {
+    setBandAttrModal(prev => {
+      if (!prev) return prev;
+      const rows = studentRows(prev.working, prev.departedEnrolmentIds);
+      const row = rows.find(r => r.studentId === studentId);
+      if (!row) return prev;
+      const current = row.attributedEntry;
+      const linkedRows = (catchups || []).filter(c => c.bandLessonId === prev.lessonId);
+      const misses = selectableMissesForStudent(row.entries, openMissesFlat, linkedRows);
+      const nextMissBy = { ...prev.missByEnrolment };
+
+      // Cycle to the next selectable miss, moving "Counts against" with it.
+      if (patch.cycleMiss) {
+        if (misses.length < 2 || !current) return prev;
+        const curKey = missKeyOf(nextMissBy[current.enrolmentId]);
+        const idx = misses.findIndex(m => missKeyOf(m) === curKey);
+        const next = misses[(idx + 1) % misses.length];
+        nextMissBy[next.enrolmentId] = next;
+        return {
+          ...prev,
+          missByEnrolment: nextMissBy,
+          working: applyStudentAttribution(prev.working, studentId, next.enrolmentId, CONSUMPTION.catchup, next.weekKey),
+        };
+      }
+
+      const consumption = patch.consumption !== undefined
+        ? (patch.consumption || null)
+        : (current ? current.consumption : null);
+      let enrolmentId = patch.enrolmentId !== undefined
+        ? patch.enrolmentId
+        : (current ? current.enrolmentId : (row.entries[0] && row.entries[0].enrolmentId));
+
+      if (consumption === null) {
+        return { ...prev, working: applyStudentAttribution(prev.working, studentId, enrolmentId, null, null) };
+      }
+      if (consumption === CONSUMPTION.catchup) {
+        // Prefer a miss on the chosen enrolment; otherwise follow the miss.
+        let miss = misses.find(m => m.enrolmentId === enrolmentId) || nextMissBy[enrolmentId] || misses[0];
+        if (!miss) return prev;
+        enrolmentId = miss.enrolmentId;
+        nextMissBy[enrolmentId] = miss;
+        return {
+          ...prev,
+          missByEnrolment: nextMissBy,
+          working: applyStudentAttribution(prev.working, studentId, enrolmentId, CONSUMPTION.catchup, miss.weekKey),
+        };
+      }
+      return {
+        ...prev,
+        working: applyStudentAttribution(prev.working, studentId, enrolmentId, consumption,
+          consumption === CONSUMPTION.regular ? weekKey : null),
+      };
+    });
+  };
+
+  // Rows handed to the modal — fully derived here so the component stays
+  // presentational and never reaches for global state.
+  const bandAttrRows = useMemo(() => {
+    if (!bandAttrModal) return [];
+    const linkedRows = (catchups || []).filter(c => c.bandLessonId === bandAttrModal.lessonId);
+    return studentRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds).map(row => {
+      const misses = selectableMissesForStudent(row.entries, openMissesFlat, linkedRows);
+      const attributed = row.attributedEntry;
+      const chosenMiss = attributed ? bandAttrModal.missByEnrolment[attributed.enrolmentId] : null;
+      const st = students.find(s => s.id === row.studentId);
+      return {
+        studentId: row.studentId,
+        studentName: st?.name || row.entries[0]?.studentId || "—",
+        entries: row.entries,
+        consumption: attributed ? attributed.consumption : "",
+        enrolmentId: attributed ? attributed.enrolmentId : (row.entries[0]?.enrolmentId || ""),
+        instrumentOptions: row.entries.map(e => ({ enrolmentId: e.enrolmentId, label: e.instrument || "—" })),
+        misses: misses.map(m => ({ key: missKeyOf(m), label: formatCatchupCompletionLabel(m), miss: m })),
+        // Reuses the catch-up completion formatter — a miss carries the same
+        // weekKey/day/time fields it reads.
+        settlesLabel: chosenMiss ? formatCatchupCompletionLabel(chosenMiss) : "",
+        departed: row.departed,
+      };
+    });
+  }, [bandAttrModal, catchups, openMissesFlat, students]);
+
+  // Save. Order is fixed and deliberate — see planAttributionSave.
+  //   (1) every insert is awaited first; if any fails, the ones that landed in
+  //       THIS save are rolled back and nothing else is touched;
+  //   (2) one synchronous block commits memberStates (with each new row id
+  //       stamped into catchupId), removedLessons, card removals and restores,
+  //       AND the new catch-up rows — so no frame can show a row without its
+  //       stamp, which is exactly the state the tightened hide test renders;
+  //   (3) deletes are fire-and-report. A failed delete leaves a row that
+  //       renders visibly rather than one that hides while closing a miss.
+  const handleBandAttrSave = async () => {
+    if (!bandAttrModal || bandAttrModal.saving) return;
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const entry = weeklyTimetables[storageKey];
+    const lesson = (entry?.lessons || []).find(l => l.id === bandAttrModal.lessonId);
+    if (!lesson) { setBandAttrModal(null); return; }
+
+    const linkedRows = (catchups || []).filter(c => c.bandLessonId === lesson.id);
+    const plan = planAttributionSave({
+      stored: bandAttrModal.stored,
+      working: bandAttrModal.working,
+      missByEnrolment: bandAttrModal.missByEnrolment,
+      catchupsForBand: linkedRows,
+      weekKey,
+    });
+    if (!plan.changed) { setBandAttrModal(null); return; }
+
+    setBandAttrModal(prev => prev ? { ...prev, saving: true } : prev);
+    const insertedRows = [];
+    try {
+      if (plan.inserts.length > 0) {
+        // Same auth read handleScheduleCatchup does before inserting.
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) throw new Error("Not authenticated");
+        for (const { entry: msEntry, miss } of plan.inserts) {
+          if (!miss) throw new Error("No missed lesson selected for this catch-up");
+          // Payload mirrors handleScheduleCatchup exactly — same resolves_*
+          // population from the miss, no teacher attribution (Spec 3) — with
+          // the band's slot and the back-link to the band card.
+          const inserted = await insertCatchup({
+            userId: user.id,
+            schoolId: lesson.schoolId || selectedSchool || "__private__",
+            weekKey,
+            day: lesson.day,
+            time: lesson.start,
+            instrument: msEntry.instrument || "",
+            enrolmentId: msEntry.enrolmentId,
+            resolvesEnrolmentId: miss.enrolmentId,
+            resolvesWeekKey: miss.weekKey,
+            resolvesOriginalDay: miss.day,
+            resolvesOriginalTime: miss.start ?? miss.time ?? null,
+            madeUp: false,
+            notes: null,
+            bandLessonId: lesson.id,
+          });
+          insertedRows.push({ enrolmentId: msEntry.enrolmentId, row: inserted });
+        }
+      }
+    } catch (err) {
+      // Roll back only what THIS save created, then leave everything else —
+      // memberStates, cards, ledger — exactly as it was, window still open.
+      for (const { row } of insertedRows) {
+        try { await deleteCatchup({ id: row.id }); } catch (rbErr) {
+          console.error("[band attribution] rollback delete failed:", rbErr);
+        }
+      }
+      logError && logError("Failed to save band attribution", err?.message || String(err));
+      console.error("[band attribution] insert failed:", err);
+      alert("Failed to save band attribution. See console.");
+      setBandAttrModal(prev => prev ? { ...prev, saving: false } : prev);
+      return;
+    }
+
+    // (2) ONE synchronous commit.
+    const idByEnrolment = new Map(insertedRows.map(r => [r.enrolmentId, r.row.id]));
+    const stampedMemberStates = plan.memberStates.map(e =>
+      idByEnrolment.has(e.enrolmentId) ? { ...e, catchupId: idByEnrolment.get(e.enrolmentId) } : e
+    );
+    setWeeklyTimetables(prev => {
+      const d = prev[storageKey];
+      if (!d) return prev;
+      let lessons = d.lessons || [];
+      const band = lessons.find(l => l.id === bandAttrModal.lessonId);
+      if (!band) return prev;
+      let ledger = band.removedLessons || [];
+
+      // became regular → card(s) off the grid, into the ledger
+      for (const e of plan.regularOn) {
+        const cards = findMemberCards(lessons, e, enrolmentResolver);
+        if (cards.length === 0) continue;
+        const ids = new Set(cards.map(c => c.id));
+        lessons = lessons.filter(l => !ids.has(l.id));
+        ledger = [...ledger, ...cards];
+      }
+      // away from regular → out of the ledger either way; back onto the grid
+      // only if the slot is free, matching the "Remove band session" restore.
+      for (const e of plan.regularOff) {
+        const cards = findMemberCards(ledger, e, enrolmentResolver);
+        if (cards.length === 0) continue;
+        const ids = new Set(cards.map(c => c.id));
+        ledger = ledger.filter(l => !ids.has(l.id));
+        for (const rl of cards) {
+          const slotOccupied = lessons.some(l => l.day === rl.day && l.start === rl.start);
+          if (!slotOccupied) lessons = [...lessons, rl];
+          // If occupied, the student stays missing → unscheduled banner picks it up
+        }
+      }
+
+      lessons = lessons.map(l => l.id === bandAttrModal.lessonId
+        ? { ...l, memberStates: stampedMemberStates, removedLessons: ledger }
+        : l);
+      return { ...prev, [storageKey]: { ...d, lessons } };
+    });
+    if (insertedRows.length > 0) setCatchups(prev => [...prev, ...insertedRows.map(r => r.row)]);
+    setBandAttrModal(null);
+    if (notify) notify("Band attribution saved");
+
+    // (3) deletes — fire-and-report.
+    for (const row of plan.deletes) {
+      try {
+        await deleteCatchup({ id: row.id });
+        setCatchups(prev => prev.filter(c => c.id !== row.id));
+      } catch (err) {
+        logError && logError("Failed to remove linked catchup", err?.message || String(err));
+        console.error("[band attribution] delete failed:", err);
+        if (notify) notify("A linked catch-up could not be removed — it will show as a card", "warning");
+      }
+    }
   };
 
   // Action handlers — call catchupsDB write helpers + bubble local state.
@@ -1701,7 +2024,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // card draws nothing, so warnings computed for it are unreachable, and
       // checkConstraints would flag it as double-booked against the very band
       // session it is being delivered inside.
-      if (isHiddenBehindBandCard(c, baseLessons)) continue;
+      if (isHiddenBehindBandCard(c, bandPresenceLessons)) continue;
       const slots = (schools || []).find(s => s.id === c.schoolId)?.slots || [];
       const slot = slots.find(sl => sl.start === c.time) || { start: c.time, end: c.time };
       const merged = { ...c, start: c.time, __isCatchup: true };
@@ -1710,7 +2033,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       if (filtered.length > 0) out[c.id] = filtered;
     }
     return out;
-  }, [enrichedCatchups, weekKey, weeklyData, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons]);
+  }, [enrichedCatchups, weekKey, weeklyData, bandPresenceLessons, selectedSchool, currentSchool, weeklyTimetables, teacherCoverage, laneOverrides, students, enrolments, teachers, schools, bands, groups, weekDateMap, weekInterruptions, specLookupRef, timetable, temporaryLanes, crossSchoolLessons]);
 
   // ── Add band session to WTT ────────────────────────────────
   const handleAddBandSession = (band) => {
@@ -1718,33 +2041,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const time = contextMenu.time;
     const existingData = weeklyTimetables[storageKey] || { lessons: [], missed: [] };
     let lessons = [...(existingData.lessons || [])];
-    const bandRemovedLessons = [];
-    // Band Session Attribution cluster 2 — new bands displace nothing.
-    // Each member is attributed per-enrolment instead, so their regular
-    // card stays on the grid and removedLessons stays empty. Legacy bands
-    // (no memberStates) are untouched and still run the loop below,
-    // guitar-preference heuristic and all. memberStates is built BEFORE
-    // the loop so the guard can read it.
+    // Band Session Attribution — this path only ever creates NEW bands, which
+    // displace nothing at placement: each member is attributed per-enrolment
+    // through the attribution window instead, and a "regular" attribution is
+    // what moves their card into the ledger. The old guitar-preference
+    // displacement loop that stood here was unreachable once cluster 2 stamped
+    // memberStates on every band created here, so it is gone; removedLessons
+    // starts empty and the ledger fills only on attribution.
     const newMemberStates = buildMemberStates(band.members, enrolments, weekKey);
-    // false for every band this path creates — the displacement loop below is
-    // the legacy shape, kept intact so no existing band changes behaviour.
-    const displaceMembers = !Array.isArray(newMemberStates);
-    for (const member of (displaceMembers ? (band.members || []) : [])) {
-      const student = students.find(s => s.id === member.studentId);
-      if (!student) continue;
-      const existingBandCount = lessons.filter(l => l.isBandSession && (l.members || []).some(m => m.studentId === member.studentId)).length;
-      const studentLessons = lessons.filter(l => !l.isBandSession && l.studentId === member.studentId);
-      let removedLesson = null;
-      if (studentLessons.length > 0) {
-        const guitarLesson = studentLessons.find(l => /guitar/i.test(l.instrument));
-        if (existingBandCount === 0) {
-          removedLesson = guitarLesson || studentLessons.find(l => l.instrument === member.instrument) || studentLessons[0];
-        } else {
-          removedLesson = guitarLesson || studentLessons[0];
-        }
-        if (removedLesson) { bandRemovedLessons.push(removedLesson); lessons = lessons.filter(l => l.id !== removedLesson.id); }
-      }
-    }
     // Band de-allocation — bands place into the chip-active lane of the
     // right-clicked day (same destination resolution as placeLesson /
     // handleWeeklyMoveLesson), not the band record's teacher.
@@ -1762,7 +2066,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       day, start: time, end: time,
       members: band.members || [],
       memberStates: newMemberStates,
-      removedLessons: bandRemovedLessons,
+      removedLessons: [],
     };
     lessons = [...lessons, bandLesson];
     setWeeklyTimetables(prev => ({ ...prev, [storageKey]: { ...existingData, lessons } }));
@@ -1776,6 +2080,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
     }
     setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+    // Band Session Attribution cluster 3b — auto-open the attribution window
+    // for a band nobody has decided about yet. Seeded from the lesson object
+    // just built, NOT by reading weeklyTimetables back: the setState above has
+    // not committed, so a read here would miss the band entirely.
+    maybeAutoOpenBandAttribution(bandLesson);
   };
 
   const handleGenerate = async () => {
@@ -2392,6 +2701,26 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         }
       };
     });
+    // Band Session Attribution cluster 3b — a moved band takes its linked
+    // catch-ups with it. Without this the rows keep the old day/time, the band
+    // and its catch-ups silently separate, and the tightened hide test starts
+    // rendering them as loose cards at the old cell. Fire-and-report, matching
+    // handleCatchupRelocate; weekKey never changes because both the move and
+    // the staging area are scoped to one weeklyTimetables entry.
+    if (hasMemberStates(lesson)) {
+      const linkedIds = (lesson.memberStates || []).map(e => e && e.catchupId).filter(Boolean);
+      for (const cid of linkedIds) {
+        const current = (catchups || []).find(c => c.id === cid);
+        if (!current || (current.day === newDay && current.time === slot.start)) continue;
+        updateCatchup({ id: cid, currentRow: current, day: newDay, time: slot.start })
+          .then(updated => setCatchups(prev => prev.map(c => c.id === cid ? updated : c)))
+          .catch(err => {
+            logError && logError("Failed to move linked catchup", err?.message || String(err));
+            console.error("[band move] linked catchup update failed:", err);
+            if (notify) notify("A linked catch-up could not be moved — it will show at the old slot", "warning");
+          });
+      }
+    }
     if (lesson) {
       // Simulate the weekly lesson list after the move for stale-warning re-evaluation
       const currentEntry = weeklyTimetables[`${weekKey}|${selectedSchool}`];
@@ -2538,6 +2867,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         setExpandedWarnings(prev => { const next = new Set(prev); next.add(bandLesson.id); return next; });
       }
       notify(`Band session placed: ${band.name} — ${newDay} ${slot.start}`);
+      maybeAutoOpenBandAttribution(bandLesson);
       return;
     }
 
@@ -2742,6 +3072,22 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         );
       })()}
 
+      {/* Band attribution window — one row per member student (cluster 3b) */}
+      {bandAttrModal && (() => {
+        const lesson = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandAttrModal.lessonId);
+        const timeLabel = lesson?.start ? to12h(lesson.start) : "";
+        return (
+          <BandAttributionModal
+            title={lesson?.bandName || "Band session"}
+            subtitle={[lesson?.day, timeLabel].filter(Boolean).join(" · ")}
+            rows={bandAttrRows}
+            onChange={handleBandAttrChange}
+            onSave={handleBandAttrSave}
+            onCancel={() => setBandAttrModal(null)}
+            saving={!!bandAttrModal.saving}
+          />
+        );
+      })()}
       {/* Unified missed lesson modal — single (right-click) and bulk (multi-select) */}
       {missedModal && (() => {
         const isBulk = missedModal.type === "bulk";
@@ -4198,7 +4544,36 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               </button>
                   );
                 })()}
+                {(() => {
+                  // Band Session Attribution cluster 3b — new bands only.
+                  const bl = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
+                  if (!hasMemberStates(bl)) return null;
+                  return (
+                    <button onClick={() => { openBandAttribution(contextMenu.lessonId); setContextMenu(null); }}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.text, borderRadius: 6, fontFamily: "inherit" }}
+                      onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
+                      onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Users size={13} /> Attribute members…</span>
+                    </button>
+                  );
+                })()}
                 <button onClick={() => {
+                  // Band Session Attribution cluster 3b — delete every linked
+                  // catch-up first. Owner decision: no warning. Fire-and-report;
+                  // a failed delete leaves a row the tightened hide test renders
+                  // visibly rather than one silently closing a miss.
+                  const removedBand = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
+                  if (hasMemberStates(removedBand)) {
+                    for (const cid of (removedBand.memberStates || []).map(e => e && e.catchupId).filter(Boolean)) {
+                      deleteCatchup({ id: cid })
+                        .then(() => setCatchups(prev => prev.filter(c => c.id !== cid)))
+                        .catch(err => {
+                          logError && logError("Failed to remove linked catchup", err?.message || String(err));
+                          console.error("[band remove] linked catchup delete failed:", err);
+                          if (notify) notify("A linked catch-up could not be removed — it will show as a card", "warning");
+                        });
+                    }
+                  }
                   setWeeklyTimetables(prev => {
                     const d = prev[storageKey];
                     if (!d) return prev;

@@ -570,3 +570,161 @@ export function suppressesSameDayClash(bandLesson, studentId) {
   if (!entry) return false;
   return entry.consumption === CONSUMPTION.catchup || entry.consumption === CONSUMPTION.free;
 }
+
+// ── Window + save planning (cluster 3b) ─────────────────────────────
+
+/**
+ * The misses a student may choose to settle with this band slot.
+ *
+ * Their currently-open misses, PLUS the miss their existing linked
+ * catch-up already settles. That one is no longer "open" precisely
+ * BECAUSE this band closes it, so leaving it out would make the
+ * student's own current choice unselectable and silently un-settle it on
+ * the next save.
+ *
+ * Matching is by the four resolves_* coordinates the catch-up carries,
+ * so the restored entry is the same miss object shape as the open ones.
+ *
+ * @param {Array} entries          One student's memberStates entries.
+ * @param {Array} openMisses       Picker-shaped candidates (enrolmentId,
+ *                                 weekKey, day, start/time).
+ * @param {Array} catchupsForBand  Catch-up rows linked to this band.
+ * @returns {Array} Selectable misses, open ones first.
+ */
+export function selectableMissesForStudent(entries, openMisses, catchupsForBand) {
+  const ids = new Set((entries || []).map((e) => e && e.enrolmentId));
+  const out = (openMisses || []).filter((m) => m && ids.has(m.enrolmentId));
+  for (const entry of (entries || [])) {
+    if (!entry || !entry.catchupId) continue;
+    const row = (catchupsForBand || []).find((c) => c && c.id === entry.catchupId);
+    if (!row || !row.resolvesEnrolmentId || !row.resolvesWeekKey) continue;
+    const already = out.some(
+      (m) => m.enrolmentId === row.resolvesEnrolmentId && m.weekKey === row.resolvesWeekKey
+        && m.day === row.resolvesOriginalDay
+    );
+    if (already) continue;
+    out.push({
+      enrolmentId: row.resolvesEnrolmentId,
+      weekKey: row.resolvesWeekKey,
+      day: row.resolvesOriginalDay,
+      start: row.resolvesOriginalTime,
+      time: row.resolvesOriginalTime,
+      studentId: entry.studentId,
+      instrument: entry.instrument,
+    });
+  }
+  return out;
+}
+
+/**
+ * True if `row` (a catchups row) settles `miss`. Compares the four
+ * resolves_* coordinates against the miss, tolerating the miss carrying
+ * its time as `start` or `time`.
+ *
+ * @param {Object|null} row
+ * @param {Object|null} miss
+ * @returns {boolean}
+ */
+function rowSettlesMiss(row, miss) {
+  if (!row || !miss) return false;
+  const missTime = miss.start || miss.time || null;
+  return row.resolvesEnrolmentId === miss.enrolmentId
+    && row.resolvesWeekKey === miss.weekKey
+    && row.resolvesOriginalDay === miss.day
+    && (row.resolvesOriginalTime || null) === (missTime || null);
+}
+
+/**
+ * Work out what saving the attribution window must actually do.
+ *
+ * Pure: it decides, it does not act. The handler executes the plan, in
+ * the plan's order — inserts first (so a failure changes nothing), then
+ * one state commit, then deletes.
+ *
+ * Per student, comparing the working copy against what was stored when
+ * the window opened:
+ *
+ *   • became CATCHUP, or is still catchup but against a DIFFERENT miss
+ *     → insert a row. If a row already existed it is also deleted, so a
+ *       re-pointed catch-up is a delete-and-insert rather than an update:
+ *       the resolves_* set is the row's identity, and replacing it keeps
+ *       insert-then-delete ordering safe if the insert fails.
+ *   • moved AWAY from catchup (to regular, free, or cleared — including
+ *     a departed entry being cleared) → delete the existing row.
+ *   • became REGULAR → its card(s) leave the week and go into the band's
+ *     removedLessons ledger.
+ *   • moved AWAY from regular → its card(s) leave the ledger. They are
+ *     dropped from it either way; whether they return to the grid is the
+ *     caller's occupancy test, matching "Remove band session".
+ *
+ * consumedWeekKey follows the consumption: regular → the band's week,
+ * catchup → the settled miss's week, anything else → null.
+ *
+ * @param {Object} args
+ * @param {MemberState[]} args.stored     memberStates as at window open.
+ * @param {MemberState[]} args.working    The edited copy.
+ * @param {Object} args.missByEnrolment   { [enrolmentId]: miss } — the
+ *        miss each catchup-attributed student is settling.
+ * @param {Array} args.catchupsForBand    Catch-up rows linked to this band.
+ * @param {string} args.weekKey           The band's week.
+ * @returns {{inserts: Array, deletes: Array, regularOn: Array,
+ *   regularOff: Array, memberStates: MemberState[], changed: boolean}}
+ */
+export function planAttributionSave({ stored, working, missByEnrolment, catchupsForBand, weekKey } = {}) {
+  const storedList = stored || [];
+  const workingList = working || [];
+  const misses = missByEnrolment || {};
+  const rows = catchupsForBand || [];
+  const storedByEnrolment = new Map(storedList.map((e) => [e && e.enrolmentId, e]));
+
+  const inserts = [];
+  const deletes = [];
+  const regularOn = [];
+  const regularOff = [];
+
+  const memberStates = workingList.map((entry) => {
+    if (!entry) return entry;
+    const before = storedByEnrolment.get(entry.enrolmentId) || null;
+    const wasCatchup = !!(before && before.consumption === CONSUMPTION.catchup);
+    const isCatchup = entry.consumption === CONSUMPTION.catchup;
+    const wasRegular = !!(before && before.consumption === CONSUMPTION.regular);
+    const isRegular = entry.consumption === CONSUMPTION.regular;
+    const existingRow = before && before.catchupId
+      ? rows.find((c) => c && c.id === before.catchupId) || null
+      : null;
+    const miss = isCatchup ? (misses[entry.enrolmentId] || null) : null;
+
+    let catchupId = before ? before.catchupId || null : null;
+    let consumedWeekKey = null;
+
+    if (isCatchup) {
+      const samePoint = wasCatchup && existingRow && rowSettlesMiss(existingRow, miss);
+      if (samePoint) {
+        consumedWeekKey = existingRow.resolvesWeekKey || (miss && miss.weekKey) || null;
+      } else {
+        if (existingRow) deletes.push(existingRow);
+        inserts.push({ entry, miss });
+        catchupId = null;          // stamped from the inserted row by the caller
+        consumedWeekKey = miss ? miss.weekKey || null : null;
+      }
+    } else {
+      if (existingRow) deletes.push(existingRow);
+      catchupId = null;
+      consumedWeekKey = isRegular ? weekKey || null : null;
+    }
+
+    if (isRegular && !wasRegular) regularOn.push(entry);
+    if (wasRegular && !isRegular) regularOff.push(before);
+
+    return { ...entry, catchupId, consumedWeekKey };
+  });
+
+  const changed = inserts.length > 0 || deletes.length > 0
+    || regularOn.length > 0 || regularOff.length > 0
+    || memberStates.some((e, i) => {
+      const before = storedByEnrolment.get(e && e.enrolmentId) || null;
+      return !before || before.consumption !== e.consumption;
+    });
+
+  return { inserts, deletes, regularOn, regularOff, memberStates, changed };
+}

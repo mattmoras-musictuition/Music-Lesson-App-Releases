@@ -10,7 +10,9 @@ import { makeEnrolmentResolver } from "../utils/enrolmentActivity";
 import {
   buildMemberStates, applyStudentAttribution, defaultAttributions,
   reconcileMemberStates, findMemberCards, isExcludedByBands, studentRows,
+  selectableMissesForStudent, planAttributionSave,
 } from "./bandMemberStates";
+import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -128,6 +130,69 @@ export function runSmokeTests(logErrorFn) {
     [isExcludedByBands(amyPiano, [newBand], resolver), isExcludedByBands(amyGuitar, [newBand], resolver)], [false, true]);
   assert("new band with no attribution excludes nothing",
     isExcludedByBands(amyGuitar, [{ isBandSession: true, members: [{ studentId: "amy" }], memberStates: built }], resolver), false);
+
+  // ── Band attribution: hide test + save plan (cluster 3b) ───────
+  // The hide test needs BOTH directions of the link: the band present, and
+  // that band still claiming the row.
+  const cu = { id: "cu1", bandLessonId: "BL1", weekKey: bandWeek, time: "10:00", day: "Monday" };
+  const claiming = { id: "BL1", isBandSession: true, memberStates: [{ enrolmentId: "e_amy_pno", studentId: "amy", catchupId: "cu1", consumption: "catchup" }] };
+  const notClaiming = { id: "BL1", isBandSession: true, memberStates: [{ enrolmentId: "e_amy_pno", studentId: "amy", catchupId: null, consumption: null }] };
+  assert("hidden when band present AND claims the row", isHiddenBehindBandCard(cu, [claiming]), true);
+  assert("visible when band present but claims nothing", isHiddenBehindBandCard(cu, [notClaiming]), false);
+  assert("visible when band absent", isHiddenBehindBandCard(cu, []), false);
+  assert("visible when band is legacy (no memberStates)",
+    isHiddenBehindBandCard(cu, [{ id: "BL1", isBandSession: true }]), false);
+  assert("merge hides a claimed catchup, keeps an orphan",
+    mergeCatchupsIntoLessons([], [cu, { id: "cu2", bandLessonId: "GONE", weekKey: bandWeek }], bandWeek, [claiming]).map(l => l.id),
+    ["cu2"]);
+
+  // selectableMissesForStudent restores the miss the existing row settles.
+  const linkedRow = { id: "cu1", bandLessonId: "BL1", resolvesEnrolmentId: "e_amy_pno", resolvesWeekKey: "2026-03-02", resolvesOriginalDay: "Monday", resolvesOriginalTime: "11:00" };
+  const amyEntries = built.filter(e => e.studentId === "amy").map(e =>
+    e.enrolmentId === "e_amy_pno" ? { ...e, consumption: "catchup", catchupId: "cu1" } : e);
+  assert("selectable misses include the already-settled one",
+    selectableMissesForStudent(amyEntries, [], [linkedRow]).map(m => [m.enrolmentId, m.weekKey]),
+    [["e_amy_pno", "2026-03-02"]]);
+
+  // planAttributionSave — one case per transition.
+  const base = (consumption, catchupId) => [
+    { enrolmentId: "e_amy_pno", studentId: "amy", instrument: "Piano", consumption, catchupId: catchupId || null, consumedWeekKey: null, fee: null, attended: null, writerTeacherId: null },
+  ];
+  const missA = { enrolmentId: "e_amy_pno", weekKey: "2026-03-02", day: "Monday", start: "11:00" };
+  const missB = { enrolmentId: "e_amy_pno", weekKey: "2026-03-09", day: "Tuesday", start: "09:00" };
+  const rowA = { id: "cu1", resolvesEnrolmentId: "e_amy_pno", resolvesWeekKey: "2026-03-02", resolvesOriginalDay: "Monday", resolvesOriginalTime: "11:00" };
+  const planOf = (stored, working, missBy, rows) => planAttributionSave({
+    stored, working, missByEnrolment: missBy || {}, catchupsForBand: rows || [], weekKey: bandWeek });
+
+  let pl = planOf(base(null), base("regular"));
+  assert("unattributed → regular", [pl.inserts.length, pl.deletes.length, pl.regularOn.length, pl.memberStates[0].consumedWeekKey],
+    [0, 0, 1, bandWeek]);
+
+  pl = planOf(base(null), base("catchup"), { e_amy_pno: missA });
+  assert("unattributed → catchup inserts one row",
+    [pl.inserts.length, pl.deletes.length, pl.memberStates[0].consumedWeekKey], [1, 0, "2026-03-02"]);
+
+  pl = planOf(base("catchup", "cu1"), base("catchup", "cu1"), { e_amy_pno: missA }, [rowA]);
+  assert("catchup → same miss is a no-op", [pl.inserts.length, pl.deletes.length, pl.changed], [0, 0, false]);
+
+  pl = planOf(base("catchup", "cu1"), base("catchup", "cu1"), { e_amy_pno: missB }, [rowA]);
+  assert("catchup → different miss replaces the row",
+    [pl.inserts.length, pl.deletes.map(d => d.id)], [1, ["cu1"]]);
+
+  pl = planOf(base("catchup", "cu1"), base("free"), {}, [rowA]);
+  assert("catchup → free deletes the row",
+    [pl.inserts.length, pl.deletes.map(d => d.id), pl.memberStates[0].catchupId, pl.memberStates[0].consumedWeekKey],
+    [0, ["cu1"], null, null]);
+
+  pl = planOf(base("regular"), base("catchup"), { e_amy_pno: missA });
+  assert("regular → catchup inserts and releases the card",
+    [pl.inserts.length, pl.regularOff.length, pl.regularOn.length], [1, 1, 0]);
+
+  pl = planOf(base("catchup", "cu1"), base(null), {}, [rowA]);
+  assert("departed catchup cleared deletes the row",
+    [pl.deletes.map(d => d.id), pl.memberStates[0].consumption], [["cu1"], null]);
+
+  assert("no-op save reports unchanged", planOf(base(null), base(null)).changed, false);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

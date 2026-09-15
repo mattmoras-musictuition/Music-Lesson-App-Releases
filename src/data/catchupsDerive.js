@@ -197,24 +197,36 @@ export function getCatchupsForGridCell(catchups, weekKey, day, time) {
  * from banking, completion or invoicing would silently re-open misses
  * that have genuinely been made up.
  *
- * The band must actually be PRESENT in the lessons array being rendered.
- * An orphaned link — band deleted, moved to another week, or its id
- * re-minted — deliberately falls back to a visible, ordinary catch-up
- * card. Visible and obviously wrong beats hidden while still closing a
- * miss. The same applies when the band card is filtered out of the
- * array for another reason (a lane the viewer has deselected): if no
- * band card is drawn, the catch-up is not a duplicate.
+ * The link must be whole in BOTH directions. The band must be PRESENT in
+ * the week, AND that band must still claim this row — one of its
+ * memberStates entries carrying catchupId === catchup.id. A one-way link
+ * is not enough: a half-failed save or a delete that did not land leaves
+ * a row pointing at a band that no longer points back, and such a row
+ * must RENDER. Hiding it would leave a catch-up silently closing a miss
+ * with nothing on screen to say so — the one outcome worse than a
+ * duplicate card.
+ *
+ * So an orphaned link of any kind — band deleted, band moved to another
+ * week, id re-minted, or the band's entry cleared — deliberately falls
+ * back to a visible, ordinary catch-up card. Visible and obviously wrong
+ * beats hidden and wrong. The same applies when the band is simply
+ * absent from the array (a lane the viewer has deselected): callers that
+ * render a filtered list pass an unfiltered presence array so that
+ * absence does not masquerade as deletion.
  *
  * @param {Catchup} catchup
- * @param {Array|null|undefined} weekLessons  The lessons array actually
- *        being rendered for that week.
+ * @param {Array|null|undefined} weekLessons  Lessons that EXIST in the
+ *        week — including staged band sessions, which keep their linked
+ *        catch-ups hidden while the band waits in the staging area.
  * @returns {boolean}
  */
 export function isHiddenBehindBandCard(catchup, weekLessons) {
   if (!catchup || !catchup.bandLessonId) return false;
-  return (weekLessons || []).some(
+  const band = (weekLessons || []).find(
     (l) => l && l.isBandSession && l.id === catchup.bandLessonId
   );
+  if (!band || !Array.isArray(band.memberStates)) return false;
+  return band.memberStates.some((e) => e && e.catchupId === catchup.id);
 }
 
 /**
