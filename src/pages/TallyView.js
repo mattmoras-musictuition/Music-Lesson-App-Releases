@@ -166,6 +166,19 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // renderer share one bankingIndex + one isCaughtUpCell predicate.
   const bankingIndex = useMemo(() => buildBankingIndex(catchups || []), [catchups]);
 
+  // Band Session Attribution cluster 4b — a caught-up tooltip whose banking row
+  // was delivered inside a band session names that band. Display only. The row
+  // carries the band's week and school, so the band card is found in that one
+  // WTT slot; a band that cannot be found (deleted, or parked in staging, which
+  // is not part of the slot's lessons) falls back to unnamed wording.
+  const caughtUpTooltip = (catchup) => {
+    const when = formatCatchupCompletionLabel(catchup);
+    if (!catchup?.bandLessonId) return "Caught up on " + when;
+    const band = (weeklyTimetables?.[`${catchup.weekKey}|${catchup.schoolId}`]?.lessons || [])
+      .find(l => l.isBandSession && l.id === catchup.bandLessonId);
+    return (band?.bandName ? "Caught up in band session: " + band.bandName : "Caught up in band session") + " — " + when;
+  };
+
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────
   const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
   const stats = useMemo(() => {
@@ -812,7 +825,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                   : displayEntry?.status === "removed" ? "Inactive"
                                   : displayEntry?.status === "completed" ? (displayEntry.bandSession ? (displayEntry.notes || "Band Session") : "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : ""))
                                   : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
-                                  : caughtUp ? ("Caught up on " + formatCatchupCompletionLabel(bankingCatchup))
+                                  : caughtUp ? caughtUpTooltip(bankingCatchup)
                                   : displayEntry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
                                   : future ? "Future week" : "Unmarked";
                                 setTallyTooltip({ text, x: r.left + r.width / 2, y: r.top - 6, isMissed: displayEntry?.status === "missed" });
