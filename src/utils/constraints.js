@@ -215,8 +215,8 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
       // Band Session Attribution — which same-day card (if any) deserves the
       // warning depends on how the member is attributed, so the choice lives
       // in sameDayClashCard rather than here. Legacy bands and unattributed
-      // members still get the FIRST same-day card, exactly as before; catchup
-      // and free members get none; a member attributed "regular" gets one only
+      // members still get the FIRST same-day card, exactly as before; catchup,
+      // free and not-in-session members get none; a member attributed "regular" gets one only
       // if a card for THAT enrolment survived — their other instrument's
       // lesson that day is expected, not a clash. Hence every same-day card is
       // collected, not just the first. Only this warning is affected; the

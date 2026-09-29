@@ -45,7 +45,14 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
  * How a band member's slot is accounted for. Frozen so a typo in a
  * consumer throws in strict mode rather than silently reading undefined.
  *
- * @type {Readonly<{regular: string, catchup: string, free: string, forward: string, billed: string}>}
+ * notInSession is a member deliberately left out of a planned session —
+ * a rhythm-section rehearsal, a singers-only session. It is not an
+ * absence and not a free extra: they were never at it. In phase 1 it
+ * behaves exactly like free (their regular card stands, no catch-up
+ * row); its distinct meaning is read later through attendsSession and
+ * consumesEntitlement.
+ *
+ * @type {Readonly<{regular: string, catchup: string, free: string, forward: string, billed: string, notInSession: string}>}
  */
 export const CONSUMPTION = Object.freeze({
   regular: "regular",
@@ -53,6 +60,7 @@ export const CONSUMPTION = Object.freeze({
   free: "free",
   forward: "forward",
   billed: "billed",
+  notInSession: "not_in_session",
 });
 
 /**
@@ -548,9 +556,9 @@ export function isExcludedByBands(masterLesson, weekBands, resolver) {
  * be suppressed for this member.
  *
  * It is suppressed only when the band is a NEW band AND the student is
- * attributed "catchup" or "free" — both of which mean the band slot is
- * deliberately EXTRA to their regular lesson, so the regular card
- * standing alongside it is correct, not a clash.
+ * attributed "catchup", "free" or "not_in_session" — each of which means
+ * their regular lesson deliberately stands alongside the band, so the
+ * regular card that day is correct, not a clash.
  *
  * It is NOT suppressed for an unattributed student (owner decision — the
  * warning is the prompt to attribute them), nor for one attributed
@@ -568,7 +576,8 @@ export function suppressesSameDayClash(bandLesson, studentId) {
     (e) => e && e.studentId === studentId && e.consumption != null
   );
   if (!entry) return false;
-  return entry.consumption === CONSUMPTION.catchup || entry.consumption === CONSUMPTION.free;
+  return entry.consumption === CONSUMPTION.catchup || entry.consumption === CONSUMPTION.free
+    || entry.consumption === CONSUMPTION.notInSession;
 }
 
 // ── Window + save planning (cluster 3b) ─────────────────────────────
@@ -649,8 +658,9 @@ function rowSettlesMiss(row, miss) {
  *       re-pointed catch-up is a delete-and-insert rather than an update:
  *       the resolves_* set is the row's identity, and replacing it keeps
  *       insert-then-delete ordering safe if the insert fails.
- *   • moved AWAY from catchup (to regular, free, or cleared — including
- *     a departed entry being cleared) → delete the existing row.
+ *   • moved AWAY from catchup (to regular, free, not in session, or
+ *     cleared — including a departed entry being cleared) → delete the
+ *     existing row.
  *   • became REGULAR → its card(s) leave the week and go into the band's
  *     removedLessons ledger.
  *   • moved AWAY from regular → its card(s) leave the ledger. They are
@@ -743,7 +753,9 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
  *     same-day card, exactly as before. Unchanged behaviour.
  *   • attributed CATCHUP or FREE → null. The band slot is deliberately
  *     EXTRA to their regular lesson, so a regular card that day is
- *     correct rather than a clash.
+ *     correct rather than a clash. NOT IN SESSION → null too: they are
+ *     not at the band at all, so their regular card is simply their
+ *     lesson.
  *   • attributed REGULAR → only a card belonging to the REGULAR
  *     enrolment warrants a warning, because that card should have been
  *     moved into the ledger and a surviving one is a real problem. A
@@ -772,7 +784,7 @@ export function sameDayClashCard(bandLesson, studentId, sameDayCards) {
     (e) => e && e.studentId === studentId && e.consumption != null
   );
   if (!entry) return first;                                  // unattributed
-  if (entry.consumption !== CONSUMPTION.regular) return null; // catchup / free
+  if (entry.consumption !== CONSUMPTION.regular) return null; // catchup / free / not in session
 
   return cards.find((c) => c && (
     c.enrolmentId ? c.enrolmentId === entry.enrolmentId : c.instrument === entry.instrument
@@ -838,4 +850,42 @@ export function restoreLedgerCards(lessons, ledger) {
     if (!slotOccupied) out = [...out, rl];
   }
   return out;
+}
+
+// ── Cluster 3c ──────────────────────────────────────────────────────
+
+/**
+ * True if this consumption uses up one of the student's paid lessons —
+ * the tally should tick it and invoicing should count it.
+ *
+ * regular, catchup and forward all draw on the entitlement. free is a
+ * gift, billed was already charged elsewhere, not_in_session means they
+ * were never at the band, and null is undecided — none of those consume.
+ *
+ * Not wired in yet; cluster 4 builds the tally and charge on it.
+ *
+ * @param {string|null|undefined} consumption  One of CONSUMPTION, or null.
+ * @returns {boolean}
+ */
+export function consumesEntitlement(consumption) {
+  return consumption === CONSUMPTION.regular
+    || consumption === CONSUMPTION.catchup
+    || consumption === CONSUMPTION.forward;
+}
+
+/**
+ * True if this member is expected to be AT the band session.
+ *
+ * Only not_in_session says otherwise. An unattributed entry (or a
+ * missing one) counts as present: until the owner decides, the member is
+ * assumed to be there.
+ *
+ * Not wired in yet; cluster 6 (band card member list) and phase 2
+ * (teacher attendance marking) build on it.
+ *
+ * @param {MemberState|null|undefined} entry
+ * @returns {boolean}
+ */
+export function attendsSession(entry) {
+  return !entry || entry.consumption !== CONSUMPTION.notInSession;
 }

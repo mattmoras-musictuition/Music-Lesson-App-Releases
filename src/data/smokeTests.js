@@ -12,6 +12,7 @@ import {
   reconcileMemberStates, findMemberCards, isExcludedByBands, studentRows,
   selectableMissesForStudent, planAttributionSave,
   sameDayClashCard, applyRegularDisplacement, restoreLedgerCards,
+  consumesEntitlement, attendsSession,
 } from "./bandMemberStates";
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 
@@ -242,6 +243,51 @@ export function runSmokeTests(logErrorFn) {
     restoreLedgerCards([pno], [gtr]).map(l => l.id), ["C_P", "C_G"]);
   assert("restoreLedgerCards: occupied slot is skipped",
     restoreLedgerCards([{ id: "OTHER", day: "Monday", start: "09:00" }], [gtr]).map(l => l.id), ["OTHER"]);
+
+  // ── Band attribution: "Not in this session" (cluster 3c) ──
+  pl = planOf(base(null), base("not_in_session"));
+  assert("unattributed → not_in_session: no insert, delete or regularOn",
+    [pl.inserts.length, pl.deletes.length, pl.regularOn.length, pl.memberStates[0].consumedWeekKey, pl.changed],
+    [0, 0, 0, null, true]);
+
+  pl = planOf(base("catchup", "cu1"), base("not_in_session", "cu1"), {}, [rowA]);
+  assert("catchup → not_in_session deletes the row, no insert",
+    [pl.inserts.length, pl.deletes.map(d => d.id), pl.memberStates[0].catchupId, pl.memberStates[0].consumedWeekKey],
+    [0, ["cu1"], null, null]);
+
+  // regular → not_in_session: the plan releases the card, and the save's
+  // ledger step (findMemberCards on the ledger, then the free-slot restore)
+  // puts it back on the grid and empties it from the ledger.
+  const ledgerPno = { id: "C_LP", enrolmentId: "e_amy_pno", studentId: "amy", instrument: "Piano", day: "Monday", start: "10:00" };
+  pl = planOf(base("regular"), base("not_in_session"));
+  const offCards = findMemberCards([ledgerPno], pl.regularOff[0], resolver);
+  const ledgerAfter = [ledgerPno].filter(l => !offCards.some(c => c.id === l.id));
+  assert("regular → not_in_session restores the card from the ledger",
+    [pl.regularOff.length, pl.regularOn.length, pl.memberStates[0].consumedWeekKey,
+      restoreLedgerCards([], offCards).map(l => l.id), ledgerAfter.length],
+    [1, 0, null, ["C_LP"], 0]);
+
+  pl = planOf(base("not_in_session"), base("regular"));
+  const onDisp = applyRegularDisplacement([ledgerPno], pl.memberStates, [], resolver);
+  assert("not_in_session → regular moves the card into the ledger",
+    [pl.regularOn.length, pl.regularOff.length, onDisp.lessons.length, onDisp.removedLessons.map(l => l.id)],
+    [1, 0, 0, ["C_LP"]]);
+
+  const bandNotIn = { id: "B4", isBandSession: true, members: [{ studentId: "amy" }], memberStates: [{ ...msRegularGuitar[0], consumption: "not_in_session" }] };
+  assert("sameDayClashCard: not_in_session → null",
+    sameDayClashCard(bandNotIn, "amy", [pno, gtr]), null);
+
+  const propsNoMiss = defaultAttributions(built, { openMisses: [], enrolments: enr });
+  const propsMiss = defaultAttributions(built, { openMisses: [missA], enrolments: enr });
+  assert("defaultAttributions never proposes not_in_session",
+    [...propsNoMiss, ...propsMiss].some(p => p.consumption === "not_in_session"), false);
+
+  const allValues = ["regular", "catchup", "free", "forward", "billed", "not_in_session", null];
+  assert("consumesEntitlement across every value",
+    allValues.map(consumesEntitlement), [true, true, false, true, false, false, false]);
+  assert("attendsSession across every value, plus a missing entry",
+    [...allValues.map(c => attendsSession({ consumption: c })), attendsSession(null)],
+    [true, true, true, true, true, false, true, true]);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

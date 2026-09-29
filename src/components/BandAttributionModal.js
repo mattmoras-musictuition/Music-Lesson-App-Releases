@@ -4,7 +4,8 @@
 //
 // One row per member student of a band session. Each row chooses how
 // that student's slot in the band is accounted for: their regular
-// lesson, a catch-up settling a specific missed lesson, or a free extra.
+// lesson, a catch-up settling a specific missed lesson, a free extra, or
+// not in this session at all (left out of a sectional rehearsal).
 //
 // Presentational only. It receives already-derived rows and emits
 // onChange / onSave / onCancel. It never touches Supabase, global state,
@@ -25,6 +26,7 @@ const CONSUMPTION_OPTIONS = [
   { value: "regular", label: "Regular lesson" },
   { value: "catchup", label: "Catch-up" },
   { value: "free", label: "Free extra" },
+  { value: "not_in_session", label: "Not in this session" },
 ];
 
 /**
@@ -116,7 +118,10 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                     </button>
                   ) : (
                     <>
-                      {(row.instrumentOptions || []).length > 1 && (
+                      {/* Which instrument it counts against only means something
+                          when the slot draws on an enrolment. */}
+                      {(row.instrumentOptions || []).length > 1
+                        && (row.consumption === "regular" || row.consumption === "catchup") && (
                         <select
                           value={row.enrolmentId || ""}
                           onChange={e => onChange(row.studentId, { enrolmentId: e.target.value })}
