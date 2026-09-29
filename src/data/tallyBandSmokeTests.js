@@ -191,3 +191,182 @@ export function runLegacyBandTallyTests(assert) {
   assert("catch-up parity: slot passed reads caught up, not scheduled, not open",
     probe(linked(PW)).slice(0, 3), [true, false, []]);
 }
+
+// ── New bands (memberStates present) — the cluster 4b member-state matcher.
+function ms(e, consumption, extra = {}) {
+  return { enrolmentId: e.id, studentId: e.studentId, instrument: e.instrument, consumption, catchupId: null, consumedWeekKey: null, fee: null, attended: null, writerTeacherId: null, ...extra };
+}
+
+function own(id, e) {
+  return { id, enrolmentId: e.id, studentId: e.studentId, instrument: e.instrument, schoolId: "S", day: "Thursday", start: "09:00" };
+}
+
+export function runMemberStateTallyTests(assert) {
+  const amy = student("amy"), bob = student("bob");
+  const eAG = enrol("e_amy_gtr", "amy", "Guitar");
+  const eAP = enrol("e_amy_pno", "amy", "Piano");
+  const eBD = enrol("e_bob_drm", "bob", "Drums");
+  const amyGtr = [{ studentId: "amy", instrument: "Guitar" }];
+
+  // Regular ticks the band's own week, subject to the 6pm threshold.
+  let input = {
+    students: [amy], enrolments: [eAG],
+    wtt: {
+      [PW + "|S"]: { lessons: [band("BP", { members: amyGtr, memberStates: [ms(eAG, "regular", { consumedWeekKey: PW })] })], missed: [] },
+      [FW + "|S"]: { lessons: [band("BF", { members: amyGtr, memberStates: [ms(eAG, "regular", { consumedWeekKey: FW })] })], missed: [] },
+    },
+  };
+  let d = derive(input);
+  assert("new band: regular ticks 2020 band week, 2099 blank",
+    [d.view["amy|Guitar"][PW], d.view["amy|Guitar"][FW]], ["completed:band", "blank:band"]);
+  assert("new band: regular shim carries bandSession true",
+    d.entryMap["amy|Guitar|" + PW].bandSession, true);
+
+  // Own card plus regular → one tick, from the card.
+  input.wtt[PW + "|S"].lessons.push(own("OWN_G", eAG));
+  d = derive(input);
+  assert("new band: own card beats a regular attribution — one tick, from the card",
+    [d.view["amy|Guitar"][PW], d.entryMap["amy|Guitar|" + PW].bandSession], ["completed:OWN_G", false]);
+
+  // Catch-up: the band ticks nothing; the miss week is settled by the overlay.
+  const catchupRow = (weekKey) => ({
+    id: "CU", weekKey, day: "Tuesday", time: "11:00", instrument: "Guitar", schoolId: "S",
+    enrolmentId: "e_amy_gtr", resolvesEnrolmentId: "e_amy_gtr", resolvesWeekKey: PW0,
+    resolvesOriginalDay: "Thursday", resolvesOriginalTime: "09:00", madeUp: false, createdAt: "2020-03-01", bandLessonId: "BC",
+  });
+  const catchupBand = band("BC", { members: amyGtr, memberStates: [ms(eAG, "catchup", { catchupId: "CU", consumedWeekKey: PW0 })] });
+  input = {
+    students: [amy], enrolments: [eAG],
+    wtt: { [PW0 + "|S"]: { lessons: [], missed: [missed("MS", eAG)] }, [PW + "|S"]: { lessons: [catchupBand], missed: [] } },
+  };
+  d = derive(input);
+  const idxPast = buildBankingIndex([catchupRow(PW)]);
+  const w1 = d.entryMap["amy|Guitar|" + PW0];
+  assert("new band catchup: no band tick — W1 stays a miss, W2 blank",
+    [d.view["amy|Guitar"][PW0], d.view["amy|Guitar"][PW]], ["missed-makeup-owed:MS", "blank"]);
+  assert("new band catchup: W1 caught up once the band day has passed",
+    [isCaughtUpCell(w1, idxPast), isScheduledCatchupCell(w1, idxPast), openRows(input, [catchupRow(PW)])], [true, false, []]);
+  const idxAhead = buildBankingIndex([catchupRow(FW)]);
+  assert("new band catchup: W1 scheduled while the band day is ahead",
+    [isCaughtUpCell(w1, idxAhead), isScheduledCatchupCell(w1, idxAhead)], [false, true]);
+  input.wtt[PW + "|S"].lessons.push(own("OWN_G", eAG));
+  d = derive(input);
+  assert("new band catchup: W2 comes from the own card when present",
+    d.view["amy|Guitar"][PW], "completed:OWN_G");
+
+  // free, not_in_session, null, forward, billed → nothing from the band.
+  const noTick = ["free", "not_in_session", null, "forward", "billed"];
+  let threw = false;
+  let states = [];
+  try {
+    states = noTick.map((c) => derive({
+      students: [amy], enrolments: [eAG],
+      wtt: { [PW + "|S"]: { lessons: [band("B", { members: amyGtr, memberStates: [ms(eAG, c)] })], missed: [] } },
+    }).view["amy|Guitar"][PW]);
+  } catch (err) { threw = true; }
+  assert("new band: free / not_in_session / null / forward / billed tick nothing and do not throw",
+    [threw, states], [false, ["blank", "blank", "blank", "blank", "blank"]]);
+  states = ["free", "not_in_session", null].map((c) => derive({
+    students: [amy], enrolments: [eAG],
+    wtt: { [PW + "|S"]: { lessons: [band("B", { members: amyGtr, memberStates: [ms(eAG, c)] }), own("OWN_G", eAG)], missed: [] } },
+  }).view["amy|Guitar"][PW]);
+  assert("new band: free / not_in_session / null — own card still ticks",
+    states, ["completed:OWN_G", "completed:OWN_G", "completed:OWN_G"]);
+
+  // Empty memberStates never falls through to members[] or the ledger.
+  const emptyStates = (removedLessons) => derive({
+    students: [amy, bob], enrolments: [eAG, eBD],
+    wtt: { [PW + "|S"]: { lessons: [band("B", { members: [...amyGtr, { studentId: "bob", instrument: "Drums" }], memberStates: [], removedLessons })], missed: [] } },
+  }).view;
+  let v = emptyStates([]);
+  assert("new band: empty memberStates with members[] and empty ledger ticks nothing",
+    [v["amy|Guitar"][PW], v["bob|Drums"][PW]], ["blank", "blank"]);
+  v = emptyStates([{ id: "RL", enrolmentId: "e_amy_gtr" }]);
+  assert("new band: empty memberStates ignores a populated ledger too",
+    v["amy|Guitar"][PW], "blank");
+
+  // Multi-instrument: piano regular, guitar card present (and in the ledger
+  // the legacy matcher would have read).
+  d = derive({
+    students: [amy], enrolments: [eAG, eAP],
+    wtt: { [PW + "|S"]: { lessons: [
+      band("B", { members: [{ studentId: "amy", instrument: "Piano" }], memberStates: [ms(eAG, null), ms(eAP, "regular", { consumedWeekKey: PW })], removedLessons: [{ id: "RL", enrolmentId: "e_amy_gtr" }] }),
+      own("OWN_G", eAG),
+    ], missed: [] } },
+  });
+  assert("new band: multi-instrument — piano ticks from the band, guitar from its own card",
+    [d.view["amy|Piano"][PW], d.view["amy|Guitar"][PW]], ["completed:band", "completed:OWN_G"]);
+
+  // Amendment B: a same-week miss beats a new band's regular tick.
+  input = {
+    students: [amy], enrolments: [eAG],
+    wtt: { [PW + "|S"]: { lessons: [band("B", { members: amyGtr, memberStates: [ms(eAG, "regular", { consumedWeekKey: PW })] })], missed: [missed("MS", eAG)] } },
+  };
+  d = derive(input);
+  assert("new band: regular plus same-week miss shows missed",
+    d.view["amy|Guitar"][PW], "missed-makeup-owed:MS");
+  assert("new band: that miss appears in getOpenCatchupRows",
+    openRows(input, []), ["amy@" + PW]);
+
+  // attended: false → no tick.
+  d = derive({
+    students: [amy], enrolments: [eAG],
+    wtt: { [PW + "|S"]: { lessons: [band("B", { members: amyGtr, memberStates: [ms(eAG, "regular", { attended: false })] })], missed: [] } },
+  });
+  assert("new band: regular with attended false ticks nothing",
+    d.view["amy|Guitar"][PW], "blank");
+
+  // Duplicate enrolments: the entry names a different row for the same
+  // student + instrument → falls back to studentId + instrument. A different
+  // instrument never matches.
+  d = derive({
+    students: [amy], enrolments: [eAG, eAP],
+    wtt: { [PW + "|S"]: { lessons: [band("B", { members: amyGtr, memberStates: [{ ...ms(eAG, "regular"), enrolmentId: "e_amy_gtr_other" }] })], missed: [] } },
+  });
+  assert("new band: duplicate-enrolment fallback to studentId + instrument",
+    [d.view["amy|Guitar"][PW], d.view["amy|Piano"][PW]], ["completed:band", "blank"]);
+
+  // A legacy band and a new band in the same week, each on its own matcher.
+  // The new band lists dave in members[] but attributes him free, so only the
+  // legacy fallback could tick him — and dave is not in the legacy band.
+  const dave = student("dave");
+  const eDV = enrol("e_dave_vox", "dave", "Voice");
+  d = derive({
+    students: [amy, bob, dave], enrolments: [eAG, eBD, eDV],
+    wtt: { [PW + "|S"]: { lessons: [
+      band("BN", { members: [...amyGtr, { studentId: "bob", instrument: "Drums" }, { studentId: "dave", instrument: "Voice" }], memberStates: [ms(eAG, "regular"), ms(eDV, "free")] }),
+      band("BL", { members: [{ studentId: "bob", instrument: "Drums" }] }),
+    ], missed: [] } },
+  });
+  assert("new + legacy band in one week: each uses its own matcher",
+    [d.view["amy|Guitar"][PW], d.view["bob|Drums"][PW], d.view["dave|Voice"][PW]], ["completed:band", "completed:band", "blank"]);
+
+  // The 4a Q4 scenario: six members, empty ledger, no own cards.
+  const ids = ["cat", "fre", "nis", "nul", "reg", "abs"];
+  const six = ids.map((id) => student(id));
+  const sixE = ids.map((id) => enrol("e_" + id, id, "Guitar"));
+  const byId = Object.fromEntries(sixE.map((e) => [e.studentId, e]));
+  const q4Band = band("BQ", {
+    members: ids.map((id) => ({ studentId: id, instrument: "Guitar" })),
+    memberStates: [
+      ms(byId.cat, "catchup", { catchupId: "CQ", consumedWeekKey: PW0 }),
+      ms(byId.fre, "free"), ms(byId.nis, "not_in_session"), ms(byId.nul, null),
+      ms(byId.reg, "regular", { consumedWeekKey: PW }), ms(byId.abs, "regular", { consumedWeekKey: PW }),
+    ],
+  });
+  const q4Row = { ...catchupRow(PW), id: "CQ", enrolmentId: "e_cat", resolvesEnrolmentId: "e_cat", bandLessonId: "BQ" };
+  input = {
+    students: six, enrolments: sixE,
+    wtt: {
+      [PW0 + "|S"]: { lessons: [], missed: [missed("MC", byId.cat)] },
+      [PW + "|S"]: { lessons: [q4Band], missed: [missed("MA", byId.abs, { day: "Tuesday" })] },
+    },
+  };
+  d = derive(input);
+  assert("4a Q4 scenario: only the plain regular member ticks the band week",
+    ids.map((id) => d.view[id + "|Guitar"][PW]),
+    ["blank", "blank", "blank", "blank", "completed:band", "missed-makeup-owed:MA"]);
+  assert("4a Q4 scenario: catch-up member's W1 caught up, W2 blank; open rows hold only the absent regular",
+    [isCaughtUpCell(d.entryMap["cat|Guitar|" + PW0], buildBankingIndex([q4Row])), d.view["cat|Guitar"][PW], openRows(input, [q4Row])],
+    [true, "blank", ["abs@" + PW]]);
+}

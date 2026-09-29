@@ -245,8 +245,30 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       // the shim and the band's own `day` drives the post-6pm completed
       // threshold. Chained after the regular matches so a regular lesson always
       // takes precedence and the band is never double-counted.
+      //
+      // Band Session Attribution cluster 4b — everything above describes a
+      // LEGACY band (no memberStates array) and stays exactly as it was, so
+      // past terms do not move. A NEW band (memberStates is an array, even an
+      // empty one) never reads removedLessons or members[]: those infer what
+      // the band meant, and memberStates says it. It ticks this enrolment only
+      // for an entry attributed "regular" and not marked absent. Every other
+      // consumption contributes nothing here — a catch-up's missed week is
+      // settled by the banking overlay (isCaughtUpCell) exactly like a picker
+      // catch-up, and free / not_in_session / unattributed / forward / billed
+      // consume nothing in this week. The row is matched on enrolmentId, then
+      // studentId + instrument, because the band's week-active pick and this
+      // loop's preferred row can differ when duplicate enrolments exist.
+      //
+      // Literal strings rather than CONSUMPTION: importing bandMemberStates
+      // here would close the cycle tallyDerive → bandMemberStates →
+      // enrolmentActivity → tallyDerive.
+      const matchByMemberState = (item) => item.memberStates.some(ms =>
+        !!ms && ms.consumption === "regular" && ms.attended !== false &&
+        (ms.enrolmentId === e.id || (ms.studentId === e.studentId && ms.instrument === e.instrument)));
+
       const matchByBandSession = (item) => {
         if (!item.isBandSession) return false;
+        if (Array.isArray(item.memberStates)) return matchByMemberState(item);
         const removed = item.removedLessons || [];
         if (removed.length > 0) {
           return removed.some(rl =>
@@ -257,13 +279,18 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
           m.studentId === e.studentId && m.instrument === e.instrument);
       };
 
-      const lessonMatch = (weekData.lessons || []).find(matchByEnrolment)
-        || (weekData.lessons || []).find(matchByLessonKey)
-        || (!e.isGroup ? (weekData.lessons || []).find(matchByBandSession) : undefined);
-      const missedMatch = !lessonMatch
-        ? ((weekData.missed || []).find(matchByEnrolment)
-            || (weekData.missed || []).find(matchByLessonKey))
-        : null;
+      const ownMatch = (weekData.lessons || []).find(matchByEnrolment)
+        || (weekData.lessons || []).find(matchByLessonKey);
+      const bandMatch = !ownMatch && !e.isGroup ? (weekData.lessons || []).find(matchByBandSession) : undefined;
+      const findMissed = () => (weekData.missed || []).find(matchByEnrolment)
+        || (weekData.missed || []).find(matchByLessonKey);
+      // Cluster 4b — for a NEW band only, a missed entry for this enrolment in
+      // the same week beats the band's tick: the absence path is what undoes a
+      // planned member's tick (spec 3.9). A legacy band still beats a miss, and
+      // an own-card match is never affected.
+      const newBandMiss = bandMatch && Array.isArray(bandMatch.memberStates) ? findMissed() : undefined;
+      const lessonMatch = ownMatch || (newBandMiss ? undefined : bandMatch);
+      const missedMatch = !lessonMatch ? (newBandMiss || findMissed()) : null;
 
       if (lessonMatch || missedMatch) hasWttData = true;
       if (lessonMatch?.day) latestWttDay = lessonMatch.day;

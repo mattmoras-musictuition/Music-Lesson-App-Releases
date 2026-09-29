@@ -855,14 +855,19 @@ export function restoreLedgerCards(lessons, ledger) {
 // ── Cluster 3c ──────────────────────────────────────────────────────
 
 /**
- * True if this consumption uses up one of the student's paid lessons —
- * the tally should tick it and invoicing should count it.
+ * True if this consumption uses up one of the student's paid lessons.
  *
  * regular, catchup and forward all draw on the entitlement. free is a
  * gift, billed was already charged elsewhere, not_in_session means they
  * were never at the band, and null is undecided — none of those consume.
  *
- * Not wired in yet; cluster 4 builds the tally and charge on it.
+ * This is NOT the tally's tick rule, and the tally does not call it.
+ * Consuming an entitlement and ticking a tally cell differ for catchup:
+ * the student's missed week is settled by the banking overlay
+ * (isCaughtUpCell) exactly like a picker-created catch-up, so the band
+ * itself ticks nothing for a catchup member. The tally's band matcher
+ * (tallyDerive.js, cluster 4b) ticks only "regular", on the band's own week.
+ * Not wired in anywhere yet.
  *
  * @param {string|null|undefined} consumption  One of CONSUMPTION, or null.
  * @returns {boolean}

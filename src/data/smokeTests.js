@@ -15,7 +15,7 @@ import {
   consumesEntitlement, attendsSession,
 } from "./bandMemberStates";
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
-import { runLegacyBandTallyTests } from "./tallyBandSmokeTests";
+import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -292,6 +292,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Tally band matching (cluster 4b) ──
   runLegacyBandTallyTests(assert);
+  runMemberStateTallyTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
