@@ -20,6 +20,7 @@ import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
 import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImportWiringTests, runImportMissedLineTests } from "./mttImportSmokeTests";
 import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTests, runParentEmailStudentTests } from "./bandSessionViewSmokeTests";
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
+import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -337,6 +338,7 @@ export function runSmokeTests(logErrorFn) {
   runParentEmailStudentTests(assert);
   runBandDisplayCharacterizationTests(assert);
   runBandDisplaySessionTests(assert);
+  runWeeklyPresenceTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
