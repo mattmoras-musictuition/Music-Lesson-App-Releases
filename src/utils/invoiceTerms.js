@@ -36,7 +36,10 @@ export function _sortedBreaks(interruptions) {
 // v2.28.0: the Invoicing "Invoicing for" dropdown appends past terms (view-only)
 // after the future set; detectTerms below keeps its filtered contract so the
 // Dashboard's resolveCurrentTerm and Invoicing's default selection are unchanged.
-export function detectAllTerms(interruptions) {
+// includeStaleEstimate (v2.39.0, off by default) keeps the estimated term after
+// the last break even once it began more than two weeks ago — findNextTerm
+// needs that term's label long after it started.
+export function detectAllTerms(interruptions, { includeStaleEstimate = false } = {}) {
   const breaks = _sortedBreaks(interruptions);
   if (!breaks.length) return [];
   const today = _today();
@@ -52,7 +55,7 @@ export function detectAllTerms(interruptions) {
   // Term after last known break
   const last = breaks[breaks.length - 1];
   const afterStart = _addDays(last.end, 1);
-  if (afterStart >= _addDays(today, -14)) {
+  if (includeStaleEstimate || afterStart >= _addDays(today, -14)) {
     allTerms.push({ start: afterStart, end: _addDays(afterStart, 70), isEst: true });
   }
 
@@ -73,6 +76,27 @@ export function detectAllTerms(interruptions) {
 export function detectTerms(interruptions) {
   const today = _today();
   return detectAllTerms(interruptions).filter(t => t.end >= today).slice(0, 6);
+}
+
+// The term before the one starting on termStart — the window buildInvoices
+// deducts missed lessons from. Relocated verbatim from InvoicingManager.js
+// (v2.39.0) so the catch-up pickers resolve the very same previous term.
+export function _findPrevTerm(interruptions, termStart) {
+  const breaks = _sortedBreaks(interruptions);
+  const prevBreak = [...breaks].reverse().find(b => b.end < termStart);
+  if (!prevBreak) return null;
+  const prev2 = [...breaks].reverse().find(b => b.end < prevBreak.start);
+  return {
+    start: prev2 ? _addDays(prev2.end, 1) : `${new Date(prevBreak.start + "T00:00:00").getFullYear()}-01-01`,
+    end: _addDays(prevBreak.start, -1),
+  };
+}
+
+// The labelled term that follows a term ending on termEnd: the first
+// detectAllTerms entry starting after it, so its label is exactly the
+// termLabel Invoicing stamps on that term's invoices. null when none is known.
+export function findNextTerm(interruptions, termEnd) {
+  return detectAllTerms(interruptions || [], { includeStaleEstimate: true }).find(t => t.start > termEnd) || null;
 }
 
 // Reproduces Invoicing's default term selection exactly: detectTerms

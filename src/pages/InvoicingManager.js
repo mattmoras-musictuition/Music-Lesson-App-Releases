@@ -12,7 +12,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 // v2.18.0 — term detection relocated verbatim to utils/invoiceTerms.js so the
 // Dashboard alert chip can share it; imported back here, single definition.
-import { detectTerms, detectAllTerms, _sortedBreaks, _toDS, _addDays, _today } from "../utils/invoiceTerms";
+import { detectTerms, detectAllTerms, _toDS, _today, _findPrevTerm } from "../utils/invoiceTerms";
 // v2.18.0 — uninvoiced-students derivation relocated verbatim to
 // utils/uninvoicedDerive.js, shared with the Dashboard alert chip.
 // _primaryParent moved with it; imported back here, single definition.
@@ -152,19 +152,10 @@ function _getFridayOfWeek2(termStart) {
 
 // ─────────────────────────────────────────────────────────────
 // TERM DETECTION — detectTerms + helpers live in utils/invoiceTerms.js
-// (relocated verbatim, v2.18.0). _findPrevTerm stays here: it's only
-// used by buildInvoices.
+// (relocated verbatim, v2.18.0). _findPrevTerm joined them in v2.39.0 so
+// the catch-up pickers can resolve the same previous term buildInvoices
+// deducts against.
 // ─────────────────────────────────────────────────────────────
-function _findPrevTerm(interruptions, termStart) {
-  const breaks = _sortedBreaks(interruptions);
-  const prevBreak = [...breaks].reverse().find(b => b.end < termStart);
-  if (!prevBreak) return null;
-  const prev2 = [...breaks].reverse().find(b => b.end < prevBreak.start);
-  return {
-    start: prev2 ? _addDays(prev2.end, 1) : `${new Date(prevBreak.start + "T00:00:00").getFullYear()}-01-01`,
-    end: _addDays(prevBreak.start, -1),
-  };
-}
 
 // Narrow a term's [start, end] to the window an enrolment was actually active
 // for. Billing a mid-term starter for the whole term was the second symptom of
