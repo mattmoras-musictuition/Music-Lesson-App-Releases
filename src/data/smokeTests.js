@@ -17,6 +17,7 @@ import {
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
+import { runMttImportCharacterizationTests } from "./mttImportSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -320,6 +321,9 @@ export function runSmokeTests(logErrorFn) {
   runBandAbsenceLockTests(assert);
   runBandAbsenceRegenTests(assert);
   runBandAbsenceRemovalTests(assert);
+
+  // ── Clean MTT re-import (v2.40.1) ──
+  runMttImportCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
