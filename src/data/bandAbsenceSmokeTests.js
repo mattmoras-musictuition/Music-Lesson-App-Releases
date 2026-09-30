@@ -17,7 +17,7 @@ import { deriveTallyRows, getOpenCatchupRows, getEnrolmentTermDeductionMath } fr
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { buildMemberStates, planAttributionSave, applyStudentAttribution } from "./bandMemberStates";
 import {
-  isMemberAbsent, absentMembers, eligibleForAbsence, absenceMenuLabel,
+  isMemberAbsent, absentMembers, absentEnrolmentIds, eligibleForAbsence, absenceMenuLabel,
   planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
 } from "./bandAbsence";
 
@@ -296,4 +296,50 @@ export function runBandAbsenceHelperTests(assert) {
   assert("absence free: attended false with no reason, undo back to null",
     [pf.kind, pf.band.memberStates[3].attended, memberAbsenceInfo(pf.band, pf.band.memberStates[3], []), uf.band.memberStates[3].attended],
     ["free", false, { reason: null, reasonDetail: "" }, null]);
+}
+
+// ── Attribution window lock (commit 3) ──────────────────────────────────
+export function runBandAbsenceLockTests(assert) {
+  const eAG = enrol("e_amy_gtr", "amy", "Guitar");
+  const eAP = enrol("e_amy_pno", "amy", "Piano");
+  const eBD = enrol("e_bob_drm", "bob", "Drums");
+  const m0 = { enrolmentId: eBD.id, weekKey: PW0, day: "Thursday", start: "09:00" };
+
+  // The 5a trap, closed: a catch-up absence with owed ON deleted its row
+  // (catchupId null). Saving the window again must not re-insert it.
+  const cuAbsent = ms(eBD, "catchup", { catchupId: null, consumedWeekKey: PW0, attended: false,
+    absence: { reason: "informed_absence", reasonDetail: "", notes: "", makeupEligible: true },
+    absentCatchupSnapshot: row("CU", eBD, PW, PW0, { bandLessonId: "B" }) });
+  const B = band("B", { memberStates: [cuAbsent] });
+  const ids = absentEnrolmentIds(B, []);
+  const trap = planAttributionSave({ stored: B.memberStates, working: B.memberStates, missByEnrolment: { [eBD.id]: m0 }, catchupsForBand: [], weekKey: PW, absentEnrolmentIds: ids });
+  assert("lock: absent catch-up with no row is NOT re-inserted on save",
+    [trap.inserts.length, trap.deletes.length, trap.changed, trap.memberStates[0]], [0, 0, false, cuAbsent]);
+
+  // Even a working copy that tried to change the absent student is ignored.
+  const edited = applyStudentAttribution(B.memberStates, "bob", eBD.id, "free", null);
+  const ignored = planAttributionSave({ stored: B.memberStates, working: edited, missByEnrolment: {}, catchupsForBand: [], weekKey: PW, absentEnrolmentIds: ids });
+  assert("lock: a consumption change on an absent member is ignored by the plan",
+    [ignored.changed, ignored.memberStates[0].consumption, ignored.deletes.length], [false, "catchup", 0]);
+
+  // Regular absent (stamped miss): switching the student to Piano or to free
+  // must not pull a card out of, or back into, the ledger.
+  const reg = ms(eAG, "regular", { consumedWeekKey: PW });
+  const RB = band("RB", { memberStates: [reg, ms(eAP, null), ms(eBD, "regular", { consumedWeekKey: PW })] });
+  const missed = [miss("OWN_G", eAG, { bandLessonId: "RB" })];
+  const rIds = absentEnrolmentIds(RB, missed);
+  let working = applyStudentAttribution(RB.memberStates, "amy", eAP.id, "regular", PW);
+  working = applyStudentAttribution(working, "bob", eBD.id, "free", null);
+  const rp = planAttributionSave({ stored: RB.memberStates, working, missByEnrolment: {}, catchupsForBand: [], weekKey: PW, absentEnrolmentIds: rIds });
+  assert("lock: absent regular student keeps both entries as stored (no regularOn / regularOff)",
+    [rp.memberStates.slice(0, 2), rp.regularOn.map(e => e.enrolmentId), rp.regularOff.map(e => e.enrolmentId)],
+    [RB.memberStates.slice(0, 2), [], ["e_bob_drm"]]);
+  assert("lock: the other, present student's change still applies",
+    [rp.changed, rp.memberStates[2].consumption], [true, "free"]);
+
+  // No absences → identical plan to the pre-5b call.
+  const plain = planAttributionSave({ stored: RB.memberStates, working, missByEnrolment: {}, catchupsForBand: [], weekKey: PW });
+  const plainEmpty = planAttributionSave({ stored: RB.memberStates, working, missByEnrolment: {}, catchupsForBand: [], weekKey: PW, absentEnrolmentIds: [] });
+  assert("lock: an empty absent set changes nothing",
+    plainEmpty, plain);
 }

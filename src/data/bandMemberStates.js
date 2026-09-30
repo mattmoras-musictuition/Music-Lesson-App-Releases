@@ -677,15 +677,25 @@ function rowSettlesMiss(row, miss) {
  *        miss each catchup-attributed student is settling.
  * @param {Array} args.catchupsForBand    Catch-up rows linked to this band.
  * @param {string} args.weekKey           The band's week.
+ * @param {Array<string>|Set<string>} [args.absentEnrolmentIds]  Entries
+ *        recorded absent from this session (cluster 5b). Every entry of a
+ *        student holding one is skipped entirely — kept exactly as stored,
+ *        with no insert, delete or ledger move — so an absence can only be
+ *        changed through Undo absence. In particular a catch-up absence that
+ *        deleted its row (catchupId null) is never silently re-inserted.
  * @returns {{inserts: Array, deletes: Array, regularOn: Array,
  *   regularOff: Array, memberStates: MemberState[], changed: boolean}}
  */
-export function planAttributionSave({ stored, working, missByEnrolment, catchupsForBand, weekKey } = {}) {
+export function planAttributionSave({ stored, working, missByEnrolment, catchupsForBand, weekKey, absentEnrolmentIds } = {}) {
   const storedList = stored || [];
   const workingList = working || [];
   const misses = missByEnrolment || {};
   const rows = catchupsForBand || [];
   const storedByEnrolment = new Map(storedList.map((e) => [e && e.enrolmentId, e]));
+  const absentIds = absentEnrolmentIds instanceof Set ? absentEnrolmentIds : new Set(absentEnrolmentIds || []);
+  const lockedStudents = new Set(
+    storedList.filter((e) => e && absentIds.has(e.enrolmentId)).map((e) => e.studentId)
+  );
 
   const inserts = [];
   const deletes = [];
@@ -695,6 +705,7 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
   const memberStates = workingList.map((entry) => {
     if (!entry) return entry;
     const before = storedByEnrolment.get(entry.enrolmentId) || null;
+    if (lockedStudents.has(entry.studentId)) return before || entry;
     const wasCatchup = !!(before && before.consumption === CONSUMPTION.catchup);
     const isCatchup = entry.consumption === CONSUMPTION.catchup;
     const wasRegular = !!(before && before.consumption === CONSUMPTION.regular);

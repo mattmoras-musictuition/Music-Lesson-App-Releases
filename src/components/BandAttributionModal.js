@@ -36,7 +36,9 @@ const CONSUMPTION_OPTIONS = [
  * @param {Array}    props.rows         One per student, already derived:
  *   { studentId, studentName, entries, consumption, enrolmentId,
  *     instrumentOptions: [{enrolmentId, label}], misses: [{key, label, miss}],
- *     settlesLabel, departed }
+ *     settlesLabel, departed, absentLabel }
+ *   absentLabel — "Absent — <reason>" (or "Absent") for a member recorded
+ *   absent from this session; the row is then read-only (cluster 5b).
  * @param {Function} props.onChange     (studentId, patch) — patch carries any of
  *                                      { consumption, enrolmentId, missKey }.
  * @param {Function} props.onSave
@@ -80,6 +82,7 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
 
         {rows.map(row => {
           const noMisses = !row.misses || row.misses.length === 0;
+          const locked = !!row.absentLabel;
           return (
             <div key={row.studentId}
               style={{
@@ -94,7 +97,10 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   {row.departed && (
                     <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>No longer in band</div>
                   )}
-                  {!row.departed && row.consumption === "catchup" && (
+                  {locked && (
+                    <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>{row.absentLabel}</div>
+                  )}
+                  {!locked && !row.departed && row.consumption === "catchup" && (
                     <button
                       onClick={() => onChange(row.studentId, { cycleMiss: true })}
                       disabled={noMisses || (row.misses || []).length < 2}
@@ -125,8 +131,9 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                         <select
                           value={row.enrolmentId || ""}
                           onChange={e => onChange(row.studentId, { enrolmentId: e.target.value })}
-                          title="Counts against"
-                          style={selectStyle(false)}>
+                          disabled={locked}
+                          title={locked ? "Undo the absence on the band card to change this" : "Counts against"}
+                          style={selectStyle(locked)}>
                           {row.instrumentOptions.map(o => (
                             <option key={o.enrolmentId} value={o.enrolmentId}>{o.label}</option>
                           ))}
@@ -135,7 +142,9 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                       <select
                         value={row.consumption || ""}
                         onChange={e => onChange(row.studentId, { consumption: e.target.value })}
-                        style={selectStyle(false)}>
+                        disabled={locked}
+                        title={locked ? "Undo the absence on the band card to change this" : undefined}
+                        style={selectStyle(locked)}>
                         {CONSUMPTION_OPTIONS.map(o => (
                           <option key={o.value} value={o.value} disabled={o.value === "catchup" && noMisses}>
                             {o.label}

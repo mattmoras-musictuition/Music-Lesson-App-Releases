@@ -31,6 +31,7 @@ import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, app
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
+import { absentEnrolmentIds, memberAbsenceInfo } from "../data/bandAbsence";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1380,10 +1381,23 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       };
     }
 
+    // Cluster 5b — members recorded absent are locked: no defaults, no edits,
+    // skipped by the save plan. Their sub-line reads "Absent — <reason>".
+    const weekMissed = weeklyTimetables[storageKey]?.missed || [];
+    const absentIds = absentEnrolmentIds(lesson, weekMissed);
+    const absentLabels = {};
+    for (const e of reconciled) {
+      if (!e || !absentIds.has(e.enrolmentId)) continue;
+      const info = memberAbsenceInfo(lesson, e, weekMissed);
+      const label = info && info.reason ? getMissedReasonLabel(info.reason, info.reasonDetail) : null;
+      absentLabels[e.studentId] = label ? `Absent — ${label}` : "Absent";
+    }
+
     // Defaults for the undecided, applied through applyStudentAttribution so
     // the one-consumption-per-student rule holds even here.
     let working = reconciled;
     for (const p of defaultAttributions(reconciled, { openMisses: openMissesFlat, enrolments })) {
+      if (absentLabels[p.studentId]) continue;
       working = applyStudentAttribution(working, p.studentId, p.enrolmentId, p.consumption,
         p.settlesMiss ? p.settlesMiss.weekKey : (p.consumption === CONSUMPTION.regular ? weekKey : null));
       if (p.settlesMiss) missByEnrolment[p.enrolmentId] = p.settlesMiss;
@@ -1395,6 +1409,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       working,
       departedEnrolmentIds,
       missByEnrolment,
+      absentEnrolmentIds: [...absentIds],
+      absentLabels,
       saving: false,
     });
   };
@@ -1419,6 +1435,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const rows = studentRows(prev.working, prev.departedEnrolmentIds);
       const row = rows.find(r => r.studentId === studentId);
       if (!row) return prev;
+      if (prev.absentLabels && prev.absentLabels[studentId]) return prev;
       const current = row.attributedEntry;
       const linkedRows = (catchups || []).filter(c => c.bandLessonId === prev.lessonId);
       const misses = selectableMissesForStudent(row.entries, openMissesFlat, linkedRows);
@@ -1490,6 +1507,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         // weekKey/day/time fields it reads.
         settlesLabel: chosenMiss ? formatCatchupCompletionLabel(chosenMiss) : "",
         departed: row.departed,
+        absentLabel: (bandAttrModal.absentLabels && bandAttrModal.absentLabels[row.studentId]) || "",
       };
     });
   }, [bandAttrModal, catchups, openMissesFlat, students]);
@@ -1564,6 +1582,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       missByEnrolment: bandAttrModal.missByEnrolment,
       catchupsForBand: linkedRows,
       weekKey,
+      absentEnrolmentIds: bandAttrModal.absentEnrolmentIds,
     });
     if (!plan.changed) { setBandAttrModal(null); return; }
 
