@@ -17,6 +17,7 @@ import {
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
+import { runBandAbsenceCharacterizationTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -312,6 +313,9 @@ export function runSmokeTests(logErrorFn) {
   runLegacyBandTallyTests(assert);
   runMemberStateTallyTests(assert);
   runCatchupScopeTests(assert);
+
+  // ── Band absence (cluster 5b) ──
+  runBandAbsenceCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
