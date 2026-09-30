@@ -21,6 +21,7 @@ import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLa
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
 import { carryBandMisses } from "./data/bandAbsence";
+import { bandNameForCatchup } from "./data/bandSessionView";
 import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
@@ -3858,7 +3859,9 @@ export default function MusicTimetableApp() {
               const startMin = timeToMin(c.time || "00:00");
               const endMin = startMin + (c.durationMinutes ?? 30);
               const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
-              lines.push(`  ${day} ${c.time}${String.fromCharCode(8211)}${endStr}: ${studentName} (${c.instrument || "?"}) ${String.fromCharCode(8212)} ${teacherName}`);
+              // v2.41.0 — a band-linked row says which band session it was delivered in.
+              const bandName = bandNameForCatchup(c, weeklyTimetables);
+              lines.push(`  ${day} ${c.time}${String.fromCharCode(8211)}${endStr}: ${studentName} (${c.instrument || "?"})${bandName ? ` [in band session: ${bandName}]` : ""} ${String.fromCharCode(8212)} ${teacherName}`);
             });
           }
         });

@@ -13,7 +13,7 @@ import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
-import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween } from "../data/bandSessionView";
+import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup } from "../data/bandSessionView";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -2520,9 +2520,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           const endMin = lh * 60 + lm + 30;
                           const endStr = `${String(Math.floor(endMin / 60)).padStart(2, "0")}:${String(endMin % 60).padStart(2, "0")}`;
                           const tName = teachers.find(tc => tc.id === tid)?.name || "";
+                          // v2.41.0 — a band catch-up is marked with a small band icon;
+                          // hovering names the band(s). Unfound bands render plainly.
+                          const chipBands = [...new Set(sorted.map(c => bandNameForCatchup(c, weeklyTimetables)).filter(Boolean))];
                           return (
-                            <span key={tid} style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 4px" }}>
+                            <span key={tid} title={chipBands.length ? `Includes band catch-ups: ${chipBands.join(", ")}` : undefined} style={{ display: "inline-flex", alignItems: "center", gap: 2, fontSize: 9, fontWeight: 700, color: "#fff", background: teacherColorMap[tid] || colors.accent, borderRadius: 3, padding: "1px 4px" }}>
                               {tName.split(" ").map(w => w[0]).join("")}
+                              {chipBands.length > 0 && <Guitar size={8} />}
                               <span style={{ fontWeight: 400, opacity: 0.9 }}>{toTimeLabel(first.time)}–{toTimeLabel(endStr)}</span>
                             </span>
                           );
@@ -2766,7 +2770,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         const tid = mtt?.teacherId || "";
                         const studentName = students.find(s => s.id === enrol?.studentId)?.name || "";
                         if (!byTeacher[tid]) byTeacher[tid] = { lessons: [] };
-                        byTeacher[tid].lessons.push({ ...c, _studentName: studentName });
+                        byTeacher[tid].lessons.push({ ...c, _studentName: studentName, _bandName: bandNameForCatchup(c, weeklyTimetables) });
                       }
                       return (
                         <div>
@@ -2791,8 +2795,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                   {sorted.map(c => (
                                     <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 11 }}>
                                       <span style={{ color: colors.textMuted, fontWeight: 600, flexShrink: 0 }}>{toTimeLabel(c.time)}</span>
+                                      {c._bandName ? (
+                                        // v2.41.0 — a band-linked row names its band.
+                                        <span style={{ color: colors.text }}>{preferredFirstName(c._studentName)}{c.instrument ? ` · ${c.instrument}` : ""} · in {c._bandName} <span style={{ color: colors.textMuted }}>(band)</span></span>
+                                      ) : (<>
                                       <span style={{ color: colors.text }}>{c._studentName}</span>
                                       {c.instrument && <span style={{ color: colors.textMuted }}>· {c.instrument}</span>}
+                                      </>)}
                                     </div>
                                   ))}
                                 </div>
