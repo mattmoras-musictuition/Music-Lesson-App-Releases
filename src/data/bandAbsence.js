@@ -421,3 +421,72 @@ export function carryBandMisses(nextMissed, prevMissed, nextLessons) {
   const carried = (prevMissed || []).filter(m => isBandStampedMiss(m) && bandIds.has(m.bandLessonId));
   return [...withoutBandMisses(nextMissed), ...carried];
 }
+
+// ── Clean MTT re-import (v2.40.1) ───────────────────────────────────────
+//
+// Re-importing a week (or a day) from the master is a sweeping reset: every
+// band card in scope goes, with everything attached to it, exactly as if each
+// band had been removed by hand first.
+
+/**
+ * Plan the band side of a clean import of one week+school entry.
+ *
+ * In scope: every band card in the week, or only `day`'s band cards for a day
+ * import. Legacy bands (no memberStates) are simply dropped — nothing hangs
+ * off them.
+ *
+ * rowsToDelete — the band-linked catchups rows of the removed bands: the union
+ *   of (a) catchupIds in their memberStates and (b) rows whose bandLessonId
+ *   is a removed band, restricted to this week + school, de-duplicated.
+ *   Deleting them re-opens the misses they settled, as manual removal does.
+ *   Catch-ups not linked to a band are never included.
+ *
+ * restoreCards — cards the import will NOT rebuild, so they must go back on
+ *   the grid as "Remove band session" would put them: a day import only
+ *   rebuilds that day, so a removed band's ledger cards (and its regular
+ *   absences' cards) on OTHER days are returned for the caller's
+ *   occupied-slot restore. Always empty for a whole-week import, which
+ *   rebuilds every card from the master.
+ *
+ * @param {Object} entry        The week+school entry before import.
+ * @param {Array} catchups      The full catchups collection.
+ * @param {Object} opts
+ * @param {string|null} [opts.day]  Day import scope; null = whole week.
+ * @param {string} opts.weekKey
+ * @param {string} opts.schoolId
+ * @returns {{lessons: Array, rowsToDelete: Array, restoreCards: Array,
+ *   removedBandIds: string[], removedBandCount: number, legacyBandCount: number}}
+ */
+export function planCleanImport(entry, catchups, { day = null, weekKey, schoolId } = {}) {
+  const lessons = (entry && entry.lessons) || [];
+  const removed = lessons.filter(l => l && l.isBandSession && (!day || l.day === day));
+  const removedIds = new Set(removed.map(b => b.id));
+
+  const linkedIds = new Set();
+  for (const b of removed) {
+    if (!hasMemberStates(b)) continue;
+    for (const e of b.memberStates) if (e && e.catchupId) linkedIds.add(e.catchupId);
+  }
+  const seen = new Set();
+  const rowsToDelete = (catchups || []).filter(c => {
+    if (!c || seen.has(c.id)) return false;
+    if (c.weekKey !== weekKey || c.schoolId !== schoolId) return false;
+    if (!linkedIds.has(c.id) && !removedIds.has(c.bandLessonId)) return false;
+    seen.add(c.id);
+    return true;
+  });
+
+  const restoreCards = !day ? [] : [
+    ...removed.flatMap(b => b.removedLessons || []),
+    ...((entry && entry.missed) || []).filter(m => m && removedIds.has(m.bandLessonId)).map(cardFromBandMiss),
+  ].filter(c => c && c.day !== day);
+
+  return {
+    lessons: lessons.filter(l => !(l && removedIds.has(l.id))),
+    rowsToDelete,
+    restoreCards,
+    removedBandIds: [...removedIds],
+    removedBandCount: removed.length,
+    legacyBandCount: removed.filter(b => !hasMemberStates(b)).length,
+  };
+}

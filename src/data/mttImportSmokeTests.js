@@ -12,7 +12,7 @@
 // ============================================================
 
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
-import { carryBandMisses } from "./bandAbsence";
+import { carryBandMisses, planCleanImport } from "./bandAbsence";
 import { mergeCatchupsIntoLessons, buildBankingIndex } from "./catchupsDerive";
 
 const FW = "2099-03-09";   // a future Monday
@@ -107,4 +107,76 @@ export function runMttImportCharacterizationTests(assert) {
     !!buildBankingIndex([cu]).get("e_bob_drm|2099-03-02"), true);
   assert("char import all: with the band present the row is hidden behind it",
     mergeCatchupsIntoLessons(week.lessons, [cu], FW).filter(l => l.__isCatchup).length, 0);
+}
+
+// ── planCleanImport (commit 2) ──────────────────────────────────────────
+export function runCleanImportPlanTests(assert) {
+  const week = existingWeek();
+  const opts = { weekKey: FW, schoolId: "S" };
+  const cu = { id: "CU", weekKey: FW, schoolId: "S", enrolmentId: "e_bob_drm", bandLessonId: "B_NEW" };
+  // Stamp lost from memberStates but row still points at the band.
+  const cuStampOnly = { id: "CU2", weekKey: FW, schoolId: "S", enrolmentId: "e_amy_gtr", bandLessonId: "B_NEW" };
+  // In memberStates only (no bandLessonId on the row).
+  const week2 = existingWeek();
+  week2.lessons[1].memberStates[0] = { ...week2.lessons[1].memberStates[0], consumption: "catchup", catchupId: "CU3" };
+  const cuIdOnly = { id: "CU3", weekKey: FW, schoolId: "S", enrolmentId: "e_amy_gtr", bandLessonId: null };
+  const plain = { id: "PLAIN", weekKey: FW, schoolId: "S", enrolmentId: "e_bob_drm", bandLessonId: null };
+  const otherWeek = { id: "OW", weekKey: "2099-03-16", schoolId: "S", bandLessonId: "B_NEW" };
+  const otherSchool = { id: "OS", weekKey: FW, schoolId: "T", bandLessonId: "B_NEW" };
+
+  const p = planCleanImport(week2, [cu, cu, cuStampOnly, cuIdOnly, plain, otherWeek, otherSchool], opts);
+  assert("clean plan: rows = memberStates ids ∪ bandLessonId matches, de-duplicated, this week + school only",
+    p.rowsToDelete.map(r => r.id).sort(), ["CU", "CU2", "CU3"]);
+  assert("clean plan: catch-ups not linked to a band are never included",
+    p.rowsToDelete.some(r => r.id === "PLAIN"), false);
+
+  const w = planCleanImport(week, [cu], opts);
+  assert("clean plan week: every band card removed (new and legacy), other cards kept, nothing to restore",
+    [w.removedBandIds, w.removedBandCount, w.legacyBandCount, ids(w.lessons), w.restoreCards],
+    [["B_NEW", "B_OLD"], 2, 1, ["W_BOB"], []]);
+
+  // Day scope: only Tuesday's band goes; Thursday's legacy band stays. The
+  // removed band's ledger card for Amy sits on Thursday, which a Tuesday import
+  // does not rebuild, so it is handed back for restore.
+  const d = planCleanImport(week, [cu], { ...opts, day: "Tuesday" });
+  assert("clean plan day: only that day's band removed; other days' bands kept",
+    [d.removedBandIds, bandIds(d.lessons)], [["B_NEW"], ["B_OLD"]]);
+  assert("clean plan day: the removed band's out-of-scope ledger card is returned for restore",
+    ids(d.restoreCards), ["W_AMY"]);
+  const thu = planCleanImport(week, [], { ...opts, day: "Thursday" });
+  assert("clean plan day: legacy band removed on its own day; nothing hangs off it",
+    [thu.removedBandIds, thu.rowsToDelete, thu.restoreCards, thu.legacyBandCount], [["B_OLD"], [], [], 1]);
+
+  // A regular absence (card moved out of the ledger into a stamped miss) on
+  // another day comes back too, as manual removal would restore it.
+  const absWeek = existingWeek();
+  const card = absWeek.lessons[1].removedLessons[0];
+  absWeek.lessons[1] = { ...absWeek.lessons[1], removedLessons: [] };
+  absWeek.missed = [...absWeek.missed, { ...card, reason: "informed_absence", makeupEligible: true, madeUp: false, bandLessonId: "B_NEW", ledgerCard: card }];
+  assert("clean plan day: a regular absence's card on another day is returned for restore",
+    planCleanImport(absWeek, [], { ...opts, day: "Tuesday" }).restoreCards, [card]);
+
+  // Free / not-in-session / absent members add nothing beyond their band's rows.
+  const mixed = existingWeek();
+  mixed.lessons[1].memberStates = [
+    { enrolmentId: "e_a", studentId: "a", consumption: "free", catchupId: null, attended: false },
+    { enrolmentId: "e_b", studentId: "b", consumption: "not_in_session", catchupId: null, attended: null },
+    { enrolmentId: "e_c", studentId: "c", consumption: "catchup", catchupId: null, attended: false,
+      absentCatchupSnapshot: { id: "GONE" } },
+  ];
+  assert("clean plan: free / not-in-session / absent-with-deleted-row members add no rows",
+    planCleanImport(mixed, [{ id: "GONE", weekKey: FW, schoolId: "S", bandLessonId: null }], opts).rowsToDelete, []);
+
+  const empty = planCleanImport({ lessons: [{ id: "X", day: "Monday" }], missed: [] }, [cu], opts);
+  assert("clean plan: zero-band week → nothing removed, nothing deleted",
+    [empty.removedBandCount, empty.rowsToDelete, ids(empty.lessons)], [0, [], ["X"]]);
+  assert("clean plan: missing entry is safe",
+    planCleanImport(null, [cu], opts).removedBandCount, 0);
+
+  // Import all: per-school plans, totals summed by the caller.
+  const s2 = { lessons: [{ id: "B_T", isBandSession: true, day: "Monday", memberStates: [], removedLessons: [] }], missed: [] };
+  const plans = [planCleanImport(week, [cu, otherSchool], opts), planCleanImport(s2, [cu, otherSchool], { weekKey: FW, schoolId: "T" })];
+  assert("clean plan multi-school: totals across schools",
+    [plans.reduce((n, pl) => n + pl.removedBandCount, 0), plans.flatMap(pl => pl.rowsToDelete).map(r => r.id)],
+    [3, ["CU"]]);
 }
