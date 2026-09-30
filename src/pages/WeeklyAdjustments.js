@@ -32,7 +32,8 @@ import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, app
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
-  absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss } from "../data/bandAbsence";
+  absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
+  planBandRemovalAbsences } from "../data/bandAbsence";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -4792,7 +4793,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const d = prev[storageKey];
                     if (!d) return prev;
                     const bandLesson = (d.lessons || []).find(l => l.id === contextMenu.lessonId);
-                    const removedLessons = bandLesson?.removedLessons || [];
+                    // Cluster 5b — the band's absences go with it: stamped misses
+                    // removed, regular members' cards restored like the ledger.
+                    const absences = planBandRemovalAbsences(contextMenu.lessonId, d.missed || []);
+                    const removedLessons = [...(bandLesson?.removedLessons || []), ...absences.cards];
                     let lessons = d.lessons.filter(l => l.id !== contextMenu.lessonId);
                     // Restore individual cards — skip any whose slot is now occupied
                     for (const rl of removedLessons) {
@@ -4800,7 +4804,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       if (!slotOccupied) lessons = [...lessons, rl];
                       // If occupied, student stays missing → unscheduled banner picks it up
                     }
-                    return { ...prev, [storageKey]: { ...d, lessons } };
+                    return { ...prev, [storageKey]: { ...d, lessons, missed: absences.missed } };
                   });
                   setContextMenu(null);
                   notify("Band session removed");
@@ -6611,7 +6615,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             setWeeklyTimetables(prev => {
                               const entry = prev[storageKey];
                               if (!entry) return prev;
-                              return { ...prev, [storageKey]: { ...entry, catchupStaged: (entry.catchupStaged || []).filter(sc => sc.id !== c.id) } };
+                              // Cluster 5b — a stray staged band's absences go with
+                              // it too; regular members' cards return to the grid
+                              // under the same occupied-slot rule.
+                              const absences = planBandRemovalAbsences(c.id, entry.missed || []);
+                              const hadAbsences = absences.cards.length > 0 || absences.missed.length !== (entry.missed || []).length;
+                              return { ...prev, [storageKey]: {
+                                ...entry,
+                                catchupStaged: (entry.catchupStaged || []).filter(sc => sc.id !== c.id),
+                                ...(hadAbsences ? { lessons: restoreLedgerCards(entry.lessons || [], absences.cards), missed: absences.missed } : {}),
+                              } };
                             });
                           }}
                           style={{ position: "absolute", top: 2, right: 5, fontSize: 11, color: colors.textMuted, cursor: "pointer", lineHeight: 1, fontWeight: 700 }}

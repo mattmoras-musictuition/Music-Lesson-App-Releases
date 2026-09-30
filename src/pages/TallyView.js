@@ -10,6 +10,7 @@ import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
+import { bandCatchupTooltip } from "../data/bandAbsence";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -171,12 +172,14 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // carries the band's week and school, so the band card is found in that one
   // WTT slot; a band that cannot be found (deleted, or parked in staging, which
   // is not part of the slot's lessons) falls back to unnamed wording.
+  //
+  // Cluster 5b — when that band's member was then marked absent and the row
+  // kept (catch-up owed off = forfeited), the tooltip says so instead. Icon,
+  // colour, tiles and banking are unchanged.
   const caughtUpTooltip = (catchup) => {
     const when = formatCatchupCompletionLabel(catchup);
     if (!catchup?.bandLessonId) return "Caught up on " + when;
-    const band = (weeklyTimetables?.[`${catchup.weekKey}|${catchup.schoolId}`]?.lessons || [])
-      .find(l => l.isBandSession && l.id === catchup.bandLessonId);
-    return (band?.bandName ? "Caught up in band session: " + band.bandName : "Caught up in band session") + " — " + when;
+    return bandCatchupTooltip(catchup, weeklyTimetables, when);
   };
 
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────

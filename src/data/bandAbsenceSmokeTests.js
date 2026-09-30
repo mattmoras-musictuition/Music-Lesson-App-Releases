@@ -20,6 +20,7 @@ import {
   isMemberAbsent, absentMembers, absentEnrolmentIds, eligibleForAbsence, absenceMenuLabel,
   planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
   isBandStampedMiss, withoutBandMisses, carryBandMisses, bandEntryForMiss,
+  planBandRemovalAbsences, cardFromBandMiss, bandCatchupTooltip,
 } from "./bandAbsence";
 
 const PW0 = "2020-03-02";  // week of the original miss
@@ -374,4 +375,41 @@ export function runBandAbsenceRegenTests(assert) {
     carryBandMisses([plain, stamped, generated], [plain, stamped], [B]).map(m => m.id), ["PLAIN", "GEN", "OWN_G"]);
   assert("regen: the carried miss is the same object — reason and catch-up flag intact",
     carryBandMisses([], [stamped], [B])[0], stamped);
+}
+
+// ── Remove-band cleanup and the forfeited tooltip (commit 6) ────────────
+export function runBandAbsenceRemovalTests(assert) {
+  const eAG = enrol("e_amy_gtr", "amy", "Guitar");
+  const eBD = enrol("e_bob_drm", "bob", "Drums");
+  const ledgerCard = card("OWN_G", eAG, { teacherId: "T_OLD" });
+  const B = band("B", { memberStates: [ms(eAG, "regular")], removedLessons: [ledgerCard] });
+  const stamped = planMarkAbsent({ band: B, entry: B.memberStates[0], missed: [], enrolments: [eAG] }).misses[0];
+  const other = miss("OTHER", eBD);
+  const foreign = miss("FOREIGN", eBD, { bandLessonId: "B2" });
+
+  const r = planBandRemovalAbsences("B", [other, stamped, foreign]);
+  assert("remove band: its stamped misses leave missed[]; other misses and other bands' stay",
+    r.missed.map(m => m.id), ["OTHER", "FOREIGN"]);
+  assert("remove band: the regular member's card is handed back as it left the ledger",
+    r.cards, [ledgerCard]);
+  assert("remove band: no absences → nothing to restore",
+    planBandRemovalAbsences("B", [other]), { missed: [other], cards: [] });
+  const { ledgerCard: _drop, ...legacyShape } = stamped;
+  assert("cardFromBandMiss: without ledgerCard the miss fields are stripped and teacherId restored",
+    cardFromBandMiss(legacyShape), { ...ledgerCard, enrolmentId: "e_amy_gtr" });
+
+  // Tooltip: the row's band is found in its own week + school.
+  const cu = row("CU", eBD, PW, PW0, { bandLessonId: "BC" });
+  const when = "Tuesday 10 March, 11:00";
+  const wtt = (entryExtra, bandName = "Seven Nation Army") => ({
+    [PW + "|S"]: { lessons: [band("BC", { bandName, memberStates: [ms(eBD, "catchup", { catchupId: "CU", ...entryExtra })] })], missed: [] },
+  });
+  assert("tooltip: kept row, member absent → Forfeited with the band name",
+    bandCatchupTooltip(cu, wtt({ attended: false }), when), "Forfeited — absent from band session (Seven Nation Army) — " + when);
+  assert("tooltip: band without a name → unnamed Forfeited wording",
+    bandCatchupTooltip(cu, wtt({ attended: false }, ""), when), "Forfeited — absent from band session — " + when);
+  assert("tooltip: member present → cluster 4b wording unchanged",
+    bandCatchupTooltip(cu, wtt({ attended: null }), when), "Caught up in band session: Seven Nation Army — " + when);
+  assert("tooltip: band not found → unnamed cluster 4b wording",
+    bandCatchupTooltip(cu, {}, when), "Caught up in band session — " + when);
 }

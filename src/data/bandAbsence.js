@@ -238,6 +238,61 @@ export function applyCatchupAbsence({ band, entry, absence, row } = {}) {
 }
 
 /**
+ * The card a regular band absence was made from, exactly as it left the
+ * ledger (ledgerCard), or rebuilt from the miss for an entry without one.
+ */
+export function cardFromBandMiss(m) {
+  if (m.ledgerCard) return m.ledgerCard;
+  const card = { ...m };
+  for (const k of MISS_FIELDS) delete card[k];
+  if (m.ledgerTeacherId) card.teacherId = m.ledgerTeacherId;
+  return card;
+}
+
+/**
+ * Removing a band session also removes its absences: every miss stamped
+ * with this band comes out of missed[], and the regular members' cards are
+ * handed back for the caller's occupied-slot restore (the same rule as the
+ * ledger). Catch-up absences need nothing here — a deleted row stays deleted
+ * and the original miss stays owed.
+ *
+ * @param {string} bandId
+ * @param {Array} missed   The band week's missed[].
+ * @returns {{missed: Array, cards: Array}}
+ */
+export function planBandRemovalAbsences(bandId, missed) {
+  const mine = (missed || []).filter(m => m && m.bandLessonId === bandId);
+  return {
+    missed: (missed || []).filter(m => !(m && m.bandLessonId === bandId)),
+    cards: mine.map(cardFromBandMiss),
+  };
+}
+
+/**
+ * Tally tooltip for a caught-up cell whose banking row came from a band.
+ * A row whose member was then marked absent (attended false, row kept =
+ * forfeited) reads "Forfeited — absent from band session (<band>) — <when>";
+ * otherwise the cluster 4b wording. The band is looked up in the row's own
+ * week and school; a band that cannot be found gets the unnamed wording.
+ *
+ * @param {Object} catchup           The banking row (bandLessonId set).
+ * @param {Object} weeklyTimetables
+ * @param {string} when              formatCatchupCompletionLabel(catchup).
+ * @returns {string}
+ */
+export function bandCatchupTooltip(catchup, weeklyTimetables, when) {
+  const band = ((weeklyTimetables && weeklyTimetables[`${catchup.weekKey}|${catchup.schoolId}`]) || {}).lessons
+    ?.find(l => l && l.isBandSession && l.id === catchup.bandLessonId) || null;
+  const entry = hasMemberStates(band)
+    ? band.memberStates.find(e => e && e.catchupId === catchup.id) || null
+    : null;
+  if (entry && entry.attended === false) {
+    return (band.bandName ? `Forfeited — absent from band session (${band.bandName})` : "Forfeited — absent from band session") + " — " + when;
+  }
+  return (band && band.bandName ? "Caught up in band session: " + band.bandName : "Caught up in band session") + " — " + when;
+}
+
+/**
  * Plan undoing a member's absence.
  *
  *   regular → { kind: "regular", band, missed } — stamped misses removed,
@@ -265,13 +320,7 @@ export function planUndoAbsence({ band, entry, missed, catchups } = {}) {
   if (entry.consumption === CONSUMPTION.regular) {
     const mine = bandMissesFor(missed, band.id, entry);
     const ids = new Set(mine.map(m => m.id));
-    const restored = mine.map(m => {
-      if (m.ledgerCard) return m.ledgerCard;
-      const card = { ...m };
-      for (const k of MISS_FIELDS) delete card[k];
-      if (m.ledgerTeacherId) card.teacherId = m.ledgerTeacherId;
-      return card;
-    });
+    const restored = mine.map(cardFromBandMiss);
     return {
       kind: "regular",
       band: { ...band, removedLessons: [...(band.removedLessons || []), ...restored] },
