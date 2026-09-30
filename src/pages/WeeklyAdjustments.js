@@ -9,8 +9,8 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, _getMondayOf, isPastWeek as isWeekKeyPast, getParentEmails, openCompose, openGmailSequential, groupDisplayName, bandDisplayName, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, getInstColor, clampMenuPos, getClassTeacher, getSchoolAcronym, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
-import { getMissedEntries, findOpenCatchups, getOpenCatchupRows } from "../utils/tallyDerive";
-import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
+import { getMissedEntries } from "../utils/tallyDerive";
+import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts } from "../utils/catchupScope";
 import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
@@ -1231,99 +1231,36 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     return { score, label };
   };
 
-  // Unresolved missed lessons across the current term, grouped by
-  // enrolment. Drives the "Schedule catchup for…" menu.
+  // Missed lessons a catch-up placed in a given week may settle — the shared
+  // offerable-misses rule (utils/catchupScope.js, v2.39.0). In a term week:
+  // that term's open misses. In a holiday week: the term just finished, minus
+  // each student whose next-term invoice has been sent. Earlier terms never.
+  // The lifted candidate derivation (containment filters, start/time re-join,
+  // enrolment resolution, already-resolved exclusion) lives in the helper.
   //
-  // Single source of truth: getOpenCatchupRows applies deriveTallyRows's
-  // containment filters (school filter, __private__ exclusion,
-  // pending/trial exclusion, archived enrolment-overlap, enrolment join)
-  // so the picker stays aligned with TallyView's makeupOwed instead of
-  // walking raw missed entries. Picker-only post-processing stays here:
-  // a raw-WTT re-join recovers start/time (the shim carries day/weekKey
-  // but not start/time, and handleScheduleCatchup reads
-  // missedEntries[0].start ?? .time for resolvesOriginalTime), then
-  // enrolment-id resolution, already-scheduled exclusion, group, sort.
-  //
-  // Each group carries missedEntries[] sorted oldest-first so the click
-  // handler can pick missedEntries[0] as the target. Groups sort
-  // alphabetical by studentName, tie-break by instrument.
-  const unresolvedMissedGroups = useMemo(() => {
-    const allTerms = getTerms(termBreaks);
-    const activeTerm = getCurrentTerm(allTerms, new Date(weekKey + "T00:00:00"));
-    if (!activeTerm) return [];
-    const termWeeks = getTermWeeks({ activeTerm, termBreaks, now: new Date() });
-    const openRows = getOpenCatchupRows({
-      weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all",
-    });
-    const byEnrolment = new Map();
-    for (const row of openRows) {
-      // Re-join to the raw WTT missed entry to recover start/time, which
-      // the buildShimEntry object doesn't carry but handleScheduleCatchup
-      // needs for resolvesOriginalTime. Storage key mirrors deriveTallyRows
-      // (`${weekKey}|${schoolId}`, schoolId = mttCard||student schoolId,
-      // which is exactly row.missed.schoolId).
-      const wttMissed = weeklyTimetables[`${row.weekKey}|${row.missed.schoolId}`]?.missed || [];
-      const matchDay = row.missed.day;
-      const matchById = row.missed.groupId
-        ? (m) => m.day === matchDay && m.groupId === row.missed.groupId
-        : (m) => m.day === matchDay && m.studentId === row.missed.studentId && m.instrument === row.missed.instrument;
-      const rawMissed = wttMissed.find(matchById);
-      if (!rawMissed && process.env.NODE_ENV !== "production") {
-        console.warn("[catchup picker] start/time re-join missed raw WTT entry", {
-          weekKey: row.weekKey, schoolId: row.missed.schoolId, day: matchDay,
-          studentId: row.missed.studentId, instrument: row.missed.instrument, groupId: row.missed.groupId,
-        });
-      }
-      const enriched = {
-        ...row.missed,
-        start: row.missed.start ?? rawMissed?.start ?? null,
-        time: row.missed.time ?? rawMissed?.time ?? null,
-      };
-      const resolvedId = enriched.enrolmentId ?? enrolmentIdFor(enriched.studentId, enriched.instrument, enrolments, enriched.groupId);
-      if (!resolvedId) {
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[catchup picker] dropping candidate — could not resolve enrolment", {
-            studentId: enriched.studentId,
-            studentName: enriched.studentName,
-            instrument: enriched.instrument,
-            weekKey: row.weekKey,
-            day: enriched.day,
-          });
-        }
-        continue;
-      }
-      enriched.enrolmentId = resolvedId;
-      if (catchups.some(c => c.resolvesEnrolmentId === resolvedId && c.resolvesWeekKey === row.weekKey)) continue;
-      if (!byEnrolment.has(resolvedId)) byEnrolment.set(resolvedId, []);
-      byEnrolment.get(resolvedId).push(enriched);
-    }
-    const groups = [];
-    for (const [enrolmentId, entries] of byEnrolment) {
-      if (entries.length === 0) continue;
-      entries.sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || "")); // oldest first
-      const first = entries[0];
-      const en = enrolments.find(e => e.id === enrolmentId);
-      const st = en && !en.isGroup ? students.find(s => s.id === en.studentId) : null;
-      const studentName = en?.isGroup
-        ? (first.groupName || "Group")
-        : (st?.name || first.studentName || "—");
-      groups.push({
-        enrolmentId,
-        studentName,
-        instrument: first.instrument || en?.instrument || "",
-        schoolId: first.schoolId || "",
-        owedCount: entries.length,
-        missedEntries: entries,
-      });
-    }
-    groups.sort((a, b) => {
-      const na = a.studentName.toLowerCase();
-      const nb = b.studentName.toLowerCase();
-      if (na !== nb) return na.localeCompare(nb);
-      return (a.instrument || "").localeCompare(b.instrument || "");
-    });
-    return groups;
-  }, [weeklyTimetables, enrolments, students, timetable, termBreaks, catchups, weekKey]);
+  // Invoices are read RAW from localStorage on every render (the Dashboard
+  // pattern) so a send on the Invoicing tab is picked up by the next render
+  // with no extra plumbing; the memos below re-run only when the string
+  // actually changes.
+  let invoiceDraftsRaw = "[]";
+  try { invoiceDraftsRaw = localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"; } catch {}
+  const offerableFor = useCallback((targetWeekKey) => getOfferableMisses({
+    targetWeekKey, interruptions, invoices: parseInvoiceDrafts(invoiceDraftsRaw),
+    weeklyTimetables, enrolments, students, timetable, catchups, groups,
+  }).entries, [interruptions, invoiceDraftsRaw, weeklyTimetables, enrolments, students, timetable, catchups, groups]);
+
+  // Offerable misses for the week on screen — feeds the staging tray, the
+  // period-grid "Schedule catchup" submenu and the band attribution window.
+  const offerableEntries = useMemo(() => offerableFor(weekKey), [offerableFor, weekKey]);
+
+  // Grouped by enrolment for the "Schedule catchup for…" menus. Each group
+  // carries missedEntries[] sorted oldest-first so the click handler can pick
+  // missedEntries[0] as the target. Groups sort alphabetical by studentName,
+  // tie-break by instrument.
+  const unresolvedMissedGroups = useMemo(
+    () => groupOfferableByEnrolment(offerableEntries, { enrolments, students }),
+    [offerableEntries, enrolments, students]
+  );
 
   // Set of studentNames that appear more than once in the grouped list —
   // drives the instrument-disambiguator decision in display.
@@ -3887,10 +3824,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               {(() => {
                 const sId = contextMenu.schoolId;
                 // Build one row per (student, instrument) pair that has owed make-ups.
-                // schoolId filter is on the missed entry's schoolId (audit decision:
+                // v2.39.0 — from the shared offerable list for the week on screen
+                // (was every open-flagged miss in history). schoolId filter is
+                // still on the missed entry's schoolId (audit decision:
                 // theoretical-only shift vs students-table school join).
-                const eligibleEntries = findOpenCatchups({ weeklyTimetables, schoolId: sId })
-                  .map(r => ({ ...r.missed, weekKey: r.weekKey }));
+                const eligibleEntries = offerableEntries.filter(e => e.schoolId === sId);
                 // Group by studentId + instrument
                 const pairMap = {};
                 for (const e of eligibleEntries) {
@@ -4137,8 +4075,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           {(() => {
                             // Spec 3 cluster 5b-3c-a: replaces the OLD JSONB-lesson
                             // catchup creation. Aggregation comes from the
-                            // unresolvedMissedGroups useMemo (per-enrolment, current-
-                            // term scope), school-filtered to the period grid's
+                            // unresolvedMissedGroups useMemo (per-enrolment, offerable
+                            // for the week on screen), school-filtered to the period grid's
                             // school context, scored via computeStudentSlotScore.
                             // Click → handleScheduleCatchup with target cell from
                             // contextMenu (period-grid path uses contextMenu.day/
@@ -4366,7 +4304,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // above; differs only in the school-filter pass-through.
             const target = { day: contextMenu.targetDay, time: contextMenu.targetTime, weekKey: contextMenu.targetWeekKey };
             const targetWeekDate = (weekDates || []).find(wd => wd.day === target.day)?.date || null;
-            const annotated = unresolvedMissedGroups.map(g => {
+            // v2.39.0 — offerable misses for the week being placed into.
+            const pickerGroups = !target.weekKey || target.weekKey === weekKey
+              ? unresolvedMissedGroups
+              : groupOfferableByEnrolment(offerableFor(target.weekKey), { enrolments, students });
+            const annotated = pickerGroups.map(g => {
               const en = enrolments.find(e => e.id === g.enrolmentId);
               const st = en && !en.isGroup ? students.find(s => s.id === en.studentId) : null;
               let score = 0, scoreLabel = null;

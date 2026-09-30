@@ -11,8 +11,8 @@ import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/i
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
-import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek, getOpenCatchupRows } from "../utils/tallyDerive";
-import { getTerms, getCurrentTerm, getTermWeeks } from "../utils/termWeeks";
+import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
+import { getOfferableMisses, parseInvoiceDrafts } from "../utils/catchupScope";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -173,21 +173,12 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
   const monday = getCurrentWeekMonday();
   const todayStr = toLocalDateStr(today);
 
-  // ── Term weeks (shared with TallyView via src/utils/termWeeks.js) ──
-  // Hoisted here so both sidebarAlertCount (L1383 catch-ups badge) and
-  // the alerts-panel render block (L2676 catch-ups chip) can feed
-  // termWeeks into getOpenCatchupRows.
+  // Deduplicated, sorted term breaks (week labels in the interruptions list).
   const termBreaks = useMemo(() =>
     interruptions.filter(i => i.type === "term_break")
       .reduce((acc, i) => { if (!acc.find(x => x.date === i.date)) acc.push(i); return acc; }, [])
       .sort((a, b) => a.date.localeCompare(b.date)),
     [interruptions]
-  );
-  const terms = useMemo(() => getTerms(termBreaks, melbourneNow()), [termBreaks]);
-  const currentTerm = useMemo(() => getCurrentTerm(terms, melbourneNow()), [terms]);
-  const termWeeks = useMemo(
-    () => getTermWeeks({ activeTerm: currentTerm, termBreaks, now: melbourneNow() }),
-    [currentTerm, termBreaks]
   );
 
   // Session 5B / C6 + chips-followup — per-day per-school unacked
@@ -1571,6 +1562,18 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     return { term, rows };
   }, [interruptions, timetable, groups, students, schools, uninvoicedDismissalsRaw, dashInvoiceDraftsRaw]);
 
+  // v2.39.0 — catch-ups owed (sidebar badge + alerts chip): the shared
+  // offerable-misses rule for the Monday of today's week. In term that is the
+  // current term's open misses; in the holidays the just-finished term's,
+  // minus each student whose next-term invoice has been sent. Keyed on the
+  // same raw invoice-drafts string as the uninvoiced chip, so a send on the
+  // Invoicing tab shows up on the next render.
+  const offerableWeekKey = toLocalDateStr(_getMondayOf(melbourneNow()));
+  const offerableTodayEntries = React.useMemo(() => getOfferableMisses({
+    targetWeekKey: offerableWeekKey, interruptions, invoices: parseInvoiceDrafts(dashInvoiceDraftsRaw),
+    weeklyTimetables, enrolments, students, timetable, catchups, groups,
+  }).entries, [offerableWeekKey, interruptions, dashInvoiceDraftsRaw, weeklyTimetables, enrolments, students, timetable, catchups, groups]);
+
   // Lesson-change email dismissals — keyed by email id, persistent across midnight
   // (parallel to alertDismissals but no `date` field and no daily reset)
   const [lessonChangeDismissals, setLessonChangeDismissals] = React.useState(() => {
@@ -1619,13 +1622,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         .map(e => `${e.studentId}|${e.instrument}`)
     ).size;
 
-    // Aligned with the alerts-panel chip (and TallyView's stats.makeupOwed):
-    // term scope, all schools, __private__/pending/trial/archived-overlap
-    // filters all inherited from deriveTallyRows. Current week is included
-    // — matches the tally summary card.
-    const catchupTotal = getOpenCatchupRows({
-      weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all", catchups,
-    }).length;
+    // Same shared offerable list as the alerts-panel chip (v2.39.0).
+    const catchupTotal = offerableTodayEntries.length;
 
     const allRR = inboxEmails.filter(e => {
       if (emailNoReplyOverrides.has(e.id)) return false;
@@ -1686,7 +1684,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, termWeeks, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -3099,15 +3097,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           return Object.values(byStudent);
         })();
         const missedPriorSorted = (() => {
-          // Canonical iterator aligned with TallyView's stats.makeupOwed
-          // (term scope, school filter "all", __private__ exclusion,
-          // pending/trial exclusion, archived-overlap, enrolment-join).
-          // Current week is INCLUDED — matches the tally summary card,
-          // which counts all term-week owed catchups including the
-          // current week.
+          // v2.39.0 — the shared offerable list (utils/catchupScope.js) for
+          // today's week, all schools; same set as the sidebar badge.
           const byKey = {};
-          for (const r of getOpenCatchupRows({ weeklyTimetables, enrolments, students, timetable, termWeeks, schoolFilter: "all", catchups })) {
-            const e = r.missed;
+          for (const e of offerableTodayEntries) {
             const k = `${e.studentId}|${e.instrument}`;
             if (!byKey[k]) {
               const st = students.find(s => s.id === e.studentId);

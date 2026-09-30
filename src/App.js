@@ -44,7 +44,8 @@ import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, ge
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
-import { getWttWeekKeysWithActivity, getWeekTallySummary, findOpenCatchups } from "./utils/tallyDerive";
+import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDerive";
+import { getOfferableMisses, parseInvoiceDrafts } from "./utils/catchupScope";
 import { stampFirstPlacementStart } from "./utils/enrolmentPlacement";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -3965,14 +3966,23 @@ export default function MusicTimetableApp() {
       lines.push("");
     }
 
-    // ── Outstanding catch-ups (all time, not yet made up) — always shown if any exist ──
-    // No upper-bound filter (unlike site 3859); the "all time" semantics are intentional.
-    const catchupsOwed = findOpenCatchups({ weeklyTimetables });
+    // ── Outstanding catch-ups — always shown if any exist ──
+    // v2.39.0 — the shared offerable-misses rule (utils/catchupScope.js) for
+    // the Monday of today's week, the same set as the Dashboard chip: the
+    // current term's open misses, or in the holidays the just-finished term's
+    // minus students whose next-term invoice is sent. Was all history.
+    let aiInvoiceDraftsRaw = "[]";
+    try { aiInvoiceDraftsRaw = localStorage.getItem(STORAGE_KEYS.invoiceDrafts) || "[]"; } catch {}
+    const catchupsOwed = getOfferableMisses({
+      targetWeekKey: toLocalDateStr(_getMondayOf(melbourneNow())),
+      interruptions, invoices: parseInvoiceDrafts(aiInvoiceDraftsRaw),
+      weeklyTimetables, enrolments, students, timetable, catchups, groups,
+    }).entries;
     if (catchupsOwed.length > 0) {
       lines.push("## Outstanding Catch-ups");
-      catchupsOwed.forEach(r => {
-        const label = getTermWeekLabel(r.weekKey, termBreaks) || r.weekKey;
-        lines.push(`  - ${r.missed.studentName} (${r.missed.instrument}), ${label}`);
+      catchupsOwed.forEach(e => {
+        const label = getTermWeekLabel(e.weekKey, termBreaks) || e.weekKey;
+        lines.push(`  - ${e.studentName || e.groupName || "Group"} (${e.instrument}), ${label}`);
       });
       lines.push("");
     }
