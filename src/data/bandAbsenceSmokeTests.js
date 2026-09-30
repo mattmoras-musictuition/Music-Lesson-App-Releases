@@ -16,6 +16,10 @@
 import { deriveTallyRows, getOpenCatchupRows, getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { buildMemberStates, planAttributionSave, applyStudentAttribution } from "./bandMemberStates";
+import {
+  isMemberAbsent, absentMembers, eligibleForAbsence, absenceMenuLabel,
+  planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
+} from "./bandAbsence";
 
 const PW0 = "2020-03-02";  // week of the original miss
 const PW = "2020-03-09";   // the band's week
@@ -193,4 +197,103 @@ export function runBandAbsenceCharacterizationTests(assert) {
     [Object.keys(dupView).sort(), dupView.e_dup_new && dupView.e_dup_new[PW],
       math(dupWtt, [], "e_dup_new", "Guitar").deductions, math(dupWtt, [], "e_dup_old", "Guitar").deductions],
     [["e_dup_new"], "missed-makeup-owed:DM", 1, 0]);
+}
+
+// ── Absence planning helpers (commit 2) ─────────────────────────────────
+export function runBandAbsenceHelperTests(assert) {
+  const amy = { id: "amy", name: "Amy Adams" };
+  const bob = { id: "bob", name: "Bob Brown" };
+  const cat = { id: "cat", name: "Cat Chen" };
+  const eAG = enrol("e_amy_gtr", "amy", "Guitar");
+  const eAP = enrol("e_amy_pno", "amy", "Piano");
+  const eBD = enrol("e_bob_drm", "bob", "Drums");
+  const eCV = enrol("e_cat_vox", "cat", "Vocals");
+  const enrolments = [eAG, eAP, eBD, eCV];
+
+  const ledgerCard = card("OWN_G", eAG, { teacherId: "T_OLD", writerTeacherId: "T_W", cardNote: "bring book", notes: "n" });
+  const cuRow = row("CU", eBD, PW, PW0, { bandLessonId: "B" });
+  const B = band("B", {
+    members: [{ studentId: "amy" }, { studentId: "bob" }, { studentId: "cat" }],
+    memberStates: [
+      ms(eAG, "regular", { consumedWeekKey: PW }),
+      ms(eAP, null),
+      ms(eBD, "catchup", { catchupId: "CU", consumedWeekKey: PW0 }),
+      ms(eCV, "free"),
+    ],
+    removedLessons: [ledgerCard],
+  });
+  const [reg, , cu, fr] = B.memberStates;
+
+  assert("absence: eligible = regular (with ledger card), catchup, free; unattributed excluded",
+    eligibleForAbsence(B, []).map(e => e.enrolmentId), ["e_amy_gtr", "e_bob_drm", "e_cat_vox"]);
+  assert("absence: legacy band has no absence feature",
+    [eligibleForAbsence(band("L", { members: [{ studentId: "amy" }], removedLessons: [ledgerCard] }), []), planMarkAbsent({ band: band("L"), entry: reg, missed: [], enrolments })],
+    [[], null]);
+  assert("absence: menu label adds the instrument only for a two-enrolment student",
+    [absenceMenuLabel(B, reg, [amy, bob, cat]), absenceMenuLabel(B, cu, [amy, bob, cat])], ["Amy Adams (Guitar)", "Bob Brown"]);
+
+  // Regular: the ledger card moves into missed[], stripped of teacher stamps.
+  const pr = planMarkAbsent({ band: B, entry: reg, missed: [], enrolments });
+  const m = pr.misses[0];
+  assert("absence regular: card leaves the ledger, one stamped miss with the card's own day/time",
+    [pr.kind, pr.band.removedLessons.length, m.id, m.day, m.start, m.bandLessonId, m.enrolmentId],
+    ["regular", 0, "OWN_G", "Thursday", "09:00", "B", "e_amy_gtr"]);
+  assert("absence regular: no teacherId / writerTeacherId / isBandSession on the miss; teacherId kept as ledgerTeacherId",
+    ["teacherId" in m, "writerTeacherId" in m, "isBandSession" in m, m.ledgerTeacherId], [false, false, false, "T_OLD"]);
+  assert("absence regular: detected from the stamped miss; attended untouched",
+    [isMemberAbsent(pr.band, reg, pr.misses), absentMembers(pr.band, pr.misses).map(e => e.enrolmentId), pr.band.memberStates[0].attended],
+    [true, ["e_amy_gtr"], null]);
+  const withReason = [{ ...m, reason: "informed_absence", makeupEligible: true }];
+  assert("absence regular: info reads the miss's reason; no longer eligible",
+    [memberAbsenceInfo(pr.band, reg, withReason), eligibleForAbsence(pr.band, withReason).map(e => e.enrolmentId)],
+    [{ reason: "informed_absence", reasonDetail: "" }, ["e_bob_drm", "e_cat_vox"]]);
+  const other = miss("OTHER", eBD);
+  const ur = planUndoAbsence({ band: pr.band, entry: reg, missed: [other, ...withReason], catchups: [] });
+  assert("absence regular undo: miss removed, the card back in the ledger exactly as it was",
+    [ur.missed.map(x => x.id), ur.band.removedLessons], [["OTHER"], [ledgerCard]]);
+
+  // Duplicate enrolments: the miss is stamped via enrolmentIdFor like any
+  // miss, and is still found for the member whose entry holds the other id.
+  const eOld = enrol("e_dup_old", "amy", "Guitar", { startDate: "2020-01-01" });
+  const eNew = enrol("e_dup_new", "amy", "Guitar", { startDate: "2020-02-01" });
+  const dupEntry = ms(eOld, "regular");
+  const dupBand = band("BD", { memberStates: [dupEntry], removedLessons: [card("DC", eOld)] });
+  const dp = planMarkAbsent({ band: dupBand, entry: dupEntry, missed: [], enrolments: [eOld, eNew] });
+  assert("absence regular, duplicate enrolments: stamped like handleMissedDrop, still matched to the member",
+    [dp.misses[0].enrolmentId, isMemberAbsent(dp.band, dupEntry, dp.misses)], ["e_dup_new", true]);
+
+  // Catch-up: owed OFF keeps the row; owed ON deletes it with a snapshot.
+  assert("absence catchup: mark plans a prompt and writes nothing",
+    planMarkAbsent({ band: B, entry: cu, missed: [], enrolments }), { kind: "catchup" });
+  const off = applyCatchupAbsence({ band: B, entry: cu, absence: { reason: "uninformed_absence", makeupEligible: false }, row: cuRow });
+  const offEntry = off.band.memberStates[2];
+  assert("absence catchup owed off: row stays, attended false, reason recorded, catchupId kept",
+    [off.deleteRow, offEntry.attended, offEntry.absence.reason, offEntry.catchupId, "absentCatchupSnapshot" in offEntry],
+    [null, false, "uninformed_absence", "CU", false]);
+  const on = applyCatchupAbsence({ band: B, entry: cu, absence: { reason: "informed_absence", makeupEligible: true }, row: cuRow });
+  const onEntry = on.band.memberStates[2];
+  assert("absence catchup owed on: row deleted, snapshot kept, catchupId null, consumedWeekKey untouched",
+    [on.deleteRow.id, onEntry.absentCatchupSnapshot, onEntry.catchupId, onEntry.consumedWeekKey, isMemberAbsent(on.band, onEntry, [])],
+    ["CU", cuRow, null, PW0, true]);
+  const u1 = planUndoAbsence({ band: on.band, entry: onEntry, missed: [], catchups: [] });
+  const u1e = u1.band.memberStates[2];
+  assert("absence catchup undo: snapshot re-inserted under its original id, catchupId restored, absence cleared",
+    [u1.insertRow, u1e.catchupId, u1e.attended, "absence" in u1e, "absentCatchupSnapshot" in u1e, u1e.consumption],
+    [cuRow, "CU", null, false, false, "catchup"]);
+  const elsewhere = row("CU2", eBD, FW, PW0);
+  const u2 = planUndoAbsence({ band: on.band, entry: onEntry, missed: [], catchups: [elsewhere] });
+  const u2e = u2.band.memberStates[2];
+  assert("absence catchup undo refused: miss booked elsewhere → reset to Not set, no insert",
+    [u2.reset, u2.insertRow, u2e.consumption, u2e.catchupId, u2e.attended, "absence" in u2e, "absentCatchupSnapshot" in u2e],
+    [true, undefined, null, null, null, false, false]);
+  const u3 = planUndoAbsence({ band: off.band, entry: offEntry, missed: [], catchups: [cuRow] });
+  assert("absence catchup undo (owed off): attended null, row untouched",
+    [u3.insertRow, u3.band.memberStates[2].attended, u3.band.memberStates[2].catchupId], [undefined, null, "CU"]);
+
+  // Free: attended:false directly, no prompt; undo clears it.
+  const pf = planMarkAbsent({ band: B, entry: fr, missed: [], enrolments });
+  const uf = planUndoAbsence({ band: pf.band, entry: pf.band.memberStates[3], missed: [], catchups: [] });
+  assert("absence free: attended false with no reason, undo back to null",
+    [pf.kind, pf.band.memberStates[3].attended, memberAbsenceInfo(pf.band, pf.band.memberStates[3], []), uf.band.memberStates[3].attended],
+    ["free", false, { reason: null, reasonDetail: "" }, null]);
 }
