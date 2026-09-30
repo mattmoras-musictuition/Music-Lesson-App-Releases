@@ -217,3 +217,76 @@ export function findUnattributedBands(weeklyTimetables, { weekKeys, schoolIds } 
     || a.start.localeCompare(b.start)
     || a.bandName.localeCompare(b.bandName));
 }
+
+// ── Dashboard alert (cluster 6b) ────────────────────────────────────
+
+const DAY_MS = 86400000;
+const keyToUtc = (k) => { const [y, m, d] = String(k).split("-").map(Number); return Date.UTC(y, m - 1, d); };
+const utcToKey = (t) => new Date(t).toISOString().slice(0, 10);
+
+/**
+ * Every Monday (YYYY-MM-DD) from the week holding term.start through
+ * term.end, inclusive. Timezone-free (UTC arithmetic on date strings).
+ *
+ * @param {{start: string, end: string}|null} term
+ * @returns {string[]}
+ */
+export function termWeekKeys(term) {
+  if (!term || !term.start || !term.end) return [];
+  const s = keyToUtc(term.start);
+  const dow = (new Date(s).getUTCDay() + 6) % 7;   // Monday = 0
+  const end = keyToUtc(term.end);
+  const out = [];
+  for (let t = s - dow * DAY_MS; t <= end; t += 7 * DAY_MS) out.push(utcToKey(t));
+  return out;
+}
+
+/**
+ * Whole weeks from one Monday to another (negative = earlier).
+ */
+export function weekOffsetBetween(fromWeekKey, toWeekKey) {
+  return Math.round((keyToUtc(toWeekKey) - keyToUtc(fromWeekKey)) / (7 * DAY_MS));
+}
+
+// The alert is dismissed for the SET of bands it listed, never for good: each
+// dismissal key carries band lesson ids, and a band no key covers shows again.
+export const UNATTRIBUTED_ALERT_PREFIX = "alert-unattributed-bands|";
+
+/**
+ * The alertDismissals key that dismisses exactly these bands.
+ */
+export function unattributedAlertDismissKey(bandLessonIds) {
+  return UNATTRIBUTED_ALERT_PREFIX + [...new Set(bandLessonIds || [])].sort().join(",");
+}
+
+/**
+ * The band lesson ids no dismissal key covers, in input order.
+ *
+ * @param {Array<string>} bandLessonIds
+ * @param {Object} dismissed  alertDismissals.dismissed
+ */
+export function undismissedBandIds(bandLessonIds, dismissed) {
+  const covered = new Set();
+  for (const [key, on] of Object.entries(dismissed || {})) {
+    if (!on || !key.startsWith(UNATTRIBUTED_ALERT_PREFIX)) continue;
+    for (const id of key.slice(UNATTRIBUTED_ALERT_PREFIX.length).split(",")) if (id) covered.add(id);
+  }
+  return (bandLessonIds || []).filter(id => !covered.has(id));
+}
+
+/**
+ * The unattributed band sessions the Dashboard alert lists: every NEW band in
+ * the term's weeks with a member nobody has decided about, minus the bands
+ * an earlier dismissal covered.
+ *
+ * @param {Object} weeklyTimetables
+ * @param {{start, end}|null} term   The anchor term (catch-ups owed's rule).
+ * @param {Object} dismissed         alertDismissals.dismissed
+ * @returns {Array} findUnattributedBands rows.
+ */
+export function unattributedBandsForAlert(weeklyTimetables, term, dismissed) {
+  if (!term) return [];
+  const bands = findUnattributedBands(weeklyTimetables, { weekKeys: termWeekKeys(term) });
+  const keep = new Set(undismissedBandIds(bands.map(b => b.bandLessonId), dismissed));
+  return bands.filter(b => keep.has(b.bandLessonId));
+}

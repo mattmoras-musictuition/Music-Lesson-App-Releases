@@ -12,7 +12,8 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
 import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
-import { getOfferableMisses, parseInvoiceDrafts } from "../utils/catchupScope";
+import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
+import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween } from "../data/bandSessionView";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -1574,6 +1575,16 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     weeklyTimetables, enrolments, students, timetable, catchups, groups,
   }).entries, [offerableWeekKey, interruptions, dashInvoiceDraftsRaw, weeklyTimetables, enrolments, students, timetable, catchups, groups]);
 
+  // v2.41.0 — band sessions whose members' roles aren't all set. Every new band
+  // in the anchor term (catch-ups owed's rule: the current term, or in the
+  // holidays the one just finished), past and future weeks. Computed from the
+  // weeklyTimetables PROP (Dashboard never remounts). A dismissal hides only
+  // the bands it listed, so a new unattributed band brings the chip back.
+  const unattributedBands = React.useMemo(() => {
+    const anchor = resolveAnchorTerm(interruptions, offerableWeekKey);
+    return unattributedBandsForAlert(weeklyTimetables, anchor ? anchor.term : null, alertDismissals.dismissed);
+  }, [interruptions, offerableWeekKey, weeklyTimetables, alertDismissals]);
+
   // Lesson-change email dismissals — keyed by email id, persistent across midnight
   // (parallel to alertDismissals but no `date` field and no daily reset)
   const [lessonChangeDismissals, setLessonChangeDismissals] = React.useState(() => {
@@ -1679,12 +1690,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     if (trialOnly > 0 && !dismissed("alert-trial")) count++;
     if (lcEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !dismissed("alert-lesson-change")) count++;
     if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
+    if (unattributedBands.length > 0) count++;   // dismissal already applied
     const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
     const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
     if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
     return count;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
+  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, unattributedBands, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -3152,6 +3164,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           + (responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") ? 1 : 0)
           + (upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`)).length > 0 ? 1 : 0)
           + (catchupTotal > 0 && !isAlertDismissed("alert-catchup") ? 1 : 0)
+          + (unattributedBands.length > 0 ? 1 : 0)
           + (pendingOnly > 0 && !pendingDismissed ? 1 : 0)
           + (trialOnly > 0 && !trialDismissed ? 1 : 0)
           + (lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
@@ -3403,7 +3416,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                 });
               };
               const renderItem = (item, i, sectionIdx) => {
-                const isClickable = !!(item.composeData || item.navigateTo || item.openEmailId || item.navigateToStudent);
+                const isClickable = !!(item.composeData || item.navigateTo || item.openEmailId || item.navigateToStudent || item.onSelect);
                 return (
                   <div
                     key={i}
@@ -3415,6 +3428,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       else if (item.navigateToStudent) { if (onViewStudent) { onViewStudent(item.navigateToStudent); } else { onNavigate("students"); } setAlertDropdown(null); }
                       else if (item.composeData) { openCompose([item.composeData.addr], { subject: item.composeData.subject, triggerId: item.composeData.triggerId }); setAlertDropdown(null); }
                       else if (item.navigateTo) { onNavigate(item.navigateTo); setAlertDropdown(null); }
+                      else if (item.onSelect) { item.onSelect(); setAlertDropdown(null); }
                     } : undefined}
                     onMouseEnter={isClickable ? e => { e.currentTarget.style.boxShadow = `0 0 0 1.5px ${item.chipColor || borderColor || colors.danger}`; } : undefined}
                     onMouseLeave={isClickable ? e => { e.currentTarget.style.boxShadow = "none"; } : undefined}
@@ -3755,6 +3769,41 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <span style={{ color: colors.accentDark, fontWeight: 700 }}>{catchupTotal} catch-up{catchupTotal !== 1 ? "s" : ""} owed</span>
                           <DismissBtn groupType="alert-catchup" color={colors.accentDark} />
                         </div>
+                        );
+                      })()}
+                      {/* v2.41.0 — band sessions needing attributions set. Row click opens
+                          that week in the Weekly Timetable; the X on a row or on the
+                          chip dismisses only the bands listed (id-keyed). */}
+                      {unattributedBands.length > 0 && (() => {
+                        const n = unattributedBands.length;
+                        const currentMondayKey = toLocalDateStr(getCurrentWeekMonday());
+                        const dayIdx = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
+                        const jumpTo = (b) => {
+                          const school = schools.find(s => s.id === b.schoolId);
+                          if (school && onJumpToWeekly) onJumpToWeekly(school, weekOffsetBetween(currentMondayKey, b.weekKey));
+                        };
+                        const items = unattributedBands.map(b => {
+                          const school = schools.find(s => s.id === b.schoolId);
+                          const d = new Date(b.weekKey + "T00:00:00");
+                          d.setDate(d.getDate() + (dayIdx[b.day] ?? 0));
+                          const dateLabel = `${(b.day || "").slice(0, 3)} ${d.getDate()} ${d.toLocaleDateString("en-AU", { month: "short" })}`;
+                          const scColor = school?.color || colors.amber;
+                          return {
+                            label: `${b.bandName || "Band"} — ${dateLabel} (${school ? getSchoolAcronym(school) : "?"}) · ${b.set} of ${b.total}`,
+                            chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`,
+                            onSelect: () => jumpTo(b),
+                            dismissKey: unattributedAlertDismissKey([b.bandLessonId]),
+                          };
+                        });
+                        return (
+                          <div
+                            onClick={() => jumpTo(unattributedBands[0])}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "BAND ATTRIBUTIONS", borderColor: colors.amber, items }); }}
+                            onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: `1px solid ${colors.amber}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            <span style={{ color: colors.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Guitar size={11} /> {n} band session{n !== 1 ? "s" : ""} need{n === 1 ? "s" : ""} attributions set</span>
+                            <DismissBtn color={colors.amber} onClick={() => dismissAlert(unattributedAlertDismissKey(unattributedBands.map(b => b.bandLessonId)))} />
+                          </div>
                         );
                       })()}
                       {(() => {

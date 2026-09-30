@@ -18,7 +18,7 @@ import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDeri
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
 import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImportWiringTests, runImportMissedLineTests } from "./mttImportSmokeTests";
-import { runBandSessionViewTests, runBandCardStatusTests } from "./bandSessionViewSmokeTests";
+import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTests } from "./bandSessionViewSmokeTests";
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -333,6 +333,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Band session view (cluster 6b) ──
   runBandSessionViewTests(assert);
   runBandCardStatusTests(assert);
+  runUnattributedAlertTests(assert);
   runBandDisplayCharacterizationTests(assert);
   runBandDisplaySessionTests(assert);
 

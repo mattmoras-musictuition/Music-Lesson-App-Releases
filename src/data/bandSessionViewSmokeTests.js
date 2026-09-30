@@ -10,7 +10,9 @@ import {
   SESSION_STATUS, sessionMemberRows, sessionMembers, isBandUnattributed,
   attributionProgress, absentCount, bandCoversStudentForPresence,
   bandNameForCatchup, findUnattributedBands, bandCardStatus,
+  termWeekKeys, weekOffsetBetween, unattributedAlertDismissKey, undismissedBandIds, unattributedBandsForAlert,
 } from "./bandSessionView";
+import { resolveAnchorTerm } from "../utils/catchupScope";
 
 const W = "2099-03-09";
 const PW = "2020-03-09";
@@ -194,4 +196,51 @@ export function runBandCardStatusTests(assert) {
     bandCardStatus(mk([entry("a", "Guitar", "regular"), entry("b", "Bass", null), entry("c", "Keys", "free", { attended: false })]), miss),
     { needsAttribution: true, absentN: 2 });
   assert("card status: empty memberStates → nothing", bandCardStatus(newBand("C", [{ studentId: "a" }], []), []), { needsAttribution: false, absentN: 0 });
+}
+
+export function runUnattributedAlertTests(assert) {
+  assert("alert: termWeekKeys from a mid-week start to the end",
+    termWeekKeys({ start: "2099-01-28", end: "2099-02-18" }), ["2099-01-26", "2099-02-02", "2099-02-09", "2099-02-16"]);
+  assert("alert: termWeekKeys, no term", termWeekKeys(null), []);
+  assert("alert: weekOffsetBetween", [weekOffsetBetween("2099-03-09", "2099-03-23"), weekOffsetBetween("2099-03-09", "2099-02-23"), weekOffsetBetween("2099-03-09", "2099-03-09")], [2, -2, 0]);
+  assert("alert: weekOffsetBetween across a DST change", weekOffsetBetween("2020-03-30", "2020-04-13"), 2);
+
+  const key = unattributedAlertDismissKey(["b2", "b1", "b2"]);
+  assert("alert: dismiss key is prefixed, sorted, de-duplicated", key, "alert-unattributed-bands|b1,b2");
+  assert("alert: undismissed ids — nothing dismissed", undismissedBandIds(["b1", "b2"], {}), ["b1", "b2"]);
+  assert("alert: undismissed ids — set dismissed", undismissedBandIds(["b1", "b2"], { [key]: true }), []);
+  assert("alert: undismissed ids — a new band comes back alone", undismissedBandIds(["b1", "b2", "b3"], { [key]: true }), ["b3"]);
+  assert("alert: undismissed ids — per-row keys add up",
+    undismissedBandIds(["b1", "b2"], { [unattributedAlertDismissKey(["b1"])]: true, [unattributedAlertDismissKey(["b2"])]: true }), []);
+  assert("alert: other alert keys and false flags are ignored",
+    undismissedBandIds(["b1"], { "alert-catchup": true, [unattributedAlertDismissKey(["b1"])]: false }), ["b1"]);
+
+  const un = (id, wk, day) => newBand(id, [{ studentId: "a", instrument: "Guitar" }], [entry("a", "Guitar", null)], { day });
+  const wtt = {
+    "2099-01-26|S": { lessons: [un("before", "2099-01-26", "Monday")] },
+    "2099-02-02|S": { lessons: [un("inTerm1", "2099-02-02", "Thursday"), { id: "leg", isBandSession: true, members: [{ studentId: "a" }], removedLessons: [] }] },
+    "2099-04-06|S": { lessons: [un("inTerm2", "2099-04-06", "Monday")] },
+    "2099-04-20|S": { lessons: [un("after", "2099-04-20", "Monday")] },
+  };
+  const term = { start: "2099-02-02", end: "2099-04-10" };
+  assert("alert: term scope — past and future weeks of the term, legacy excluded",
+    unattributedBandsForAlert(wtt, term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
+  assert("alert: no term → nothing", unattributedBandsForAlert(wtt, null, {}), []);
+  assert("alert: dismissed set hides the chip",
+    unattributedBandsForAlert(wtt, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2"])]: true }), []);
+  const wtt2 = { ...wtt, "2099-03-02|S": { lessons: [un("fresh", "2099-03-02", "Tuesday")] } };
+  assert("alert: a new unattributed band reappears after dismissal",
+    unattributedBandsForAlert(wtt2, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2"])]: true }).map(b => b.bandLessonId), ["fresh"]);
+
+  // The Dashboard resolves the term with catch-ups owed's rule.
+  const interruptions = [
+    { type: "term_break", date: "2099-01-01", endDate: "2099-02-01" },
+    { type: "term_break", date: "2099-04-11", endDate: "2099-04-26" },
+  ];
+  const inTerm = resolveAnchorTerm(interruptions, "2099-03-02");
+  const inHols = resolveAnchorTerm(interruptions, "2099-04-13");
+  assert("alert: during term — this term's bands",
+    unattributedBandsForAlert(wtt, inTerm && inTerm.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
+  assert("alert: in the holidays — the just-finished term's bands",
+    unattributedBandsForAlert(wtt, inHols && inHols.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
 }
