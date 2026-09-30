@@ -301,7 +301,8 @@ export function bandCatchupTooltip(catchup, weeklyTimetables, when) {
  *             absence cleared.
  *   catchup with a snapshot →
  *     • { kind: "catchup", band, insertRow } — re-insert the snapshot under
- *       its ORIGINAL id and restore catchupId, when no other row now
+ *       its ORIGINAL id (at the band's current day/time) and restore
+ *       catchupId, when no other row now
  *       resolves the same miss (a row already carrying the snapshot's id —
  *       a failed delete put back — is simply re-linked, insertRow null);
  *     • { kind: "catchup", band, reset: true } — another row has since
@@ -349,9 +350,11 @@ export function planUndoAbsence({ band, entry, missed, catchups } = {}) {
     };
   }
   const stillThere = list.some(c => c && c.id === snap.id);
+  // The band may have moved since (syncBandLinkedCatchups only moves live
+  // rows), so the re-inserted row takes the band's current day and time.
   return {
     kind: "catchup",
-    insertRow: stillThere ? null : snap,
+    insertRow: stillThere ? null : { ...snap, day: band.day || snap.day, time: band.start || snap.time },
     band: {
       ...band,
       memberStates: mapEntry(band.memberStates, entry.enrolmentId, e => ({ ...withoutAbsence(e), catchupId: snap.id })),

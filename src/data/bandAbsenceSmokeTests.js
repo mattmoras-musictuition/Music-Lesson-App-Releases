@@ -286,6 +286,9 @@ export function runBandAbsenceHelperTests(assert) {
     [u1.insertRow, u1e.catchupId, u1e.attended, "absence" in u1e, "absentCatchupSnapshot" in u1e, u1e.consumption],
     [cuRow, "CU", null, false, false, "catchup"]);
   const elsewhere = row("CU2", eBD, FW, PW0);
+  const moved = { ...on.band, day: "Friday", start: "13:00" };
+  assert("absence catchup undo after the band moved: row re-inserted at the band's current slot",
+    [planUndoAbsence({ band: moved, entry: onEntry, missed: [], catchups: [] }).insertRow], [{ ...cuRow, day: "Friday", time: "13:00" }]);
   const u2 = planUndoAbsence({ band: on.band, entry: onEntry, missed: [], catchups: [elsewhere] });
   const u2e = u2.band.memberStates[2];
   assert("absence catchup undo refused: miss booked elsewhere → reset to Not set, no insert",
