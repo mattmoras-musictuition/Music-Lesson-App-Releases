@@ -4,9 +4,12 @@
 // (cardDisplayById, the drag-hover overlay, buildPopoverInfo) so smoke tests
 // can pin them. Each takes the member LIST to show — the caller decides
 // whether that is the roster (legacy) or the session's members.
+// bandPopoverGroups is new in cluster 6b: it sorts a band's members into the
+// popover's attending / absent / not-in-session groups.
 // ============================================================
 
 import { timeToMin } from "../utils/helpers";
+import { sessionMemberRows, SESSION_STATUS } from "./bandSessionView";
 
 /**
  * The band card's member subline: first name (plus surname initial when two
@@ -79,4 +82,35 @@ export function bandPopoverMembers(memberList, students, { displayName, classTea
       classTeacher: classTeacherName(st),
     };
   }).filter(Boolean);
+}
+
+/**
+ * The hover popover's band member groups (cluster 6b): everyone is listed,
+ * attending first (free members tagged isFree; unattributed members count
+ * as attending), then absent ("Absent (<reason>)", or "Absent"), then not in
+ * this session. A legacy band puts all of members[] in `attending`, exactly
+ * as bandPopoverMembers(members) would (each row also carries isFree:false).
+ *
+ * @param {Object} band
+ * @param {Array} missed   The band week's missed[].
+ * @param {Array} students
+ * @param {Object} fns     bandPopoverMembers' fns plus
+ *        reasonLabel(reason, detail) → text.
+ * @returns {{attending: Array, absent: Array, notInSession: Array}}
+ */
+export function bandPopoverGroups(band, missed, students, fns) {
+  const out = { attending: [], absent: [], notInSession: [] };
+  for (const r of sessionMemberRows(band, missed)) {
+    const [pm] = bandPopoverMembers([r], students, fns);
+    if (!pm) continue;
+    if (r.status === SESSION_STATUS.absent) {
+      const label = r.absenceReason ? fns.reasonLabel(r.absenceReason, r.absenceReasonDetail) : null;
+      out.absent.push({ ...pm, absenceLabel: label ? `Absent (${label})` : "Absent" });
+    } else if (r.status === SESSION_STATUS.notInSession) {
+      out.notInSession.push(pm);
+    } else {
+      out.attending.push({ ...pm, isFree: r.isFree });
+    }
+  }
+  return out;
 }

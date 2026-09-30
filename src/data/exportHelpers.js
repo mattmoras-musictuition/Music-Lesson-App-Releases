@@ -12,6 +12,7 @@ import { timeToMin, getBreaksForSchool, getSchoolAcronym, downloadFile, getLiveT
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { DAYS, instruments_colors } from "../constants";
 import { getXLSX } from "../utils/api";
+import { sessionMembers } from "./bandSessionView";
 
 // Cluster 12a: opts-cascade resolver for stamped-teacherName-free exports.
 // Reads enrolments/laneOverrides/weekKey from opts (MTT exports pass null/null
@@ -63,9 +64,14 @@ function lessonDisplayName(l) {
 // and for bands without resolvable students; callers should keep the existing
 // "(prefix ? prefix + ' · ' : '') + ti" tidy-up so an empty prefix collapses
 // to just the teacher name.
-export function bandStudentFirstNames(l, students) {
+//
+// Cluster 6b: pass the week's `missed` (WTT exports) to list only students in
+// this session — not-in-session and absent members drop out. Without it
+// (MTT exports, older callers) the full members[] is listed as before; a
+// legacy band lists members[] either way.
+export function bandStudentFirstNames(l, students, missed) {
   if (!l || !l.isBandSession) return "";
-  var members = l.members || [];
+  var members = missed == null ? (l.members || []) : sessionMembers(l, missed);
   if (!members.length || !students) return "";
   var byId = {};
   for (var si = 0; si < students.length; si++) byId[students[si].id] = students[si];
@@ -234,7 +240,7 @@ export function buildGridRows(lessons, students, school, teachers, opts) {
         // and group lessons. Empty members fall back to "" so the tidy-up at
         // the render site (cls ? ... : '') drops the segment cleanly.
         var cls = l.isBandSession
-          ? bandStudentFirstNames(l, students)
+          ? bandStudentFirstNames(l, students, opts && opts.missed)
           : (st ? st.className || "" : "");
         // Cluster 12a: lane-resolved teacher name (override-aware on WTT).
         var ti = firstNameOf(_liveTeacherName(l, students, teachers, opts));
@@ -582,7 +588,7 @@ function buildDaysListHtml(lessons, students, title, meta, opts) {
         + '<div style="display:flex;align-items:flex-start;gap:7px">'
           + '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + color + ';flex-shrink:0;margin-top:3px"></span>'
           + '<div style="min-width:0;flex:1"><div style="font-weight:600;font-size:12px;color:' + TEXT + ';line-height:1.3">' + name + (cls ? ' <span style="color:' + MUTED + ';font-size:10.5px;font-weight:500">' + cls + '</span>' : '') + '</div>'
-          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + ((function(){ var p = l.isBandSession ? bandStudentFirstNames(l, students) : (l.instrument || ''); return p ? p + ' \u00b7 ' : ''; })()) + ti + '</div></div>'
+          + '<div style="font-size:10.5px;color:' + MUTED + ';margin-top:1px">' + ((function(){ var p = l.isBandSession ? bandStudentFirstNames(l, students, opts && opts.missed) : (l.instrument || ''); return p ? p + ' \u00b7 ' : ''; })()) + ti + '</div></div>'
         + '</div>'
         + (l.adjusted ? '<div style="color:' + ADJUST + ';font-style:italic;font-size:10.5px;margin-top:2px">\u21BB ' + (l.adjustReason || 'Adjusted') + '</div>' : '')
       + '</td></tr>';
@@ -656,7 +662,7 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   // schedule — Monday-Wednesday-only teacher gets a 3-day grid rather
   // than a 5-day grid with blanks on Thu/Fri.
   // Cluster 12a: gridOpts extended with enrolments / laneOverrides / weekKey for buildGridRows leaf-resolver.
-  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
+  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
   var showSeparate = !schoolId && !teacherName && !className;
   var body = buildHeaderBand(title, null, meta);
   if (showSeparate) {
@@ -702,7 +708,7 @@ export function generateTeacherSchedulesHtml(lessons, students, schools, teacher
       if (nm.length > maxNameLen) maxNameLen = nm.length;
     });
     var dayColWidth = Math.min(170, Math.max(105, maxNameLen * 6.5 + 16));
-    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey }); });
+    var grids = teacherSchoolGroups.map(function(sg) { return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed }); });
     // Session 96: single header band per teacher instead of separate h1 + meta.
     var metaLine = schoolName + " \u00b7 " + sourceLabel + " \u00b7 " + tLessons.length + " lesson" + (tLessons.length !== 1 ? "s" : "");
     body += buildHeaderBand(tName, "Teacher schedule", metaLine);
@@ -764,7 +770,7 @@ export function buildTeacherSchoolGrid(tLessons, students, school, teachers, opt
         var name = lessonDisplayName(l);
         // Match buildGridRows: bands slot first names into the cls position.
         var cls = l.isBandSession
-          ? bandStudentFirstNames(l, students)
+          ? bandStudentFirstNames(l, students, opts && opts.missed)
           : (st ? st.className || "" : "");
         var color = ic[l.instrument] || ic.default;
         return { name: name, cls: cls, color: color, adjusted: l.adjusted, adjustReason: l.adjustReason };
@@ -856,7 +862,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
   var filename = filenameBase + (day ? "-" + day : "");
   var showSeparate = !schoolId && !teacherName && !className;
   // Cluster 12a: gridOpts extended for lane-resolved teacher resolution.
-  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
+  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
 
   if (format === "csv") {
     const Papa = window.Papa;
@@ -925,7 +931,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
       XLSX.utils.book_append_sheet(wb, gridToSheet(gRows2), "Timetable");
     }
     // Cluster 12a: prepareLessonRows now takes opts so Teacher resolves lane-aware.
-    var listRows = prepareLessonRows(filtered, students, { teachers: teachers, enrolments: opts && opts.enrolments, teacherCoverage: opts && opts.teacherCoverage, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
+    var listRows = prepareLessonRows(filtered, students, { teachers: teachers, enrolments: opts && opts.enrolments, teacherCoverage: opts && opts.teacherCoverage, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed });
     var listWs = XLSX.utils.json_to_sheet(listRows);
     var listCols = Object.keys(listRows[0] || {});
     listWs["!cols"] = listCols.map(function(k) { return { wch: Math.max(k.length, Math.max.apply(null, listRows.map(function(r) { return String(r[k] || "").length; }))) + 2 }; });
@@ -947,7 +953,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
     } else {
       var body = buildHeaderBand(pdfTitle, null, pdfMeta);
       // Cluster 12a: pdfGridOpts extended for lane-resolved teacher resolution.
-      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey };
+      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
       if (showSeparate) {
         var groups3 = groupLessonsBySchool(filtered, schools);
         for (var g3 = 0; g3 < groups3.length; g3++) {
@@ -992,7 +998,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
       for (var sg = 0; sg < teacherSchoolGroups.length; sg++) {
         var sgSchool = teacherSchoolGroups[sg].school;
         var sgLessons = teacherSchoolGroups[sg].lessons;
-        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
+        var sgGrid = buildTeacherSchoolGrid(sgLessons, students, sgSchool, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed });
         var sgDays = sgGrid.days;
         aoa.push([getSchoolAcronym(sgSchool) + " — " + sgSchool.name]);
         aoa.push(["Time"].concat(sgDays));
@@ -1027,7 +1033,7 @@ export async function exportTeacherSchedules(lessons, students, schools, teacher
         return aMin - bMin;
       });
       var sg2Grids = teacherSchoolGroups2.map(function(sg) {
-        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey });
+        return buildTeacherSchoolGrid(sg.lessons, students, sg.school, teachers, { teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed });
       });
       var maxNameLen = 0;
       tLessons2.forEach(function(l) {

@@ -96,7 +96,7 @@ export function sessionMemberRows(band, missed) {
     if (!sid || seen.has(sid)) continue;
     seen.add(sid);
     const r = byStudent.get(sid);
-    out.push(statusRow(sid, m.instrument || (r && r.attributedEntry && r.attributedEntry.instrument), r ? r.attributedEntry : null, band, missed));
+    out.push(statusRow(sid, m.instrument, r ? r.attributedEntry : null, band, missed));
   }
   for (const r of byStudent.values()) {
     if (seen.has(r.studentId) || !r.attributedEntry) continue;

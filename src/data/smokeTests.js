@@ -19,7 +19,7 @@ import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSm
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
 import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImportWiringTests, runImportMissedLineTests } from "./mttImportSmokeTests";
 import { runBandSessionViewTests } from "./bandSessionViewSmokeTests";
-import { runBandDisplayCharacterizationTests } from "./bandDisplaySmokeTests";
+import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -333,6 +333,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Band session view (cluster 6b) ──
   runBandSessionViewTests(assert);
   runBandDisplayCharacterizationTests(assert);
+  runBandDisplaySessionTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

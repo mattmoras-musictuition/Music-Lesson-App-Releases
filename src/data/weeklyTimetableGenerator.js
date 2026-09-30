@@ -573,7 +573,7 @@ export function printWeeklyTimetable(weeklyTimetables, schools, students, weekDa
         for (const l of cellLessons) {
           const col = getColor(l.instrument, l.isGroup);
           const cls = l.adjusted ? "lesson-card adjusted" : "lesson-card";
-          const student = l.isGroup ? groupDisplayName(l) : l.studentName;
+          const student = l.isBandSession ? (l.bandName || "Band") : l.isGroup ? groupDisplayName(l) : l.studentName;
           const stObj = students.find(s => s.id === l.studentId);
           const classLabel = stObj?.className ? ` · ${stObj.className}` : "";
           html += `<div class="${cls}" style="background:${col}18;border-left-color:${col}">

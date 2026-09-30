@@ -3803,7 +3803,7 @@ export default function MusicTimetableApp() {
               if (l.adjusted) flags.push("adjusted");
               if (l.isTrial) flags.push("trial");
               if (l.isGroup) flags.push("group");
-              const who = l.isGroup ? (l.groupName || "Group") : (l.studentName || "");
+              const who = l.isBandSession ? (l.bandName || "Band") : l.isGroup ? (l.groupName || "Group") : (l.studentName || "");
               const tName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, wttWeekKey);
               lines.push(`  ${day} ${l.start}${String.fromCharCode(8211)}${l.end}: ${who} (${l.instrument || "?"}) ${String.fromCharCode(8212)} ${tName}${flags.length ? ` [${flags.join(", ")}]` : ""}`);
             });

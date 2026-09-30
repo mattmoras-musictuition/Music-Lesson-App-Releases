@@ -98,6 +98,9 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   // resolution; MTT exports pass null/null (lane-only).
   const exportWeekKey = selectedWeek ? selectedWeek.weekKey : null;
   const exportLaneOverrides = selectedWeek ? laneOverrides : null;
+  // Cluster 6b: a week export passes that week's missed[] so band rows list
+  // only students in the session. Master exports pass nothing (unchanged).
+  const exportMissed = selectedWeek ? selectedWeek.missed : undefined;
   const resolveLessonTeacherName = (l) => getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, exportLaneOverrides, exportWeekKey) || "";
 
   const schoolIds = [...new Set(sourceLessons.map(l => l.schoolId))];
@@ -223,7 +226,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   const getExportHtml = React.useCallback((singleDay) => {
     const dayFilter = singleDay || (day.size === 1 ? [...day][0] : null);
     if (exportType === "teacher_schedules") {
-      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
+      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed });
     }
     const parts = [];
     if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
@@ -241,8 +244,9 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
       enrolments,
       laneOverrides: exportLaneOverrides,
       weekKey: exportWeekKey,
+      missed: exportMissed,
     });
-  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, teacherCoverage]);
+  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, exportMissed, teacherCoverage]);
 
   // Session 96: upload a base64 PDF to the private documents bucket and
   // register it as a Document so it appears in the Documents tab and becomes
@@ -323,6 +327,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                 enrolments,
                 laneOverrides: exportLaneOverrides,
                 weekKey: exportWeekKey,
+                missed: exportMissed,
               });
             }
           } else if (exportType === "teacher_schedules") {
@@ -338,7 +343,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                 }
               }
             } else {
-              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey });
+              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed });
             }
           }
         }

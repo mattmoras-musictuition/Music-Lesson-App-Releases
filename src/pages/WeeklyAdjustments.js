@@ -34,7 +34,8 @@ import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
-import { bandCardMemberNames, bandSpecialistTags, bandPopoverMembers } from "../data/bandDisplay";
+import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
+import { sessionMembers } from "../data/bandSessionView";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -179,7 +180,7 @@ function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyl
           </div>
           {info.bandMembers.map((m, i) => (
             <div key={i} style={{ fontSize: 11, color: colors.text, marginBottom: i < info.bandMembers.length - 1 ? 4 : 0 }}>
-              <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
+              <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · {m.instrument}</span> : null}{m.isFree ? <span style={{ color: colors.textMuted, fontWeight: 400 }}> · free</span> : null}</div>
               {m.className && (
                 <div style={{ color: colors.textMuted }}>
                   Class: {m.className}{m.classTeacher ? ` – ${m.classTeacher}` : ""}
@@ -189,6 +190,19 @@ function HoverInfoCard({ colors, color, info, flyoutPanel, rectTop, fallbackStyl
           ))}
         </div>
       )}
+      {[["Absent", info.bandAbsent], ["Not in this session", info.bandNotInSession]].map(([heading, list]) => (list || []).length > 0 && (
+        <div key={heading} style={{ marginTop: 4, borderTop: `1px solid ${colors.borderLight}`, paddingTop: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+            {heading}
+          </div>
+          {list.map((m, i) => (
+            <div key={i} style={{ fontSize: 11, color: colors.textMuted, marginBottom: i < list.length - 1 ? 4 : 0 }}>
+              <div style={{ fontWeight: 600 }}>{m.name}{m.instrument ? <span style={{ fontWeight: 400 }}> · {m.instrument}</span> : null}</div>
+              {m.absenceLabel && <div>{m.absenceLabel}</div>}
+            </div>
+          ))}
+        </div>
+      ))}
       {(info.bandPersonnel || []).length > 0 && (
         <div style={{ marginTop: 4, fontSize: 11, color: colors.textLight }}>
           With: {info.bandPersonnel.join(", ")}
@@ -645,6 +659,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       bands: [],
       groupMembers: [],
       bandMembers: [],
+      bandAbsent: [],
+      bandNotInSession: [],
       bandPersonnel: [],
     };
 
@@ -675,11 +691,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         if (!t) return null;
         return p.instrument ? `${t.name} (${p.instrument})` : t.name;
       }).filter(Boolean);
-      const memberArr = lesson.members || [];
-      info.bandMembers = bandPopoverMembers(memberArr, students, {
+      // Cluster 6b: everyone is listed, grouped by their part in this
+      // session — attending (free tagged), then absent, then not in this
+      // session. A legacy band (or the Add-band menu's synthetic lesson) has
+      // no session status, so all of members[] lands in the first group.
+      const groups = bandPopoverGroups(lesson, weeklyData?.missed || EMPTY_LESSONS, students, {
         displayName: buildPreferredDisplayName,
         classTeacherName: (st) => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : ""; },
+        reasonLabel: getMissedReasonLabel,
       });
+      info.bandMembers = groups.attending;
+      info.bandAbsent = groups.absent;
+      info.bandNotInSession = groups.notInSession;
     } else {
       const st = students.find(s => s.id === lesson.studentId);
       info.title = buildPreferredDisplayName(st?.name || lesson.studentName);
@@ -1126,7 +1149,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // Teacher name is derived identically for band + regular cards.
       const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
       if (l.isBandSession) {
-        const bandMembers = (l.members || []);
+        // Cluster 6b: only students in this session (legacy bands: members[]).
+        const bandMembers = sessionMembers(l, weeklyData?.missed || EMPTY_LESSONS);
         const memberNames = bandCardMemberNames(bandMembers, students);
         // Specialist conflicts across all members
         const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
@@ -1169,7 +1193,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       }
     }
     return out;
-  }, [wLessons, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes, currentSchool, specLookupRef]);
+  }, [wLessons, weeklyData?.missed, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes, currentSchool, specLookupRef]);
 
   // ── Spec 3 cluster 5b-3a: catchup create / delete plumbing ───────────────
 
@@ -3685,6 +3709,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     laneOverrides,
                     weekKey,
                     weekLabel,
+                    missed: weeklyData?.missed || [],
                     schoolShortName: schoolForExport ? getSchoolAcronym(schoolForExport) : "",
                     breaks: weeklyData?.breaks || [],
                   }
@@ -6059,7 +6084,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {
-                                          specs = bandSpecialistTags(dl.members || [], students, specLookupRef, dl.schoolId, day, sl);
+                                          specs = bandSpecialistTags(sessionMembers(dl, weeklyData?.missed || EMPTY_LESSONS), students, specLookupRef, dl.schoolId, day, sl);
                                         } else {
                                           const st = students.find(s => s.id === dl.studentId);
                                           specs = st && st.className ? (specLookupRef[dl.schoolId + "|" + st.className + "|" + day] || []).filter(sp => { const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start); return sS < sp.end && sE > sp.start; }).map(sp => sp.subject || "Specialist") : [];
