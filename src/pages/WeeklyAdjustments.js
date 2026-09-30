@@ -24,7 +24,7 @@ import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB
 import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
-import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, applyStudentAttribution,
@@ -5259,6 +5259,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             {confirmImportAllWeeks ? (
               <div style={{ display: "flex", gap: 6, alignItems: "center", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: colors.cardBg, fontWeight: 500 }}>Import all schools?</span>
+                {(() => {
+                  // v2.40.1 — how many recorded misses this import clears.
+                  const n = (schools || []).reduce((sum, sc) => sum + importClearedMissedCount(weeklyTimetables[`${weekDates[0].date}|${sc.id}`] || null), 0);
+                  const line = importMissedLine(n, "all");
+                  return line ? <span style={{ fontSize: 11, color: colors.cardBg, opacity: 0.85 }}>{line}</span> : null;
+                })()}
                 <Btn variant="primary" onClick={importAllSchoolsFromMTT} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600, background: colors.sidebarActive, color: "#fff", border: "none" }}>Yes</Btn>
                 <Btn variant="secondary" onClick={() => setConfirmImportAllWeeks(false)} style={{ height: 28, padding: "0 10px", fontSize: 12, borderRadius: 6, fontWeight: 600 }}>No</Btn>
               </div>
@@ -5589,7 +5595,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   <>
                     {confirmImportExpanded === "week" ? (
                       <>
-                        <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace week?</span>
+                        <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace week?{(() => {
+                          const line = importMissedLine(importClearedMissedCount(weeklyTimetables[storageKey] || null), "week");
+                          return line ? <span style={{ display: "block", fontSize: 11, fontWeight: 400 }}>{line}</span> : null;
+                        })()}</span>
                         <button onClick={() => { importFromMTT(null); }} disabled={generating}
                           style={{ padding: "6px 10px", background: colors.sidebarActive, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>Yes</button>
                         <button onClick={() => setConfirmImportExpanded(false)}
@@ -5636,7 +5645,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     {isExpanded ? (
                       confirmImportExpanded === d ? (
                         <>
-                          <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace {d.slice(0,3)}?</span>
+                          <span style={{ padding: "6px 10px", fontSize: 12, fontWeight: 500, color: colors.sidebarActive, background: colors.blueLight, whiteSpace: "nowrap" }}>Replace {d.slice(0,3)}?{(() => {
+                            const line = importMissedLine(importClearedMissedCount(weeklyTimetables[storageKey] || null, { day: d }), "day", d);
+                            return line ? <span style={{ display: "block", fontSize: 11, fontWeight: 400 }}>{line}</span> : null;
+                          })()}</span>
                           <button onClick={() => { importFromMTT(d); }}
                             style={{ padding: "6px 10px", background: colors.sidebarActive, color: "#fff", fontSize: 12, fontWeight: 600, fontFamily: "inherit", cursor: "pointer", border: "none", borderLeft: "1px solid rgba(255,255,255,0.3)" }}>Yes</button>
                           <button onClick={() => setConfirmImportExpanded(false)}

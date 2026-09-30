@@ -128,3 +128,44 @@ export function buildMttImportForWeekSchool({
     skippedInactiveCount,
   };
 }
+
+// ── Import confirmation: missed-lesson count line (v2.40.1) ──────────────
+
+/**
+ * How many recorded missed entries a clean import of this entry will clear.
+ *
+ *   Whole week (day null) — every entry: missed[] is wiped and, with every
+ *     band removed, no band absence survives the carry-forward.
+ *   Day import — that day's ordinary entries, plus any band absence whose
+ *     band does not survive (bands on other days keep theirs; a band on the
+ *     target day is removed, so its absences go, whichever day their card
+ *     sits on).
+ *
+ * @param {Object|null} entry  The week+school entry before import.
+ * @param {Object} [opts]
+ * @param {string|null} [opts.day]
+ * @returns {number}
+ */
+export function importClearedMissedCount(entry, { day = null } = {}) {
+  const missed = (entry && entry.missed) || [];
+  if (!day) return missed.length;
+  const surviving = new Set(((entry && entry.lessons) || [])
+    .filter(l => l && l.isBandSession && l.day !== day).map(l => l.id));
+  return missed.filter(m => m && (m.bandLessonId ? !surviving.has(m.bandLessonId) : m.day === day)).length;
+}
+
+/**
+ * The extra confirmation line, or null when nothing would be cleared.
+ *
+ * @param {number} n
+ * @param {"week"|"day"|"all"} scope
+ * @param {string} [day]  For scope "day".
+ * @returns {string|null}
+ */
+export function importMissedLine(n, scope, day) {
+  if (!n || n <= 0) return null;
+  const what = `${n} missed lesson${n === 1 ? "" : "s"}`;
+  if (scope === "day") return `${what} recorded on ${day} will be cleared.`;
+  if (scope === "all") return `${what} recorded this week across all schools will be cleared.`;
+  return `${what} recorded this week will be cleared.`;
+}

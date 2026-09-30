@@ -11,7 +11,7 @@
 // Weeks: 2020 (past) and 2099 (future), as in the other band suites.
 // ============================================================
 
-import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
 import { carryBandMisses, planCleanImport } from "./bandAbsence";
 import { mergeCatchupsIntoLessons, buildBankingIndex } from "./catchupsDerive";
 import { removeCatchupsInBackground } from "../utils/catchupsDB";
@@ -221,4 +221,29 @@ export function runCleanImportWiringTests(assert) {
   removeCatchupsInBackground([], { setCatchups: () => { touched = true; } });
   assert("clean wiring: bulk removal leaves state at once; an empty list touches nothing",
     [afterSync, touched], [["KEEP"], false]);
+}
+
+// ── Confirmation count line (commit 4) ──────────────────────────────────
+export function runImportMissedLineTests(assert) {
+  const week = existingWeek();
+  // A band absence for the Tuesday band whose card sits on Thursday, and one
+  // for a band that no longer exists.
+  week.missed.push(
+    { id: "ABS_NEW", day: "Thursday", bandLessonId: "B_NEW" },
+    { id: "ABS_GONE", day: "Monday", bandLessonId: "B_GONE" },
+  );
+  assert("missed line: week counts every entry; day counts what that import clears",
+    [importClearedMissedCount(week), importClearedMissedCount(week, { day: "Tuesday" }),
+      importClearedMissedCount(week, { day: "Thursday" }), importClearedMissedCount(week, { day: "Monday" })],
+    // Tue: MISS_TUE + ABS_NEW (its band is removed) + ABS_GONE; Thu: MISS_THU + ABS_GONE
+    // (Tuesday's band survives, so ABS_NEW is carried); Mon: ABS_GONE only.
+    [4, 3, 2, 1]);
+  assert("missed line: wording for week / day / all schools, singular and plural",
+    [importMissedLine(1, "week"), importMissedLine(3, "week"), importMissedLine(1, "day", "Tuesday"),
+      importMissedLine(2, "all")],
+    ["1 missed lesson recorded this week will be cleared.", "3 missed lessons recorded this week will be cleared.",
+      "1 missed lesson recorded on Tuesday will be cleared.", "2 missed lessons recorded this week across all schools will be cleared."]);
+  assert("missed line: omitted when nothing is cleared",
+    [importMissedLine(0, "week"), importMissedLine(0, "all"), importClearedMissedCount(null), importClearedMissedCount({ lessons: [], missed: [] }, { day: "Monday" })],
+    [null, null, 0, 0]);
 }
