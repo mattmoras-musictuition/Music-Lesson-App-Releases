@@ -34,6 +34,7 @@ import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
+import { bandCardMemberNames, bandSpecialistTags, bandPopoverMembers } from "../data/bandDisplay";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -675,17 +676,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         return p.instrument ? `${t.name} (${p.instrument})` : t.name;
       }).filter(Boolean);
       const memberArr = lesson.members || [];
-      info.bandMembers = memberArr.map(m => {
-        const st = students.find(s => s.id === m.studentId);
-        if (!st) return null;
-        const ct = getClassTeacher(st, contacts || []);
-        return {
-          name: buildPreferredDisplayName(st.name),
-          instrument: m.instrument || "",
-          className: st.className || st.class_name || "",
-          classTeacher: ct ? ct.name : "",
-        };
-      }).filter(Boolean);
+      info.bandMembers = bandPopoverMembers(memberArr, students, {
+        displayName: buildPreferredDisplayName,
+        classTeacherName: (st) => { const ct = getClassTeacher(st, contacts || []); return ct ? ct.name : ""; },
+      });
     } else {
       const st = students.find(s => s.id === lesson.studentId);
       info.title = buildPreferredDisplayName(st?.name || lesson.studentName);
@@ -1133,31 +1127,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
       if (l.isBandSession) {
         const bandMembers = (l.members || []);
-        const resolvedStudents = bandMembers.map(m => students.find(st => st.id === m.studentId));
-        const memberNames = bandMembers.map((m, mi) => {
-          const s = resolvedStudents[mi];
-          if (!s) return null;
-          // Inline name logic: first name, add surname initial if duplicate first name
-          const first = (s.name || "").split(" ")[0];
-          const hasDupe = resolvedStudents.some((os, oi) => oi !== mi && os && (os.name || "").split(" ")[0] === first);
-          const parts = (s.name || "").split(" ");
-          const displayName = hasDupe && parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
-          return displayName + (m.instrument ? ` (${m.instrument})` : "");
-        }).filter(Boolean);
+        const memberNames = bandCardMemberNames(bandMembers, students);
         // Specialist conflicts across all members
         const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
-        const bandSpecTags = (() => {
-          if (!sl) return [];
-          const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start);
-          const specSet = new Set();
-          for (const m of bandMembers) {
-            const ms = students.find(s => s.id === m.studentId);
-            if (!ms?.className) continue;
-            const mSpecs = (specLookupRef[l.schoolId + "|" + ms.className + "|" + l.day] || []).filter(sp => sS < sp.end && sE > sp.start);
-            mSpecs.forEach(sp => specSet.add((sp.subject || "Specialist") + " (" + ms.name.split(" ")[0] + ")"));
-          }
-          return [...specSet];
-        })();
+        const bandSpecTags = bandSpecialistTags(bandMembers, students, specLookupRef, l.schoolId, l.day, sl);
         out[l.id] = { teacherName, memberNames, bandSpecTags };
       } else {
         // Live instrument: if the student's instrument changed, reflect it on the card
@@ -6086,15 +6059,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {
-                                          const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start);
-                                          const specSet = new Set();
-                                          for (const m of (dl.members || [])) {
-                                            const ms = students.find(s => s.id === m.studentId);
-                                            if (!ms || !ms.className) continue;
-                                            const mSpecs = (specLookupRef[dl.schoolId + "|" + ms.className + "|" + day] || []).filter(sp => sS < sp.end && sE > sp.start);
-                                            mSpecs.forEach(sp => specSet.add((sp.subject || "Specialist") + " (" + ms.name.split(" ")[0] + ")"));
-                                          }
-                                          specs = [...specSet];
+                                          specs = bandSpecialistTags(dl.members || [], students, specLookupRef, dl.schoolId, day, sl);
                                         } else {
                                           const st = students.find(s => s.id === dl.studentId);
                                           specs = st && st.className ? (specLookupRef[dl.schoolId + "|" + st.className + "|" + day] || []).filter(sp => { const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start); return sS < sp.end && sE > sp.start; }).map(sp => sp.subject || "Specialist") : [];

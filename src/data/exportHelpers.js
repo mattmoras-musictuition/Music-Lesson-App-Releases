@@ -63,7 +63,7 @@ function lessonDisplayName(l) {
 // and for bands without resolvable students; callers should keep the existing
 // "(prefix ? prefix + ' · ' : '') + ti" tidy-up so an empty prefix collapses
 // to just the teacher name.
-function bandStudentFirstNames(l, students) {
+export function bandStudentFirstNames(l, students) {
   if (!l || !l.isBandSession) return "";
   var members = l.members || [];
   if (!members.length || !students) return "";
