@@ -10,10 +10,21 @@
 //     missed[] entries whose day matches the target
 //   - lessons get freshly-minted IDs (this is intentional — see audit A.5)
 //
+// v2.40.1 clean import — `dropBands: true` (every caller passes it) makes the
+// import a sweeping reset instead: every band card in scope (the week, or the
+// target day) is removed with everything attached to it, as if removed by
+// hand. The result then also carries `rowsToDelete` — the removed bands'
+// linked catchups rows, for the caller to delete — and, for a day import,
+// the removed bands' cards on OTHER days are restored under the usual
+// occupied-slot rule (the week import rebuilds every card from the master).
+// See planCleanImport (data/bandAbsence.js).
+//
 // Returns null if `mtt` is missing/empty so callers can short-circuit.
 
 import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
+import { planCleanImport } from "../data/bandAbsence";
+import { restoreLedgerCards } from "../data/bandMemberStates";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -22,6 +33,8 @@ export function buildMttImportForWeekSchool({
   existingEntry = null,
   targetDay = null,
   enrolments = [],
+  dropBands = false,
+  catchups = [],
 }) {
   if (!mtt || !Array.isArray(mtt.lessons)) return null;
 
@@ -62,6 +75,25 @@ export function buildMttImportForWeekSchool({
     weekDate: weekDateMap[l.day],
     adjusted: false,
   }));
+
+  if (dropBands) {
+    const plan = planCleanImport(existingEntry, catchups, { day: targetDay, weekKey, schoolId });
+    const lessons = targetDay
+      ? restoreLedgerCards([...plan.lessons.filter(l => l.day !== targetDay), ...importedLessons], plan.restoreCards)
+      : importedLessons;
+    return {
+      entry: {
+        lessons,
+        missed: targetDay ? (existingEntry?.missed || []).filter(m => m.day !== targetDay) : [],
+        generatedAt: new Date().toISOString(),
+      },
+      importedCount: importedLessons.length,
+      preservedBandCount: 0,
+      removedBandCount: plan.removedBandCount,
+      rowsToDelete: plan.rowsToDelete,
+      skippedInactiveCount,
+    };
+  }
 
   if (targetDay) {
     const otherDays = existingEntry

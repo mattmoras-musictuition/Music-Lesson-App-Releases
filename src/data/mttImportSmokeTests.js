@@ -14,6 +14,7 @@
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { carryBandMisses, planCleanImport } from "./bandAbsence";
 import { mergeCatchupsIntoLessons, buildBankingIndex } from "./catchupsDerive";
+import { removeCatchupsInBackground } from "../utils/catchupsDB";
 
 const FW = "2099-03-09";   // a future Monday
 
@@ -67,46 +68,58 @@ function existingWeek() {
 const ids = (list) => (list || []).map(l => l.id);
 const bandIds = (list) => (list || []).filter(l => l.isBandSession).map(l => l.id);
 
-// ── Characterization (commit 1) — import behaviour before the clean import ──
+// ── Characterization (commit 1, updated in commit 3) ────────────────────
+// Every call below uses the options the app's import paths now pass
+// (dropBands + catchups). Assertions whose result changed with the clean
+// import are marked "(clean)".
+const CU = { id: "CU", weekKey: FW, schoolId: "S", day: "Tuesday", time: "11:00", instrument: "Drums", enrolmentId: "e_bob_drm", resolvesEnrolmentId: "e_bob_drm", resolvesWeekKey: "2099-03-02", resolvesOriginalDay: "Tuesday", resolvesOriginalTime: "10:00", bandLessonId: "B_NEW" };
+const clean = { dropBands: true, catchups: [CU] };
+
 export function runMttImportCharacterizationTests(assert) {
   const week = existingWeek();
 
-  // Whole-week import keeps every band card and re-imports every master card —
-  // including Amy's, which the new band's ledger already holds (the doubling).
-  const wk = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week });
-  assert("char import week: every band card kept, with its memberStates and ledger",
-    [bandIds(wk.entry.lessons), wk.entry.lessons.find(l => l.id === "B_NEW").removedLessons.map(c => c.id), wk.preservedBandCount],
-    [["B_NEW", "B_OLD"], ["W_AMY"], 2]);
-  assert("char import week: Amy's master card re-imported beside the band that replaced her (doubled)",
+  // Whole-week import: every band card goes, with its linked row; Amy's
+  // master card comes back once, with no band beside it.
+  const wk = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week, ...clean });
+  assert("char import week (clean): no band cards kept; the band's linked row queued for deletion",
+    [bandIds(wk.entry.lessons), wk.preservedBandCount, wk.removedBandCount, ids(wk.rowsToDelete)],
+    [[], 0, 2, ["CU"]]);
+  assert("char import week (clean): Amy's master card re-imported once, no band beside it",
     wk.entry.lessons.filter(l => !l.isBandSession).map(l => l.enrolmentId).sort(), ["e_amy_gtr", "e_bob_drm"]);
   assert("char import week: missed[] wiped; notes and breaks not carried",
     [wk.entry.missed, "notes" in wk.entry, "breaks" in wk.entry], [[], false, false]);
 
-  // Day import keeps that day's bands and the other days as they were.
-  const dy = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week, targetDay: "Tuesday" });
-  assert("char import day: that day's band kept, other days untouched, one master card imported",
-    [bandIds(dy.entry.lessons), dy.importedCount, dy.preservedBandCount, ids(dy.entry.lessons).filter(i => i.startsWith("W_"))],
-    [["B_OLD", "B_NEW"], 1, 1, []]);
+  // Day import: only that day's band goes. Its ledger card for Amy sits on
+  // Thursday, which a Tuesday import does not rebuild, so it is restored.
+  const dy = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week, targetDay: "Tuesday", ...clean });
+  assert("char import day (clean): that day's band removed, other days' band kept, out-of-scope ledger card restored",
+    [bandIds(dy.entry.lessons), dy.importedCount, dy.preservedBandCount, ids(dy.entry.lessons).filter(i => i.startsWith("W_")), ids(dy.rowsToDelete)],
+    [["B_OLD"], 1, 0, ["W_AMY"], ["CU"]]);
   assert("char import day: only that day's missed entries wiped",
     ids(dy.entry.missed), ["MISS_THU"]);
 
-  // A band-stamped miss is carried forward while its band survives the import.
+  // A band-stamped miss is carried forward while its band survives (a
+  // Thursday import leaves Tuesday's band), and dropped once it is removed.
   const stamped = { id: "W_AMY", enrolmentId: "e_amy_gtr", studentId: "amy", instrument: "Guitar", schoolId: "S", day: "Thursday", start: "09:00", reason: "informed_absence", makeupEligible: true, madeUp: false, bandLessonId: "B_NEW" };
-  assert("char import week: a band-stamped miss is carried forward while its band survives",
-    ids(carryBandMisses(wk.entry.missed, [...week.missed, stamped], wk.entry.lessons)), ["W_AMY"]);
+  const thu = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week, targetDay: "Thursday", ...clean });
+  assert("char import (clean): band-stamped miss carried while its band survives, dropped once removed",
+    [ids(carryBandMisses(thu.entry.missed, [...week.missed, stamped], thu.entry.lessons)),
+      ids(carryBandMisses(wk.entry.missed, [...week.missed, stamped], wk.entry.lessons))],
+    [["MISS_TUE", "W_AMY"], []]);
 
-  // "Import all schools" rebuilds each school from master cards only, so the
-  // band is gone — but its linked catch-up row is not deleted. With no band
-  // to hide behind, the row draws as a loose catch-up card and still banks.
-  const cu = { id: "CU", weekKey: FW, schoolId: "S", day: "Tuesday", time: "11:00", instrument: "Drums", enrolmentId: "e_bob_drm", resolvesEnrolmentId: "e_bob_drm", resolvesWeekKey: "2099-03-02", resolvesOriginalDay: "Tuesday", resolvesOriginalTime: "10:00", bandLessonId: "B_NEW" };
+  // "Import all schools" rebuilds each school from master cards only; the
+  // removed band's linked row is now deleted instead of being orphaned, so it
+  // no longer draws as a loose card and no longer banks.
   const importAllLessons = MTT.lessons.filter(l => l.schoolId === "S");
-  assert("char import all: band dropped, linked row left behind and drawn as a loose card",
-    [bandIds(importAllLessons), mergeCatchupsIntoLessons(importAllLessons, [cu], FW).filter(l => l.__isCatchup).map(l => l.id)],
-    [[], ["CU"]]);
-  assert("char import all: the orphaned row still settles its miss (banking)",
-    !!buildBankingIndex([cu]).get("e_bob_drm|2099-03-02"), true);
+  const allRows = planCleanImport(week, [CU], { weekKey: FW, schoolId: "S" }).rowsToDelete;
+  const remaining = [CU].filter(c => !allRows.some(r => r.id === c.id));
+  assert("char import all (clean): band dropped and its linked row queued for deletion, so nothing draws loose",
+    [bandIds(importAllLessons), ids(allRows), mergeCatchupsIntoLessons(importAllLessons, remaining, FW).filter(l => l.__isCatchup).map(l => l.id)],
+    [[], ["CU"], []]);
+  assert("char import all (clean): the settled miss is owed again (no banking row left)",
+    !!buildBankingIndex(remaining).get("e_bob_drm|2099-03-02"), false);
   assert("char import all: with the band present the row is hidden behind it",
-    mergeCatchupsIntoLessons(week.lessons, [cu], FW).filter(l => l.__isCatchup).length, 0);
+    mergeCatchupsIntoLessons(week.lessons, [CU], FW).filter(l => l.__isCatchup).length, 0);
 }
 
 // ── planCleanImport (commit 2) ──────────────────────────────────────────
@@ -179,4 +192,33 @@ export function runCleanImportPlanTests(assert) {
   assert("clean plan multi-school: totals across schools",
     [plans.reduce((n, pl) => n + pl.removedBandCount, 0), plans.flatMap(pl => pl.rowsToDelete).map(r => r.id)],
     [3, ["CU"]]);
+}
+
+// ── Clean import wiring (commit 3) ──────────────────────────────────────
+export function runCleanImportWiringTests(assert) {
+  const week = existingWeek();
+
+  // Without dropBands the builder behaves exactly as before v2.40.1.
+  const legacy = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: week });
+  assert("clean wiring: dropBands off keeps the pre-v2.40.1 behaviour (bands kept, no rows)",
+    [bandIds(legacy.entry.lessons), legacy.preservedBandCount, "rowsToDelete" in legacy], [["B_NEW", "B_OLD"], 2, false]);
+
+  // Day restore follows the occupied-slot rule: a card already in Amy's
+  // Thursday 09:00 slot keeps it, and her ledger card is not put back.
+  const busy = existingWeek();
+  busy.lessons.push({ id: "W_OTHER", enrolmentId: "e_z", studentId: "z", instrument: "Flute", schoolId: "S", day: "Thursday", start: "09:00" });
+  const dy = buildMttImportForWeekSchool({ mtt: MTT, schoolId: "S", weekDates: weekDates(FW), existingEntry: busy, targetDay: "Tuesday", dropBands: true, catchups: [] });
+  assert("clean wiring: day restore skips an occupied slot",
+    ids(dy.entry.lessons).filter(i => i.startsWith("W_")), ["W_OTHER"]);
+
+  // Bulk removal takes the rows out of local state synchronously (no flash);
+  // the deletes themselves are background work.
+  let state = [{ id: "CU" }, { id: "KEEP" }, { id: "CU2" }];
+  const setCatchups = (fn) => { state = fn(state); };
+  removeCatchupsInBackground([{ id: "CU" }, { id: "CU2" }], { setCatchups, deleteFn: () => Promise.resolve() });
+  const afterSync = state.map(c => c.id);
+  let touched = false;
+  removeCatchupsInBackground([], { setCatchups: () => { touched = true; } });
+  assert("clean wiring: bulk removal leaves state at once; an empty list touches nothing",
+    [afterSync, touched], [["KEEP"], false]);
 }

@@ -33,8 +33,8 @@ import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, app
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
-  planBandRemovalAbsences } from "../data/bandAbsence";
-import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
+  planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
+import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
 // so it keeps the same identity across renders (never recreated), letting empty
@@ -1546,7 +1546,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // row is put back — by id, so a concurrent reload cannot duplicate it — and
   // then it renders visibly, which is the correct outcome for a row that really
   // is still there.
-  const deleteBandLinkedCatchups = (rows) => {
+  //
+  // `bulk` (clean MTT import, v2.40.1): same no-flash removal, but failures
+  // are reported as ONE summary notice rather than one per row.
+  const deleteBandLinkedCatchups = (rows, { bulk = false } = {}) => {
+    if (bulk) { removeCatchupsInBackground(rows, { setCatchups, notify, logError }); return; }
     const list = (rows || []).filter(Boolean);
     if (list.length === 0) return;
     const ids = new Set(list.map(r => r.id));
@@ -2474,6 +2478,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       existingEntry: weeklyTimetables[storageKey] || null,
       targetDay,
       enrolments,
+      // v2.40.1 clean import: in-scope band cards go, with their linked rows.
+      dropBands: true,
+      catchups,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     const importedEntry = {
@@ -2481,6 +2488,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       missed: carryBandMisses(result.entry.missed, (weeklyTimetables[storageKey] || {}).missed, result.entry.lessons),
     };
     setWeeklyTimetables(prev => ({ ...prev, [storageKey]: importedEntry }));
+    deleteBandLinkedCatchups(result.rowsToDelete, { bulk: true });
     // Say what was left out. Silent skipping would repeat the original fault:
     // the app quietly disagreeing with itself about which lessons exist.
     const skipNote = result.skippedInactiveCount > 0
@@ -2513,8 +2521,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const guardAllActive = !!weekKeyAll && !isWeekKeyPast(weekKeyAll) && (enrolments || []).length > 0;
     const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
     let skippedAllCount = 0;
+    // v2.40.1 clean import — one batched timetable update for every school,
+    // then ONE background delete of every removed band's linked catch-ups
+    // (this path always dropped band cards but left those rows orphaned).
+    const allUpdates = {};
+    const allRowsToDelete = [];
     for (const school of schools) {
       const sk = weekDates[0].date + "|" + school.id;
+      allRowsToDelete.push(...planCleanImport(weeklyTimetables[sk] || null, catchups, { weekKey: weekKeyAll, schoolId: school.id }).rowsToDelete);
       const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
       const mttLessons = guardAllActive
         ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
@@ -2524,11 +2538,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // This path keeps no band sessions, so band absences cannot survive it;
       // carryBandMisses drops them with their band.
       const importedMissed = carryBandMisses([], (weeklyTimetables[sk] || {}).missed, importedLessons);
-      setWeeklyTimetables(prev => ({
-        ...prev,
-        [sk]: { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() }
-      }));
+      allUpdates[sk] = { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() };
     }
+    setWeeklyTimetables(prev => ({ ...prev, ...allUpdates }));
+    deleteBandLinkedCatchups(allRowsToDelete, { bulk: true });
     const skipNoteAll = skippedAllCount > 0 ? ` (${skippedAllCount} not started yet)` : "";
     notify(`Imported from MTT for all schools${skipNoteAll}`);
     setConfirmImportAllWeeks(false);

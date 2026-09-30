@@ -19,7 +19,8 @@ import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsD
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
 import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
-import { loadCatchupsFromSupabase, deleteCatchup } from "./utils/catchupsDB";
+import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
+import { carryBandMisses } from "./data/bandAbsence";
 import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
@@ -4316,8 +4317,10 @@ export default function MusicTimetableApp() {
   };
 
   // Session 6 / Phase 2 — Dashboard "Import from MTT" button. Mirrors the
-  // whole-week branch of WeeklyAdjustments.importFromMTT (no targetDay), so
-  // band sessions on the week are preserved and missed[] is cleared. The
+  // whole-week branch of WeeklyAdjustments.importFromMTT (no targetDay):
+  // v2.40.1 clean import — band cards in the week are removed with their
+  // linked catch-ups, missed[] is cleared, and band-stamped misses go through
+  // the same carry-forward as the weekly page (a no-op once bands are gone). The
   // setWeeklyTimetables call routes through the same auto-save effect that
   // syncs to Supabase, so no explicit network call is needed here.
   const handleImportFromMtt = (school, weekOffset) => {
@@ -4339,12 +4342,19 @@ export default function MusicTimetableApp() {
       weekDates,
       existingEntry: weeklyTimetables[storageKey] || null,
       enrolments,
+      dropBands: true,
+      catchups,
     });
     if (!result) {
       notify("No master timetable to import from", "warning");
       return;
     }
-    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
+    const importedEntry = {
+      ...result.entry,
+      missed: carryBandMisses(result.entry.missed, (weeklyTimetables[storageKey] || {}).missed, result.entry.lessons),
+    };
+    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: importedEntry }));
+    removeCatchupsInBackground(result.rowsToDelete, { setCatchups, notify, logError });
     const extraNote = result.preservedBandCount > 0
       ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
       : "";

@@ -322,3 +322,44 @@ export async function deleteCatchup({ id }) {
     }
   }
 }
+
+/**
+ * Bulk no-flash removal of catchups rows (v2.40.1 clean MTT import).
+ *
+ * Same pattern as WeeklyAdjustments' deleteBandLinkedCatchups: the rows leave
+ * local state SYNCHRONOUSLY (so no frame draws them as loose cards once their
+ * band is gone), the deletes run in the background, and any that fail are
+ * put back — by id, so a concurrent reload cannot duplicate them — to render
+ * visibly. Unlike the single-row path, failures produce ONE summary notice.
+ *
+ * @param {Array} rows
+ * @param {Object} deps
+ * @param {Function} deps.setCatchups
+ * @param {Function} [deps.notify]
+ * @param {Function} [deps.logError]
+ * @param {Function} [deps.deleteFn]  Injectable for tests; defaults to deleteCatchup.
+ * @returns {Promise<Array>} The rows that could not be deleted.
+ */
+export function removeCatchupsInBackground(rows, { setCatchups, notify, logError, deleteFn = deleteCatchup } = {}) {
+  const list = (rows || []).filter(Boolean);
+  if (list.length === 0) return Promise.resolve([]);
+  const ids = new Set(list.map(r => r.id));
+  setCatchups(prev => prev.filter(c => !ids.has(c.id)));
+  return Promise.all(list.map(row =>
+    Promise.resolve()
+      .then(() => deleteFn({ id: row.id }))
+      .then(() => null, err => {
+        logError && logError("Failed to remove linked catchup", err?.message || String(err));
+        console.error("[clean import] linked catchup delete failed:", err);
+        return row;
+      })
+  )).then(results => {
+    const failed = results.filter(Boolean);
+    if (failed.length > 0) {
+      setCatchups(prev => [...prev, ...failed.filter(f => !prev.some(c => c.id === f.id))]);
+      const n = failed.length;
+      if (notify) notify(`${n} band catch-up${n === 1 ? "" : "s"} couldn't be removed and will still show on the timetable.`, "warning");
+    }
+    return failed;
+  });
+}
