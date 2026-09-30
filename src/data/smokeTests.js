@@ -12,7 +12,7 @@ import {
   reconcileMemberStates, findMemberCards, isExcludedByBands, studentRows,
   selectableMissesForStudent, planAttributionSave,
   sameDayClashCard, applyRegularDisplacement, restoreLedgerCards,
-  consumesEntitlement, attendsSession,
+  consumesEntitlement, attendsSession, canEnterStaging,
 } from "./bandMemberStates";
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
@@ -289,6 +289,23 @@ export function runSmokeTests(logErrorFn) {
   assert("attendsSession across every value, plus a missing entry",
     [...allValues.map(c => attendsSession({ consumption: c })), attendsSession(null)],
     [true, true, true, true, true, false, true, true]);
+
+  // ── Staging tray: bands never enter (owner decision, 30 Sep 2026) ──
+  // true only means "not refused as a band"; a non-band card still needs the
+  // tray's own fromStaged gate, which placed catch-ups and regular cards lack.
+  assert("canEnterStaging: legacy band → false",
+    canEnterStaging({ id: "BL", isBandSession: true, members: [{ studentId: "amy" }], removedLessons: [] }), false);
+  assert("canEnterStaging: new band with memberStates → false",
+    canEnterStaging({ id: "BN", isBandSession: true, members: [{ studentId: "amy" }], memberStates: built }), false);
+  assert("canEnterStaging: new band with empty memberStates → false",
+    canEnterStaging({ id: "BE", isBandSession: true, members: [], memberStates: [] }), false);
+  assert("canEnterStaging: band placed from staging (fromStaged) → false",
+    canEnterStaging({ id: "BS", isBandSession: true, fromStaged: true, members: [], memberStates: [] }), false);
+  assert("canEnterStaging: catch-up card → true",
+    canEnterStaging({ id: "CU", __isCatchup: true, studentId: "amy", instrument: "Guitar", resolvesEnrolmentId: "e_amy_pno" }), true);
+  assert("canEnterStaging: regular lesson card → true",
+    canEnterStaging({ id: "C_G", enrolmentId: "e_amy_gtr_old", studentId: "amy", instrument: "Guitar", day: "Monday", start: "09:00" }), true);
+  assert("canEnterStaging: missing lesson → false", canEnterStaging(null), false);
 
   // ── Tally band matching (cluster 4b) ──
   runLegacyBandTallyTests(assert);

@@ -29,7 +29,7 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
-  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards } from "../data/bandMemberStates";
+  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
@@ -3954,49 +3954,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   );
                 });
               })()}
-              {/* Band sessions for this school */}
-              {(() => {
-                const sId = contextMenu.schoolId;
-                const schoolBands = (bands || []).filter(b => b.schoolId === sId);
-                if (schoolBands.length === 0) return null;
-                const alreadyStagedBandIds = new Set((weeklyData?.catchupStaged || []).filter(c => c.isBandSession).map(c => c.bandId));
-                const alreadyPlacedBandIds = new Set((weeklyData?.lessons || []).filter(l => l.isBandSession).map(l => l.bandId));
-                return (
-                  <>
-                    <div style={{ margin: "4px 12px", borderTop: `1px solid ${colors.border}` }} />
-                    <div style={{ padding: "4px 10px", fontSize: 11, color: colors.textMuted, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Band session</div>
-                    {schoolBands.map(band => {
-                      const alreadyStaged = alreadyStagedBandIds.has(band.id);
-                      const alreadyPlaced = alreadyPlacedBandIds.has(band.id);
-                      const disabled = alreadyStaged || alreadyPlaced;
-                      return (
-                        <button key={band.id} disabled={disabled} onClick={() => {
-                          if (disabled) return;
-                          // Spec 2 cluster 4c — staged entry: bucket_id deferred until drag-into-slot.
-                          // Band Session Attribution cluster 2 — the staging chip is
-                          // where a band session first comes into being, so this is
-                          // where memberStates is stamped. Every path downstream
-                          // (drop onto the grid, drag back to staging) only carries it.
-                          const stagedBand = { id: uid(), isBandSession: true, bandId: band.id, bandName: band.name, schoolId: band.schoolId, members: band.members || [], memberStates: buildMemberStates(band.members, enrolments, weekKey) };
-                          setWeeklyTimetables(prev => {
-                            const entry = prev[storageKey] || { lessons: [], missed: [] };
-                            return { ...prev, [storageKey]: { ...entry, catchupStaged: [...(entry.catchupStaged || []), stagedBand] } };
-                          });
-                          setContextMenu(null);
-                        }}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: disabled ? "default" : "pointer", color: disabled ? colors.textMuted : colors.text, fontFamily: "inherit", textAlign: "left", opacity: disabled ? 0.5 : 1 }}
-                          onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = BAND_COLOR + "15"; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
-                          <span style={{ color: disabled ? colors.textMuted : BAND_COLOR, fontWeight: 600 }}>{band.name}</span>
-                          <span style={{ fontSize: 11, color: colors.textMuted, whiteSpace: "nowrap" }}>
-                            {alreadyPlaced ? "placed" : alreadyStaged ? "staged" : `${(band.members || []).length} members`}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </>
-                );
-              })()}
               </div>
             </div>
           ) : contextMenu.isEmpty ? (
@@ -6331,7 +6288,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const lid = draggingId || "";
                     if (!lid.startsWith("staged:")) {
                       const draggedLesson = (weeklyData.lessons || []).find(l => l.id === lid);
-                      if (!draggedLesson || !draggedLesson.fromStaged) return;
+                      // Band sessions are let through here ONLY so onDrop fires and
+                      // can say why they are refused; onDrop never stages them.
+                      if (!draggedLesson || !(draggedLesson.fromStaged || !canEnterStaging(draggedLesson))) return;
                     }
                     e.preventDefault(); e.dataTransfer.dropEffect = "move";
                   }}
@@ -6340,7 +6299,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const lid = draggingId || "";
                     if (lid.startsWith("staged:")) { setDragOverStaging(true); return; }
                     const draggedLesson = (weeklyData.lessons || []).find(l => l.id === lid);
-                    if (draggedLesson && draggedLesson.fromStaged) setDragOverStaging(true);
+                    if (draggedLesson && draggedLesson.fromStaged && canEnterStaging(draggedLesson)) setDragOverStaging(true);
                   }}
                   onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverStaging(false); }}
                   onDrop={e => {
@@ -6348,6 +6307,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const lid = e.dataTransfer.getData("text/plain");
                     if (!lid || lid.startsWith("staged:") || lid.startsWith("missed:") || lid.startsWith("wbreak:")) return;
                     const draggedLesson = (weeklyData.lessons || []).find(l => l.id === lid);
+                    // Band sessions never enter the tray (owner decision, 30 Sep 2026).
+                    // Nothing is written: the card stays in its slot, and its own
+                    // onDragEnd clears the drag state.
+                    if (draggedLesson && !canEnterStaging(draggedLesson)) {
+                      if (notify) notify("Band sessions can't go in the staging tray.", "warning");
+                      return;
+                    }
                     if (!draggedLesson || !draggedLesson.fromStaged) return;
                     // Spec 2 cluster 4c — card→staged transition. Card has bucket_id (post-4b);
                     // staged entries deliberately carry teacherId+teacherName instead (no day/slot →

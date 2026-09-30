@@ -894,3 +894,24 @@ export function consumesEntitlement(consumption) {
 export function attendsSession(entry) {
   return !entry || entry.consumption !== CONSUMPTION.notInSession;
 }
+
+// ── Staging tray ────────────────────────────────────────────────────
+
+/**
+ * True if `lesson` may be put into the WTT staging tray (catchupStaged).
+ *
+ * The tray is a few-seconds holding area for hovering catch-up cards over
+ * slots to check clashes. Band sessions — legacy or new, whatever their
+ * memberStates or fromStaged — are never parked there (owner decision,
+ * 30 Sep 2026): staging is not saved to Supabase, so a parked band's
+ * attributions and linked catch-ups could silently come apart from it.
+ *
+ * This answers only the band question. A non-band card still has to pass
+ * the tray's own existing gates to be accepted.
+ *
+ * @param {Object|null|undefined} lesson
+ * @returns {boolean}
+ */
+export function canEnterStaging(lesson) {
+  return !!lesson && !lesson.isBandSession;
+}
