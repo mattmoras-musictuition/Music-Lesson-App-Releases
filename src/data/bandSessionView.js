@@ -141,6 +141,14 @@ export function absentCount(band, missed) {
 }
 
 /**
+ * The band card's status lines: "Needs attribution" (amber) and "N absent"
+ * (muted red). Independent — both can show. Legacy: neither.
+ */
+export function bandCardStatus(band, missed) {
+  return { needsAttribution: isBandUnattributed(band), absentN: absentCount(band, missed) };
+}
+
+/**
  * Does this band account for the student's lesson this week, for the
  * "not scheduled this week" check?
  *

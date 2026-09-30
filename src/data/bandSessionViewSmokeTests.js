@@ -9,7 +9,7 @@
 import {
   SESSION_STATUS, sessionMemberRows, sessionMembers, isBandUnattributed,
   attributionProgress, absentCount, bandCoversStudentForPresence,
-  bandNameForCatchup, findUnattributedBands,
+  bandNameForCatchup, findUnattributedBands, bandCardStatus,
 } from "./bandSessionView";
 
 const W = "2099-03-09";
@@ -176,4 +176,22 @@ export function runBandSessionViewTests(assert) {
     findUnattributedBands(all, { weekKeys: [PW] }).map(b => [b.bandName, b.day]), [["Band P1", "Friday"]]);
   assert("findUnattributedBands: empty input", findUnattributedBands({}), []);
   assert("SESSION_STATUS values", Object.values(SESSION_STATUS), ["attending", "absent", "not_in_session", "unattributed"]);
+}
+
+export function runBandCardStatusTests(assert) {
+  const legacy = { id: "L", isBandSession: true, members: [{ studentId: "a", instrument: "Guitar" }], removedLessons: [] };
+  const mk = (states, members) => newBand("C", members || states.map(e => ({ studentId: e.studentId, instrument: e.instrument })), states);
+  const miss = [{ bandLessonId: "C", enrolmentId: "e_a_Guitar", studentId: "a", instrument: "Guitar", reason: "sick" }];
+  assert("card status: legacy shows nothing, even with a stamped miss",
+    bandCardStatus(legacy, [{ bandLessonId: "L", studentId: "a", instrument: "Guitar" }]), { needsAttribution: false, absentN: 0 });
+  assert("card status: freshly placed band → needs attribution",
+    bandCardStatus(mk([entry("a", "Guitar", null), entry("b", "Bass", null)]), []), { needsAttribution: true, absentN: 0 });
+  assert("card status: partly set → still needs attribution",
+    bandCardStatus(mk([entry("a", "Guitar", "free"), entry("b", "Bass", null)]), []), { needsAttribution: true, absentN: 0 });
+  assert("card status: all set, nobody absent → nothing",
+    bandCardStatus(mk([entry("a", "Guitar", "regular"), entry("b", "Bass", "not_in_session")]), []), { needsAttribution: false, absentN: 0 });
+  assert("card status: both lines at once",
+    bandCardStatus(mk([entry("a", "Guitar", "regular"), entry("b", "Bass", null), entry("c", "Keys", "free", { attended: false })]), miss),
+    { needsAttribution: true, absentN: 2 });
+  assert("card status: empty memberStates → nothing", bandCardStatus(newBand("C", [{ studentId: "a" }], []), []), { needsAttribution: false, absentN: 0 });
 }

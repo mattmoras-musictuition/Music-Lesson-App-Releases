@@ -35,7 +35,7 @@ import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMiss
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
-import { sessionMembers } from "../data/bandSessionView";
+import { sessionMembers, bandCardStatus } from "../data/bandSessionView";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1155,7 +1155,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         // Specialist conflicts across all members
         const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
         const bandSpecTags = bandSpecialistTags(bandMembers, students, specLookupRef, l.schoolId, l.day, sl);
-        out[l.id] = { teacherName, memberNames, bandSpecTags };
+        // Cluster 6b status lines (new bands only; both false/0 for legacy).
+        const { needsAttribution, absentN } = bandCardStatus(l, weeklyData?.missed || EMPTY_LESSONS);
+        out[l.id] = { teacherName, memberNames, bandSpecTags, needsAttribution, absentN };
       } else {
         // Live instrument: if the student's instrument changed, reflect it on the card
         const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
@@ -6264,6 +6266,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         )}
                                         <div style={{ fontWeight: 600, color: hasBandWarning ? colors.text : colors.text }}>{l.bandName || "TBC"}</div>
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
+                                        {_d.needsAttribution && <div style={{ color: colors.amber, fontSize: 10, fontWeight: 600 }}>Needs attribution</div>}
+                                        {_d.absentN > 0 && <div style={{ color: colors.danger, opacity: 0.75, fontSize: 10, fontWeight: 600 }}>{_d.absentN} absent</div>}
                                         {(() => { const tn = _d.teacherName; return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (
