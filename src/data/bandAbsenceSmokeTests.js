@@ -19,7 +19,7 @@ import { buildMemberStates, planAttributionSave, applyStudentAttribution } from 
 import {
   isMemberAbsent, absentMembers, absentEnrolmentIds, eligibleForAbsence, absenceMenuLabel,
   planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
-  isBandStampedMiss, withoutBandMisses, carryBandMisses,
+  isBandStampedMiss, withoutBandMisses, carryBandMisses, bandEntryForMiss,
 } from "./bandAbsence";
 
 const PW0 = "2020-03-02";  // week of the original miss
@@ -248,6 +248,9 @@ export function runBandAbsenceHelperTests(assert) {
   assert("absence regular: info reads the miss's reason; no longer eligible",
     [memberAbsenceInfo(pr.band, reg, withReason), eligibleForAbsence(pr.band, withReason).map(e => e.enrolmentId)],
     [{ reason: "informed_absence", reasonDetail: "" }, ["e_bob_drm", "e_cat_vox"]]);
+  assert("absence regular: bandEntryForMiss finds the member; a foreign or unstamped miss finds none",
+    [bandEntryForMiss(pr.band, m) && bandEntryForMiss(pr.band, m).enrolmentId, bandEntryForMiss(pr.band, { ...m, bandLessonId: "X" }), bandEntryForMiss(pr.band, miss("P", eBD))],
+    ["e_amy_gtr", null, null]);
   const other = miss("OTHER", eBD);
   const ur = planUndoAbsence({ band: pr.band, entry: reg, missed: [other, ...withReason], catchups: [] });
   assert("absence regular undo: miss removed, the card back in the ledger exactly as it was",

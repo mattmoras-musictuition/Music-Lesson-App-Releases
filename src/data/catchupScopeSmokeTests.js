@@ -11,7 +11,7 @@
 //   T4 2099-10-05 → est.  (after the last break, so labelled "(est.)")
 // ============================================================
 
-import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, normalizeTermLabel, resolveAnchorTerm } from "../utils/catchupScope";
+import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, normalizeTermLabel, resolveAnchorTerm, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { deriveTallyRows, getOpenCatchupRows } from "../utils/tallyDerive";
 import { selectableMissesForStudent } from "./bandMemberStates";
 
@@ -161,4 +161,15 @@ export function runCatchupScopeTests(assert) {
     ]);
   assert("scope m: Tally Unscheduled count unchanged",
     getOpenCatchupRows({ ...fx, termWeeks: T3_WEEKS, schoolFilter: "all" }).length, 3);
+
+  // n — nextTermInvoiceSentFor: rule 3 for one student and one miss (the
+  // band-absence late-invoice notice). Same anchor and line match.
+  const sentFor = (weekKey, invoices, studentId, studentName) =>
+    nextTermInvoiceSentFor({ weekKey, interruptions: INTERRUPTIONS, invoices, studentId, studentName });
+  assert("scope n: T3 miss, T4 invoice sent for this student → true; for another student → false",
+    [sentFor(T3W2, sentAmy, "amy", "Amy"), sentFor(T3W3, sentAmy, "bob", "Bob")], [true, false]);
+  assert("scope n: draft or another term's sent invoice → false",
+    [sentFor(T3W2, [inv("draft", "Term 4 2099", amyLine)], "amy", "Amy"), sentFor(T3W2, [inv("sent", "Term 3 2099", amyLine)], "amy", "Amy")], [false, false]);
+  assert("scope n: legacy name-only line and est. suffix match like rule 3",
+    [sentFor(T3W4, [inv("sent", "Term 4 2099 (est.)", [{ studentName: "Cal" }])], "cal", "Cal"), sentFor(T2WK, sentAmy, "amy", "Amy")], [true, false]);
 }

@@ -10,7 +10,7 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, melbourneToday, melbo
 import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries } from "../utils/tallyDerive";
-import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts } from "../utils/catchupScope";
+import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel } from "../utils/missedReasonLabels";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
@@ -31,7 +31,8 @@ import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, app
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
-import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses } from "../data/bandAbsence";
+import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
+  absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss } from "../data/bandAbsence";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1559,6 +1560,150 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     }
   };
 
+  // ── Band absence (cluster 5b) ───────────────────────────────────
+  //
+  // All state changes go through bandAbsence.js's pure planners, re-run
+  // inside each setter against the latest week entry so a stale render can
+  // never write an old band back.
+  const firstNameOf = (studentId) =>
+    ((students.find(s => s.id === studentId)?.name) || "").split(" ")[0] || "This student";
+  const bandEntryOf = (band, enrolmentId) =>
+    (hasMemberStates(band) ? band.memberStates.find(e => e && e.enrolmentId === enrolmentId) : null) || null;
+
+  // Replace one band card (and optionally the week's missed[]) in the
+  // current week. fn(band, weekEntry) returns { band, missed? } or null.
+  const applyToBand = (bandLessonId, fn, sk = storageKey) => setWeeklyTimetables(prev => {
+    const d = prev[sk];
+    if (!d) return prev;
+    const b = (d.lessons || []).find(l => l.id === bandLessonId);
+    if (!b) return prev;
+    const out = fn(b, d);
+    if (!out) return prev;
+    return {
+      ...prev,
+      [sk]: {
+        ...d,
+        lessons: d.lessons.map(l => l.id === bandLessonId ? out.band : l),
+        ...(out.missed ? { missed: out.missed } : {}),
+      },
+    };
+  });
+
+  // Undo a regular member's absence: stamped miss(es) out, card(s) back into
+  // the ledger. Shared by Undo absence, reason-prompt Cancel and missed-zone
+  // Remove.
+  const undoRegularBandAbsence = (bandLessonId, enrolmentId, sk = storageKey) => applyToBand(bandLessonId, (b, d) => {
+    const u = planUndoAbsence({ band: b, entry: bandEntryOf(b, enrolmentId), missed: d.missed || [], catchups });
+    return u && u.kind === "regular" ? { band: u.band, missed: u.missed } : null;
+  }, sk);
+
+  const handleBandMarkAbsent = (bandLessonId, enrolmentId) => {
+    setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const d = weeklyTimetables[storageKey];
+    const b = (d?.lessons || []).find(l => l.id === bandLessonId);
+    const entry = bandEntryOf(b, enrolmentId);
+    const plan = entry ? planMarkAbsent({ band: b, entry, missed: d.missed || [], enrolments }) : null;
+    if (!plan) return;
+    if (plan.kind === "free") {
+      applyToBand(bandLessonId, (bb, dd) => {
+        const p = planMarkAbsent({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], enrolments });
+        return p && p.kind === "free" ? { band: p.band } : null;
+      });
+      notify(`${firstNameOf(entry.studentId)} marked absent`);
+      return;
+    }
+    setTallyPromptNotes(""); setTallyPromptCategory(null); setTallyPromptReasonDetail(""); setTallyPromptCatchup(null);
+    if (plan.kind === "regular") {
+      applyToBand(bandLessonId, (bb, dd) => {
+        const p = planMarkAbsent({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], enrolments });
+        return p && p.kind === "regular" ? { band: p.band, missed: [...(dd.missed || []), ...p.misses] } : null;
+      });
+      setTallyPrompt({
+        lesson: plan.misses[0], missedEntry: plan.misses[0], weekKey, weekNum: termWeek,
+        band: { mode: "regular", bandLessonId, enrolmentId, missIds: plan.misses.map(m => m.id), storageKey },
+      });
+      return;
+    }
+    // catchup — nothing is written until the prompt saves.
+    const st = students.find(s => s.id === entry.studentId);
+    setTallyPrompt({
+      lesson: { id: null, studentName: st?.name || "", instrument: entry.instrument || "", day: b.day || "", isGroup: false },
+      weekKey, weekNum: termWeek,
+      band: { mode: "catchup", bandLessonId, enrolmentId },
+    });
+  };
+
+  // Reason-prompt save for a catch-up member. Owed ON deletes the band-linked
+  // row (the deleteBandLinkedCatchups pattern: gone from state at once, put
+  // back on failure) and keeps a snapshot for undo; owed OFF keeps the row.
+  const handleCatchupAbsenceSave = (bandLessonId, enrolmentId, absence) => {
+    const b = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+    const entry = bandEntryOf(b, enrolmentId);
+    if (!entry || entry.consumption !== CONSUMPTION.catchup || entry.attended === false) return;
+    const row = entry.catchupId ? (catchups || []).find(c => c.id === entry.catchupId) || null : null;
+    const { deleteRow } = applyCatchupAbsence({ band: b, entry, absence, row });
+    applyToBand(bandLessonId, (bb) => {
+      const e = bandEntryOf(bb, enrolmentId);
+      if (!e || e.consumption !== CONSUMPTION.catchup || e.attended === false) return null;
+      return { band: applyCatchupAbsence({ band: bb, entry: e, absence, row }).band };
+    });
+    if (deleteRow) {
+      deleteBandLinkedCatchups([deleteRow]);
+      const st = students.find(s => s.id === entry.studentId);
+      const lateInvoice = nextTermInvoiceSentFor({
+        weekKey: deleteRow.resolvesWeekKey, interruptions,
+        invoices: parseInvoiceDrafts(invoiceDraftsRaw), studentId: entry.studentId, studentName: st?.name,
+      });
+      if (lateInvoice) {
+        notify(`Heads up: ${firstNameOf(entry.studentId)}'s next-term invoice has already been sent, so this lesson won't be credited on it.`, "warning", 9000);
+        return;
+      }
+    }
+    const displayReason = getMissedReasonLabel(absence.reason, absence.reasonDetail) || "Other";
+    notify(`Band absence recorded: ${displayReason}`);
+  };
+
+  const handleBandUndoAbsence = async (bandLessonId, enrolmentId) => {
+    setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const d = weeklyTimetables[storageKey];
+    const b = (d?.lessons || []).find(l => l.id === bandLessonId);
+    const entry = bandEntryOf(b, enrolmentId);
+    const plan = entry ? planUndoAbsence({ band: b, entry, missed: d.missed || [], catchups }) : null;
+    if (!plan) return;
+    if (plan.kind === "regular") {
+      undoRegularBandAbsence(bandLessonId, enrolmentId);
+      notify("Absence undone");
+      return;
+    }
+    if (plan.insertRow) {
+      // Re-insert under the ORIGINAL id, so the entry's catchupId and the
+      // row agree again. Nothing changes on the band unless this lands.
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) throw new Error("Not authenticated");
+        const { id, createdAt, updatedAt, ...fields } = plan.insertRow;
+        const inserted = await insertCatchup({ userId: user.id, id, ...fields });
+        setCatchups(prev => prev.some(c => c.id === inserted.id) ? prev : [...prev, inserted]);
+      } catch (err) {
+        logError && logError("Failed to undo band absence", err?.message || String(err));
+        console.error("[band absence] re-insert failed:", err);
+        alert("Failed to undo the absence. See console.");
+        return;
+      }
+    }
+    applyToBand(bandLessonId, (bb, dd) => {
+      const u = planUndoAbsence({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], catchups });
+      return u ? { band: u.band } : null;
+    });
+    if (plan.reset) {
+      notify(`${firstNameOf(entry.studentId)}'s missed lesson has since been booked elsewhere, so their band role has been reset to Not set.`, "warning", 9000);
+    } else {
+      notify("Absence undone");
+    }
+  };
+
   // Save. Order is fixed and deliberate — see planAttributionSave.
   //   (1) every insert is awaited first; if any fails, the ones that landed in
   //       THIS save are rolled back and nothing else is touched;
@@ -2770,6 +2915,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!slot) return;
     const missed = weeklyData.missed[missedIndex];
     if (!missed) return;
+    // A band absence goes back through the band card, never onto the grid.
+    if (missed.bandLessonId) { notify("Use Undo absence on the band card.", "warning"); return; }
     // Spec 2 cluster 10b Commit 2 — Q2=β viewedLanes-aware destination.
     // The missed entry's bucket_id was stale on day-change; use the chip-active
     // lane instead. No modal regardless of teacher match (WTT week-scoped).
@@ -2957,7 +3104,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
       {/* Tally prompt — shown when lesson is manually dragged to missed area */}
       {tallyPrompt && (() => {
-        const closeBoth = () => { setTallyPrompt(null); setTallyConfirm(null); };
+        // Band absence (cluster 5b): "regular" mode edits the stamped miss
+        // the band card just created, and Cancel puts the card back in the
+        // band's ledger; "catchup" mode has no miss at all — Save records the
+        // absence on the member, Cancel writes nothing.
+        const bandMode = tallyPrompt.band || null;
+        const closeBoth = () => {
+          if (bandMode && bandMode.mode === "regular") undoRegularBandAbsence(bandMode.bandLessonId, bandMode.enrolmentId, bandMode.storageKey);
+          setTallyPrompt(null); setTallyConfirm(null);
+        };
         const lesson = tallyPrompt.lesson;
         const handleTpCategory = (cat) => {
           const newCat = tallyPromptCategory === cat ? null : cat;
@@ -2975,6 +3130,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           if (finalReasonDetail && finalReasonDetail.toLowerCase() !== "other" && !rememberedReasons.includes(finalReasonDetail)) {
             saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
           }
+          if (bandMode && bandMode.mode === "catchup") {
+            handleCatchupAbsenceSave(bandMode.bandLessonId, bandMode.enrolmentId, {
+              reason: finalReason, reasonDetail: finalReasonDetail, notes: finalDetails, makeupEligible: finalMakeup,
+            });
+            setTallyPrompt(null); setTallyConfirm(null);
+            return;
+          }
+          const promptMissIds = bandMode ? (bandMode.missIds || []) : [lesson.id];
           const lKey = lesson.isGroup ? `group|${lesson.groupId}` : `${lesson.studentId}|${lesson.instrument}`;
           setWeeklyTimetables(prev => {
             const wEntry = prev[storageKey];
@@ -2983,7 +3146,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               ...prev,
               [storageKey]: {
                 ...wEntry,
-                missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
+                missed: (wEntry.missed || []).map(m => promptMissIds.includes(m.id) ? {
                   ...m,
                   reason: finalReason,
                   reasonDetail: finalReasonDetail,
@@ -3381,6 +3544,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />
                 <button
                   onClick={() => {
+                    // A band absence (cluster 5b) is undone rather than dropped:
+                    // the card goes back into its band's ledger. A stamped miss
+                    // whose band is gone falls through to the plain removal.
+                    const stampedBand = missedLesson.bandLessonId
+                      ? (weeklyData?.lessons || []).find(l => l.id === missedLesson.bandLessonId)
+                      : null;
+                    const stampedEntry = stampedBand ? bandEntryForMiss(stampedBand, missedLesson) : null;
+                    if (stampedEntry) {
+                      undoRegularBandAbsence(stampedBand.id, stampedEntry.enrolmentId);
+                      setContextMenu(null);
+                      return;
+                    }
                     setWeeklyTimetables(prev => {
                       const entry = prev[storageKey];
                       if (!entry) return prev;
@@ -4541,6 +4716,66 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       onMouseLeave={e => e.currentTarget.style.background = "none"}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Users size={13} /> Attribute members…</span>
                     </button>
+                  );
+                })()}
+                {(() => {
+                  // Band absence (cluster 5b) — new bands only. "Mark absent ▸"
+                  // lists attributed regular / catch-up / free members not yet
+                  // absent; "Undo absence ▸" appears only when someone is.
+                  const bl = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
+                  if (!hasMemberStates(bl)) return null;
+                  const wMissed = weeklyData.missed || [];
+                  const eligible = eligibleForAbsence(bl, wMissed);
+                  const absent = absentMembers(bl, wMissed);
+                  if (eligible.length === 0 && absent.length === 0) return null;
+                  const subMenuW = 220;
+                  const menuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
+                  const menuRight = menuRect ? menuRect.right : contextMenu.x + 220;
+                  const menuLeft = menuRect ? menuRect.left : contextMenu.x;
+                  const subX = menuRight + subMenuW > window.innerWidth ? menuLeft - subMenuW : menuRight;
+                  const subType = addLessonSubmenu?.type;
+                  const list = subType === "bandAbsent" ? eligible : subType === "bandUndoAbsent" ? absent : null;
+                  const openSub = (type, e) => {
+                    if (subType === type) return;
+                    addLessonSubmenuType.current = type;
+                    setAddLessonSubmenu({ type, y: e.currentTarget.getBoundingClientRect().top });
+                  };
+                  const itemStyle = (color) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color, borderRadius: 6, fontFamily: "inherit" });
+                  const dangerHover = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2";
+                  return (
+                    <div style={{ position: "relative" }}>
+                      {list && list.length > 0 && (
+                        <div ref={subMenuRef}
+                          style={{ position: "fixed", ...clampMenuPos(subX, addLessonSubmenu.y, subMenuW, 280), zIndex: 10001, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", minWidth: subMenuW, maxHeight: 280, overflowY: "auto" }}>
+                          <div style={{ padding: "6px 12px", fontSize: 11, color: subType === "bandAbsent" ? colors.danger : colors.text, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
+                            {subType === "bandAbsent" ? "Mark absent" : "Undo absence"}
+                          </div>
+                          {list.map(e => (
+                            <button key={e.enrolmentId}
+                              onClick={() => subType === "bandAbsent" ? handleBandMarkAbsent(bl.id, e.enrolmentId) : handleBandUndoAbsence(bl.id, e.enrolmentId)}
+                              style={itemStyle(colors.text)}
+                              onMouseEnter={ev => ev.currentTarget.style.background = subType === "bandAbsent" ? dangerHover : colors.bg}
+                              onMouseLeave={ev => ev.currentTarget.style.background = "none"}>
+                              <span>{absenceMenuLabel(bl, e, students)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {eligible.length > 0 && (
+                        <button style={itemStyle(colors.danger)}
+                          onMouseEnter={e => { e.currentTarget.style.background = dangerHover; openSub("bandAbsent", e); }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Mark absent</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      )}
+                      {absent.length > 0 && (
+                        <button style={itemStyle(colors.text)}
+                          onMouseEnter={e => { e.currentTarget.style.background = colors.bg; openSub("bandUndoAbsent", e); }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "none"; }}>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><RotateCcw size={13} /> Undo absence</span><ChevronRight size={10} style={{ opacity: 0.5, flexShrink: 0 }} />
+                        </button>
+                      )}
+                    </div>
                   );
                 })()}
                 <button onClick={() => {

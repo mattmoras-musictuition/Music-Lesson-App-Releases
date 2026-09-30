@@ -89,6 +89,19 @@ export function resolveAnchorTerm(interruptions, weekKey) {
   return { term, inBreak: false };
 }
 
+// Every line of every SENT invoice for `term` (" (est.)" ignored). Rule 3's
+// input, shared with nextTermInvoiceSentFor.
+function sentInvoiceLinesForTerm(invoices, term) {
+  const label = normalizeTermLabel(term && term.label);
+  const lines = [];
+  for (const inv of (invoices || [])) {
+    if (!inv || inv.status !== "sent") continue;
+    if (normalizeTermLabel(inv.termLabel) !== label) continue;
+    for (const line of (inv.lines || [])) if (line) lines.push(line);
+  }
+  return lines;
+}
+
 // True when a sent invoice for the next term bills this student. A line with
 // a studentId matches on that id alone; only a legacy line with none falls
 // back to the name.
@@ -181,13 +194,7 @@ export function getOfferableMisses({
   const N = findNextTerm(interruptions, T.end);
   let entries = candidates;
   if (N) {
-    const nLabel = normalizeTermLabel(N.label);
-    const sentLines = [];
-    for (const inv of (invoices || [])) {
-      if (!inv || inv.status !== "sent") continue;
-      if (normalizeTermLabel(inv.termLabel) !== nLabel) continue;
-      for (const line of (inv.lines || [])) if (line) sentLines.push(line);
-    }
+    const sentLines = sentInvoiceLinesForTerm(invoices, N);
     if (sentLines.length > 0) {
       const nameOf = (id, fallback) => (students || []).find(s => s.id === id)?.name || fallback || "";
       entries = candidates.filter(e => {
@@ -203,6 +210,28 @@ export function getOfferableMisses({
 
   entries = [...entries].sort((a, b) => (a.weekKey || "").localeCompare(b.weekKey || ""));
   return { anchorTerm: T, nextTerm: N, entries };
+}
+
+/**
+ * Rule 3 for a single student and a single miss: true when the invoice for
+ * the term AFTER the miss's anchor term (rule 1) is already sent and bills
+ * this student — i.e. re-opening that miss now can no longer be credited on
+ * it. Same anchor, same sent-line match as getOfferableMisses.
+ *
+ * @param {Object} params
+ * @param {string} params.weekKey - the miss's week.
+ * @param {Array} params.interruptions
+ * @param {Object[]} [params.invoices] - parsed "mt-invoice-drafts".
+ * @param {string} params.studentId
+ * @param {string} [params.studentName]
+ * @returns {boolean}
+ */
+export function nextTermInvoiceSentFor({ weekKey, interruptions, invoices = [], studentId, studentName }) {
+  const anchor = resolveAnchorTerm(interruptions, weekKey);
+  if (!anchor) return false;
+  const N = findNextTerm(interruptions, anchor.term.end);
+  if (!N) return false;
+  return studentInvoiceSent(sentInvoiceLinesForTerm(invoices, N), studentId, studentName);
 }
 
 /**

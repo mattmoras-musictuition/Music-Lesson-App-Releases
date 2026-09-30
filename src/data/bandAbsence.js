@@ -55,6 +55,20 @@ export function bandMissesFor(missed, bandId, entry) {
 }
 
 /**
+ * The regular entry a band-stamped miss belongs to, or null — the inverse of
+ * bandMissesFor, for paths that start from the miss (missed-zone Remove).
+ *
+ * @param {Object} band
+ * @param {Object} miss   A miss with bandLessonId === band.id.
+ * @returns {Object|null}
+ */
+export function bandEntryForMiss(band, miss) {
+  if (!hasMemberStates(band) || !miss || miss.bandLessonId !== band.id) return null;
+  return (band.memberStates || []).find(e => e && e.consumption === CONSUMPTION.regular
+    && bandMissesFor([miss], band.id, e).length > 0) || null;
+}
+
+/**
  * True if the member is recorded absent from this band session.
  *
  * @param {Object} band    A band card.

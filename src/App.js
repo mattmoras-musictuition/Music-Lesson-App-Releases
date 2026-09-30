@@ -3173,6 +3173,9 @@ export default function MusicTimetableApp() {
           if (m) { foundKey = sk; foundMissed = m; break; }
         }
         if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
+        // Band absence (cluster 5b): owned by the band card, which keeps the
+        // ledger card and member state in step. Refuse rather than drift.
+        if (foundMissed.bandLessonId) return `Can't change ${studentName}'s entry: band absence — use the band card. Nothing changed.`;
         setWeeklyTimetables(prev => {
           const data = prev[foundKey];
           if (!data) return prev;
@@ -3216,6 +3219,9 @@ export default function MusicTimetableApp() {
           if (m) { foundKey = sk; foundMissed = m; break; }
         }
         if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing changed.`;
+        // Band absence (cluster 5b): owned by the band card, which keeps the
+        // ledger card and member state in step. Refuse rather than drift.
+        if (foundMissed.bandLessonId) return `Can't change ${studentName}'s entry: band absence — use the band card. Nothing changed.`;
         const isMadeUp = madeUp !== false;
         setWeeklyTimetables(prev => {
           const data = prev[foundKey];
@@ -3261,6 +3267,9 @@ export default function MusicTimetableApp() {
           if (m) { foundKey = sk; foundMissed = m; break; }
         }
         if (!foundMissed) return `No missed-lesson entry found for ${studentName} on ${day} in the week of ${weekKey} — nothing deleted.`;
+        // Band absence (cluster 5b): owned by the band card, which keeps the
+        // ledger card and member state in step. Refuse rather than drift.
+        if (foundMissed.bandLessonId) return `Can't change ${studentName}'s entry: band absence — use the band card. Nothing changed.`;
         setWeeklyTimetables(prev => {
           const data = prev[foundKey];
           if (!data) return prev;
