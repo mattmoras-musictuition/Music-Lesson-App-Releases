@@ -31,7 +31,7 @@ import { hasMemberStates, buildMemberStates, isExcludedByBands, studentRows, app
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
-import { absentEnrolmentIds, memberAbsenceInfo } from "../data/bandAbsence";
+import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses } from "../data/bandAbsence";
 import { insertCatchup, updateCatchup, deleteCatchup } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -2219,12 +2219,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
     // Skip students with a pre-marked informed_absence for this week — remove from
     // scheduled lessons and push into missed so they don't appear on the grid.
-    const _preAbsentEntries = getMissedEntries({
+    // Band absences are excluded: they key on studentId here and would pull
+    // every one of that student's cards for the week into missed.
+    const _preAbsentEntries = withoutBandMisses(getMissedEntries({
       weeklyTimetables,
       weekKey,
       schoolId: selectedSchool,
       reasons: ["informed_absence"],
-    });
+    }));
     const _preAbsentIds = new Set(
       _preAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
     );
@@ -2262,9 +2264,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       };
     });
 
+    // Band absences are not generator output — carry forward those whose band
+    // survives (every preserved band does here).
+    const weekLessonsOut = [...existingBandSessions, ...scheduledLessons];
+    const weekMissedOut = carryBandMisses(allMissedNormalized, weeklyData?.missed, weekLessonsOut);
     setWeeklyTimetables(prev => ({
       ...prev,
-      [storageKey]: { lessons: [...existingBandSessions, ...scheduledLessons], missed: allMissedNormalized, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
+      [storageKey]: { lessons: weekLessonsOut, missed: weekMissedOut, notes: adjustmentNotes, generatedAt: new Date().toISOString() }
     }));
 
     const adj = scheduledLessons.filter(l => l.adjusted).length;
@@ -2282,12 +2288,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const result = generateWeeklyTimetable(
         filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage, enrolments
       );
-      const _allPreAbsentEntries = getMissedEntries({
+      const _allPreAbsentEntries = withoutBandMisses(getMissedEntries({
         weeklyTimetables,
         weekKey,
         schoolId: school.id,
         reasons: ["informed_absence"],
-      });
+      }));
       const _allPreAbsentIds = new Set(
         _allPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
       );
@@ -2304,9 +2310,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           return { ...l, reason: tallyEntry?.reason || "informed_absence", enrolmentId: enrolmentIdFor(l.studentId, l.instrument, enrolments, l.groupId) };
         }),
       ];
+      const _allLessonsOut = [...existingBandSessionsAll, ..._allScheduledLessons];
+      const _allMissedOut = carryBandMisses(_allMissed, (weeklyTimetables[sk] || {}).missed, _allLessonsOut);
       setWeeklyTimetables(prev => ({
         ...prev,
-        [sk]: { lessons: [...existingBandSessionsAll, ..._allScheduledLessons], missed: _allMissed, generatedAt: new Date().toISOString() }
+        [sk]: { lessons: _allLessonsOut, missed: _allMissedOut, generatedAt: new Date().toISOString() }
       }));
     }
   };
@@ -2322,7 +2330,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       enrolments,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
-    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: result.entry }));
+    const importedEntry = {
+      ...result.entry,
+      missed: carryBandMisses(result.entry.missed, (weeklyTimetables[storageKey] || {}).missed, result.entry.lessons),
+    };
+    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: importedEntry }));
     // Say what was left out. Silent skipping would repeat the original fault:
     // the app quietly disagreeing with itself about which lessons exist.
     const skipNote = result.skippedInactiveCount > 0
@@ -2363,9 +2375,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         : candidateLessons;
       skippedAllCount += candidateLessons.length - mttLessons.length;
       const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
+      // This path keeps no band sessions, so band absences cannot survive it;
+      // carryBandMisses drops them with their band.
+      const importedMissed = carryBandMisses([], (weeklyTimetables[sk] || {}).missed, importedLessons);
       setWeeklyTimetables(prev => ({
         ...prev,
-        [sk]: { lessons: importedLessons, missed: [], generatedAt: new Date().toISOString() }
+        [sk]: { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() }
       }));
     }
     const skipNoteAll = skippedAllCount > 0 ? ` (${skippedAllCount} not started yet)` : "";
@@ -2482,12 +2497,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     );
 
     // Skip students with a pre-marked informed_absence for this week
-    const _dayPreAbsentEntries = getMissedEntries({
+    const _dayPreAbsentEntries = withoutBandMisses(getMissedEntries({
       weeklyTimetables,
       weekKey,
       schoolId: selectedSchool,
       reasons: ["informed_absence"],
-    });
+    }));
     const _dayPreAbsentIds = new Set(
       _dayPreAbsentEntries.filter(e => e.studentId).map(e => e.studentId)
     );
@@ -2535,7 +2550,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
 
     const mergedLessons = [...otherDayLessons, ...newDayLessons];
-    const mergedMissed = [...otherDayMissed, ...newDayMissedNormalized];
+    const mergedMissed = carryBandMisses([...otherDayMissed, ...newDayMissedNormalized], existing?.missed, mergedLessons);
 
     setWeeklyTimetables(prev => ({
       ...prev,

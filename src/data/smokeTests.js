@@ -17,7 +17,7 @@ import {
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
-import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests } from "./bandAbsenceSmokeTests";
+import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -318,6 +318,7 @@ export function runSmokeTests(logErrorFn) {
   runBandAbsenceCharacterizationTests(assert);
   runBandAbsenceHelperTests(assert);
   runBandAbsenceLockTests(assert);
+  runBandAbsenceRegenTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

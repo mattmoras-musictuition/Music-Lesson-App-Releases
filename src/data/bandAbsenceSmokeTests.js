@@ -19,6 +19,7 @@ import { buildMemberStates, planAttributionSave, applyStudentAttribution } from 
 import {
   isMemberAbsent, absentMembers, absentEnrolmentIds, eligibleForAbsence, absenceMenuLabel,
   planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
+  isBandStampedMiss, withoutBandMisses, carryBandMisses,
 } from "./bandAbsence";
 
 const PW0 = "2020-03-02";  // week of the original miss
@@ -342,4 +343,32 @@ export function runBandAbsenceLockTests(assert) {
   const plainEmpty = planAttributionSave({ stored: RB.memberStates, working, missByEnrolment: {}, catchupsForBand: [], weekKey: PW, absentEnrolmentIds: [] });
   assert("lock: an empty absent set changes nothing",
     plainEmpty, plain);
+}
+
+// ── Regenerate / import preservation (commit 4) ─────────────────────────
+export function runBandAbsenceRegenTests(assert) {
+  const eAG = enrol("e_amy_gtr", "amy", "Guitar");
+  const eAP = enrol("e_amy_pno", "amy", "Piano");
+  const eBD = enrol("e_bob_drm", "bob", "Drums");
+  const B = band("B", { memberStates: [ms(eAG, "regular")] });
+  const stamped = miss("OWN_G", eAG, { bandLessonId: "B", reason: "informed_absence" });
+  const orphan = miss("OLD_X", eBD, { bandLessonId: "GONE" });
+  const plain = miss("PLAIN", eBD, { day: "Monday" });
+  const generated = miss("GEN", eAP, { reason: "timetable_clash" });
+
+  assert("regen: isBandStampedMiss / withoutBandMisses",
+    [isBandStampedMiss(stamped), isBandStampedMiss(plain), isBandStampedMiss(null), withoutBandMisses([stamped, plain, orphan]).map(m => m.id)],
+    [true, false, false, ["PLAIN"]]);
+  assert("regen week: a surviving band's absence is carried forward after the generator's misses",
+    carryBandMisses([generated], [plain, stamped], [B, card("C", eBD)]).map(m => m.id), ["GEN", "OWN_G"]);
+  assert("regen: an absence whose band did not survive is dropped",
+    carryBandMisses([], [stamped, orphan], [card("C", eBD)]).map(m => m.id), []);
+  assert("regen: unstamped previous misses are never carried (caller's rule unchanged)",
+    carryBandMisses([], [plain], [B]).map(m => m.id), []);
+  // Day rebuild: nextMissed already holds other days' entries, stamped ones
+  // included — they must not be doubled.
+  assert("regen day: stamped entries already in nextMissed are not duplicated",
+    carryBandMisses([plain, stamped, generated], [plain, stamped], [B]).map(m => m.id), ["PLAIN", "GEN", "OWN_G"]);
+  assert("regen: the carried miss is the same object — reason and catch-up flag intact",
+    carryBandMisses([], [stamped], [B])[0], stamped);
 }

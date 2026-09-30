@@ -311,3 +311,47 @@ export function memberAbsenceInfo(band, entry, missed) {
   }
   return { reason: null, reasonDetail: "" };
 }
+
+// ── Regenerate / import (cluster 5b) ────────────────────────────────────
+//
+// Every week rebuild (regenerate week / day / all schools, MTT import)
+// replaces missed[] from the generator. A band absence is not generator
+// output, so without this it would silently vanish and the regular member
+// would tick the band again.
+
+/**
+ * True if `m` is a band absence (a miss stamped with bandLessonId).
+ */
+export function isBandStampedMiss(m) {
+  return !!(m && m.bandLessonId);
+}
+
+/**
+ * Drop band absences from a list of misses. Used on the informed-absence
+ * "pre-absent" sets, which key on studentId and would otherwise pull every
+ * one of that student's generated cards for the week into missed.
+ */
+export function withoutBandMisses(misses) {
+  return (misses || []).filter(m => !isBandStampedMiss(m));
+}
+
+/**
+ * Rebuild a week's missed[] after regeneration or import.
+ *
+ * Band absences are stripped from `nextMissed` (a day rebuild keeps other
+ * days' entries, stamped ones included) and then every band absence from
+ * `prevMissed` is carried forward whose band survives in `nextLessons`.
+ * A stamped miss whose band did not survive is dropped. Unstamped misses in
+ * `prevMissed` are never carried — what happens to them is the caller's
+ * existing rule, unchanged.
+ *
+ * @param {Array} nextMissed   missed[] as the rebuild produced it.
+ * @param {Array} prevMissed   missed[] before the rebuild.
+ * @param {Array} nextLessons  lessons[] after the rebuild.
+ * @returns {Array}
+ */
+export function carryBandMisses(nextMissed, prevMissed, nextLessons) {
+  const bandIds = new Set((nextLessons || []).filter(l => l && l.isBandSession).map(l => l.id));
+  const carried = (prevMissed || []).filter(m => isBandStampedMiss(m) && bandIds.has(m.bandLessonId));
+  return [...withoutBandMisses(nextMissed), ...carried];
+}
