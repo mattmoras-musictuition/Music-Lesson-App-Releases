@@ -35,7 +35,7 @@ import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMiss
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
-import { sessionMembers, bandCardStatus } from "../data/bandSessionView";
+import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -3603,7 +3603,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const parentEmailSet = new Set();
             const parentRows = []; // { name, email } for individual list
             dayLessons.forEach(l => {
-              const studentIds = l.isGroup ? (l.studentIds || []) : l.studentId ? [l.studentId] : [];
+              // v2.41.0 — band cards contribute the students attending that
+              // session (legacy bands: members[]); see parentEmailStudentIds.
+              const studentIds = parentEmailStudentIds(l, weeklyData?.missed || EMPTY_LESSONS);
               studentIds.forEach(sid => {
                 const st = students.find(s => s.id === sid);
                 if (!st) return;

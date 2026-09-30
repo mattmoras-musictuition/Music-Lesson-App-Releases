@@ -10,7 +10,7 @@ import {
   SESSION_STATUS, sessionMemberRows, sessionMembers, isBandUnattributed,
   attributionProgress, absentCount, bandCoversStudentForPresence,
   bandNameForCatchup, findUnattributedBands, bandCardStatus,
-  termWeekKeys, weekOffsetBetween, unattributedAlertDismissKey, undismissedBandIds, unattributedBandsForAlert,
+  termWeekKeys, weekOffsetBetween, unattributedAlertDismissKey, undismissedBandIds, unattributedBandsForAlert, parentEmailStudentIds,
 } from "./bandSessionView";
 import { resolveAnchorTerm } from "../utils/catchupScope";
 
@@ -243,4 +243,20 @@ export function runUnattributedAlertTests(assert) {
     unattributedBandsForAlert(wtt, inTerm && inTerm.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
   assert("alert: in the holidays — the just-finished term's bands",
     unattributedBandsForAlert(wtt, inHols && inHols.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
+}
+
+export function runParentEmailStudentTests(assert) {
+  assert("day email: individual card", parentEmailStudentIds({ id: "c", studentId: "a" }, []), ["a"]);
+  assert("day email: group card", parentEmailStudentIds({ id: "g", isGroup: true, studentIds: ["a", "b"] }, []), ["a", "b"]);
+  assert("day email: card without a student", parentEmailStudentIds({ id: "x" }, []), []);
+  assert("day email: nothing", parentEmailStudentIds(null, []), []);
+  const legacy = { id: "L", isBandSession: true, members: [{ studentId: "a" }, { studentId: "b" }], removedLessons: [] };
+  assert("day email: legacy band → members[] as listed", parentEmailStudentIds(legacy, []), ["a", "b"]);
+  const band = newBand("B", ["reg", "absReg", "cu", "free", "nis", "unset"].map(s => ({ studentId: s, instrument: "Guitar" })), [
+    entry("reg", "Guitar", "regular"), entry("absReg", "Guitar", "regular"),
+    entry("cu", "Guitar", "catchup", { attended: false, absence: { reason: "sick" } }),
+    entry("free", "Guitar", "free"), entry("nis", "Guitar", "not_in_session"), entry("unset", "Guitar", null),
+  ]);
+  const missed = [{ bandLessonId: "B", enrolmentId: "e_absReg_Guitar", studentId: "absReg", instrument: "Guitar" }];
+  assert("day email: new band → attending + unattributed only", parentEmailStudentIds(band, missed), ["reg", "free", "unset"]);
 }

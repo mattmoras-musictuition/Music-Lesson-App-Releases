@@ -176,6 +176,24 @@ export function bandCoversStudentForPresence(band, studentId, instrument) {
 }
 
 /**
+ * The students whose parents a day-header "email parents" should reach for
+ * one lesson card: a group's students, an individual's student, and — for a
+ * band — the students attending this session (unattributed included;
+ * not-in-session and absent members left out). A legacy band contributes
+ * members[] as listed. Callers de-duplicate recipients.
+ *
+ * @param {Object} lesson
+ * @param {Array} missed   The week's missed[] (regular band absences).
+ * @returns {string[]}
+ */
+export function parentEmailStudentIds(lesson, missed) {
+  if (!lesson) return [];
+  if (lesson.isBandSession) return sessionMembers(lesson, missed).map(r => r.studentId).filter(Boolean);
+  if (lesson.isGroup) return lesson.studentIds || [];
+  return lesson.studentId ? [lesson.studentId] : [];
+}
+
+/**
  * The band a band-linked catch-up row belongs to, looked up in the row's own
  * week and school (as bandCatchupTooltip does). Its name, or null when the
  * row isn't band-linked, the band can't be found, or it has no name.
