@@ -2,10 +2,11 @@
 // BANDS SYNC SMOKE TESTS
 // v2.41.2. Characterizes every band write path through the pure helpers in
 // utils/bandsSync.js: the row mappers, BandsManager's Save/Delete list
-// changes, and the whole-list Supabase sync plan.
+// changes, and the Supabase write plan. v2.41.2 replaced the whole-list
+// upsert + sweep with per-row writes: only the saved band is upserted.
 // ============================================================
 
-import { rowToBand, bandToRow, applyBandSave, applyBandDelete, planWholeListSync } from "../utils/bandsSync";
+import { rowToBand, bandToRow, applyBandSave, applyBandDelete, planBandUpsert } from "../utils/bandsSync";
 
 const ADMIN = "daf539a2-ec67-45e5-8533-a3a5beb5b9e5";
 const TEACHER = "teacher-user-uuid";
@@ -44,11 +45,11 @@ export function runBandsSyncCharacterizationTests(assert) {
   assert("bandsSync: Delete of unknown id is a no-op", applyBandDelete(list, "zz").map(b => b.id), ["a", "b", "c"]);
   assert("bandsSync: list helpers never mutate the input", list.map(b => b.id + ":" + b.name), ["a:a", "b:b", "c:c"]);
 
-  // ── Whole-list sync plan (the behaviour v2.41.2 replaces) ──
-  assert("bandsSync: whole-list plan is null when signed out", planWholeListSync(list, null), null);
-  const plan = planWholeListSync(list, ADMIN);
-  assert("bandsSync: whole-list plan upserts EVERY band in memory", plan.upsertRows.map(r => r.id), ["a", "b", "c"]);
-  assert("bandsSync: whole-list plan stamps admin on every row", plan.upsertRows.every(r => r.user_id === ADMIN), true);
-  assert("bandsSync: whole-list plan sweeps admin rows not in memory", plan.deleteSweep, { ownedBy: ADMIN, keepIds: ["a", "b", "c"] });
-  assert("bandsSync: whole-list plan skips the sweep for an empty list", planWholeListSync([], ADMIN), { upsertRows: [], deleteSweep: null });
+  // ── Per-row write plan (v2.41.2; replaced the whole-list upsert + sweep) ──
+  assert("bandsSync: per-row plan is null when signed out", planBandUpsert(band("b"), null), null);
+  assert("bandsSync: per-row plan is null without an id", planBandUpsert({ name: "x" }, ADMIN), null);
+  assert("bandsSync: per-row plan writes ONLY the saved band, stamped admin",
+    planBandUpsert(band("b", { name: "B2" }), ADMIN), bandToRow(band("b", { name: "B2" }), ADMIN));
+  assert("bandsSync: per-row plan re-owns a teacher-created band",
+    planBandUpsert(rowToBand(row), ADMIN).user_id, ADMIN);
 }

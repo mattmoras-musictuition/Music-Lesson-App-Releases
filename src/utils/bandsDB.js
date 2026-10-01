@@ -1,9 +1,14 @@
 // ============================================================
-// bandsDB.js — Supabase load/sync for bands
+// bandsDB.js — Supabase load and per-row writes for bands
 // ============================================================
+//
+// v2.41.2: PER-ROW writes. The old whole-list upsert + delete-not-in-list
+// sweep overwrote teacher edits made since the admin loaded and could
+// delete bands the admin had never seen. Now only the band the admin saved
+// is upserted, and only a band the admin deleted is deleted, by id.
 
 import { supabase } from "../supabaseClient";
-import { rowToBand, planWholeListSync } from "./bandsSync";
+import { rowToBand, planBandUpsert } from "./bandsSync";
 
 export async function loadBandsFromSupabase() {
   const { data, error } = await supabase
@@ -14,19 +19,20 @@ export async function loadBandsFromSupabase() {
   return (data || []).map(rowToBand);
 }
 
-export async function syncBandsToSupabase(bands, userId) {
-  const plan = planWholeListSync(bands, userId);
-  if (!plan) return;
-  const { error: upsertError } = await supabase
+export async function upsertBandToSupabase(band, userId) {
+  const row = planBandUpsert(band, userId);
+  if (!row) return;
+  const { error } = await supabase
     .from("bands")
-    .upsert(plan.upsertRows, { onConflict: "id" });
-  if (upsertError) throw new Error(upsertError.message);
+    .upsert(row, { onConflict: "id" });
+  if (error) throw new Error(error.message);
+}
 
-  if (!plan.deleteSweep) return;
-  const { error: deleteError } = await supabase
+export async function deleteBandFromSupabase(id) {
+  if (!id) return;
+  const { error } = await supabase
     .from("bands")
     .delete()
-    .eq("user_id", plan.deleteSweep.ownedBy)
-    .not("id", "in", `(${plan.deleteSweep.keepIds.join(",")})`);
-  if (deleteError) throw new Error(deleteError.message);
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }

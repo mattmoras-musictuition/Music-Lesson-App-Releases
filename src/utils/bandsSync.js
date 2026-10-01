@@ -54,12 +54,13 @@ export function applyBandDelete(bands, id) {
   return bands.filter(b => b.id !== id);
 }
 
-// The whole-list sync: every band in memory is upserted (stamped with the
-// admin's user_id), then every admin-owned row whose id is not in memory is
-// deleted. No delete when the list is empty. null when signed out.
-export function planWholeListSync(bands, userId) {
-  if (!userId) return null;
-  const upsertRows = bands.map(b => bandToRow(b, userId));
-  const keepIds = bands.map(b => b.id);
-  return { upsertRows, deleteSweep: keepIds.length === 0 ? null : { ownedBy: userId, keepIds } };
+// v2.41.2 per-row writes. Only the band the admin actually saved is
+// upserted (stamped with the admin's user_id, which re-owns a band a
+// teacher created), and only an explicitly deleted band is deleted, by id.
+// There is no sweep: rows the admin never touched — including bands a
+// teacher created or edited since the admin loaded — are never written.
+// null when signed out.
+export function planBandUpsert(band, userId) {
+  if (!userId || !band || !band.id) return null;
+  return bandToRow(band, userId);
 }

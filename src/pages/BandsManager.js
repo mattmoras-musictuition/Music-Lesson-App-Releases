@@ -8,7 +8,6 @@ import { BAND_LINK_CATEGORIES, BAND_COLOR, BAND_INSTRUMENTS } from "../constants
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { applyBandSave, applyBandDelete } from "../utils/bandsSync";
 import { Card, PageTitle, NavButtons, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ResourcePicker } from "../components/ResourcePicker";
@@ -23,7 +22,7 @@ function bandDisplayName(student, allMembers) {
   return parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
 }
 
-export function BandsManager({ bands, setBands, schools, students, enrolments, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
+export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, students, enrolments, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
   const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
@@ -48,13 +47,12 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
 
   const saveBand = () => {
     if (!form.schoolId) { notify("Select a school", "warning"); return; }
-    const isNew = editing === "new";
-    setBands(prev => applyBandSave(prev, form, isNew));
+    onSaveBand(form, editing === "new");
     setForm(null); setEditing(null);
     notify("Band saved!");
   };
 
-  const deleteBand = (id) => { setBands(prev => applyBandDelete(prev, id)); notify("Band removed"); };
+  const deleteBand = (id) => { onDeleteBand(id); notify("Band removed"); };
 
   const addMember = (student) => {
     if (!form || form.members.some(m => m.studentId === student.id)) return;

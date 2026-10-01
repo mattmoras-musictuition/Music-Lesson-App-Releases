@@ -29,7 +29,8 @@ import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
-import { loadBandsFromSupabase, syncBandsToSupabase } from "./utils/bandsDB";
+import { loadBandsFromSupabase, upsertBandToSupabase, deleteBandFromSupabase } from "./utils/bandsDB";
+import { applyBandSave, applyBandDelete } from "./utils/bandsSync";
 import { loadResourcesFromSupabase } from "./utils/resourcesDB";
 import { signedUrlFor, BUCKET_VOICE_NOTES } from "./utils/storageHelpers";
 import { loadDocumentsFromSupabase, syncDocumentsToSupabase } from "./utils/documentsDB";
@@ -2322,7 +2323,23 @@ export default function MusicTimetableApp() {
   useEffect(() => { if (storageReady.current && specialists.length > 0) { saveData(STORAGE_KEYS.specialists, specialists); saveData(STORAGE_KEYS.specialistsBak, specialists); if (sessionUserId && !isDev) syncSpecialistsToSupabase(specialists, sessionUserId).catch(err => logError("Specialists Supabase sync failed", err.message)); else if (!isDev) console.warn("[sync] Specialists — no Supabase session"); } }, [specialists, sessionUserId]);
   useEffect(() => { if (storageReady.current && interruptions.length > 0) { saveData(STORAGE_KEYS.interruptions, interruptions); if (sessionUserId && !isDev) syncInterruptionsToSupabase(interruptions, sessionUserId).catch(err => logError("Interruptions Supabase sync failed", err.message)); else if (!isDev) console.warn("[sync] Interruptions — no Supabase session"); } }, [interruptions, sessionUserId]);
   useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.groups, groups); if (sessionUserId && !isDev) syncGroupsToSupabase(groups, sessionUserId).catch(err => logError("Groups Supabase sync failed", err.message)); else if (groups.length > 0 && !isDev) console.warn("[sync] Groups — no Supabase session"); } }, [groups, sessionUserId]);
-  useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.bands, bands); if (sessionUserId && !isDev) syncBandsToSupabase(bands, sessionUserId).catch(err => logError("Bands Supabase sync failed", err.message)); else if (bands.length > 0 && !isDev) console.warn("[sync] Bands — no Supabase session"); } }, [bands, sessionUserId]);
+  // Bands are persisted PER ROW at each mutation (v2.41.2) — see writeBand /
+  // handleSaveBand / handleDeleteBand. The old whole-list sync overwrote
+  // teacher edits and swept rows it had not loaded. This effect only keeps
+  // the localStorage cache fresh for offline load.
+  useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.bands, bands); } }, [bands]);
+  const writeBand = (band) => {
+    if (isDev) return;
+    if (!sessionUserId) { console.warn("[sync] Bands — no Supabase session"); return; }
+    upsertBandToSupabase(band, sessionUserId).catch(err => logError("Bands Supabase sync failed", err.message));
+  };
+  const handleSaveBand = (band, isNew) => { setBands(prev => applyBandSave(prev, band, isNew)); writeBand(band); };
+  const handleDeleteBand = (id) => {
+    setBands(prev => applyBandDelete(prev, id));
+    if (isDev) return;
+    if (!sessionUserId) { console.warn("[sync] Bands — no Supabase session"); return; }
+    deleteBandFromSupabase(id).catch(err => logError("Bands Supabase sync failed", err.message));
+  };
   // Resources are a SHARED pool persisted per-row at each mutation site
   // (see resourcesDB insert/update/delete); the old destructive whole-list
   // sync was removed so one app can't delete rows the other created. This
@@ -4218,7 +4235,8 @@ export default function MusicTimetableApp() {
     if (data.weeklyTimetables) { setWeeklyTimetables(data.weeklyTimetables); saveData(STORAGE_KEYS.weeklyTimetables, data.weeklyTimetables); }
     if (data.timetableVersions) saveData(STORAGE_KEYS.timetableVersions, data.timetableVersions);
     if (data.contacts) { setContacts(data.contacts); saveData(STORAGE_KEYS.contacts, data.contacts); }
-    if (data.bands) { setBands(data.bands); saveData(STORAGE_KEYS.bands, data.bands); }
+    // Bands: upsert each restored band; nothing on the server is deleted (v2.41.2).
+    if (data.bands) { setBands(data.bands); saveData(STORAGE_KEYS.bands, data.bands); data.bands.forEach(writeBand); }
     if (data.masterBreaks) { setMasterBreaks(data.masterBreaks); saveData(STORAGE_KEYS.masterBreaks, data.masterBreaks); }
     if (data.resources) { setResources(data.resources); saveData(STORAGE_KEYS.resources, data.resources); }
     if (data.userTemplates) saveData(STORAGE_KEYS.userTemplates, data.userTemplates);
@@ -6230,7 +6248,7 @@ export default function MusicTimetableApp() {
           {/* Waiting List is no longer a standalone page — it is folded into the
               Students page as the third toggle tab (see the StudentsManager
               `waitingListSlot` prop below). The component file is reused there. */}
-          {page === "bands" && <BandsManager bands={bands} setBands={setBands} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
+          {page === "bands" && <BandsManager bands={bands} onSaveBand={handleSaveBand} onDeleteBand={handleDeleteBand} schools={schools} students={students} enrolments={enrolments} teachers={teachers} resources={resources} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onCompose={({ band, link }) => { const emails = [...new Set((band.members || []).map(m => students.find(s => s.id === m.studentId)).filter(Boolean).flatMap(s => (s.parents || []).filter(p => p.email).map(p => p.email)))]; setComposeEmail({ to: emails, subject: (band.name || "Band") + " \u2014 " + (link.label || link.category), body: "Hi,\n\nHere is a link for " + (band.name || "the band") + ":\n" + link.url }); }} />}
           {page === "concerts" && <ConcertsManager schools={schools} students={students} teachers={teachers} bands={bands} documents={documents} setDocuments={setDocuments} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "timetable" && <TimetableView mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={activeStudents} allStudents={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} onAddStaff={handleAddStaff} onRemoveStaff={handleRemoveStaff} specialists={specialists} pendingStudents={pendingStudents} masterBreaks={masterBreaks} setMasterBreaks={setMasterBreaks} bands={bands} viewState={ttViewState} setViewState={setTtViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onExport={handleExport} onPrint={() => printMasterTimetable(timetable, schools, students, teachers)} onClearSchool={handleClearSchool} contacts={contacts} onWarningsChange={(w, a) => { setTtConstraintWarnings(w); setTtAckedConstraints(a); }} initialConstraintWarnings={ttConstraintWarnings} initialAckedConstraints={ttAckedConstraints} onClear={() => { setTimetable(null); setGroups(prev => prev.map(g => g.status === "scheduled" ? { ...g, status: "forming" } : g)); }} onSchedulePending={handleSchedulePending} onMoveLesson={(lessonId, newDay, newTime) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
