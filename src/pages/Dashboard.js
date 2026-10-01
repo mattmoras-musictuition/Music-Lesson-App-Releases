@@ -1539,8 +1539,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   }).entries, [offerableWeekKey, interruptions, dashInvoiceDraftsRaw, weeklyTimetables, enrolments, students, timetable, catchups, groups]);
 
   // v2.41.0 — band sessions whose members' roles aren't all set. Every new band
-  // in the anchor term (catch-ups owed's rule: the current term, or in the
-  // holidays the one just finished), past and future weeks. Computed from the
+  // from the start of the anchor term onwards, no end limit (v2.41.1). The
+  // anchor is catch-ups owed's rule: the current term, or in the holidays the
+  // one just finished — so next term's bands show during the break. Computed from the
   // weeklyTimetables PROP (Dashboard never remounts). A dismissal hides only
   // the bands it listed, so a new unattributed band brings the chip back.
   const unattributedBands = React.useMemo(() => {

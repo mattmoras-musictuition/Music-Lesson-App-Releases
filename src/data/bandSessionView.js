@@ -214,15 +214,18 @@ const DAY_RANK = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, 
  * @param {Object} [scope]
  * @param {Array<string>} [scope.weekKeys]   Only these weeks (all if omitted).
  * @param {Array<string>} [scope.schoolIds]  Only these schools (all if omitted).
+ * @param {string} [scope.fromWeekKey]       Only weeks on or after this Monday
+ *        (YYYY-MM-DD; ISO dates compare correctly as strings).
  * @returns {Array<{weekKey, schoolId, bandLessonId, bandName, day, start, set, total}>}
  */
-export function findUnattributedBands(weeklyTimetables, { weekKeys, schoolIds } = {}) {
+export function findUnattributedBands(weeklyTimetables, { weekKeys, schoolIds, fromWeekKey } = {}) {
   const weekSet = weekKeys ? new Set(weekKeys) : null;
   const schoolSet = schoolIds ? new Set(schoolIds) : null;
   const out = [];
   for (const [key, entry] of Object.entries(weeklyTimetables || {})) {
     const [weekKey, schoolId] = key.split("|");
     if (weekSet && !weekSet.has(weekKey)) continue;
+    if (fromWeekKey && weekKey < fromWeekKey) continue;
     if (schoolSet && !schoolSet.has(schoolId)) continue;
     for (const l of ((entry && entry.lessons) || [])) {
       if (!l || !l.isBandSession || !isBandUnattributed(l)) continue;
@@ -293,9 +296,11 @@ export function undismissedBandIds(bandLessonIds, dismissed) {
 }
 
 /**
- * The unattributed band sessions the Dashboard alert lists: every NEW band in
- * the term's weeks with a member nobody has decided about, minus the bands
- * an earlier dismissal covered.
+ * The unattributed band sessions the Dashboard alert lists: every NEW band
+ * with a member nobody has decided about, in any week from the Monday of the
+ * anchor term's start onwards — no end limit (v2.41.1: during the holidays
+ * the anchor is the term just finished, so next term's bands must show too) —
+ * minus the bands an earlier dismissal covered.
  *
  * @param {Object} weeklyTimetables
  * @param {{start, end}|null} term   The anchor term (catch-ups owed's rule).
@@ -304,7 +309,9 @@ export function undismissedBandIds(bandLessonIds, dismissed) {
  */
 export function unattributedBandsForAlert(weeklyTimetables, term, dismissed) {
   if (!term) return [];
-  const bands = findUnattributedBands(weeklyTimetables, { weekKeys: termWeekKeys(term) });
+  const fromWeekKey = termWeekKeys(term)[0];
+  if (!fromWeekKey) return [];
+  const bands = findUnattributedBands(weeklyTimetables, { fromWeekKey });
   const keep = new Set(undismissedBandIds(bands.map(b => b.bandLessonId), dismissed));
   return bands.filter(b => keep.has(b.bandLessonId));
 }

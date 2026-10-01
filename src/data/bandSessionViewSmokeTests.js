@@ -223,26 +223,56 @@ export function runUnattributedAlertTests(assert) {
     "2099-04-20|S": { lessons: [un("after", "2099-04-20", "Monday")] },
   };
   const term = { start: "2099-02-02", end: "2099-04-10" };
-  assert("alert: term scope — past and future weeks of the term, legacy excluded",
-    unattributedBandsForAlert(wtt, term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
+  // v2.41.1 (D1): the scope is every week from the Monday of the anchor term's
+  // start onwards, with no end limit. These replace the v2.41.0 term-only cases.
+  assert("alert scope: from the term's first Monday on — later weeks included, earlier excluded, legacy excluded",
+    unattributedBandsForAlert(wtt, term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2", "after"]);
+  const wttLater = { ...wtt, "2099-07-20|S": { lessons: [un("laterTerm", "2099-07-20", "Wednesday")] } };
+  assert("alert scope: a band in a later term is included",
+    unattributedBandsForAlert(wttLater, term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2", "after", "laterTerm"]);
+  assert("alert scope: a mid-week term start keeps that week's band",
+    unattributedBandsForAlert(wtt, { start: "2099-02-04", end: "2099-04-10" }, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2", "after"]);
+  assert("alert scope: fromWeekKey compares ISO week keys",
+    findUnattributedBands(wtt, { fromWeekKey: "2099-04-06" }).map(b => b.bandLessonId), ["inTerm2", "after"]);
   assert("alert: no term → nothing", unattributedBandsForAlert(wtt, null, {}), []);
   assert("alert: dismissed set hides the chip",
-    unattributedBandsForAlert(wtt, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2"])]: true }), []);
+    unattributedBandsForAlert(wtt, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2", "after"])]: true }), []);
   const wtt2 = { ...wtt, "2099-03-02|S": { lessons: [un("fresh", "2099-03-02", "Tuesday")] } };
   assert("alert: a new unattributed band reappears after dismissal",
-    unattributedBandsForAlert(wtt2, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2"])]: true }).map(b => b.bandLessonId), ["fresh"]);
+    unattributedBandsForAlert(wtt2, term, { [unattributedAlertDismissKey(["inTerm1", "inTerm2", "after"])]: true }).map(b => b.bandLessonId), ["fresh"]);
 
-  // The Dashboard resolves the term with catch-ups owed's rule.
+  // The Dashboard resolves the anchor term with catch-ups owed's rule.
   const interruptions = [
     { type: "term_break", date: "2099-01-01", endDate: "2099-02-01" },
     { type: "term_break", date: "2099-04-11", endDate: "2099-04-26" },
   ];
+  const wtt3 = { ...wtt, "2099-04-27|S": { lessons: [un("nextTerm", "2099-04-27", "Monday")] } };
   const inTerm = resolveAnchorTerm(interruptions, "2099-03-02");
   const inHols = resolveAnchorTerm(interruptions, "2099-04-13");
-  assert("alert: during term — this term's bands",
-    unattributedBandsForAlert(wtt, inTerm && inTerm.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
-  assert("alert: in the holidays — the just-finished term's bands",
-    unattributedBandsForAlert(wtt, inHols && inHols.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2"]);
+  assert("alert scope: during term — this term onwards",
+    unattributedBandsForAlert(wtt3, inTerm && inTerm.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2", "after", "nextTerm"]);
+  assert("alert scope: in the holidays — the just-finished term AND the following term",
+    unattributedBandsForAlert(wtt3, inHols && inHols.term, {}).map(b => b.bandLessonId), ["inTerm1", "inTerm2", "after", "nextTerm"]);
+
+  // The owner's case, 1 Oct 2026 (Holidays Week 2, spring break 2026-09-19 →
+  // 2026-10-04): a term 4 band must be listed. No real-clock read — today's
+  // Monday is passed to resolveAnchorTerm as a string.
+  const breaks2026 = [
+    { type: "term_break", date: "2026-06-27", endDate: "2026-07-12" },
+    { type: "term_break", date: "2026-09-19", endDate: "2026-10-04" },
+  ];
+  const anchor2026 = resolveAnchorTerm(breaks2026, "2026-09-28");
+  const wtt2026 = {
+    "2026-06-22|S": { lessons: [un("t2", "2026-06-22", "Monday")] },
+    "2026-08-03|S": { lessons: [un("t3", "2026-08-03", "Monday")] },
+    "2026-10-12|S": { lessons: [un("t4", "2026-10-12", "Thursday")] },
+  };
+  assert("alert scope: 1 Oct 2026 anchors on term 3 (holidays)",
+    [anchor2026 && anchor2026.inBreak, anchor2026 && anchor2026.term.start, anchor2026 && anchor2026.term.end], [true, "2026-07-13", "2026-09-18"]);
+  assert("alert scope: 1 Oct 2026 — v2.41.0's term-only weeks did not reach term 4",
+    termWeekKeys(anchor2026.term).includes("2026-10-12"), false);
+  assert("alert scope: 1 Oct 2026 — the term 4 band is now listed (term 2 band is not)",
+    unattributedBandsForAlert(wtt2026, anchor2026.term, {}).map(b => b.bandLessonId), ["t3", "t4"]);
 }
 
 export function runParentEmailStudentTests(assert) {
