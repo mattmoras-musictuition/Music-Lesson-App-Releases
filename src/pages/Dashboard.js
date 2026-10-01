@@ -847,42 +847,6 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     loadStaffDocs();
   }, []);
 
-  // ── Invoice alert tracking ─────────────────────────────────
-  const [submittedInvoices, setSubmittedInvoices] = React.useState([]);
-  const [seenInvoiceIds, setSeenInvoiceIds] = React.useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem("mt-seen-invoice-ids") || "[]")); } catch { return new Set(); }
-  });
-  const dismissInvoiceAlert = (id) => {
-    setSeenInvoiceIds(prev => {
-      const next = new Set([...prev, id]);
-      localStorage.setItem("mt-seen-invoice-ids", JSON.stringify([...next]));
-      return next;
-    });
-  };
-  const dismissAllInvoiceAlerts = (ids) => {
-    setSeenInvoiceIds(prev => {
-      const next = new Set([...prev, ...ids]);
-      localStorage.setItem("mt-seen-invoice-ids", JSON.stringify([...next]));
-      return next;
-    });
-  };
-  React.useEffect(() => {
-    async function loadInvoices() {
-      try {
-        const { data } = await supabase
-          .from("teacher_invoices")
-          .select("id, teacher_id, period_start, period_end, total_hours, total_amount, submitted_at")
-          .eq("status", "sent")
-          .order("submitted_at", { ascending: false })
-          .limit(50);
-        setSubmittedInvoices(data || []);
-      } catch (e) { console.warn("Dashboard: failed to load invoices", e); }
-    }
-    loadInvoices();
-    const interval = setInterval(loadInvoices, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
   // ── Classroom teacher email alert tracking ─────────────────
   // Cache of { emailId: { type, summary } } — persisted to localStorage
   const [teacherEmailAlerts, setTeacherEmailAlerts] = React.useState(() => {
@@ -1584,29 +1548,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     return unattributedBandsForAlert(weeklyTimetables, anchor ? anchor.term : null, alertDismissals.dismissed);
   }, [interruptions, offerableWeekKey, weeklyTimetables, alertDismissals]);
 
-  // Lesson-change email dismissals — keyed by email id, persistent across midnight
-  // (parallel to alertDismissals but no `date` field and no daily reset)
-  const [lessonChangeDismissals, setLessonChangeDismissals] = React.useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.lessonChangeDismissals) || "{}");
-      if (stored && typeof stored.dismissed === "object") return stored;
-      return { dismissed: {} };
-    } catch { return { dismissed: {} }; }
-  });
-  const dismissLessonChange = (emailId) => {
-    const next = { dismissed: { ...lessonChangeDismissals.dismissed, [emailId]: true } };
-    setLessonChangeDismissals(next);
-    try { localStorage.setItem(STORAGE_KEYS.lessonChangeDismissals, JSON.stringify(next)); } catch {}
-  };
-  const dismissLessonChangesBulk = (emailIds) => {
-    if (!emailIds || emailIds.length === 0) return;
-    const additions = Object.fromEntries(emailIds.map(id => [id, true]));
-    const next = { dismissed: { ...lessonChangeDismissals.dismissed, ...additions } };
-    setLessonChangeDismissals(next);
-    try { localStorage.setItem(STORAGE_KEYS.lessonChangeDismissals, JSON.stringify(next)); } catch {}
-  };
-  const isLessonChangeDismissed = (emailId) => !!lessonChangeDismissals.dismissed[emailId];
-
   // ── Sidebar badge counts ────────────────────────────────────
   const unreadEmailCount = useMemo(() =>
     inboxEmails.filter(e => !emailReadIds.has(e.id)).length,
@@ -2153,11 +2094,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     students, groups, enrolments, timetable, archivedStudentIds, studentHasUnplacedEnrolment,
     todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
     interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
-    seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds, submittedInvoices, seenInvoiceIds,
+    seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
     teacherEmailAlerts, seenTeacherEmailAlertIds,
   });
   const alertChips = buildAlertChips(alertData, {
-    isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands, isLessonChangeDismissed,
+    isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands,
   });
   const alertChipCount = visibleChipCount(alertChips);
   const chipOn = (key) => !!alertChips.find(c => c.key === key && c.visible);
@@ -2995,8 +2936,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           unassignedStudents, unassignedGroupStudents, unassignedGroupCount, unschedEntries, incompleteStudents,
           responseRequiredRed, responseRequiredYellow, responseRequiredBlue, pendingOnly, trialOnly,
           upcomingInterruptions, missedThisWeek, missedPriorSorted, catchupTotal,
-          lessonChangeEmails, upcomingAbsences, upcomingReminderAlerts,
-          newTeacherNotes, newStaffDocs, newInvoices, newTeacherEmailAlerts,
+          upcomingAbsences, upcomingReminderAlerts,
+          newTeacherNotes, newStaffDocs, newTeacherEmailAlerts,
         } = alertData;
         // The Alerts-button badge: the number of visible chips (same as the sidebar).
         const totalAlertsWithTeacherNotes = alertChipCount;
@@ -3007,16 +2948,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         const dismissAllActive = () => {
           // Every visible chip, each through its own mechanism (dashboardAlerts
           // dismissAllPlan): alertDismissals keys in one write, then the
-          // seen-set / lesson-change stores. No hand-kept list to forget.
+          // seen-set stores. No hand-kept list to forget.
           const plan = dismissAllPlan(alertChips);
           const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...plan.keys } };
           setAlertDismissals(next);
           try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
-          if (plan.seen.lessonChanges) dismissLessonChangesBulk(plan.seen.lessonChanges);
           if (plan.seen.teacherNotes) dismissAllTeacherNoteAlerts(plan.seen.teacherNotes);
           if (plan.seen.staffDocs) dismissAllStaffDocAlerts(plan.seen.staffDocs);
           if (plan.seen.teacherEmailAlerts) dismissAllTeacherEmailAlerts(plan.seen.teacherEmailAlerts);
-          if (plan.seen.invoices) dismissAllInvoiceAlerts(plan.seen.invoices);
         };
 
         const CATEGORY_FILTERS = [
@@ -3728,53 +3667,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           }} />
                         </div>
                       ); })()}
-                      {/* Lesson change requests from parents */}
-                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)); return chipOn("lesson-change") && (
-                        <div draggable
-                          onDragStart={() => setAlertDragging({ text: `Review ${visibleLessonChangeEmails.length} lesson change request${visibleLessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: visibleLessonChangeEmails })}
-                          onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
-                          onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set(["parent"])); setEmailSchoolFilter(new Set()); }}
-                          onMouseEnter={e => {
-                            clearTimeout(alertDropdownTimer.current);
-                            const r = e.currentTarget.getBoundingClientRect();
-                            const visEms = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id));
-                            const visIds = visEms.map(em => em.id);
-                            openAlertDropdown({
-                              rect: r,
-                              anchor: "right",
-                              title: "LESSON CHANGE REQUESTS",
-                              borderColor: colors.accent,
-                              headerAction: visEms.length > 1 ? {
-                                label: `Dismiss all ${visEms.length}`,
-                                onClick: () => {
-                                  if (window.confirm(`Dismiss all ${visEms.length} lesson change request${visEms.length !== 1 ? "s" : ""}?`)) {
-                                    dismissLessonChangesBulk(visIds);
-                                    setAlertDropdown(null);
-                                  }
-                                }
-                              } : undefined,
-                              items: visEms.map(em => {
-                                const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown";
-                                const fromAddr = (em.from?.match(/<(.+)>/)?.[1] || em.from || "").toLowerCase();
-                                const parentStudent = students.find(s => studentMatchesParentEmail(s, fromAddr));
-                                const sc = parentStudent ? schools.find(sc2 => sc2.id === parentStudent.schoolId) : null;
-                                const scColor = sc?.color || (darkMode ? colors.accent : colors.accentDark);
-                                return {
-                                  label: `${n} — ${em.subject || "(no subject)"}`,
-                                  chipColor: scColor, chipBg: `${scColor}18`, chipBorder: scColor,
-                                  openEmailId: em.id,
-                                  onDismiss: () => dismissLessonChange(em.id),
-                                  dragPayload: { text: `Reply to ${n} re: ${em.subject || "lesson change"}`, tag: "email", groupType: `alert-lesson-change-${em.id}`, responseEmails: [em] }
-                                };
-                              })
-                            });
-                          }}
-                          onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
-                          style={{ padding: "3px 10px", background: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, border: `1px solid ${colors.accent}`, borderRadius: 20, fontSize: 11, cursor: "grab", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
-                          <span style={{ color: darkMode ? colors.accent : colors.accentDark, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><RefreshCw size={11} /> {visibleLessonChangeEmails.length} lesson change{visibleLessonChangeEmails.length !== 1 ? "s" : ""}</span>
-                          <DismissBtn groupType="alert-lesson-change" color={colors.accent} />
-                        </div>
-                      ); })()}
                       {chipOn("pending") && (() => {
                         const pendingStudents = students.filter(s => s.status === "pending").flatMap(s => {
                           const nonGroup = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup);
@@ -3919,48 +3811,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               {single ? `🏫 ${newTeacherEmailAlerts[0].summary}` : `🏫 ${newTeacherEmailAlerts.length} classroom updates`}
                             </span>
                             <span onClick={e => { e.stopPropagation(); dismissAllTeacherEmailAlerts(newTeacherEmailAlerts.map(a => a.emailId)); }} title="Dismiss all" style={{ marginLeft: 2, color: colors.danger, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
-                          </div>
-                        );
-                      })()}
-                      {/* ── Invoice received chip ── */}
-                      {chipOn("invoices") && (() => {
-                        const invColor = "#0D9488"; // teal-600
-                        const invBg = darkMode ? "rgba(13,148,136,0.15)" : "#CCFBF1";
-                        const chipItems = newInvoices.map(inv => {
-                          const teacher = teachers.find(t => t.id === inv.teacher_id);
-                          const teacherName = teacher?.name || "Teacher";
-                          const periodLabel = inv.period_start
-                            ? `${new Date(inv.period_start + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}–${new Date(inv.period_end + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}`
-                            : "";
-                          return {
-                            label: `${teacherName}${periodLabel ? ` — ${periodLabel}` : ""}${inv.total_amount ? ` ($${Number(inv.total_amount).toFixed(2)})` : ""}`,
-                            chipColor: invColor,
-                            chipBg: invBg,
-                            chipBorder: invColor,
-                            navigateTo: "teachers",
-                            dismissKey: inv.id,
-                          };
-                        });
-                        const single = newInvoices.length === 1;
-                        const singleInv = single ? newInvoices[0] : null;
-                        const singleTeacher = singleInv ? teachers.find(t => t.id === singleInv.teacher_id) : null;
-                        const singleLabel = singleTeacher
-                          ? `${singleTeacher.name}${singleInv.period_start ? ` — ${new Date(singleInv.period_start + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}–${new Date(singleInv.period_end + "T12:00:00").toLocaleDateString("en-AU", { day: "numeric", month: "short" })}` : ""}`
-                          : "New invoice";
-                        return (
-                          <div
-                            onClick={single ? () => { onNavigate("teachers"); } : undefined}
-                            onMouseEnter={!single ? e => {
-                              clearTimeout(alertDropdownTimer.current);
-                              const r = e.currentTarget.getBoundingClientRect();
-                              openAlertDropdown({ rect: r, title: "INVOICES RECEIVED", borderColor: invColor, items: chipItems });
-                            } : undefined}
-                            onMouseLeave={!single ? () => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); } : undefined}
-                            style={{ padding: "3px 10px", background: invBg, border: `1px solid ${invColor}60`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
-                            <span style={{ color: invColor, fontWeight: 700 }}>
-                              {single ? `🧾 ${singleLabel}` : `🧾 ${newInvoices.length} invoices received`}
-                            </span>
-                            <span onClick={e => { e.stopPropagation(); dismissAllInvoiceAlerts(newInvoices.map(inv => inv.id)); }} title="Dismiss all" style={{ marginLeft: 2, color: invColor, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
                           </div>
                         );
                       })()}

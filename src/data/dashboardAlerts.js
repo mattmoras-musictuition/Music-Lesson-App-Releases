@@ -8,13 +8,15 @@
 // sidebar badge, the Alerts-button badge and "Dismiss all". Before this the
 // two badges and Dismiss-all were three hand-kept lists that had drifted
 // apart (sidebar 6 / button 7 / 8 chips on the owner's screen). Both badges
-// are now simply the number of visible chips.
+// are now simply the number of visible chips. The "lesson changes" and
+// "invoices received" chips were removed in v2.41.1 (owner decision); those
+// emails stay in the Emails panel and teacher invoices on the Teachers page.
 // ============================================================
 
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
 import { computeTermWeekNum } from "../utils/tallyHelpers";
-import { toLocalDateStr, studentMatchesParentEmail } from "../utils/helpers";
+import { toLocalDateStr } from "../utils/helpers";
 import { unattributedAlertDismissKey } from "./bandSessionView";
 
 /**
@@ -25,15 +27,14 @@ import { unattributedAlertDismissKey } from "./bandSessionView";
  *   inboxEmails, emailNoReplyOverrides (Set), emailSummaries, sentLoaded,
  *   sentEmails, interruptions, weeklyTimetables, offerableTodayEntries,
  *   sortedReminders, seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
- *   submittedInvoices, seenInvoiceIds, teacherEmailAlerts,
- *   seenTeacherEmailAlertIds.
+ *   teacherEmailAlerts, seenTeacherEmailAlertIds.
  */
 export function deriveAlertData(i) {
   const {
     students, groups, enrolments, timetable, archivedStudentIds, studentHasUnplacedEnrolment,
     todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
     interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
-    seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds, submittedInvoices, seenInvoiceIds,
+    seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
     teacherEmailAlerts, seenTeacherEmailAlertIds,
   } = i;
   // Alerts data
@@ -120,15 +121,6 @@ export function deriveAlertData(i) {
   const catchupTooltipLines = Object.entries(catchupByStudent)
     .sort((a, b) => b[1] - a[1])
     .map(([name, count]) => `${name} — ${count} owed`);
-  // Lesson-change emails: inbox emails from known parents that mention schedule/time keywords
-  const lessonChangeKeywords = ["reschedul", "change", "swap", "move", "different time", "different day", "can't make", "cannot make", "won't be", "will not be", "away", "absent", "cancel", "conflict", "clash"];
-  const lessonChangeEmails = inboxEmails.filter(e => {
-    const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-    const isParent = students.some(s => studentMatchesParentEmail(s, addr));
-    if (!isParent) return false;
-    const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
-    return lessonChangeKeywords.some(kw => text.includes(kw));
-  });
   // Upcoming absences: informed_absence entries for NEXT week (alert fires the week before)
   const upcomingAbsences = (() => {
     // weekLabel is absent on WTT.missed; the || nextWeekKey fallback always resolves
@@ -155,9 +147,6 @@ export function deriveAlertData(i) {
   // Staff document uploads
   const newStaffDocs = staffUploadedDocs.filter(d => !seenStaffDocIds.has(d.id));
   const hasNewStaffDocs = newStaffDocs.length > 0;
-  // Invoice alerts — submitted invoices not yet seen
-  const newInvoices = submittedInvoices.filter(inv => !seenInvoiceIds.has(inv.id));
-  const hasNewInvoices = newInvoices.length > 0;
   // Classroom/specialist teacher email alerts
   const newTeacherEmailAlerts = Object.values(teacherEmailAlerts)
     .filter(a => a.type !== "other" && a.summary && !seenTeacherEmailAlertIds.has(a.emailId));
@@ -167,8 +156,8 @@ export function deriveAlertData(i) {
     unassignedStudents, unassignedGroupStudents, unassignedGroupCount, unschedEntries, incompleteStudents,
     responseRequiredRed, responseRequiredYellow, responseRequiredBlue, pendingOnly, trialOnly,
     upcomingInterruptions, currentWeekKey, nextWeekKey, missedThisWeek, missedPriorSorted, catchupTotal,
-    catchupTooltipLines, lessonChangeEmails, upcomingAbsences, upcomingReminderAlerts,
-    newTeacherNotes, hasNewTeacherNotes, newStaffDocs, hasNewStaffDocs, newInvoices, hasNewInvoices,
+    catchupTooltipLines, upcomingAbsences, upcomingReminderAlerts,
+    newTeacherNotes, hasNewTeacherNotes, newStaffDocs, hasNewStaffDocs,
     newTeacherEmailAlerts, hasTeacherEmailAlerts,
   };
 }
@@ -215,16 +204,16 @@ const intrKeys = (intrs) => intrs.map(i => `alert-interruption-${i.id}`);
  *   dismissKeys  alertDismissals keys the chip's X / Dismiss-all write;
  *   seen         { set, ids } for "new X" chips, which are hidden by marking
  *                ids seen instead (set ∈ teacherNotes | staffDocs |
- *                teacherEmailAlerts | invoices).
+ *                teacherEmailAlerts).
  * Interruptions contribute one entry per chip actually rendered.
  *
  * @param {Object} d    deriveAlertData output.
  * @param {Object} ctx  { isAlertDismissed, unassignedCount, unschedCount,
- *   uninvoicedRows, unattributedBands, isLessonChangeDismissed }
+ *   uninvoicedRows, unattributedBands }
  * @returns {Array}
  */
 export function buildAlertChips(d, ctx) {
-  const { isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows, unattributedBands, isLessonChangeDismissed } = ctx;
+  const { isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows, unattributedBands } = ctx;
   const on = (key) => !isAlertDismissed(key);
   const simple = (key, alertKey, condition) => ({ key, visible: !!condition && on(alertKey), dismissKeys: [alertKey], seen: null });
   const responseVisible = (list) => list.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).length > 0;
@@ -253,16 +242,13 @@ export function buildAlertChips(d, ctx) {
     chips.push({ key: `intr-school-${schoolId}`, visible: true, dismissKeys: intrKeys(intrs), seen: null });
   }
 
-  const lcIds = d.lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id);
   chips.push(
     simple("response-blue", "alert-response-blue", responseVisible(d.responseRequiredBlue)),
-    { key: "lesson-change", visible: lcIds.length > 0 && on("alert-lesson-change"), dismissKeys: ["alert-lesson-change"], seen: { set: "lessonChanges", ids: lcIds } },
     simple("pending", "alert-pending", d.pendingOnly > 0),
     simple("trial", "alert-trial", d.trialOnly > 0),
     seenChip("teacher-notes", "teacherNotes", d.newTeacherNotes.map(n => n.id)),
     seenChip("staff-docs", "staffDocs", d.newStaffDocs.map(doc => doc.id)),
     seenChip("teacher-email-alerts", "teacherEmailAlerts", d.newTeacherEmailAlerts.map(a => a.emailId)),
-    seenChip("invoices", "invoices", d.newInvoices.map(inv => inv.id)),
   );
   return chips;
 }
