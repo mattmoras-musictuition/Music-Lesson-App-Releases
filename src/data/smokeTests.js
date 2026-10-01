@@ -21,6 +21,7 @@ import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImp
 import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTests, runParentEmailStudentTests } from "./bandSessionViewSmokeTests";
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
 import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
+import { runDashboardAlertCharacterizationTests } from "./dashboardAlertsSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -339,6 +340,9 @@ export function runSmokeTests(logErrorFn) {
   runBandDisplayCharacterizationTests(assert);
   runBandDisplaySessionTests(assert);
   runWeeklyPresenceTests(assert);
+
+  // ── Dashboard alerts (v2.41.1) ──
+  runDashboardAlertCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

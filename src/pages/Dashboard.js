@@ -10,10 +10,11 @@ import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 import { useTheme } from "../context/ThemeContext";
 import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to12h, getCurrentWeekMonday, getTermWeekLabel, getParentEmails, studentMatchesParentEmail, openCompose, openGmailSequential, getInitials, getSchoolAcronym, timeToMin, toTimeLabel, _getMondayOf, getInterruptionAffectedStudents, formatSiblingMissedText, getLiveTeacherName } from "../utils/helpers";
-import { computeTermWeekNum, computeTermKey } from "../utils/tallyHelpers";
-import { getMissedSince, getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
+import { computeTermKey } from "../utils/tallyHelpers";
+import { getMissedSince } from "../utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
 import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup } from "../data/bandSessionView";
+import { deriveAlertData, panelAlertCounts, sidebarAlertCountFrom, dismissAllPlan } from "../data/dashboardAlerts";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -1613,90 +1614,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     inboxEmails.filter(e => !emailReadIds.has(e.id)).length,
   [inboxEmails, emailReadIds]);
 
-  const sidebarAlertCount = useMemo(() => {
-    const dismissed = (key) => !!alertDismissals?.dismissed?.[key];
-    const todayStr2 = melbourneToday();
-    const mon = getCurrentWeekMonday();
-    const currentWeekKey = toLocalDateStr(mon);
-    const nextWeekKey = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 7); return d; })());
-    const alertIntrEnd = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 14); return d; })());
-    const startOfToday = new Date(todayStr2 + "T00:00:00").getTime();
-    const startOfYesterday = startOfToday - 86400000;
-    const emailAgeMs2 = (e) => e.internalDate || (e.date ? new Date(e.date).getTime() : 0);
-
-    const incompleteCount = students.filter(s =>
-      s.status === "active" && (!s.schoolId || !s.className || !(s.parents || []).some(p => p.email || p.phone))
-    ).length;
-
-    const missedThisWeekCount = new Set(
-      getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })
-        .map(e => `${e.studentId}|${e.instrument}`)
-    ).size;
-
-    // Same shared offerable list as the alerts-panel chip (v2.39.0).
-    const catchupTotal = offerableTodayEntries.length;
-
-    const allRR = inboxEmails.filter(e => {
-      if (emailNoReplyOverrides.has(e.id)) return false;
-      const cached = emailSummaries[`${e.threadId || e.id}-${e.id}`];
-      if (!(typeof cached === "object" ? !!cached?.needsReply : false)) return false;
-      // Exclude emails already replied to
-      const msgs = e.threadMessages || [];
-      if (msgs.some(m => m.isSent)) return false;
-      // Replied-status unknown until the first sent fetch lands — suppress
-      if (!sentLoaded) return false;
-      const tid = e.threadId || e.id;
-      const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-      if (sentEmails.some(s => {
-        if (s.threadId && s.threadId === e.threadId) return true;
-        if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
-        return (s.threadId || s.id) === tid;
-      })) return false;
-      return true;
-    });
-    const rrRed = allRR.filter(e => emailAgeMs2(e) < startOfYesterday);
-    const rrYellow = allRR.filter(e => emailAgeMs2(e) >= startOfYesterday && emailAgeMs2(e) < startOfToday);
-    const rrBlue = allRR.filter(e => emailAgeMs2(e) >= startOfToday);
-
-    const pendingOnly = students.filter(s => s.status === "pending").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
-    const trialOnly = students.filter(s => s.status === "trial").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
-
-    const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr2 && i.date <= alertIntrEnd);
-
-    const lcKeywords = ["reschedul","change","swap","move","different time","different day","can't make","cannot make","won't be","will not be","away","absent","cancel","conflict","clash"];
-    const lcEmails = inboxEmails.filter(e => {
-      const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-      if (!students.some(s => studentMatchesParentEmail(s, addr))) return false;
-      const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
-      return lcKeywords.some(kw => text.includes(kw));
-    });
-
-    const upcomingAbsences = new Set(
-      getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })
-        .map(e => `${e.studentId || e.studentName}|${e.instrument}`)
-    ).size;
-
-    let count = 0;
-    if (unassignedCount > 0 && !dismissed("alert-unassigned")) count++;
-    if (unschedCount > 0 && !dismissed("alert-unscheduled")) count++;
-    if (incompleteCount > 0 && !dismissed("alert-incomplete")) count++;
-    if (missedThisWeekCount > 0 && !dismissed("alert-missed-week")) count++;
-    if (rrRed.length > 0 && !dismissed("alert-response-red")) count++;
-    if (rrYellow.length > 0 && !dismissed("alert-response-yellow")) count++;
-    if (rrBlue.length > 0 && !dismissed("alert-response-blue")) count++;
-    if (upcomingInterruptions.filter(i => !dismissed(`alert-interruption-${i.id}`)).length > 0) count++;
-    if (catchupTotal > 0 && !dismissed("alert-catchup")) count++;
-    if (pendingOnly > 0 && !dismissed("alert-pending")) count++;
-    if (trialOnly > 0 && !dismissed("alert-trial")) count++;
-    if (lcEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !dismissed("alert-lesson-change")) count++;
-    if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
-    if (unattributedBands.length > 0) count++;   // dismissal already applied
-    const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
-    const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
-    if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
-    return count;
+  const sidebarAlertCount = useMemo(() => sidebarAlertCountFrom({
+    alertDismissals, todayStr: melbourneToday(), monday: getCurrentWeekMonday(), students, enrolments, weeklyTimetables,
+    offerableTodayEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
+    interruptions, isLessonChangeDismissed, unattributedBands, groups, unassignedCount, unschedCount,
+  }),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, unattributedBands, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
+  [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, unattributedBands, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
 
   useEffect(() => {
     if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
@@ -3056,186 +2980,43 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
       {/* ── Emails / To Do / Alerts — unified banner card ── */}
       {(() => {
-        // Alerts data
-        const unassignedStudents = students.filter(s => s.status === "active" && studentHasUnplacedEnrolment(s));
-        // Unassigned group students — active/pending/trial students with a group instrument not yet placed in any group
-        const assignedGroupStudentIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
-        const unassignedGroupStudents = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupStudentIds.has(s.id));
-        const unassignedGroupCount = unassignedGroupStudents.length;
-        const unschedEntries = timetable ? timetable.unscheduled.filter(u => u.reason !== "Unassigned" && !archivedStudentIds.has(u.student?.id)) : [];
-        // Incomplete student profiles — missing school, class, or parent contact
-        const incompleteStudents = students.filter(s => {
-          if (s.status !== "active" && s.status !== "pending") return false;
-          const isPrivate = s.schoolId === "__private__";
-          const hasParent = (s.parents || []).some(p => (p.email || "").trim() || (p.phone || "").trim());
-          if (isPrivate) return !hasParent; // private students only need a parent contact
-          const hasSchool = !!s.schoolId;
-          const rawClass = (s.className || "").trim().toLowerCase();
-          const hasClass = !!rawClass && !/^class\s*(times?|info|information|schedule|details?)?$/i.test(rawClass);
-          return !hasSchool || !hasClass || !hasParent;
+        // Alerts data — derived in data/dashboardAlerts.js (v2.41.1).
+        const alertData = deriveAlertData({
+          students, groups, enrolments, timetable, archivedStudentIds, studentHasUnplacedEnrolment,
+          todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
+          interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
+          seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds, submittedInvoices, seenInvoiceIds,
+          teacherEmailAlerts, seenTeacherEmailAlertIds,
         });
-        // Response required — tiered by age: red (2+ days), yellow (1 day), blue (today)
-        const emailAgeMs = (e) => e.internalDate || (e.date ? new Date(e.date).getTime() : 0);
-        const startOfToday = new Date(todayStr + "T00:00:00").getTime();
-        const startOfYesterday = startOfToday - 86400000;
-        const allResponseRequired = inboxEmails.filter(e => {
-          if (emailNoReplyOverrides.has(e.id)) return false;
-          const cacheKey = `${e.threadId || e.id}-${e.id}`;
-          const cached = emailSummaries[cacheKey];
-          if (!(typeof cached === "object" ? !!cached?.needsReply : false)) return false;
-          // Exclude emails already replied to
-          const msgs = e.threadMessages || [];
-          if (msgs.some(m => m.isSent)) return false;
-          // Replied-status unknown until the first sent fetch lands — suppress
-          if (!sentLoaded) return false;
-          const tid = e.threadId || e.id;
-          const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-          if (sentEmails.some(s => {
-            if (s.threadId && s.threadId === e.threadId) return true;
-            if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
-            return (s.threadId || s.id) === tid;
-          })) return false;
-          return true;
+        const {
+          unassignedStudents, unassignedGroupStudents, unassignedGroupCount, unschedEntries, incompleteStudents,
+          responseRequiredRed, responseRequiredYellow, responseRequiredBlue, pendingOnly, trialOnly,
+          upcomingInterruptions, missedThisWeek, missedPriorSorted, catchupTotal,
+          lessonChangeEmails, upcomingAbsences, upcomingReminderAlerts,
+          newTeacherNotes, hasNewTeacherNotes, newStaffDocs, hasNewStaffDocs, newInvoices, hasNewInvoices,
+          newTeacherEmailAlerts, hasTeacherEmailAlerts,
+        } = alertData;
+        const { totalAlertsWithTeacherNotes } = panelAlertCounts(alertData, {
+          isAlertDismissed, unassignedCount, unschedCount, unattributedBands, pendingDismissed, trialDismissed, isLessonChangeDismissed,
         });
-        const responseRequiredRed = allResponseRequired.filter(e => emailAgeMs(e) < startOfYesterday);
-        const responseRequiredYellow = allResponseRequired.filter(e => emailAgeMs(e) >= startOfYesterday && emailAgeMs(e) < startOfToday);
-        const responseRequiredBlue = allResponseRequired.filter(e => emailAgeMs(e) >= startOfToday);
-        const pendingOnly = students.filter(s => s.status === "pending").reduce((sum, s) => sum + Math.max(1, instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).length), 0);
-        const trialOnly = students.filter(s => s.status === "trial").reduce((sum, s) => sum + Math.max(1, instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup).length), 0);
-        // Interruptions: today through next 14 days
-        const alertIntrEnd = toLocalDateStr((() => { const d = new Date(monday); d.setDate(d.getDate() + 14); return d; })());
-        const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr && i.date <= alertIntrEnd);
-        // Missed lessons: split this week (red) vs prior weeks (coral)
-        const currentWeekKey = toLocalDateStr(monday);
-        const nextWeekKey = toLocalDateStr((() => { const d = new Date(monday); d.setDate(d.getDate() + 7); return d; })());
-        const missedThisWeek = (() => {
-          const byStudent = {};
-          for (const e of getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })) {
-            const k = `${e.studentId}|${e.instrument}`;
-            if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: e.schoolId || "", count: 0 };
-            byStudent[k].count++;
-          }
-          return Object.values(byStudent);
-        })();
-        const missedPriorSorted = (() => {
-          // v2.39.0 — the shared offerable list (utils/catchupScope.js) for
-          // today's week, all schools; same set as the sidebar badge.
-          const byKey = {};
-          for (const e of offerableTodayEntries) {
-            const k = `${e.studentId}|${e.instrument}`;
-            if (!byKey[k]) {
-              const st = students.find(s => s.id === e.studentId);
-              byKey[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, schoolId: st?.schoolId || e.schoolId || "", count: 0 };
-            }
-            byKey[k].count++;
-          }
-          return Object.values(byKey).sort((a, b) => b.count - a.count);
-        })();
-        // Catch-ups: total lessons owed, tooltip grouped by student name
-        const catchupTotal = missedPriorSorted.reduce((sum, m) => sum + m.count, 0);
-        const catchupByStudent = {};
-        for (const m of missedPriorSorted) {
-          catchupByStudent[m.studentName] = (catchupByStudent[m.studentName] || 0) + m.count;
-        }
-        const catchupTooltipLines = Object.entries(catchupByStudent)
-          .sort((a, b) => b[1] - a[1])
-          .map(([name, count]) => `${name} — ${count} owed`);
-        // Lesson-change emails: inbox emails from known parents that mention schedule/time keywords
-        const lessonChangeKeywords = ["reschedul", "change", "swap", "move", "different time", "different day", "can't make", "cannot make", "won't be", "will not be", "away", "absent", "cancel", "conflict", "clash"];
-        const lessonChangeEmails = inboxEmails.filter(e => {
-          const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-          const isParent = students.some(s => studentMatchesParentEmail(s, addr));
-          if (!isParent) return false;
-          const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
-          return lessonChangeKeywords.some(kw => text.includes(kw));
-        });
-        // Upcoming absences: informed_absence entries for NEXT week (alert fires the week before)
-        const upcomingAbsences = (() => {
-          // weekLabel is absent on WTT.missed; the || nextWeekKey fallback always resolves
-          // to nextWeekKey post-migration (audit-acknowledged degradation).
-          const byStudent = {};
-          for (const e of getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })) {
-            const k = `${e.studentId || e.studentName}|${e.instrument}`;
-            if (!byStudent[k]) byStudent[k] = { studentId: e.studentId, studentName: e.studentName, instrument: e.instrument, weekLabel: e.weekLabel || nextWeekKey, count: 0 };
-            byStudent[k].count++;
-          }
-          return Object.values(byStudent);
-        })();
-        // Reminder alerts — reminders whose event week fires an alert the week before
-        const termBreaksForAlerts = interruptions.filter(i => i.type === "term_break").sort((a,b) => a.date.localeCompare(b.date));
-        const currentTermWeekNum = computeTermWeekNum(currentWeekKey, termBreaksForAlerts);
-        const upcomingReminderAlerts = currentTermWeekNum
-          ? sortedReminders.filter(r => r.week && parseInt(r.week) - 1 === currentTermWeekNum)
-          : [];
-        const warningCount = (unassignedCount > 0 && !isAlertDismissed("alert-unassigned") ? 1 : 0) + (unschedCount > 0 && !isAlertDismissed("alert-unscheduled") ? 1 : 0) + (incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") ? 1 : 0) + (missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") ? 1 : 0) + (responseRequiredRed.length > 0 && !isAlertDismissed("alert-response-red") ? 1 : 0);
-        const totalAlerts = warningCount
-          + (responseRequiredYellow.length > 0 && !isAlertDismissed("alert-response-yellow") ? 1 : 0)
-          + (responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") ? 1 : 0)
-          + (upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`)).length > 0 ? 1 : 0)
-          + (catchupTotal > 0 && !isAlertDismissed("alert-catchup") ? 1 : 0)
-          + (unattributedBands.length > 0 ? 1 : 0)
-          + (pendingOnly > 0 && !pendingDismissed ? 1 : 0)
-          + (trialOnly > 0 && !trialDismissed ? 1 : 0)
-          + (lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
-          + (upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") ? 1 : 0)
-          + (unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") ? 1 : 0)
-          + (upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") ? 1 : 0);
-        // Teacher notes alert
-        const newTeacherNotes = students.flatMap(s =>
-          (s.teacher_notes || []).map(n => ({ ...n, studentId: s.id, studentName: s.name }))
-        ).filter(n => !seenTeacherNoteIds.has(n.id));
-        const hasNewTeacherNotes = newTeacherNotes.length > 0;
-        // Staff document uploads
-        const newStaffDocs = staffUploadedDocs.filter(d => !seenStaffDocIds.has(d.id));
-        const hasNewStaffDocs = newStaffDocs.length > 0;
-        // Invoice alerts — submitted invoices not yet seen
-        const newInvoices = submittedInvoices.filter(inv => !seenInvoiceIds.has(inv.id));
-        const hasNewInvoices = newInvoices.length > 0;
-        // Classroom/specialist teacher email alerts
-        const newTeacherEmailAlerts = Object.values(teacherEmailAlerts)
-          .filter(a => a.type !== "other" && a.summary && !seenTeacherEmailAlertIds.has(a.emailId));
-        const hasTeacherEmailAlerts = newTeacherEmailAlerts.length > 0;
-        const totalAlertsWithTeacherNotes = totalAlerts + (hasNewTeacherNotes ? 1 : 0) + (hasNewStaffDocs ? 1 : 0) + (hasNewInvoices ? 1 : 0) + (hasTeacherEmailAlerts ? 1 : 0);
 
         const bothOpen = dashPanels.emails && dashPanels.todo;
         const anyPanelOpen = dashPanels.emails || dashPanels.todo || dashPanels.alerts;
         const togglePanel = (key) => saveDashPanels({ ...dashPanels, [key]: !dashPanels[key] });
         const dismissAllActive = () => {
-          const keys = {};
-          if (unassignedCount > 0) keys["alert-unassigned"] = true;
-          if (unschedCount > 0) keys["alert-unscheduled"] = true;
-          if (incompleteStudents.length > 0) keys["alert-incomplete"] = true;
-          if (missedThisWeek.length > 0) keys["alert-missed-week"] = true;
-          if (responseRequiredRed.length > 0) keys["alert-response-red"] = true;
-          if (responseRequiredYellow.length > 0) keys["alert-response-yellow"] = true;
-          if (responseRequiredBlue.length > 0) keys["alert-response-blue"] = true;
-          upcomingInterruptions.forEach(intr => { keys[`alert-interruption-${intr.id}`] = true; });
-          if (catchupTotal > 0) keys["alert-catchup"] = true;
-          if (pendingOnly > 0) keys["alert-pending"] = true;
-          if (trialOnly > 0) keys["alert-trial"] = true;
-          if (lessonChangeEmails.length > 0) keys["alert-lesson-change"] = true;
-          if (upcomingAbsences.length > 0) keys["alert-upcoming-absences"] = true;
-          if (unassignedGroupCount > 0) keys["alert-unassigned-groups"] = true;
-          if (upcomingReminderAlerts.length > 0) keys["alert-reminder-upcoming"] = true;
-          // v2.18.0 — uninvoiced-students chip: alertDismissals hide ONLY.
-          // Deliberately does NOT write the per-student permanent dismissal
-          // set — a money warning must not be bulk-silenced.
-          if (uninvoicedAlert.rows.length > 0) keys["alert-uninvoiced"] = true;
-          const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...keys } };
+          const plan = dismissAllPlan(alertData, { unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, isLessonChangeDismissed });
+          const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...plan.keys } };
           setAlertDismissals(next);
           try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
           // Lesson-change emails live in their own persistent store (no midnight reset),
           // so route them through the dedicated bulk helper to preserve global Dismiss-all coverage.
-          const visibleLessonChangeIds = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id);
-          if (visibleLessonChangeIds.length > 0) dismissLessonChangesBulk(visibleLessonChangeIds);
+          if (plan.lessonChangeIds.length > 0) dismissLessonChangesBulk(plan.lessonChangeIds);
           // Seen-set chips ("new X" alerts) don't read alertDismissals at all —
-          // hide each the same way its own dismiss X does, by marking its ids
-          // seen. NOTE: this handler enumerates chips by hand; any future chip
-          // must be added here too, or Dismiss-all will skip it.
-          if (newTeacherNotes.length > 0) dismissAllTeacherNoteAlerts(newTeacherNotes.map(n => n.id));
-          if (newStaffDocs.length > 0) dismissAllStaffDocAlerts(newStaffDocs.map(d => d.id));
-          if (newTeacherEmailAlerts.length > 0) dismissAllTeacherEmailAlerts(newTeacherEmailAlerts.map(a => a.emailId));
-          if (newInvoices.length > 0) dismissAllInvoiceAlerts(newInvoices.map(inv => inv.id));
+          // hide each the same way its own dismiss X does, by marking its ids seen.
+          if (plan.teacherNoteIds.length > 0) dismissAllTeacherNoteAlerts(plan.teacherNoteIds);
+          if (plan.staffDocIds.length > 0) dismissAllStaffDocAlerts(plan.staffDocIds);
+          if (plan.teacherEmailAlertIds.length > 0) dismissAllTeacherEmailAlerts(plan.teacherEmailAlertIds);
+          if (plan.invoiceIds.length > 0) dismissAllInvoiceAlerts(plan.invoiceIds);
         };
 
         const CATEGORY_FILTERS = [
