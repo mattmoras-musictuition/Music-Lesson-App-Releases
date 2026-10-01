@@ -8,6 +8,7 @@ import { BAND_LINK_CATEGORIES, BAND_COLOR, BAND_INSTRUMENTS } from "../constants
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { applyBandSave, applyBandDelete } from "../utils/bandsSync";
 import { Card, PageTitle, NavButtons, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ResourcePicker } from "../components/ResourcePicker";
@@ -47,13 +48,13 @@ export function BandsManager({ bands, setBands, schools, students, enrolments, t
 
   const saveBand = () => {
     if (!form.schoolId) { notify("Select a school", "warning"); return; }
-    if (editing === "new") setBands(prev => [...prev, form]);
-    else setBands(prev => prev.map(b => b.id === form.id ? form : b));
+    const isNew = editing === "new";
+    setBands(prev => applyBandSave(prev, form, isNew));
     setForm(null); setEditing(null);
     notify("Band saved!");
   };
 
-  const deleteBand = (id) => { setBands(prev => prev.filter(b => b.id !== id)); notify("Band removed"); };
+  const deleteBand = (id) => { setBands(prev => applyBandDelete(prev, id)); notify("Band removed"); };
 
   const addMember = (student) => {
     if (!form || form.members.some(m => m.studentId === student.id)) return;

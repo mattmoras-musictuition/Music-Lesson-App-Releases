@@ -22,6 +22,7 @@ import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTe
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
 import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
 import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
+import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -343,6 +344,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Dashboard alerts (v2.41.1) ──
   runDashboardAlertTests(assert);
+
+  // ── Bands sync (v2.41.2) ──
+  runBandsSyncCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

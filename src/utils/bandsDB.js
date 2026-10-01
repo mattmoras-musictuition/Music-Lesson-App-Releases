@@ -3,38 +3,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
-
-function rowToBand(row) {
-  return {
-    id:                row.id,
-    name:              row.name               || "",
-    schoolId:          row.school_id          || "",
-    teacherId:         row.teacher_id         || "",
-    teacherInstrument: row.teacher_instrument || "",
-    // Cosmetic personnel list [{teacherId, instrument}] — display-only,
-    // replaces the legacy teacher_id+teacher_instrument pair for admin logic.
-    // The legacy columns are still mapped because the teacher app writes them.
-    personnel:         row.personnel          || [],
-    members:           row.members            || [],
-    links:             row.links              || [],
-    notes:             row.notes              || "",
-  };
-}
-
-function bandToRow(band, userId) {
-  return {
-    id:                 band.id,
-    user_id:            userId,
-    name:               band.name               || "",
-    school_id:          band.schoolId           || "",
-    teacher_id:         band.teacherId          || "",
-    teacher_instrument: band.teacherInstrument  || "",
-    personnel:          band.personnel          || [],
-    members:            band.members            || [],
-    links:              band.links              || [],
-    notes:              band.notes              || "",
-  };
-}
+import { rowToBand, planWholeListSync } from "./bandsSync";
 
 export async function loadBandsFromSupabase() {
   const { data, error } = await supabase
@@ -46,19 +15,18 @@ export async function loadBandsFromSupabase() {
 }
 
 export async function syncBandsToSupabase(bands, userId) {
-  if (!userId) return;
-  const rows = bands.map(b => bandToRow(b, userId));
+  const plan = planWholeListSync(bands, userId);
+  if (!plan) return;
   const { error: upsertError } = await supabase
     .from("bands")
-    .upsert(rows, { onConflict: "id" });
+    .upsert(plan.upsertRows, { onConflict: "id" });
   if (upsertError) throw new Error(upsertError.message);
 
-  const currentIds = bands.map(b => b.id);
-  if (currentIds.length === 0) return;
+  if (!plan.deleteSweep) return;
   const { error: deleteError } = await supabase
     .from("bands")
     .delete()
-    .eq("user_id", userId)
-    .not("id", "in", `(${currentIds.join(",")})`);
+    .eq("user_id", plan.deleteSweep.ownedBy)
+    .not("id", "in", `(${plan.deleteSweep.keepIds.join(",")})`);
   if (deleteError) throw new Error(deleteError.message);
 }
