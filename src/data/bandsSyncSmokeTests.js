@@ -6,7 +6,7 @@
 // upsert + sweep with per-row writes: only the saved band is upserted.
 // ============================================================
 
-import { rowToBand, bandToRow, applyBandSave, applyBandDelete, planBandUpsert } from "../utils/bandsSync";
+import { rowToBand, bandToRow, applyBandSave, applyBandDelete, planBandUpsert, reconcileBands, isStaleBandsRefresh } from "../utils/bandsSync";
 
 const ADMIN = "daf539a2-ec67-45e5-8533-a3a5beb5b9e5";
 const TEACHER = "teacher-user-uuid";
@@ -52,4 +52,41 @@ export function runBandsSyncCharacterizationTests(assert) {
     planBandUpsert(band("b", { name: "B2" }), ADMIN), bandToRow(band("b", { name: "B2" }), ADMIN));
   assert("bandsSync: per-row plan re-owns a teacher-created band",
     planBandUpsert(rowToBand(row), ADMIN).user_id, ADMIN);
+
+  // ── Refresh reconcile (v2.41.2 freshness) ──
+  const local = [band("a"), band("b", { name: "admin-old" }), band("c")];
+  const ids = (l) => l.map(b => b.id + ":" + b.name).join(",");
+  assert("bandsSync: refresh — server wins for untouched rows (teacher edit appears)",
+    ids(reconcileBands(local, [band("a"), band("b", { name: "teacher-edit" }), band("c")])), "a:a,b:teacher-edit,c:c");
+  assert("bandsSync: refresh — teacher-created band appears",
+    ids(reconcileBands(local, [band("a"), band("b", { name: "admin-old" }), band("c"), band("t", { name: "teacher-new" })])), "a:a,b:admin-old,c:c,t:teacher-new");
+  assert("bandsSync: refresh — band deleted elsewhere is dropped",
+    ids(reconcileBands(local, [band("a"), band("c")])), "a:a,c:c");
+  assert("bandsSync: refresh — in-flight save wins over the server copy",
+    ids(reconcileBands(local, [band("a"), band("b", { name: "server" }), band("c")],
+      { pendingSaves: new Map([["b", band("b", { name: "admin-saving" })]]) })), "a:a,b:admin-saving,c:c");
+  assert("bandsSync: refresh — in-flight NEW band kept though not on server yet",
+    ids(reconcileBands([...local, band("n", { name: "new" })], [band("a"), band("b", { name: "admin-old" }), band("c")],
+      { pendingSaves: new Map([["n", band("n", { name: "new" })]]) })), "a:a,b:admin-old,c:c,n:new");
+  assert("bandsSync: refresh — in-flight delete is NOT resurrected",
+    ids(reconcileBands([band("a"), band("c")], [band("a"), band("b", { name: "admin-old" }), band("c")],
+      { pendingDeletes: new Set(["b"]) })), "a:a,c:c");
+  assert("bandsSync: refresh — delete wins over a save pending for the same id",
+    ids(reconcileBands([band("a")], [band("a"), band("b")],
+      { pendingSaves: new Map([["b", band("b")]]), pendingDeletes: new Set(["b"]) })), "a:a");
+  assert("bandsSync: refresh — empty server list keeps memory", reconcileBands(local, []) === local, true);
+  assert("bandsSync: refresh — failed/absent server list keeps memory", reconcileBands(local, null) === local, true);
+  const same = reconcileBands(local, [band("a"), band("b", { name: "admin-old" }), band("c")]);
+  assert("bandsSync: refresh — nothing new returns the same list (no re-render)", same === local, true);
+  const one = reconcileBands(local, [band("a"), band("b", { name: "x" }), band("c")]);
+  assert("bandsSync: refresh — unchanged rows keep their objects", one[0] === local[0] && one[2] === local[2] && one[1] !== local[1], true);
+  assert("bandsSync: refresh — inputs not mutated", ids(local), "a:a,b:admin-old,c:c");
+
+  // ── Stale refresh guard ──
+  assert("bandsSync: refresh applies when nothing happened since it started",
+    isStaleBandsRefresh({ refreshSeq: 3, latestRefreshSeq: 3, writeSeqAtStart: 5, writeSeqNow: 5 }), false);
+  assert("bandsSync: refresh ignored when a newer refresh started",
+    isStaleBandsRefresh({ refreshSeq: 3, latestRefreshSeq: 4, writeSeqAtStart: 5, writeSeqNow: 5 }), true);
+  assert("bandsSync: refresh ignored when a write started after it",
+    isStaleBandsRefresh({ refreshSeq: 3, latestRefreshSeq: 3, writeSeqAtStart: 5, writeSeqNow: 6 }), true);
 }

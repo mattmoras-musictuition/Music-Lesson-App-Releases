@@ -30,7 +30,7 @@ import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
 import { loadBandsFromSupabase, upsertBandToSupabase, deleteBandFromSupabase } from "./utils/bandsDB";
-import { applyBandSave, applyBandDelete } from "./utils/bandsSync";
+import { applyBandSave, applyBandDelete, reconcileBands, isStaleBandsRefresh } from "./utils/bandsSync";
 import { loadResourcesFromSupabase } from "./utils/resourcesDB";
 import { signedUrlFor, BUCKET_VOICE_NOTES } from "./utils/storageHelpers";
 import { loadDocumentsFromSupabase, syncDocumentsToSupabase } from "./utils/documentsDB";
@@ -2328,18 +2328,59 @@ export default function MusicTimetableApp() {
   // teacher edits and swept rows it had not loaded. This effect only keeps
   // the localStorage cache fresh for offline load.
   useEffect(() => { if (storageReady.current) { saveData(STORAGE_KEYS.bands, bands); } }, [bands]);
+  // In-flight band writes, so a refresh landing mid-write neither reverts an
+  // edit nor resurrects a deleted band (reconcileBands). A save stays pending
+  // if it fails, so the admin's edit isn't silently replaced by the server
+  // copy; a delete is cleared either way (a failed delete means the band
+  // still exists, so the next refresh shows it again).
+  const pendingBandSaves = useRef(new Map());
+  const pendingBandDeletes = useRef(new Set());
+  const bandsWriteSeq = useRef(0);
+  const bandsRefreshSeq = useRef(0);
   const writeBand = (band) => {
     if (isDev) return;
     if (!sessionUserId) { console.warn("[sync] Bands — no Supabase session"); return; }
-    upsertBandToSupabase(band, sessionUserId).catch(err => logError("Bands Supabase sync failed", err.message));
+    bandsWriteSeq.current++;
+    pendingBandSaves.current.set(band.id, band);
+    upsertBandToSupabase(band, sessionUserId)
+      .then(() => { if (pendingBandSaves.current.get(band.id) === band) pendingBandSaves.current.delete(band.id); })
+      .catch(err => logError("Bands Supabase sync failed", err.message));
   };
   const handleSaveBand = (band, isNew) => { setBands(prev => applyBandSave(prev, band, isNew)); writeBand(band); };
   const handleDeleteBand = (id) => {
     setBands(prev => applyBandDelete(prev, id));
     if (isDev) return;
     if (!sessionUserId) { console.warn("[sync] Bands — no Supabase session"); return; }
-    deleteBandFromSupabase(id).catch(err => logError("Bands Supabase sync failed", err.message));
+    bandsWriteSeq.current++;
+    pendingBandSaves.current.delete(id);
+    pendingBandDeletes.current.add(id);
+    deleteBandFromSupabase(id)
+      .catch(err => logError("Bands Supabase sync failed", err.message))
+      .finally(() => pendingBandDeletes.current.delete(id));
   };
+  // Freshness (v2.41.2): reload bands when the Bands page opens and when the
+  // window regains focus. Reassigned every render so it always reads the
+  // current session — no mount-time capture (the Dashboard never-remounts
+  // lesson). Skipped in dev, where writes never reach Supabase and a server
+  // merge would discard local edits.
+  const refreshBandsRef = useRef(null);
+  refreshBandsRef.current = () => {
+    if (isDev || !sessionUserId || !storageReady.current) return;
+    const refreshSeq = ++bandsRefreshSeq.current;
+    const writeSeqAtStart = bandsWriteSeq.current;
+    loadBandsFromSupabase()
+      .then(server => {
+        if (isStaleBandsRefresh({ refreshSeq, latestRefreshSeq: bandsRefreshSeq.current, writeSeqAtStart, writeSeqNow: bandsWriteSeq.current })) return;
+        setBands(prev => reconcileBands(prev, server, { pendingSaves: pendingBandSaves.current, pendingDeletes: pendingBandDeletes.current }));
+      })
+      .catch(err => logError("Failed to refresh bands from Supabase", err.message));
+  };
+  useEffect(() => { if (page === "bands") refreshBandsRef.current(); }, [page]);
+  useEffect(() => {
+    const onFocus = () => refreshBandsRef.current();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
   // Resources are a SHARED pool persisted per-row at each mutation site
   // (see resourcesDB insert/update/delete); the old destructive whole-list
   // sync was removed so one app can't delete rows the other created. This
