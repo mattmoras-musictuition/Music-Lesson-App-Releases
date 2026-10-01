@@ -6,7 +6,9 @@
 // 2099 and today/Monday are passed in, so the real clock never matters.
 // ============================================================
 
-import { deriveAlertData, panelAlertCounts, sidebarAlertCountFrom, dismissAllPlan } from "./dashboardAlerts";
+import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan } from "./dashboardAlerts";
+import { undismissedBandIds } from "./bandSessionView";
+import { computeTermWeekNum } from "../utils/tallyHelpers";
 
 const TODAY = "2099-03-12";                       // a Thursday
 const MONDAY = new Date(2099, 2, 9);              // local Monday of TODAY's week
@@ -48,50 +50,118 @@ export function ownerCase(overrides = {}) {
   };
 }
 
-// Today's two counts and Dismiss-all, exactly as Dashboard wires them.
-function todayCounts(c) {
+// The chip list, the badge count (both badges) and Dismiss-all, exactly as
+// Dashboard wires them.
+function model(c) {
   const isAlertDismissed = (k) => !!c.dismissed[k];
   const isLessonChangeDismissed = (id) => !!c.lessonChangeDismissed[id];
   const d = deriveAlertData(c);
-  const panel = panelAlertCounts(d, {
-    isAlertDismissed, unassignedCount: c.unassignedCount, unschedCount: c.unschedCount, unattributedBands: c.unattributedBands,
-    pendingDismissed: isAlertDismissed("alert-pending"), trialDismissed: isAlertDismissed("alert-trial"), isLessonChangeDismissed,
-  }).totalAlertsWithTeacherNotes;
-  const sidebar = sidebarAlertCountFrom({ ...c, alertDismissals: { dismissed: c.dismissed }, isLessonChangeDismissed });
-  const plan = dismissAllPlan(d, { unassignedCount: c.unassignedCount, unschedCount: c.unschedCount, uninvoicedRows: c.uninvoicedRows, isLessonChangeDismissed });
-  return { d, panel, sidebar, plan };
+  const chips = buildAlertChips(d, {
+    isAlertDismissed, unassignedCount: c.unassignedCount, unschedCount: c.unschedCount,
+    uninvoicedRows: c.uninvoicedRows, unattributedBands: c.unattributedBands, isLessonChangeDismissed,
+  });
+  return { d, chips, count: visibleChipCount(chips), visible: chips.filter(x => x.visible).map(x => x.key), plan: dismissAllPlan(chips) };
 }
 
-export function runDashboardAlertCharacterizationTests(assert) {
-  const { d, panel, sidebar, plan } = todayCounts(ownerCase());
-  assert("alerts (pre-1.1): owner case derives all eight chips' data",
-    [d.unassignedGroupCount, d.incompleteStudents.length, d.responseRequiredRed.length, d.catchupTotal, d.lessonChangeEmails.length, d.pendingOnly, d.newInvoices.length],
+// Apply a Dismiss-all plan the way Dashboard does: alertDismissals keys, then
+// each seen set / the lesson-change store.
+function applyPlan(c, plan) {
+  const mark = (set, ids) => new Set([...set, ...(ids || [])]);
+  const dismissed = { ...c.dismissed, ...plan.keys };
+  // Dashboard recomputes the band list from alertDismissals (unattributedBandsForAlert).
+  const keepBands = new Set(undismissedBandIds((c.unattributedBands || []).map(b => b.bandLessonId), dismissed));
+  return {
+    ...c,
+    dismissed,
+    unattributedBands: (c.unattributedBands || []).filter(b => keepBands.has(b.bandLessonId)),
+    lessonChangeDismissed: { ...c.lessonChangeDismissed, ...Object.fromEntries((plan.seen.lessonChanges || []).map(id => [id, true])) },
+    seenTeacherNoteIds: mark(c.seenTeacherNoteIds, plan.seen.teacherNotes),
+    seenStaffDocIds: mark(c.seenStaffDocIds, plan.seen.staffDocs),
+    seenTeacherEmailAlertIds: mark(c.seenTeacherEmailAlertIds, plan.seen.teacherEmailAlerts),
+    seenInvoiceIds: mark(c.seenInvoiceIds, plan.seen.invoices),
+  };
+}
+
+// v2.41.1 commit 2 changed these assertions from the commit-1 pins, on purpose:
+//   • owner case: sidebar 6 / button 7 → both 8 (= the 8 visible chips);
+//   • uninvoiced: counted by neither → counted (it is a visible chip);
+//   • invoices received: button only → both;
+//   • incomplete profiles: two definitions → the chip's one, for both;
+//   • per-email response dismissal: still counted → hides AND uncounts;
+//   • Dismiss-all: no band key → every visible chip, band included.
+export function runDashboardAlertTests(assert) {
+  const owner = model(ownerCase());
+  assert("alerts: owner case derives all eight chips' data",
+    [owner.d.unassignedGroupCount, owner.d.incompleteStudents.length, owner.d.responseRequiredRed.length, owner.d.catchupTotal, owner.d.lessonChangeEmails.length, owner.d.pendingOnly, owner.d.newInvoices.length],
     [2, 2, 1, 1, 1, 1, 2]);
-  assert("alerts (pre-1.1): owner case — sidebar 6, Alerts button 7", [sidebar, panel], [6, 7]);
-  const noUninv = todayCounts(ownerCase({ uninvoicedRows: [] }));
-  assert("alerts (pre-1.1): uninvoiced is counted by neither badge", [noUninv.sidebar, noUninv.panel], [sidebar, panel]);
-  const noInv = todayCounts(ownerCase({ submittedInvoices: [] }));
-  assert("alerts (pre-1.1): invoices received counts on the button only", [noInv.sidebar, noInv.panel], [6, 6]);
+  assert("alerts: owner case — the eight visible chips in banner order", owner.visible,
+    ["ungrouped", "incomplete", "uninvoiced", "response-red", "catchup", "lesson-change", "pending", "invoices"]);
+  assert("alerts: owner case — both badges 8 (was sidebar 6, button 7)", owner.count, 8);
+  assert("alerts: uninvoiced is counted (was neither)", model(ownerCase({ uninvoicedRows: [] })).count, 7);
+  assert("alerts: invoices received counts on both (was button only)", model(ownerCase({ submittedInvoices: [] })).count, 7);
 
-  // Incomplete-profile divergence: the panel also counts pending students and
-  // placeholder class names; the sidebar counts active students missing a field.
-  const div = ownerCase({ students: [complete("pp", { status: "pending", className: "" }), complete("ct", { className: "Class times" })] , enrolments: [], inboxEmails: [], offerableTodayEntries: [], submittedInvoices: [] });
-  const dv = todayCounts(div);
-  assert("alerts (pre-1.1): incomplete definitions differ (chip 2 students, sidebar none)",
-    [dv.d.incompleteStudents.map(s => s.id), dv.sidebar, dv.panel], [["pp", "ct"], 1, 2]);
+  const div = model(ownerCase({ students: [complete("pp", { status: "pending", className: "" }), complete("ct", { className: "Class times" })], enrolments: [], inboxEmails: [], offerableTodayEntries: [], submittedInvoices: [], uninvoicedRows: [] }));
+  assert("alerts: incomplete uses the chip's definition for both badges",
+    [div.d.incompleteStudents.map(x => x.id), div.visible, div.count], [["pp", "ct"], ["incomplete", "pending"], 2]);
 
-  // Per-email dismissal hides the response chip but both counts ignore it.
-  const pe = todayCounts(ownerCase({ dismissed: { "alert-response-email-r1": true } }));
-  assert("alerts (pre-1.1): per-email response dismissal still counted", [pe.sidebar, pe.panel], [6, 7]);
+  const pe = model(ownerCase({ dismissed: { "alert-response-email-r1": true } }));
+  assert("alerts: per-email response dismissal hides and uncounts (was still counted)",
+    [pe.visible.includes("response-red"), pe.count], [false, 7]);
 
-  // Dismiss-all key list.
-  const withBand = todayCounts(ownerCase({ unattributedBands: [{ bandLessonId: "b1" }] }));
-  assert("alerts (pre-1.1): band chip counts on both badges", [withBand.sidebar, withBand.panel], [7, 8]);
-  assert("alerts (pre-1.1): Dismiss-all has no band key",
-    Object.keys(withBand.plan.keys).some(k => k.startsWith("alert-unattributed-bands")), false);
-  assert("alerts (pre-1.1): Dismiss-all keys for the owner case",
-    Object.keys(plan.keys).sort(),
-    ["alert-catchup", "alert-incomplete", "alert-lesson-change", "alert-pending", "alert-response-red", "alert-unassigned-groups", "alert-uninvoiced"]);
-  assert("alerts (pre-1.1): Dismiss-all seen-set and lesson-change ids",
-    [plan.lessonChangeIds, plan.invoiceIds], [["lc1"], ["inv1", "inv2"]]);
+  // Every chip type: visible → counted, dismissed → not.
+  const bare = ownerCase({ students: [], enrolments: [], inboxEmails: [], offerableTodayEntries: [], submittedInvoices: [], uninvoicedRows: [] });
+  assert("alerts: nothing to show → no chips", model(bare).count, 0);
+  const one = (label, overrides, key, dismissKey) => {
+    const m = model({ ...bare, ...overrides });
+    assert(`alerts: ${label} visible → counted`, [m.visible, m.count], [[key], 1]);
+    if (dismissKey) {
+      const dm = model({ ...bare, ...overrides, dismissed: { [dismissKey]: true } });
+      assert(`alerts: ${label} dismissed → hidden and uncounted`, dm.count, 0);
+    }
+  };
+  one("unassigned", { unassignedCount: 1 }, "unassigned", "alert-unassigned");
+  one("unscheduled", { unschedCount: 1 }, "unscheduled", "alert-unscheduled");
+  one("uninvoiced", { uninvoicedRows: [{ studentId: "u" }] }, "uninvoiced", "alert-uninvoiced");
+  one("catch-ups owed", { offerableTodayEntries: [{ studentId: "c", studentName: "C", instrument: "Gtr" }] }, "catchup", "alert-catchup");
+  one("band attributions", { unattributedBands: [{ bandLessonId: "b1" }] }, "band-attributions", null);
+  const remBreaks = [{ type: "term_break", date: "2099-01-01", endDate: "2099-02-01" }];
+  const remWeek = computeTermWeekNum("2099-03-09", remBreaks);
+  assert("alerts: reminder fixture sits in a term week", typeof remWeek === "number" && remWeek > 0, true);
+  one("reminders next week", { sortedReminders: [{ id: "r", week: String(remWeek + 1), text: "x" }], interruptions: remBreaks }, "reminder-upcoming", "alert-reminder-upcoming");
+  one("missed this week", { weeklyTimetables: { "2099-03-09|S": { lessons: [], missed: [{ studentId: "m", studentName: "M", instrument: "Gtr", day: "Monday", reason: "uninformed_absence" }] } } }, "missed-week", "alert-missed-week");
+  one("trial", { students: [complete("t", { status: "trial" })] }, "trial", "alert-trial");
+  one("teacher notes (seen-set, now on the sidebar too)", { students: [complete("tn", { teacher_notes: [{ id: "n1" }] })] }, "teacher-notes", null);
+  one("staff uploads", { staffUploadedDocs: [{ id: "doc1" }] }, "staff-docs", null);
+  one("teacher email alerts", { teacherEmailAlerts: { e1: { emailId: "e1", type: "absence", summary: "Away" } } }, "teacher-email-alerts", null);
+  assert("alerts: a seen-set chip is hidden by its seen set",
+    model({ ...bare, staffUploadedDocs: [{ id: "doc1" }], seenStaffDocIds: new Set(["doc1"]) }).count, 0);
+
+  // Interruptions: one entry per chip actually rendered.
+  const intr = (id, type, schoolId, title = "Event") => ({ id, type, schoolId, title, date: "2099-03-16" });
+  const im = model({ ...bare, interruptions: [
+    intr("ph1", "public_holiday"), intr("ph2", "public_holiday"),
+    intr("cd1", "curriculum_day", "A"),
+    intr("a1", "excursion", "A"), intr("b1", "excursion", "B"), intr("b2", "excursion", "B"),
+  ] });
+  assert("alerts: interruptions — PH group, curriculum days, school A, school B = 4 chips",
+    [im.visible, im.count], [["intr-public-holidays", "intr-curriculum-days", "intr-school-A", "intr-school-B"], 4]);
+  const im2 = model({ ...bare, interruptions: [intr("ph1", "public_holiday"), intr("b1", "excursion", "B")], dismissed: { "alert-interruption-b1": true } });
+  assert("alerts: a dismissed interruption's chip goes", im2.visible, ["intr-public-holidays"]);
+
+  // Dismiss all: every visible chip, band included, each through its own store.
+  const busy = ownerCase({
+    unattributedBands: [{ bandLessonId: "b1" }], staffUploadedDocs: [{ id: "doc1" }],
+    students: [...ownerCase().students, complete("tn", { teacher_notes: [{ id: "n1" }] })],
+    interruptions: [intr("ph1", "public_holiday")],
+  });
+  const bm = model(busy);
+  assert("alerts: busy screen count", bm.count, 12);
+  assert("alerts: Dismiss-all includes the band chip's key (was missing)",
+    Object.keys(bm.plan.keys).some(k => k.startsWith("alert-unattributed-bands|")), true);
+  assert("alerts: Dismiss-all seen ids per store",
+    [bm.plan.seen.lessonChanges, bm.plan.seen.invoices, bm.plan.seen.staffDocs, bm.plan.seen.teacherNotes], [["lc1"], ["inv1", "inv2"], ["doc1"], ["n1"]]);
+  assert("alerts: Dismiss-all doesn't write the per-student uninvoiced set (key only)",
+    Object.keys(bm.plan.keys).includes("alert-uninvoiced") && !bm.plan.seen.uninvoiced, true);
+  const after = model(applyPlan(busy, bm.plan));
+  assert("alerts: after Dismiss-all, no chips and both badges 0", [after.visible, after.count], [[], 0]);
 }

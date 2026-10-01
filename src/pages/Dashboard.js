@@ -14,7 +14,7 @@ import { computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince } from "../utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
 import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup } from "../data/bandSessionView";
-import { deriveAlertData, panelAlertCounts, sidebarAlertCountFrom, dismissAllPlan } from "../data/dashboardAlerts";
+import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan, groupInterruptions } from "../data/dashboardAlerts";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -1520,8 +1520,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
   };
   const isAlertDismissed = (key) => !!alertDismissals.dismissed[key];
-  const pendingDismissed = isAlertDismissed("alert-pending");
-  const trialDismissed = isAlertDismissed("alert-trial");
 
   // v2.18.0 — uninvoiced-students alert chip data.
   // READ-ONLY reads of the invoice drafts and dismissal keys InvoicingManager
@@ -1614,17 +1612,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     inboxEmails.filter(e => !emailReadIds.has(e.id)).length,
   [inboxEmails, emailReadIds]);
 
-  const sidebarAlertCount = useMemo(() => sidebarAlertCountFrom({
-    alertDismissals, todayStr: melbourneToday(), monday: getCurrentWeekMonday(), students, enrolments, weeklyTimetables,
-    offerableTodayEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
-    interruptions, isLessonChangeDismissed, unattributedBands, groups, unassignedCount, unschedCount,
-  }),
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  [unassignedCount, unschedCount, students, enrolments, weeklyTimetables, timetable, offerableTodayEntries, unattributedBands, inboxEmails, emailNoReplyOverrides, emailSummaries, interruptions, alertDismissals, lessonChangeDismissals, groups, sentEmails, sentLoaded]);
-
-  useEffect(() => {
-    if (setDashBadges) setDashBadges({ alerts: sidebarAlertCount, email: unreadEmailCount });
-  }, [sidebarAlertCount, unreadEmailCount, setDashBadges]);
+  // The sidebar Dashboard badge is set further down, from the alerts chip
+  // list (alertChipCount), once every input it needs is defined.
   // ── End sidebar badge counts ────────────────────────────────
 
   // Parse metadata from an enquiry email (client-side, no API call)
@@ -2154,6 +2143,27 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const dated = active.filter(r => !!getSortDate(r)).sort((a, b) => { const da = getSortDate(a), db = getSortDate(b); return da < db ? -1 : da > db ? 1 : 0; });
     return [...undated, ...dated];
   }, [reminders, interruptions]);
+
+  // ── Alerts banner: ONE chip list (v2.41.1) ─────────────────
+  // Computed every render, at the top level, so the sidebar badge stays right
+  // while the alerts panel is closed. Reads props and state only (Dashboard
+  // never remounts — no mount-time caches). The banner, the sidebar badge, the
+  // Alerts-button badge and "Dismiss all" all derive from alertChips.
+  const alertData = deriveAlertData({
+    students, groups, enrolments, timetable, archivedStudentIds, studentHasUnplacedEnrolment,
+    todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
+    interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
+    seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds, submittedInvoices, seenInvoiceIds,
+    teacherEmailAlerts, seenTeacherEmailAlertIds,
+  });
+  const alertChips = buildAlertChips(alertData, {
+    isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands, isLessonChangeDismissed,
+  });
+  const alertChipCount = visibleChipCount(alertChips);
+  const chipOn = (key) => !!alertChips.find(c => c.key === key && c.visible);
+  useEffect(() => {
+    if (setDashBadges) setDashBadges({ alerts: alertChipCount, email: unreadEmailCount });
+  }, [alertChipCount, unreadEmailCount, setDashBadges]);
 
   const fetchInbox = React.useCallback(async (opts = {}) => {
     if (!window.electronAPI) return;
@@ -2980,43 +2990,33 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
       {/* ── Emails / To Do / Alerts — unified banner card ── */}
       {(() => {
-        // Alerts data — derived in data/dashboardAlerts.js (v2.41.1).
-        const alertData = deriveAlertData({
-          students, groups, enrolments, timetable, archivedStudentIds, studentHasUnplacedEnrolment,
-          todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
-          interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
-          seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds, submittedInvoices, seenInvoiceIds,
-          teacherEmailAlerts, seenTeacherEmailAlertIds,
-        });
+        // Alerts data — derived once at the top level (alertData / alertChips).
         const {
           unassignedStudents, unassignedGroupStudents, unassignedGroupCount, unschedEntries, incompleteStudents,
           responseRequiredRed, responseRequiredYellow, responseRequiredBlue, pendingOnly, trialOnly,
           upcomingInterruptions, missedThisWeek, missedPriorSorted, catchupTotal,
           lessonChangeEmails, upcomingAbsences, upcomingReminderAlerts,
-          newTeacherNotes, hasNewTeacherNotes, newStaffDocs, hasNewStaffDocs, newInvoices, hasNewInvoices,
-          newTeacherEmailAlerts, hasTeacherEmailAlerts,
+          newTeacherNotes, newStaffDocs, newInvoices, newTeacherEmailAlerts,
         } = alertData;
-        const { totalAlertsWithTeacherNotes } = panelAlertCounts(alertData, {
-          isAlertDismissed, unassignedCount, unschedCount, unattributedBands, pendingDismissed, trialDismissed, isLessonChangeDismissed,
-        });
+        // The Alerts-button badge: the number of visible chips (same as the sidebar).
+        const totalAlertsWithTeacherNotes = alertChipCount;
 
         const bothOpen = dashPanels.emails && dashPanels.todo;
         const anyPanelOpen = dashPanels.emails || dashPanels.todo || dashPanels.alerts;
         const togglePanel = (key) => saveDashPanels({ ...dashPanels, [key]: !dashPanels[key] });
         const dismissAllActive = () => {
-          const plan = dismissAllPlan(alertData, { unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, isLessonChangeDismissed });
+          // Every visible chip, each through its own mechanism (dashboardAlerts
+          // dismissAllPlan): alertDismissals keys in one write, then the
+          // seen-set / lesson-change stores. No hand-kept list to forget.
+          const plan = dismissAllPlan(alertChips);
           const next = { date: todayStr, dismissed: { ...alertDismissals.dismissed, ...plan.keys } };
           setAlertDismissals(next);
           try { localStorage.setItem(STORAGE_KEYS.alertDismissals, JSON.stringify(next)); } catch {}
-          // Lesson-change emails live in their own persistent store (no midnight reset),
-          // so route them through the dedicated bulk helper to preserve global Dismiss-all coverage.
-          if (plan.lessonChangeIds.length > 0) dismissLessonChangesBulk(plan.lessonChangeIds);
-          // Seen-set chips ("new X" alerts) don't read alertDismissals at all —
-          // hide each the same way its own dismiss X does, by marking its ids seen.
-          if (plan.teacherNoteIds.length > 0) dismissAllTeacherNoteAlerts(plan.teacherNoteIds);
-          if (plan.staffDocIds.length > 0) dismissAllStaffDocAlerts(plan.staffDocIds);
-          if (plan.teacherEmailAlertIds.length > 0) dismissAllTeacherEmailAlerts(plan.teacherEmailAlertIds);
-          if (plan.invoiceIds.length > 0) dismissAllInvoiceAlerts(plan.invoiceIds);
+          if (plan.seen.lessonChanges) dismissLessonChangesBulk(plan.seen.lessonChanges);
+          if (plan.seen.teacherNotes) dismissAllTeacherNoteAlerts(plan.seen.teacherNotes);
+          if (plan.seen.staffDocs) dismissAllStaffDocAlerts(plan.seen.staffDocs);
+          if (plan.seen.teacherEmailAlerts) dismissAllTeacherEmailAlerts(plan.seen.teacherEmailAlerts);
+          if (plan.seen.invoices) dismissAllInvoiceAlerts(plan.seen.invoices);
         };
 
         const CATEGORY_FILTERS = [
@@ -3410,7 +3410,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     background: "rgba(196,84,84,0.08)", border: `2px solid ${colors.danger}`, borderRadius: 12 }}>
                     <div style={{ padding: `0 ${remindersBtnW + 30}px 0 ${pillW + 24}px`, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "center", height: 38, boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", scrollbarWidth: "none", msOverflowStyle: "none", position: "relative", top: -1, maskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))`, WebkitMaskImage: `linear-gradient(to right, transparent ${pillW + 10}px, black ${pillW + 22}px, black calc(100% - ${remindersBtnW + 22}px), transparent calc(100% - ${remindersBtnW + 10}px))` }}>
                       {/* Red — blockers + urgent */}
-                      {unassignedCount > 0 && !isAlertDismissed("alert-unassigned") && (
+                      {chipOn("unassigned") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Assign teachers to ${unassignedCount} student${unassignedCount !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-unassigned", adminItems: unassignedStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !mttTeacherIdx.has(`${s.id}:${(i.name || "").trim().toLowerCase()}`)).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (setStudentsViewState) setStudentsViewState(prev => ({ ...prev, filter: { ...prev.filter, hasWarning: "any" } })); onNavigate("students"); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNASSIGNED", borderColor: colors.danger, items: unassignedStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup && !mttTeacherIdx.has(`${s.id}:${(i.name || "").trim().toLowerCase()}`)).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
@@ -3420,7 +3420,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <DismissBtn groupType="alert-unassigned" />
                         </div>
                       )}
-                      {unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") && (
+                      {chipOn("ungrouped") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Place ${unassignedGroupCount} student${unassignedGroupCount !== 1 ? "s" : ""} in groups`, tag: "admin", groupType: "alert-unassigned-groups", adminItems: unassignedGroupStudents.map(s => ({ text: `${s.name} — ${instrumentsFromEnrolments(s.id, enrolments).filter(i => i.isGroup).map(i => i.name).join(", ")}` })) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { if (onViewGroups) onViewGroups(); else onNavigate("students"); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "NO GROUP ASSIGNED", borderColor: "#D97706", items: unassignedGroupStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || "#D97706"; const instrs = instrumentsFromEnrolments(s.id, enrolments).filter(i => i.isGroup).map(i => i.name).join(", "); return { label: `${s.name} — ${instrs}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
@@ -3430,7 +3430,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <DismissBtn groupType="alert-unassigned-groups" color="#D97706" />
                         </div>
                       )}
-                      {unschedCount > 0 && !isAlertDismissed("alert-unscheduled") && (
+                      {chipOn("unscheduled") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Schedule ${unschedCount} unscheduled student${unschedCount !== 1 ? "s" : ""} in timetable`, tag: "admin", groupType: "alert-unscheduled", adminItems: unschedEntries.map(u => ({ text: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}` })) })} onDragEnd={() => setAlertDragging(null)}
                           onClick={() => { const f = unschedEntries[0]; if (f && setSharedSchool) setSharedSchool(f.student.schoolId); onNavigate("timetable"); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNSCHEDULED", borderColor: colors.danger, items: unschedEntries.map(u => ({ label: `${u.student.name} — ${u.instrument}${u.reason ? ` (${u.reason})` : ""}`, chipColor: colors.danger, navigateToStudent: u.student.id })) }); }}
@@ -3440,7 +3440,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <DismissBtn groupType="alert-unscheduled" />
                         </div>
                       )}
-                      {incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") && (
+                      {chipOn("incomplete") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Complete profiles for ${incompleteStudents.length} student${incompleteStudents.length !== 1 ? "s" : ""}`, tag: "admin", groupType: "alert-incomplete", adminItems: incompleteStudents.map(s => { const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { text: `${s.name} — missing ${missing}` }; }) })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => onNavigate("students")}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "INCOMPLETE PROFILES", borderColor: colors.danger, items: incompleteStudents.map(s => { const sc = schools.find(sc2 => sc2.id === s.schoolId); const scColor = sc?.color || colors.danger; const missing = [!s.schoolId && "school", !s.className && "class", !(s.parents || []).some(p => p.email || p.phone) && "parent contact"].filter(Boolean).join(", "); return { label: `${s.name} — missing ${missing}`, chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`, navigateToStudent: s.id }; }) }); }}
@@ -3457,7 +3457,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           alertDismissals hide ONLY — deliberately does NOT batch-add
                           students to the permanent dismissal set (a money warning
                           should not be bulk-silenced). */}
-                      {uninvoicedAlert.rows.length > 0 && !isAlertDismissed("alert-uninvoiced") && (
+                      {chipOn("uninvoiced") && (
                         <div
                           onClick={() => onNavigate("invoicing")}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "UNINVOICED STUDENTS", borderColor: colors.danger, items: uninvoicedAlert.rows.map(row => ({ label: `${row.studentName} — ${row.parentName}${row.schoolAcronym ? ` (${row.schoolAcronym})` : ""}`, chipColor: colors.danger, navigateToStudent: row.studentId, onDismiss: () => dismissUninvoicedStudent(uninvoicedAlert.term.label, row.studentName) })) }); }}
@@ -3468,7 +3468,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       )}
                       {/* Response required — red (2+ days old) */}
-                      {(() => { const visibleResponseRed = responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseRed.length > 0 && !isAlertDismissed("alert-response-red") && (
+                      {(() => { const visibleResponseRed = responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return chipOn("response-red") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseRed.length} overdue email${visibleResponseRed.length !== 1 ? "s" : ""} requiring response`, tag: "email", groupType: "alert-response-red", responseEmails: responseRequiredRed })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE OVERDUE", borderColor: colors.danger, items: responseRequiredRed.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: colors.danger, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
@@ -3484,7 +3484,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           }} />
                         </div>
                       ); })()}
-                      {missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") && (() => {
+                      {chipOn("missed-week") && (() => {
                         const missedWithParents = missedThisWeek.map(m => {
                           const st = students.find(s => s.id === m.studentId);
                           const primaryParent = st?.parents?.[0] || (st && (st.parentName || st.parentEmail) ? { name: st.parentName, email: st.parentEmail } : null);
@@ -3504,7 +3504,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* Upcoming informed absences — fires the week before */}
-                      {upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") && (
+                      {chipOn("upcoming-absences") && (
                         <div
                           draggable
                           onDragStart={() => setAlertDragging({ text: `${upcomingAbsences.length} informed absence${upcomingAbsences.length !== 1 ? "s" : ""} next week`, tag: "lesson", groupType: "alert-upcoming-absences" })}
@@ -3517,7 +3517,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <DismissBtn groupType="alert-upcoming-absences" color={colors.purple700} />
                         </div>
                       )}
-                      {upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") && (
+                      {chipOn("reminder-upcoming") && (
                         <div
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "REMINDERS — NEXT WEEK", borderColor: "#D97706", items: upcomingReminderAlerts.map(rem => ({ label: rem.text + (rem.studentName ? ` — ${rem.studentName}` : ""), chipColor: "#D97706", chipBg: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", chipBorder: "#D97706" })) }); }}
                           onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
@@ -3527,7 +3527,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       )}
                       {/* Yellow — response required yesterday */}
-                      {(() => { const visibleResponseYellow = responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseYellow.length > 0 && !isAlertDismissed("alert-response-yellow") && (
+                      {(() => { const visibleResponseYellow = responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return chipOn("response-yellow") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseYellow.length} email${visibleResponseYellow.length !== 1 ? "s" : ""} awaiting response`, tag: "email", groupType: "alert-response-yellow", responseEmails: responseRequiredYellow })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "RESPONSE PENDING", borderColor: colors.accent, items: responseRequiredYellow.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; const d = em.date ? new Date(em.date).toLocaleDateString("en-AU", { day: "numeric", month: "short" }) : ""; return { label: `${n} — ${d}`, chipColor: darkMode ? colors.accent : colors.accentDark, chipBg: darkMode ? "rgba(196,122,106,0.18)" : colors.redLight, chipBorder: colors.accent, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
@@ -3544,7 +3544,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       ); })()}
                       {/* Coral — catch-ups + interruptions */}
-                      {catchupTotal > 0 && !isAlertDismissed("alert-catchup") && (() => {
+                      {chipOn("catchup") && (() => {
                         const catchupStudents = missedPriorSorted.map(m => {
                           const st = students.find(s => s.id === m.studentId);
                           const primaryParent = st?.parents?.[0] || (st && (st.parentName || st.parentEmail) ? { name: st.parentName, email: st.parentEmail } : null);
@@ -3564,7 +3564,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {/* v2.41.0 — band sessions needing attributions set. Row click opens
                           that week in the Weekly Timetable; the X on a row or on the
                           chip dismisses only the bands listed (id-keyed). */}
-                      {unattributedBands.length > 0 && (() => {
+                      {chipOn("band-attributions") && (() => {
                         const n = unattributedBands.length;
                         const currentMondayKey = toLocalDateStr(getCurrentWeekMonday());
                         const dayIdx = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
@@ -3599,24 +3599,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                       {(() => {
                         const visible = upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`));
                         if (visible.length === 0) return null;
-                        // Curriculum-day discriminator covers both new entries
-                        // (type "curriculum_day", per INTERRUPTION_SUBTYPES) and
-                        // legacy free-text-title entries.
-                        const isCurriculumDay = (i) => i.type !== "public_holiday" && (
-                          i.type === "curriculum_day" ||
-                          i.title?.trim().toLowerCase() === "curriculum day"
-                        );
-                        const curriculumDays = visible.filter(isCurriculumDay);
-                        const remaining = visible.filter(i => !isCurriculumDay(i));
-                        const publicHols = remaining.filter(i => i.type === "public_holiday");
-                        const schoolEvents = remaining.filter(i => i.type !== "public_holiday");
-                        // Group school events by schoolId
-                        const bySchool = {};
-                        schoolEvents.forEach(i => {
-                          const key = i.schoolId || "unknown";
-                          if (!bySchool[key]) bySchool[key] = [];
-                          bySchool[key].push(i);
-                        });
+                        // Same grouping the chip list counts (dashboardAlerts groupInterruptions).
+                        const { publicHols, curriculumDays, bySchool } = groupInterruptions(visible);
                         // Build drag payload for one interruption
                         const singleIntrPayload = (intr) => {
                           const affectedStudents = getInterruptionAffectedStudents(intr, students);
@@ -3728,7 +3712,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* Blue — response required today + informational */}
-                      {(() => { const visibleResponseBlue = responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return visibleResponseBlue.length > 0 && !isAlertDismissed("alert-response-blue") && (
+                      {(() => { const visibleResponseBlue = responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)); return chipOn("response-blue") && (
                         <div draggable onDragStart={() => setAlertDragging({ text: `Reply to ${visibleResponseBlue.length} email${visibleResponseBlue.length !== 1 ? "s" : ""} with questions today`, tag: "email", groupType: "alert-response-blue", responseEmails: responseRequiredBlue })} onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
                           onClick={() => { saveDashPanels({ ...dashPanels, emails: true }); setEmailCategoryFilter(new Set()); setEmailSchoolFilter(new Set()); }}
                           onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "QUESTIONS TODAY", borderColor: `${colors.sidebarActive}80`, items: responseRequiredBlue.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).slice(0, 8).map(em => { const n = em.from?.includes("<") ? em.from.split("<")[0].trim().replace(/^"|"$/g, "") : em.from || "Unknown"; return { label: `${n} — today`, chipColor: darkMode ? colors.blue600 : colors.sidebarActive, chipBg: colors.blueLight, chipBorder: `${darkMode ? colors.blue600 : colors.sidebarActive}40`, openEmailId: em.id, dismissKey: `alert-response-email-${em.id}`, onDismiss: () => { const next = new Set(emailNoReplyOverrides); next.add(em.id); setEmailNoReplyOverrides(next); persistNoReplyOverrides(next, em.id); }, dragPayload: { text: `Reply to ${n} re: ${em.subject || "(no subject)"}`, tag: "email", groupType: `alert-response-email-${em.id}`, responseEmails: [em] } }; }) }); }}
@@ -3745,7 +3729,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                       ); })()}
                       {/* Lesson change requests from parents */}
-                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)); return visibleLessonChangeEmails.length > 0 && !isAlertDismissed("alert-lesson-change") && (
+                      {(() => { const visibleLessonChangeEmails = lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)); return chipOn("lesson-change") && (
                         <div draggable
                           onDragStart={() => setAlertDragging({ text: `Review ${visibleLessonChangeEmails.length} lesson change request${visibleLessonChangeEmails.length !== 1 ? "s" : ""}`, tag: "email", groupType: "alert-lesson-change", responseEmails: visibleLessonChangeEmails })}
                           onDragEnd={() => { setAlertDragging(null); setTodoDropTarget(false); }}
@@ -3791,7 +3775,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                           <DismissBtn groupType="alert-lesson-change" color={colors.accent} />
                         </div>
                       ); })()}
-                      {pendingOnly > 0 && !pendingDismissed && (() => {
+                      {chipOn("pending") && (() => {
                         const pendingStudents = students.filter(s => s.status === "pending").flatMap(s => {
                           const nonGroup = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup);
                           if (nonGroup.length === 0) {
@@ -3818,7 +3802,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         </div>
                         );
                       })()}
-                      {trialOnly > 0 && !trialDismissed && (() => {
+                      {chipOn("trial") && (() => {
                         const trialStudents = students.filter(s => s.status === "trial").flatMap(s => {
                           const nonGroup = instrumentsFromEnrolments(s.id, enrolments).filter(i => !i.isGroup);
                           if (nonGroup.length === 0) {
@@ -3846,7 +3830,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* ── Teacher notes chip ── */}
-                      {hasNewTeacherNotes && (() => {
+                      {chipOn("teacher-notes") && (() => {
                         const noteColor = "#7C3AED";
                         const chipItems = newTeacherNotes.map(n => ({
                           label: `${n.studentName} — ${n.teacherName || "Teacher"}${n.editedAt ? " (edited)" : ""}`,
@@ -3876,7 +3860,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* ── Staff document uploads chip ── */}
-                      {hasNewStaffDocs && (() => {
+                      {chipOn("staff-docs") && (() => {
                         const docColor = "#0369A1"; // blue-700
                         const chipItems = newStaffDocs.map(d => {
                           const teacher = teachers.find(t => t.id === d.teacher_id);
@@ -3910,7 +3894,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* ── Classroom teacher email alerts chip (red — high priority) ── */}
-                      {hasTeacherEmailAlerts && (() => {
+                      {chipOn("teacher-email-alerts") && (() => {
                         const chipItems = newTeacherEmailAlerts.map(a => {
                           const em = inboxEmails.find(e => e.id === a.emailId);
                           return {
@@ -3939,7 +3923,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         );
                       })()}
                       {/* ── Invoice received chip ── */}
-                      {hasNewInvoices && (() => {
+                      {chipOn("invoices") && (() => {
                         const invColor = "#0D9488"; // teal-600
                         const invBg = darkMode ? "rgba(13,148,136,0.15)" : "#CCFBF1";
                         const chipItems = newInvoices.map(inv => {

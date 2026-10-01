@@ -3,17 +3,19 @@
 // two badges count it. Pure: no React, no I/O, no clock reads (today and the
 // current Monday are passed in), so smoke tests can pin it.
 //
-// v2.41.1 commit 1: moved VERBATIM out of Dashboard.js — the panel's chip
-// derivations, its Alerts-button count, the sidebar badge count and the
-// "Dismiss all" key list — with no behaviour change. (The two counts and
-// Dismiss-all were three separately maintained lists that had drifted apart;
-// the next commit replaces them with one chip list.)
+// v2.41.1: the panel's chip derivations moved verbatim out of Dashboard.js,
+// and ONE ordered chip list (buildAlertChips) now drives the banner, the
+// sidebar badge, the Alerts-button badge and "Dismiss all". Before this the
+// two badges and Dismiss-all were three hand-kept lists that had drifted
+// apart (sidebar 6 / button 7 / 8 chips on the owner's screen). Both badges
+// are now simply the number of visible chips.
 // ============================================================
 
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDerive";
 import { computeTermWeekNum } from "../utils/tallyHelpers";
 import { toLocalDateStr, studentMatchesParentEmail } from "../utils/helpers";
+import { unattributedAlertDismissKey } from "./bandSessionView";
 
 /**
  * Every data set the alerts banner renders chips from.
@@ -172,165 +174,119 @@ export function deriveAlertData(i) {
 }
 
 /**
- * The Alerts button's count, as the panel computed it (one per chip type,
- * not the chips' numbers).
+ * The interruption chips' grouping, from the interruptions not yet dismissed:
+ * public holidays (one chip, or one grouped chip), curriculum days (one
+ * grouped chip across schools) and the rest per school (one chip, or one
+ * grouped chip per school).
+ *
+ * @param {Array} visible  upcomingInterruptions minus per-id dismissals.
+ */
+export function groupInterruptions(visible) {
+  // Curriculum-day discriminator covers both new entries
+  // (type "curriculum_day", per INTERRUPTION_SUBTYPES) and
+  // legacy free-text-title entries.
+  const isCurriculumDay = (i) => i.type !== "public_holiday" && (
+    i.type === "curriculum_day" ||
+    i.title?.trim().toLowerCase() === "curriculum day"
+  );
+  const curriculumDays = visible.filter(isCurriculumDay);
+  const remaining = visible.filter(i => !isCurriculumDay(i));
+  const publicHols = remaining.filter(i => i.type === "public_holiday");
+  const schoolEvents = remaining.filter(i => i.type !== "public_holiday");
+  // Group school events by schoolId
+  const bySchool = {};
+  schoolEvents.forEach(i => {
+    const key = i.schoolId || "unknown";
+    if (!bySchool[key]) bySchool[key] = [];
+    bySchool[key].push(i);
+  });
+  return { publicHols, curriculumDays, bySchool };
+}
+
+const intrKeys = (intrs) => intrs.map(i => `alert-interruption-${i.id}`);
+
+/**
+ * THE alerts banner chip list, in render order. Every surface derives from
+ * it: the banner shows a chip when its entry is visible, both badges are the
+ * number of visible entries, and "Dismiss all" dismisses every visible entry
+ * through that chip's own mechanism.
+ *
+ * Each entry: { key, visible, dismissKeys, seen } —
+ *   dismissKeys  alertDismissals keys the chip's X / Dismiss-all write;
+ *   seen         { set, ids } for "new X" chips, which are hidden by marking
+ *                ids seen instead (set ∈ teacherNotes | staffDocs |
+ *                teacherEmailAlerts | invoices).
+ * Interruptions contribute one entry per chip actually rendered.
  *
  * @param {Object} d    deriveAlertData output.
  * @param {Object} ctx  { isAlertDismissed, unassignedCount, unschedCount,
- *   unattributedBands, pendingDismissed, trialDismissed, isLessonChangeDismissed }
+ *   uninvoicedRows, unattributedBands, isLessonChangeDismissed }
+ * @returns {Array}
  */
-export function panelAlertCounts(d, ctx) {
-  const { isAlertDismissed, unassignedCount, unschedCount, unattributedBands, pendingDismissed, trialDismissed, isLessonChangeDismissed } = ctx;
-  const { incompleteStudents, missedThisWeek, responseRequiredRed, responseRequiredYellow, responseRequiredBlue,
-    upcomingInterruptions, catchupTotal, pendingOnly, trialOnly, lessonChangeEmails, upcomingAbsences,
-    unassignedGroupCount, upcomingReminderAlerts, hasNewTeacherNotes, hasNewStaffDocs, hasNewInvoices, hasTeacherEmailAlerts } = d;
-  const warningCount = (unassignedCount > 0 && !isAlertDismissed("alert-unassigned") ? 1 : 0) + (unschedCount > 0 && !isAlertDismissed("alert-unscheduled") ? 1 : 0) + (incompleteStudents.length > 0 && !isAlertDismissed("alert-incomplete") ? 1 : 0) + (missedThisWeek.length > 0 && !isAlertDismissed("alert-missed-week") ? 1 : 0) + (responseRequiredRed.length > 0 && !isAlertDismissed("alert-response-red") ? 1 : 0);
-  const totalAlerts = warningCount
-    + (responseRequiredYellow.length > 0 && !isAlertDismissed("alert-response-yellow") ? 1 : 0)
-    + (responseRequiredBlue.length > 0 && !isAlertDismissed("alert-response-blue") ? 1 : 0)
-    + (upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`)).length > 0 ? 1 : 0)
-    + (catchupTotal > 0 && !isAlertDismissed("alert-catchup") ? 1 : 0)
-    + (unattributedBands.length > 0 ? 1 : 0)
-    + (pendingOnly > 0 && !pendingDismissed ? 1 : 0)
-    + (trialOnly > 0 && !trialDismissed ? 1 : 0)
-    + (lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !isAlertDismissed("alert-lesson-change") ? 1 : 0)
-    + (upcomingAbsences.length > 0 && !isAlertDismissed("alert-upcoming-absences") ? 1 : 0)
-    + (unassignedGroupCount > 0 && !isAlertDismissed("alert-unassigned-groups") ? 1 : 0)
-    + (upcomingReminderAlerts.length > 0 && !isAlertDismissed("alert-reminder-upcoming") ? 1 : 0);
-  const totalAlertsWithTeacherNotes = totalAlerts + (hasNewTeacherNotes ? 1 : 0) + (hasNewStaffDocs ? 1 : 0) + (hasNewInvoices ? 1 : 0) + (hasTeacherEmailAlerts ? 1 : 0);
-  return { warningCount, totalAlerts, totalAlertsWithTeacherNotes };
+export function buildAlertChips(d, ctx) {
+  const { isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows, unattributedBands, isLessonChangeDismissed } = ctx;
+  const on = (key) => !isAlertDismissed(key);
+  const simple = (key, alertKey, condition) => ({ key, visible: !!condition && on(alertKey), dismissKeys: [alertKey], seen: null });
+  const responseVisible = (list) => list.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).length > 0;
+  const seenChip = (key, set, ids) => ({ key, visible: ids.length > 0, dismissKeys: [], seen: { set, ids } });
+
+  const chips = [
+    simple("unassigned", "alert-unassigned", unassignedCount > 0),
+    simple("ungrouped", "alert-unassigned-groups", d.unassignedGroupCount > 0),
+    simple("unscheduled", "alert-unscheduled", unschedCount > 0),
+    simple("incomplete", "alert-incomplete", d.incompleteStudents.length > 0),
+    simple("uninvoiced", "alert-uninvoiced", (uninvoicedRows || []).length > 0),
+    simple("response-red", "alert-response-red", responseVisible(d.responseRequiredRed)),
+    simple("missed-week", "alert-missed-week", d.missedThisWeek.length > 0),
+    simple("upcoming-absences", "alert-upcoming-absences", d.upcomingAbsences.length > 0),
+    simple("reminder-upcoming", "alert-reminder-upcoming", d.upcomingReminderAlerts.length > 0),
+    simple("response-yellow", "alert-response-yellow", responseVisible(d.responseRequiredYellow)),
+    simple("catchup", "alert-catchup", d.catchupTotal > 0),
+  ];
+  const bandIds = (unattributedBands || []).map(b => b.bandLessonId);
+  chips.push({ key: "band-attributions", visible: bandIds.length > 0, dismissKeys: bandIds.length ? [unattributedAlertDismissKey(bandIds)] : [], seen: null });
+
+  const g = groupInterruptions(d.upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`)));
+  if (g.publicHols.length > 0) chips.push({ key: "intr-public-holidays", visible: true, dismissKeys: intrKeys(g.publicHols), seen: null });
+  if (g.curriculumDays.length > 0) chips.push({ key: "intr-curriculum-days", visible: true, dismissKeys: intrKeys(g.curriculumDays), seen: null });
+  for (const [schoolId, intrs] of Object.entries(g.bySchool)) {
+    chips.push({ key: `intr-school-${schoolId}`, visible: true, dismissKeys: intrKeys(intrs), seen: null });
+  }
+
+  const lcIds = d.lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id);
+  chips.push(
+    simple("response-blue", "alert-response-blue", responseVisible(d.responseRequiredBlue)),
+    { key: "lesson-change", visible: lcIds.length > 0 && on("alert-lesson-change"), dismissKeys: ["alert-lesson-change"], seen: { set: "lessonChanges", ids: lcIds } },
+    simple("pending", "alert-pending", d.pendingOnly > 0),
+    simple("trial", "alert-trial", d.trialOnly > 0),
+    seenChip("teacher-notes", "teacherNotes", d.newTeacherNotes.map(n => n.id)),
+    seenChip("staff-docs", "staffDocs", d.newStaffDocs.map(doc => doc.id)),
+    seenChip("teacher-email-alerts", "teacherEmailAlerts", d.newTeacherEmailAlerts.map(a => a.emailId)),
+    seenChip("invoices", "invoices", d.newInvoices.map(inv => inv.id)),
+  );
+  return chips;
 }
 
 /**
- * The sidebar Dashboard badge, as its own memo computed it.
- *
- * @param {Object} i  { alertDismissals, todayStr, monday (Date), students,
- *   enrolments, weeklyTimetables, offerableTodayEntries, inboxEmails,
- *   emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
- *   interruptions, isLessonChangeDismissed, unattributedBands, groups,
- *   unassignedCount, unschedCount }
+ * The number both badges show: visible chips.
  */
-export function sidebarAlertCountFrom(i) {
-  const { alertDismissals, todayStr: todayStr2, monday: mon, students, enrolments, weeklyTimetables,
-    offerableTodayEntries, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
-    interruptions, isLessonChangeDismissed, unattributedBands, groups, unassignedCount, unschedCount } = i;
-  const dismissed = (key) => !!alertDismissals?.dismissed?.[key];
-  const currentWeekKey = toLocalDateStr(mon);
-  const nextWeekKey = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 7); return d; })());
-  const alertIntrEnd = toLocalDateStr((() => { const d = new Date(mon); d.setDate(d.getDate() + 14); return d; })());
-  const startOfToday = new Date(todayStr2 + "T00:00:00").getTime();
-  const startOfYesterday = startOfToday - 86400000;
-  const emailAgeMs2 = (e) => e.internalDate || (e.date ? new Date(e.date).getTime() : 0);
-
-  const incompleteCount = students.filter(s =>
-    s.status === "active" && (!s.schoolId || !s.className || !(s.parents || []).some(p => p.email || p.phone))
-  ).length;
-
-  const missedThisWeekCount = new Set(
-    getMissedEntries({ weeklyTimetables, weekKey: currentWeekKey })
-      .map(e => `${e.studentId}|${e.instrument}`)
-  ).size;
-
-  // Same shared offerable list as the alerts-panel chip (v2.39.0).
-  const catchupTotal = offerableTodayEntries.length;
-
-  const allRR = inboxEmails.filter(e => {
-    if (emailNoReplyOverrides.has(e.id)) return false;
-    const cached = emailSummaries[`${e.threadId || e.id}-${e.id}`];
-    if (!(typeof cached === "object" ? !!cached?.needsReply : false)) return false;
-    // Exclude emails already replied to
-    const msgs = e.threadMessages || [];
-    if (msgs.some(m => m.isSent)) return false;
-    // Replied-status unknown until the first sent fetch lands — suppress
-    if (!sentLoaded) return false;
-    const tid = e.threadId || e.id;
-    const normSubject = (e.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase();
-    if (sentEmails.some(s => {
-      if (s.threadId && s.threadId === e.threadId) return true;
-      if (normSubject) { const sNorm = (s.subject || "").replace(/^(re|fwd?):\s*/gi, "").trim().toLowerCase(); if (sNorm === normSubject) return true; }
-      return (s.threadId || s.id) === tid;
-    })) return false;
-    return true;
-  });
-  const rrRed = allRR.filter(e => emailAgeMs2(e) < startOfYesterday);
-  const rrYellow = allRR.filter(e => emailAgeMs2(e) >= startOfYesterday && emailAgeMs2(e) < startOfToday);
-  const rrBlue = allRR.filter(e => emailAgeMs2(e) >= startOfToday);
-
-  const pendingOnly = students.filter(s => s.status === "pending").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
-  const trialOnly = students.filter(s => s.status === "trial").reduce((s, st) => s + Math.max(1, instrumentsFromEnrolments(st.id, enrolments).filter(i => !i.isGroup).length), 0);
-
-  const upcomingInterruptions = interruptions.filter(i => i.type !== "term_break" && i.date >= todayStr2 && i.date <= alertIntrEnd);
-
-  const lcKeywords = ["reschedul","change","swap","move","different time","different day","can't make","cannot make","won't be","will not be","away","absent","cancel","conflict","clash"];
-  const lcEmails = inboxEmails.filter(e => {
-    const addr = (e.from?.match(/<(.+)>/)?.[1] || e.from || "").toLowerCase();
-    if (!students.some(s => studentMatchesParentEmail(s, addr))) return false;
-    const text = ((e.subject || "") + " " + (e.snippet || "") + " " + (e.body || "")).toLowerCase();
-    return lcKeywords.some(kw => text.includes(kw));
-  });
-
-  const upcomingAbsences = new Set(
-    getInformedAbsencesForWeek({ weeklyTimetables, weekKey: nextWeekKey })
-      .map(e => `${e.studentId || e.studentName}|${e.instrument}`)
-  ).size;
-
-  let count = 0;
-  if (unassignedCount > 0 && !dismissed("alert-unassigned")) count++;
-  if (unschedCount > 0 && !dismissed("alert-unscheduled")) count++;
-  if (incompleteCount > 0 && !dismissed("alert-incomplete")) count++;
-  if (missedThisWeekCount > 0 && !dismissed("alert-missed-week")) count++;
-  if (rrRed.length > 0 && !dismissed("alert-response-red")) count++;
-  if (rrYellow.length > 0 && !dismissed("alert-response-yellow")) count++;
-  if (rrBlue.length > 0 && !dismissed("alert-response-blue")) count++;
-  if (upcomingInterruptions.filter(i => !dismissed(`alert-interruption-${i.id}`)).length > 0) count++;
-  if (catchupTotal > 0 && !dismissed("alert-catchup")) count++;
-  if (pendingOnly > 0 && !dismissed("alert-pending")) count++;
-  if (trialOnly > 0 && !dismissed("alert-trial")) count++;
-  if (lcEmails.filter(em => !isLessonChangeDismissed(em.id)).length > 0 && !dismissed("alert-lesson-change")) count++;
-  if (upcomingAbsences > 0 && !dismissed("alert-upcoming-absences")) count++;
-  if (unattributedBands.length > 0) count++;   // dismissal already applied
-  const assignedGroupIds = new Set((groups || []).flatMap(g => (g.studentIds || [])));
-  const ungroupedCount = students.filter(s => ["active", "pending", "trial"].includes(s.status) && instrumentsFromEnrolments(s.id, enrolments).some(i => i.isGroup) && !assignedGroupIds.has(s.id)).length;
-  if (ungroupedCount > 0 && !dismissed("alert-unassigned-groups")) count++;
-  return count;
+export function visibleChipCount(chips) {
+  return (chips || []).filter(c => c.visible).length;
 }
 
 /**
- * What the panel's "Dismiss all" writes, as it decided it.
+ * What "Dismiss all" writes: every visible chip, each through its own
+ * mechanism — alertDismissals keys, plus seen-set ids per set.
  *
- * @param {Object} d    deriveAlertData output.
- * @param {Object} ctx  { unassignedCount, unschedCount, uninvoicedRows, isLessonChangeDismissed }
- * @returns {{keys: Object, lessonChangeIds: string[], teacherNoteIds: string[],
- *   staffDocIds: string[], teacherEmailAlertIds: string[], invoiceIds: string[]}}
+ * @returns {{keys: Object, seen: Object<string, string[]>}}
  */
-export function dismissAllPlan(d, ctx) {
-  const { unassignedCount, unschedCount, uninvoicedRows, isLessonChangeDismissed } = ctx;
+export function dismissAllPlan(chips) {
   const keys = {};
-  if (unassignedCount > 0) keys["alert-unassigned"] = true;
-  if (unschedCount > 0) keys["alert-unscheduled"] = true;
-  if (d.incompleteStudents.length > 0) keys["alert-incomplete"] = true;
-  if (d.missedThisWeek.length > 0) keys["alert-missed-week"] = true;
-  if (d.responseRequiredRed.length > 0) keys["alert-response-red"] = true;
-  if (d.responseRequiredYellow.length > 0) keys["alert-response-yellow"] = true;
-  if (d.responseRequiredBlue.length > 0) keys["alert-response-blue"] = true;
-  d.upcomingInterruptions.forEach(intr => { keys[`alert-interruption-${intr.id}`] = true; });
-  if (d.catchupTotal > 0) keys["alert-catchup"] = true;
-  if (d.pendingOnly > 0) keys["alert-pending"] = true;
-  if (d.trialOnly > 0) keys["alert-trial"] = true;
-  if (d.lessonChangeEmails.length > 0) keys["alert-lesson-change"] = true;
-  if (d.upcomingAbsences.length > 0) keys["alert-upcoming-absences"] = true;
-  if (d.unassignedGroupCount > 0) keys["alert-unassigned-groups"] = true;
-  if (d.upcomingReminderAlerts.length > 0) keys["alert-reminder-upcoming"] = true;
-  // v2.18.0 — uninvoiced-students chip: alertDismissals hide ONLY.
-  // Deliberately does NOT write the per-student permanent dismissal
-  // set — a money warning must not be bulk-silenced.
-  if ((uninvoicedRows || []).length > 0) keys["alert-uninvoiced"] = true;
-  return {
-    keys,
-    lessonChangeIds: d.lessonChangeEmails.filter(em => !isLessonChangeDismissed(em.id)).map(em => em.id),
-    teacherNoteIds: d.newTeacherNotes.map(n => n.id),
-    staffDocIds: d.newStaffDocs.map(doc => doc.id),
-    teacherEmailAlertIds: d.newTeacherEmailAlerts.map(a => a.emailId),
-    invoiceIds: d.newInvoices.map(inv => inv.id),
-  };
+  const seen = {};
+  for (const c of (chips || [])) {
+    if (!c.visible) continue;
+    for (const k of c.dismissKeys) keys[k] = true;
+    if (c.seen && c.seen.ids.length) seen[c.seen.set] = [...(seen[c.seen.set] || []), ...c.seen.ids];
+  }
+  return { keys, seen };
 }
