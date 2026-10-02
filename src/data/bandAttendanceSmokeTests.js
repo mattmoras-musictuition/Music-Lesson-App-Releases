@@ -16,6 +16,7 @@ import {
   isMemberAbsent, absentMembers, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
 } from "./bandAbsence";
 import { sessionMemberRows, bandCardStatus } from "./bandSessionView";
+import { stampAdminOverride } from "./bandAttendance";
 
 const PW = "2020-03-09";                 // the band's week (past)
 const T1 = "2026-09-21T01:00:00.000Z";   // a teacher stamp's writtenAt
@@ -125,4 +126,48 @@ export function runBandAttendanceCharacterizationTests(assert) {
     tally(band({ day: "Monday", memberStates: [ms(amy, "regular")] })), "completed");
   assert("attendance char: Tally drops the tick when a regular entry says attended:false (no miss)",
     tally(r7) === "completed", false);
+}
+
+// ── adminOverrideAt stamping (C3) ──
+const NOW = "2026-10-02T03:00:00.000Z";
+
+export function runBandAttendanceStampTests(assert) {
+  const b = band({ memberStates: [
+    ms(amy, "regular", { writerTeacherId: "tw", teacherWrittenAt: T1 }),
+    ms(bob, "catchup", { catchupId: "CU1", attended: false, writerTeacherId: "tw", teacherWrittenAt: T1,
+      absence: { reason: "informed_absence", reasonDetail: "", notes: "", makeupEligible: false, suggestOwed: true } }),
+  ] });
+  const st = stampAdminOverride(b, bob.id, NOW);
+  assert("attendance stamp: sets adminOverrideAt and clears writerTeacherId on that entry only",
+    [entryOf(st, bob).adminOverrideAt, entryOf(st, bob).writerTeacherId, entryOf(st, amy)], [NOW, null, entryOf(b, amy)]);
+  assert("attendance stamp: keeps every other field (teacherWrittenAt, absence, catchupId)",
+    entryOf(st, bob), { ...entryOf(b, bob), adminOverrideAt: NOW, writerTeacherId: null });
+  assert("attendance stamp: does not mutate the input band", entryOf(b, bob).writerTeacherId, "tw");
+  assert("attendance stamp: unknown enrolment → same band object", stampAdminOverride(b, "nope", NOW) === b, true);
+  const legacy = band();
+  assert("attendance stamp: legacy band → same band object", stampAdminOverride(legacy, amy.id, NOW) === legacy, true);
+  const restamp = stampAdminOverride(stampAdminOverride(b, bob.id, T1), bob.id, NOW);
+  assert("attendance stamp: a later action moves adminOverrideAt forward", entryOf(restamp, bob).adminOverrideAt, NOW);
+
+  // What each admin action now leaves (handler = planner output, then stamp).
+  const c1 = card("C1", amy);
+  const regBand = band({ removedLessons: [c1], memberStates: [ms(amy, "regular", { writerTeacherId: "tw", teacherWrittenAt: T1 })] });
+  const regMark = planMarkAbsent({ band: regBand, entry: entryOf(regBand, amy), missed: [], enrolments: [{ ...amy, startDate: "2020-01-01" }] });
+  assert("attendance stamp: admin regular Mark absent → admin-owned (writer null), attended still null",
+    entryOf(stampAdminOverride(regMark.band, amy.id, NOW), amy),
+    ms(amy, "regular", { writerTeacherId: null, teacherWrittenAt: T1, adminOverrideAt: NOW }));
+  const tMissed = [drainMiss(c1)];
+  const tBand = band({ memberStates: [ms(amy, "regular", { writerTeacherId: "tw", teacherWrittenAt: T1 })] });
+  const uReg = planUndoAbsence({ band: tBand, entry: entryOf(tBand, amy), missed: tMissed, catchups: [] });
+  assert("attendance stamp: admin Undo of a teacher regular absence → card back, admin-owned",
+    [uReg.missed, stampAdminOverride(uReg.band, amy.id, NOW).removedLessons, entryOf(stampAdminOverride(uReg.band, amy.id, NOW), amy).adminOverrideAt],
+    [[], [c1], NOW]);
+  const uCu = planUndoAbsence({ band: b, entry: entryOf(b, bob), missed: [], catchups: [{ id: "CU1" }] });
+  assert("attendance stamp: admin Undo of a teacher catch-up absence → cleared, admin-owned, row untouched",
+    [entryOf(stampAdminOverride(uCu.band, bob.id, NOW), bob), uCu.insertRow],
+    [ms(bob, "catchup", { catchupId: "CU1", writerTeacherId: null, teacherWrittenAt: T1, adminOverrideAt: NOW }), undefined]);
+  const cuMark = applyCatchupAbsence({ band: b, entry: entryOf(b, bob), absence: { reason: "other", makeupEligible: false }, row: null });
+  assert("attendance stamp: admin catch-up Mark absent → admin-owned",
+    [entryOf(stampAdminOverride(cuMark.band, bob.id, NOW), bob).writerTeacherId, entryOf(stampAdminOverride(cuMark.band, bob.id, NOW), bob).adminOverrideAt],
+    [null, NOW]);
 }

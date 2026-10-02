@@ -36,6 +36,7 @@ import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMiss
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
 import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
+import { stampAdminOverride } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 
@@ -1545,6 +1546,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // All state changes go through bandAbsence.js's pure planners, re-run
   // inside each setter against the latest week entry so a stale render can
   // never write an old band back.
+  //
+  // v2.42.0: every admin absence action (mark, undo — incl. prompt Cancel
+  // and missed-zone Remove — confirm, dismiss) stamps the member entry with
+  // adminOverrideAt and clears writerTeacherId (bandAttendance.js), so drain
+  // v3 never lets an older or re-sent teacher stamp override it. Teacher-
+  // recorded absences arrive in the same shapes and render/undo unchanged.
   const firstNameOf = (studentId) =>
     ((students.find(s => s.id === studentId)?.name) || "").split(" ")[0] || "This student";
   const bandEntryOf = (band, enrolmentId) =>
@@ -1574,7 +1581,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // Remove.
   const undoRegularBandAbsence = (bandLessonId, enrolmentId, sk = storageKey) => applyToBand(bandLessonId, (b, d) => {
     const u = planUndoAbsence({ band: b, entry: bandEntryOf(b, enrolmentId), missed: d.missed || [], catchups });
-    return u && u.kind === "regular" ? { band: u.band, missed: u.missed } : null;
+    return u && u.kind === "regular" ? { band: stampAdminOverride(u.band, enrolmentId, new Date().toISOString()), missed: u.missed } : null;
   }, sk);
 
   const handleBandMarkAbsent = (bandLessonId, enrolmentId) => {
@@ -1588,7 +1595,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (plan.kind === "free") {
       applyToBand(bandLessonId, (bb, dd) => {
         const p = planMarkAbsent({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], enrolments });
-        return p && p.kind === "free" ? { band: p.band } : null;
+        return p && p.kind === "free" ? { band: stampAdminOverride(p.band, enrolmentId, new Date().toISOString()) } : null;
       });
       notify(`${firstNameOf(entry.studentId)} marked absent`);
       return;
@@ -1597,7 +1604,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (plan.kind === "regular") {
       applyToBand(bandLessonId, (bb, dd) => {
         const p = planMarkAbsent({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], enrolments });
-        return p && p.kind === "regular" ? { band: p.band, missed: [...(dd.missed || []), ...p.misses] } : null;
+        return p && p.kind === "regular" ? { band: stampAdminOverride(p.band, enrolmentId, new Date().toISOString()), missed: [...(dd.missed || []), ...p.misses] } : null;
       });
       setTallyPrompt({
         lesson: plan.misses[0], missedEntry: plan.misses[0], weekKey, weekNum: termWeek,
@@ -1626,7 +1633,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     applyToBand(bandLessonId, (bb) => {
       const e = bandEntryOf(bb, enrolmentId);
       if (!e || e.consumption !== CONSUMPTION.catchup || e.attended === false) return null;
-      return { band: applyCatchupAbsence({ band: bb, entry: e, absence, row }).band };
+      return { band: stampAdminOverride(applyCatchupAbsence({ band: bb, entry: e, absence, row }).band, enrolmentId, new Date().toISOString()) };
     });
     if (deleteRow) {
       deleteBandLinkedCatchups([deleteRow]);
@@ -1675,7 +1682,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     }
     applyToBand(bandLessonId, (bb, dd) => {
       const u = planUndoAbsence({ band: bb, entry: bandEntryOf(bb, enrolmentId), missed: dd.missed || [], catchups });
-      return u ? { band: u.band } : null;
+      return u ? { band: stampAdminOverride(u.band, enrolmentId, new Date().toISOString()) } : null;
     });
     if (plan.reset) {
       notify(`${firstNameOf(entry.studentId)}'s missed lesson has since been booked elsewhere, so their band role has been reset to Not set.`, "warning", 9000);
