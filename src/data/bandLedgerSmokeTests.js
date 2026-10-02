@@ -14,7 +14,7 @@
 // Weeks sit in 2099 so the past-week guards never move under a test.
 // ============================================================
 
-import { isExcludedByBands, restoreLedgerCards } from "./bandMemberStates";
+import { isExcludedByBands, restoreLedgerCards, isGenerateExcluded, withoutLedgeredDuplicates, displaceRegularIntoBands } from "./bandMemberStates";
 import { makeEnrolmentResolver } from "../utils/enrolmentActivity";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 
@@ -67,9 +67,12 @@ export function runBandLedgerCharacterizationTests(assert) {
   const imp = buildMttImportForWeekSchool({ mtt, schoolId: "S", weekDates: lweekDates(), existingEntry: { lessons: [ledgered], missed: [] },
     targetDay: "Monday", enrolments: LENROL, dropBands: true, catchups: [] });
   const outBand = imp.entry.lessons.find(l => l.id === "B2");
-  assert("ledger char: Monday import re-adds a card the ledger already holds (double-book)",
+  // Updated in v2.42.1 C2 (deliberately): before the fix this read
+  // [["e_annie"], ["W_ANNIE"]] — the double-book. The import now leaves the
+  // ledgered lesson out.
+  assert("ledger char: Monday import no longer re-adds a card the ledger already holds (was a double-book)",
     [imp.entry.lessons.filter(l => !l.isBandSession).map(l => l.enrolmentId), outBand.removedLessons.map(c => c.id)],
-    [["e_annie"], ["W_ANNIE"]]);
+    [[], ["W_ANNIE"]]);
 
   // 3. Restore: Grace's ledger card goes back only if no lesson in ANY lane
   //    sits at that day+start — otherwise it is dropped silently.
@@ -80,4 +83,70 @@ export function runBandLedgerCharacterizationTests(assert) {
     restored.map(l => l.id), ["W_MATT"]);
   assert("ledger char: restore puts the card back when the slot is free",
     restoreLedgerCards([], [grace]).map(l => l.id), ["W_GRACE"]);
+}
+
+// ── New-band generate / import displacement (C2) ──
+const gids = (lessons) => lessons.filter(l => !l.isBandSession).map(l => l.id);
+const ledger = (lessons, bandId) => lessons.find(l => l.id === bandId).removedLessons.map(c => c.id);
+// What a generate path does: filter the master, "generate" (one week card per
+// master card), put the preserved bands in front, displace.
+function generate(master, bands, r) {
+  const generated = master.filter(m => !isGenerateExcluded(m, bands, r)).map(m => ({ ...m, id: "G_" + m.id }));
+  return displaceRegularIntoBands([...bands, ...generated], r);
+}
+
+export function runBandLedgerDisplacementTests(assert) {
+  const r = lresolver();
+  const other = { id: "M_OTHER", enrolmentId: "e_x", studentId: "x", instrument: "Guitar", schoolId: "S", day: "Monday", start: "09:00" };
+  const anelaW = lcard("W_ANELA", "e_anela", "Wednesday", "09:00");
+  const master = [lcard("M_ANELA", "e_anela", "Wednesday", "09:00"), lcard("M_ANNIE", "e_annie", "Monday", "11:30"), lcard("M_GRACE", "e_grace", "Monday", "12:30"), other];
+
+  // Filter decisions
+  const band = lband("B1", "Wednesday", [lentry("e_anela"), lentry("e_annie"), lentry("e_grace")], [anelaW]);
+  assert("displace: generate filter skips a Regular member already in the ledger (duplicate)", isGenerateExcluded(master[0], [band], r), true);
+  assert("displace: generate filter keeps a Regular member NOT in the ledger", isGenerateExcluded(master[1], [band], r), false);
+  assert("displace: generate filter keeps non-members", isGenerateExcluded(other, [band], r), false);
+  const legacy = { id: "BL", isBandSession: true, bandId: "BL", day: "Friday", members: [{ studentId: "annie" }], removedLessons: [] };
+  assert("displace: legacy band keeps today's whole-student exclusion",
+    [isGenerateExcluded(master[1], [legacy], r), isExcludedByBands(master[1], [legacy], r)], [true, true]);
+  const cuBand = lband("B9", "Wednesday", [lentry("e_annie", "catchup")]);
+  assert("displace: a catch-up member's card is not excluded", isGenerateExcluded(master[1], [cuBand], r), false);
+
+  // The owner's case end to end: Monday members on a Wednesday band
+  const out = generate(master, [band], r);
+  assert("displace: multi-day — Annie's and Grace's Monday cards go INTO the ledger, not lost",
+    ledger(out, "B1"), ["W_ANELA", "G_M_ANNIE", "G_M_GRACE"]);
+  assert("displace: …and leave the grid; Anela is not duplicated; others stay",
+    gids(out), ["G_M_OTHER"]);
+  assert("displace: regenerating again is stable (no duplicates, nothing lost)",
+    [ledger(generate(master, [out[0]], r), "B1"), gids(generate(master, [out[0]], r))],
+    [["W_ANELA", "G_M_ANNIE", "G_M_GRACE"], ["G_M_OTHER"]]);
+
+  // Two bands in one week, each takes its own member
+  const b1 = lband("B1", "Wednesday", [lentry("e_annie")]);
+  const b2 = lband("B2", "Friday", [lentry("e_grace")]);
+  const two = generate(master, [b1, b2], r);
+  assert("displace: two bands in one week — each ledgers its own member",
+    [ledger(two, "B1"), ledger(two, "B2"), gids(two)], [["G_M_ANNIE"], ["G_M_GRACE"], ["G_M_ANELA", "G_M_OTHER"]]);
+
+  // Non-Regular members and legacy bands: untouched
+  const cuOut = generate(master, [cuBand], r);
+  assert("displace: catch-up member's card stays on the grid", [ledger(cuOut, "B9"), gids(cuOut).includes("G_M_ANNIE")], [[], true]);
+  const lessonsL = [legacy, { ...master[2], id: "W_G" }];
+  assert("displace: legacy band only → same array back", displaceRegularIntoBands(lessonsL, r) === lessonsL, true);
+  const settled = [band, { ...other, id: "W_O" }];
+  const settledFull = [{ ...band, removedLessons: [anelaW, lcard("W_AN", "e_annie", "Monday", "11:30"), lcard("W_GR", "e_grace", "Monday", "12:30")] }, { ...other, id: "W_O" }];
+  assert("displace: nothing to move → same array back",
+    [displaceRegularIntoBands(settledFull, r) === settledFull, displaceRegularIntoBands(settled, r) === settled], [true, true]);
+  assert("displace: a Regular member with no card anywhere is a no-op", ledger(displaceRegularIntoBands(settled, r), "B1"), ["W_ANELA"]);
+  assert("displace: duplicate filter drops only the ledgered lesson",
+    withoutLedgeredDuplicates(master, [band], r).map(m => m.id), ["M_ANNIE", "M_GRACE", "M_OTHER"]);
+
+  // Single-day import, member NOT yet in the ledger → moved in on import
+  const notYet = lband("B3", "Wednesday", [lentry("e_annie")]);
+  const imp = buildMttImportForWeekSchool({ mtt: { lessons: [master[1], other] }, schoolId: "S", weekDates: lweekDates(), existingEntry: { lessons: [notYet], missed: [] },
+    targetDay: "Monday", enrolments: LENROL, dropBands: true, catchups: [] });
+  assert("displace: Monday import ledgers a Regular member's card instead of leaving it beside the band",
+    [imp.entry.lessons.find(l => l.id === "B3").removedLessons.map(c => c.enrolmentId), imp.entry.lessons.filter(l => !l.isBandSession).map(l => l.enrolmentId), imp.importedCount],
+    [["e_annie"], ["e_x"], 2]);
 }

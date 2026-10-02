@@ -24,7 +24,7 @@
 import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
 import { planCleanImport } from "../data/bandAbsence";
-import { restoreLedgerCards } from "../data/bandMemberStates";
+import { restoreLedgerCards, withoutLedgeredDuplicates, displaceRegularIntoBands } from "../data/bandMemberStates";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -78,8 +78,16 @@ export function buildMttImportForWeekSchool({
 
   if (dropBands) {
     const plan = planCleanImport(existingEntry, catchups, { day: targetDay, weekKey, schoolId });
+    // v2.42.1 — a day import keeps the other days' bands, so it must respect
+    // their ledgers: a master card whose lesson a kept NEW band already holds
+    // is not re-added (no double-book), and any kept band's Regular member
+    // whose card is now on the grid but not in its ledger is moved into it.
+    const bandResolver = targetDay ? makeEnrolmentResolver(enrolments || []) : null;
+    const dayImported = targetDay
+      ? withoutLedgeredDuplicates(importedLessons, plan.lessons.filter(l => l.isBandSession), bandResolver)
+      : importedLessons;
     const lessons = targetDay
-      ? restoreLedgerCards([...plan.lessons.filter(l => l.day !== targetDay), ...importedLessons], plan.restoreCards)
+      ? displaceRegularIntoBands(restoreLedgerCards([...plan.lessons.filter(l => l.day !== targetDay), ...dayImported], plan.restoreCards), bandResolver)
       : importedLessons;
     return {
       entry: {
@@ -87,7 +95,7 @@ export function buildMttImportForWeekSchool({
         missed: targetDay ? (existingEntry?.missed || []).filter(m => m.day !== targetDay) : [],
         generatedAt: new Date().toISOString(),
       },
-      importedCount: importedLessons.length,
+      importedCount: dayImported.length,
       preservedBandCount: 0,
       removedBandCount: plan.removedBandCount,
       rowsToDelete: plan.rowsToDelete,

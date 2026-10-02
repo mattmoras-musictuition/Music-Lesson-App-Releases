@@ -835,6 +835,102 @@ export function applyRegularDisplacement(lessons, memberStates, ledger, resolver
   return { lessons: nextLessons, removedLessons: nextLedger };
 }
 
+// ── Ledger integrity (v2.42.1) ──────────────────────────────────────
+//
+// Rule: a card is NEVER removed from a week's lessons because of a band
+// unless it goes into that band's removedLessons ledger. isExcludedByBands
+// (above) skipped a NEW band's Regular member's master card at every
+// generate even when the ledger held nothing for them — the owner's test band
+// lost two members' Monday cards that way. The helpers below keep generate
+// and import honest without changing the matching rule (cardMatchesEntry /
+// findMemberCards are reused as they are). Legacy bands are untouched.
+
+function hasLedgerCard(band, entry, resolver) {
+  return findMemberCards(band.removedLessons, entry, resolver).length > 0;
+}
+
+// True if `card` belongs to a Regular entry of a NEW band whose ledger
+// already holds that entry's card — a second instance of a lesson the band
+// has already taken.
+function isLedgeredDuplicate(card, band, resolver) {
+  if (!hasMemberStates(band) || !isAttributableCard(card)) return false;
+  return (band.memberStates || []).some((e) => e && e.consumption === CONSUMPTION.regular
+    && cardMatchesEntry(card, e, resolver) && hasLedgerCard(band, e, resolver));
+}
+
+/**
+ * The generate paths' master filter. LEGACY bands: exactly isExcludedByBands
+ * (the whole student). NEW bands: only a Regular member whose card is ALREADY
+ * in the ledger is skipped (the regenerated card would be a duplicate). A
+ * Regular member with no ledger card is generated normally and then moved
+ * into the ledger by displaceRegularIntoBands.
+ *
+ * @param {Object} masterLesson
+ * @param {Array} weekBands
+ * @param {Function|null} resolver
+ * @returns {boolean}
+ */
+export function isGenerateExcluded(masterLesson, weekBands, resolver) {
+  if (!masterLesson) return false;
+  for (const band of (weekBands || [])) {
+    if (!band) continue;
+    if (!hasMemberStates(band)) {
+      if (isExcludedByBands(masterLesson, [band], resolver)) return true;
+      continue;
+    }
+    if (isLedgeredDuplicate(masterLesson, band, resolver)) return true;
+  }
+  return false;
+}
+
+/**
+ * Drop cards that duplicate a lesson a NEW band's ledger already holds (a
+ * single-day import re-reading the master). Legacy bands: nothing dropped,
+ * as before. Returns `cards` itself when nothing is dropped.
+ */
+export function withoutLedgeredDuplicates(cards, weekBands, resolver) {
+  const bands = (weekBands || []).filter(hasMemberStates);
+  if (bands.length === 0) return cards || [];
+  const out = (cards || []).filter((c) => !bands.some((b) => isLedgeredDuplicate(c, b, resolver)));
+  return out.length === (cards || []).length ? cards : out;
+}
+
+/**
+ * One NEW band's sweep: every Regular entry with no ledger card whose card is
+ * anywhere in `lessons` (any day, any lane) has it moved into the ledger —
+ * applyRegularDisplacement, limited to the entries the ledger is missing.
+ * An entry with no card anywhere is left alone. Returns `lessons` itself when
+ * nothing moves.
+ *
+ * @param {Array} lessons      The week's lessons (the band among them).
+ * @param {string} bandLessonId
+ * @param {Function|null} resolver
+ * @returns {Array}
+ */
+export function sweepRegularIntoLedger(lessons, bandLessonId, resolver) {
+  const band = (lessons || []).find((l) => l && l.id === bandLessonId);
+  if (!band || !hasMemberStates(band)) return lessons;
+  const missing = band.memberStates.filter((e) => e && e.consumption === CONSUMPTION.regular && !hasLedgerCard(band, e, resolver));
+  if (missing.length === 0) return lessons;
+  const ledger = band.removedLessons || [];
+  const d = applyRegularDisplacement(lessons, missing, ledger, resolver);
+  if (d.removedLessons.length === ledger.length) return lessons;
+  return d.lessons.map((l) => (l.id === bandLessonId ? { ...l, removedLessons: d.removedLessons } : l));
+}
+
+/**
+ * sweepRegularIntoLedger for every NEW band in `lessons`, in order — the
+ * generate and import paths' post-step. Returns `lessons` itself when
+ * nothing moves.
+ */
+export function displaceRegularIntoBands(lessons, resolver) {
+  let out = lessons || [];
+  for (const b of (lessons || [])) {
+    if (b && b.isBandSession && hasMemberStates(b)) out = sweepRegularIntoLedger(out, b.id, resolver);
+  }
+  return out === (lessons || []) ? lessons : out;
+}
+
 /**
  * Put a band's ledger cards back on the grid, for a band leaving the grid
  * with its attributions intact (grid → staging).
