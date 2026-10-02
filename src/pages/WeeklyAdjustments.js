@@ -36,7 +36,7 @@ import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMiss
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
 import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
-import { stampAdminOverride } from "../data/bandAttendance";
+import { stampAdminOverride, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 
@@ -577,6 +577,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const [hoverNotes, setHoverNotes] = useState(null) // null | { text, x, y };
   // Tally prompt — shown when a lesson is manually dragged to missed area
   const [tallyPrompt, setTallyPrompt] = useState(null); // { lesson, missedEntry, weekKey, weekNum }
+  const [suggestionMenu, setSuggestionMenu] = useState(null); // v2.42.0 { x, y, bandLessonId, enrolmentId, first }
   const [tallyPromptNotes, setTallyPromptNotes] = useState("");
   const [tallyPromptCategory, setTallyPromptCategory] = useState(null);
   const [tallyPromptReasonDetail, setTallyPromptReasonDetail] = useState("");
@@ -1134,7 +1135,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const bandSpecTags = bandSpecialistTags(bandMembers, students, specLookupRef, l.schoolId, l.day, sl);
         // Cluster 6b status lines (new bands only; both false/0 for legacy).
         const { needsAttribution, absentN } = bandCardStatus(l, weeklyData?.missed || EMPTY_LESSONS);
-        out[l.id] = { teacherName, memberNames, bandSpecTags, needsAttribution, absentN };
+        // v2.42.0: catch-up members a teacher marked absent with "catch-up owed" suggested.
+        const suggestions = pendingSuggestions(l).map(e => ({
+          enrolmentId: e.enrolmentId,
+          first: ((students.find(s => s.id === e.studentId)?.name) || "").split(" ")[0] || "Student",
+        }));
+        out[l.id] = { teacherName, memberNames, bandSpecTags, needsAttribution, absentN, suggestions };
       } else {
         // Live instrument: if the student's instrument changed, reflect it on the card
         const _cardStuW = !l.isGroup ? students.find(s => s.id === l.studentId) : null;
@@ -1689,6 +1695,51 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     } else {
       notify("Absence undone");
     }
+  };
+
+  // v2.42.0 — a teacher marked a catch-up member absent and suggested the
+  // catch-up is owed again. Confirm runs the cluster-5 owed-on path (the
+  // same no-flash row delete and late-invoice notice as the reason prompt's
+  // owed-on save); Dismiss leaves the forfeit. Both stamp adminOverrideAt.
+  const handleConfirmSuggestion = (bandLessonId, enrolmentId) => {
+    setSuggestionMenu(null);
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const b = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+    const entry = bandEntryOf(b, enrolmentId);
+    const row = entry && entry.catchupId ? (catchups || []).find(c => c.id === entry.catchupId) || null : null;
+    const at = new Date().toISOString();
+    const plan = entry ? planConfirmSuggestion({ band: b, entry, row, at }) : null;
+    if (!plan) return;
+    applyToBand(bandLessonId, (bb) => {
+      const e = bandEntryOf(bb, enrolmentId);
+      const p = e ? planConfirmSuggestion({ band: bb, entry: e, row, at }) : null;
+      return p ? { band: p.band } : null;
+    });
+    if (plan.deleteRow) {
+      deleteBandLinkedCatchups([plan.deleteRow]);
+      const st = students.find(s => s.id === entry.studentId);
+      const lateInvoice = nextTermInvoiceSentFor({
+        weekKey: plan.deleteRow.resolvesWeekKey, interruptions,
+        invoices: parseInvoiceDrafts(invoiceDraftsRaw), studentId: entry.studentId, studentName: st?.name,
+      });
+      if (lateInvoice) {
+        notify(`Heads up: ${firstNameOf(entry.studentId)}'s next-term invoice has already been sent, so this lesson won't be credited on it.`, "warning", 9000);
+        return;
+      }
+    }
+    notify(`Catch-up owed confirmed for ${firstNameOf(entry.studentId)}`);
+  };
+
+  const handleDismissSuggestion = (bandLessonId, enrolmentId) => {
+    setSuggestionMenu(null);
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const at = new Date().toISOString();
+    applyToBand(bandLessonId, (bb) => {
+      const e = bandEntryOf(bb, enrolmentId);
+      const p = e ? planDismissSuggestion({ band: bb, entry: e, at }) : null;
+      return p ? { band: p.band } : null;
+    });
+    notify("Suggestion dismissed");
   };
 
   // Save. Order is fixed and deliberate — see planAttributionSave.
@@ -3097,6 +3148,28 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   return (
     <div onClick={() => { setHoverNotes(null); if (contextMenu) { setContextMenu(null); setMissedZoneSubmenu(null); setDayHeaderSubmenu(null); setWttEmailSubmenu(null); setWttEmailLevel2(null); setSwapTeacherSubmenu(null); } if (expandedWarnings.size > 0) setExpandedWarnings(new Set()); }} >
+
+      {/* v2.42.0 — Confirm / Dismiss a teacher's "catch-up owed" suggestion */}
+      {suggestionMenu && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1100 }} onClick={e => { e.stopPropagation(); setSuggestionMenu(null); }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ position: "fixed", left: Math.min(suggestionMenu.x, window.innerWidth - 250), top: Math.min(suggestionMenu.y, window.innerHeight - 130), width: 240,
+              background: colors.cardBg, border: `1px solid ${colors.amber}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: colors.amber, padding: "4px 8px 6px" }}>{suggestionMenu.first}: Teacher suggests catch-up owed</div>
+            {[
+              { label: "Confirm — catch-up owed", onClick: () => handleConfirmSuggestion(suggestionMenu.bandLessonId, suggestionMenu.enrolmentId) },
+              { label: "Dismiss — keep as forfeited", onClick: () => handleDismissSuggestion(suggestionMenu.bandLessonId, suggestionMenu.enrolmentId) },
+            ].map(btn => (
+              <button key={btn.label} onClick={btn.onClick}
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 8px", border: "none", borderRadius: 6, background: "transparent", color: colors.text, fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}
+                onMouseEnter={e => { e.currentTarget.style.background = colors.blueLight; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
+                {btn.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Tally prompt — shown when lesson is manually dragged to missed area */}
       {tallyPrompt && (() => {
@@ -6255,6 +6328,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         {memberNames.length > 0 && <div style={{ color: colors.textMuted, fontSize: 11, marginTop: 2 }}>{memberNames.join(", ")}</div>}
                                         {_d.needsAttribution && <div style={{ color: colors.amber, fontSize: 10, fontWeight: 600 }}>Needs attribution</div>}
                                         {_d.absentN > 0 && <div style={{ color: colors.danger, opacity: 0.75, fontSize: 10, fontWeight: 600 }}>{_d.absentN} absent</div>}
+                                        {(_d.suggestions || []).map(sg => (
+                                          <div key={sg.enrolmentId}
+                                            onClick={e => { e.stopPropagation(); setHoverPopover(null); setSuggestionMenu({ x: e.clientX, y: e.clientY, bandLessonId: l.id, enrolmentId: sg.enrolmentId, first: sg.first }); }}
+                                            title="Click to confirm or dismiss"
+                                            style={{ color: colors.amber, fontSize: 10, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 3 }}>
+                                            <AlertTriangle size={10} style={{ flexShrink: 0 }} /> {sg.first}: Teacher suggests catch-up owed
+                                          </div>
+                                        ))}
                                         {(() => { const tn = _d.teacherName; return tn ? <div style={{ color: colors.textLight, fontSize: 11 }}>{tn.split(" ")[0]}</div> : null; })()}
                                         {bandSpecTags.length > 0 && draggingId !== l.id && <div style={{ color: colors.specialistTag, fontSize: 10, fontWeight: 600 }}>during {bandSpecTags.join(", ")}</div>}
                                         {isBandExpanded && (

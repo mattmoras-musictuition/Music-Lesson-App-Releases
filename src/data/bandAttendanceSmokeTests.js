@@ -16,7 +16,7 @@ import {
   isMemberAbsent, absentMembers, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
 } from "./bandAbsence";
 import { sessionMemberRows, bandCardStatus } from "./bandSessionView";
-import { stampAdminOverride } from "./bandAttendance";
+import { stampAdminOverride, isPendingSuggestion, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "./bandAttendance";
 
 const PW = "2020-03-09";                 // the band's week (past)
 const T1 = "2026-09-21T01:00:00.000Z";   // a teacher stamp's writtenAt
@@ -170,4 +170,46 @@ export function runBandAttendanceStampTests(assert) {
   assert("attendance stamp: admin catch-up Mark absent → admin-owned",
     [entryOf(stampAdminOverride(cuMark.band, bob.id, NOW), bob).writerTeacherId, entryOf(stampAdminOverride(cuMark.band, bob.id, NOW), bob).adminOverrideAt],
     [null, NOW]);
+}
+
+// ── Catch-up suggestions: Confirm / Dismiss (C4) ──
+export function runBandAttendanceSuggestionTests(assert) {
+  const abs = { reason: "uninformed_absence", reasonDetail: "Sick", notes: "n", makeupEligible: false, suggestOwed: true };
+  const sugg = ms(bob, "catchup", { catchupId: "CU1", consumedWeekKey: "2020-03-02", fee: 25, attended: false, absence: abs, writerTeacherId: "tw", teacherWrittenAt: T1 });
+  const b = band({ memberStates: [ms(amy, "regular"), sugg, ms(cat, "catchup", { catchupId: "CU3", attended: false, absence: { ...abs, suggestOwed: false } })] });
+  const row = { id: "CU1", weekKey: PW, resolvesEnrolmentId: bob.id, resolvesWeekKey: "2020-03-02", day: "Tuesday", time: "11:00" };
+
+  assert("suggestion: pending = catch-up + attended false + suggestOwed true",
+    [isPendingSuggestion(sugg), isPendingSuggestion({ ...sugg, attended: null }), isPendingSuggestion({ ...sugg, consumption: "free" }),
+     isPendingSuggestion({ ...sugg, absence: { ...abs, suggestOwed: false } }), isPendingSuggestion(null)],
+    [true, false, false, false, false]);
+  assert("suggestion: pendingSuggestions lists only pending entries", pendingSuggestions(b).map(e => e.enrolmentId), ["e_bob"]);
+  assert("suggestion: legacy band has none", pendingSuggestions(band()), []);
+
+  const conf = planConfirmSuggestion({ band: b, entry: entryOf(b, bob), row, at: NOW });
+  assert("suggestion: Confirm deletes the linked row (owed-on path)", conf.deleteRow, row);
+  assert("suggestion: Confirm → snapshot kept, catchupId null, makeupEligible true, suggestOwed false, admin-owned",
+    entryOf(conf.band, bob),
+    { ...sugg, catchupId: null, absentCatchupSnapshot: row, writerTeacherId: null, adminOverrideAt: NOW,
+      absence: { reason: "uninformed_absence", reasonDetail: "Sick", notes: "n", makeupEligible: true, suggestOwed: false } });
+  assert("suggestion: Confirm leaves other members alone",
+    [entryOf(conf.band, amy), entryOf(conf.band, cat)], [entryOf(b, amy), entryOf(b, cat)]);
+  assert("suggestion: Confirm clears the pending marker", pendingSuggestions(conf.band), []);
+  assert("suggestion: Confirmed absence still renders absent", isMemberAbsent(conf.band, entryOf(conf.band, bob), []), true);
+  const undo = planUndoAbsence({ band: conf.band, entry: entryOf(conf.band, bob), missed: [], catchups: [] });
+  assert("suggestion: Undo after Confirm re-inserts the row under its id (cluster-5 path)",
+    [undo.insertRow && undo.insertRow.id, entryOf(undo.band, bob).catchupId], ["CU1", "CU1"]);
+  const confNoRow = planConfirmSuggestion({ band: b, entry: entryOf(b, bob), row: null, at: NOW });
+  assert("suggestion: Confirm with no linked row deletes nothing, still owed",
+    [confNoRow.deleteRow, entryOf(confNoRow.band, bob).absence.makeupEligible, "absentCatchupSnapshot" in entryOf(confNoRow.band, bob)],
+    [null, true, false]);
+
+  const dis = planDismissSuggestion({ band: b, entry: entryOf(b, bob), at: NOW });
+  assert("suggestion: Dismiss → suggestOwed false, still a forfeit absence, row kept, admin-owned",
+    entryOf(dis.band, bob), { ...sugg, writerTeacherId: null, adminOverrideAt: NOW, absence: { ...abs, suggestOwed: false } });
+  assert("suggestion: Dismiss returns no row to delete", "deleteRow" in dis, false);
+  assert("suggestion: Confirm/Dismiss refuse a non-pending entry",
+    [planConfirmSuggestion({ band: b, entry: entryOf(b, cat), row: null, at: NOW }), planDismissSuggestion({ band: b, entry: entryOf(b, cat), at: NOW })],
+    [null, null]);
+  assert("suggestion: Confirm/Dismiss do not mutate the input", entryOf(b, bob), sugg);
 }
