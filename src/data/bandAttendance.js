@@ -21,7 +21,7 @@
 // ============================================================
 
 import { hasMemberStates, CONSUMPTION } from "./bandMemberStates";
-import { applyCatchupAbsence } from "./bandAbsence";
+import { applyCatchupAbsence, bandEntryForMiss } from "./bandAbsence";
 
 /**
  * The band with one member entry marked as touched by an admin absence
@@ -43,6 +43,27 @@ export function stampAdminOverride(band, enrolmentId, at) {
       ? { ...e, adminOverrideAt: at, writerTeacherId: null }
       : e)),
   };
+}
+
+/**
+ * The Missed-zone Edit modal saving a band miss (bandLessonId set) is an
+ * admin absence action too: the member entry it belongs to is stamped, so a
+ * teacher-recorded band miss the admin edits is admin-owned from then on
+ * (drain v3 rule 1 skips later teacher stamps). Returns the week's lessons
+ * with that band card stamped; for a non-band miss, or a band / entry that
+ * can't be found, `lessons` itself is returned untouched.
+ *
+ * @param {Array} lessons   The week's lessons[].
+ * @param {Object} miss     The miss being edited (as it was before the edit).
+ * @param {string} at       ISO timestamp.
+ * @returns {Array}
+ */
+export function stampBandMissEdit(lessons, miss, at) {
+  if (!miss || !miss.bandLessonId) return lessons;
+  const band = (lessons || []).find(l => l && l.isBandSession && l.id === miss.bandLessonId);
+  const entry = band ? bandEntryForMiss(band, miss) : null;
+  if (!entry) return lessons;
+  return lessons.map(l => (l === band ? stampAdminOverride(band, entry.enrolmentId, at) : l));
 }
 
 // ── Catch-up suggestions (teacher suggests catch-up owed) ───────────────

@@ -16,7 +16,7 @@ import {
   isMemberAbsent, absentMembers, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
 } from "./bandAbsence";
 import { sessionMemberRows, bandCardStatus } from "./bandSessionView";
-import { stampAdminOverride, isPendingSuggestion, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion, catchupSuggestionSummary } from "./bandAttendance";
+import { stampAdminOverride, isPendingSuggestion, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion, catchupSuggestionSummary, stampBandMissEdit } from "./bandAttendance";
 import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan } from "./dashboardAlerts";
 import { ownerCase } from "./dashboardAlertsSmokeTests";
 
@@ -247,4 +247,27 @@ export function runBandAttendanceDashboardTests(assert) {
   assert("suggestion chip: adds one to the alert badge", visibleChipCount(chips3) - visibleChipCount(chips0), 1);
   assert("suggestion chip: not dismissible — Dismiss all writes nothing for it",
     [chip(chips3).dismissKeys, JSON.stringify(dismissAllPlan(chips3)) === JSON.stringify(dismissAllPlan(chips0))], [[], true]);
+}
+
+// ── Missed-zone Edit modal on a band miss (amendment) ──
+export function runBandAttendanceMissEditTests(assert) {
+  const c1 = card("C1", amy);
+  const b = band({ memberStates: [ms(amy, "regular", { writerTeacherId: "tw", teacherWrittenAt: T1 }), ms(bob, "regular")] });
+  const other = { id: "L2", studentId: "zed", instrument: "Cello", day: "Monday" };
+  const lessons = [other, b];
+  const bandMiss = drainMiss(c1);
+  const out = stampBandMissEdit(lessons, bandMiss, NOW);
+  assert("miss edit: editing a teacher band miss stamps that member (adminOverrideAt, writer cleared)",
+    entryOf(out[1], amy), ms(amy, "regular", { writerTeacherId: null, teacherWrittenAt: T1, adminOverrideAt: NOW }));
+  assert("miss edit: other members and other lessons untouched",
+    [entryOf(out[1], bob), out[0] === other], [entryOf(b, bob), true]);
+  assert("miss edit: fallback match by studentId + instrument (miss without enrolmentId)",
+    entryOf(stampBandMissEdit(lessons, { ...bandMiss, enrolmentId: undefined }, NOW)[1], amy).adminOverrideAt, NOW);
+  const plainMiss = { ...card("C9", amy), reason: "informed_absence" };
+  assert("miss edit: a non-band miss touches no memberStates (same lessons array)",
+    stampBandMissEdit(lessons, plainMiss, NOW) === lessons, true);
+  assert("miss edit: band miss whose band is gone → lessons untouched",
+    stampBandMissEdit([other], bandMiss, NOW).length === 1 && stampBandMissEdit([other], bandMiss, NOW)[0] === other, true);
+  assert("miss edit: no miss → lessons untouched", stampBandMissEdit(lessons, undefined, NOW) === lessons, true);
+  assert("miss edit: input band not mutated", entryOf(b, amy).writerTeacherId, "tw");
 }

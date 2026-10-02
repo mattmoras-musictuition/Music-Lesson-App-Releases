@@ -36,7 +36,7 @@ import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMiss
   planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
 import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
-import { stampAdminOverride, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
+import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 
@@ -3399,10 +3399,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             setWeeklyTimetables(prev => {
               const wEntry = prev[storageKey];
               if (!wEntry) return prev;
+              // v2.42.0: editing a band miss is an admin absence action — stamp
+              // its member entry (adminOverrideAt, writer cleared).
+              const edited = (wEntry.missed || []).find(m => m.id === lesson.id);
+              const lessons = stampBandMissEdit(wEntry.lessons, edited, now);
               return {
                 ...prev,
                 [storageKey]: {
                   ...wEntry,
+                  ...(lessons !== wEntry.lessons ? { lessons } : {}),
                   missed: (wEntry.missed || []).map(m => m.id === lesson.id ? {
                     ...m,
                     reason: finalReason,
