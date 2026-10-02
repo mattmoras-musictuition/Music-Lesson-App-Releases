@@ -25,7 +25,7 @@
 // Legacy bands (no memberStates) get none of this.
 // ============================================================
 
-import { hasMemberStates, CONSUMPTION } from "./bandMemberStates";
+import { hasMemberStates, CONSUMPTION, restoreCardsReporting } from "./bandMemberStates";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 
 const ABSENCE_CAPABLE = new Set([CONSUMPTION.regular, CONSUMPTION.catchup, CONSUMPTION.free]);
@@ -266,6 +266,24 @@ export function planBandRemovalAbsences(bandId, missed) {
     missed: (missed || []).filter(m => !(m && m.bandLessonId === bandId)),
     cards: mine.map(cardFromBandMiss),
   };
+}
+
+/**
+ * "Remove band session" (v2.42.1, extracted): the band card leaves the week,
+ * its stamped misses go, and its ledger cards plus its regular absentees'
+ * cards go back on the grid under the occupied-slot rule — the ones that
+ * can't are returned in `dropped` for the caller's notice.
+ *
+ * @param {Object} entry          The week+school entry.
+ * @param {string} bandLessonId
+ * @returns {{lessons: Array, missed: Array, dropped: Array}}
+ */
+export function planRemoveBandSession(entry, bandLessonId) {
+  const band = ((entry && entry.lessons) || []).find(l => l && l.id === bandLessonId);
+  const absences = planBandRemovalAbsences(bandLessonId, (entry && entry.missed) || []);
+  const restore = [...((band && band.removedLessons) || []), ...absences.cards];
+  const r = restoreCardsReporting(((entry && entry.lessons) || []).filter(l => l.id !== bandLessonId), restore);
+  return { lessons: r.lessons, missed: absences.missed, dropped: r.dropped };
 }
 
 /**

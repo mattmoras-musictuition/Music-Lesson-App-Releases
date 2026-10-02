@@ -28,12 +28,12 @@ import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
-  defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
-  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
+  defaultAttributions, reconcileMemberStates, selectableMissesForStudent,
+  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
-  planBandRemovalAbsences, planCleanImport } from "../data/bandAbsence";
+  planBandRemovalAbsences, planCleanImport, planRemoveBandSession } from "../data/bandAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
 import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
@@ -1560,6 +1560,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // recorded absences arrive in the same shapes and render/undo unchanged.
   const firstNameOf = (studentId) =>
     ((students.find(s => s.id === studentId)?.name) || "").split(" ")[0] || "This student";
+  // v2.42.1 — a band card that can't go back because its slot is taken is
+  // never dropped silently: a notice names it, and a quiet log records it.
+  const reportUnrestoredCards = (dropped) => {
+    const notice = restoreDropNotice(dropped, c => firstNameOf(c.studentId) || (c.studentName || "").split(" ")[0] || "A student");
+    if (!notice) return;
+    if (notify) notify(notice, "warning", 9000);
+    if (logError) logError("Band lesson not put back (slot taken)", (dropped || []).map(c => `${c.studentId}|${c.enrolmentId || ""}|${c.day} ${c.start}`).join(", "));
+  };
   const bandEntryOf = (band, enrolmentId) =>
     (hasMemberStates(band) ? band.memberStates.find(e => e && e.enrolmentId === enrolmentId) : null) || null;
 
@@ -1831,44 +1839,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const stampedMemberStates = plan.memberStates.map(e =>
       idByEnrolment.has(e.enrolmentId) ? { ...e, catchupId: idByEnrolment.get(e.enrolmentId) } : e
     );
+    // Ledger step (bandMemberStates.applyAttributionLedger): became Regular →
+    // card(s) into the ledger; left Regular → back on the grid where the slot
+    // is free; then the v2.42.1 repair sweep for every Regular member still
+    // missing a card. Cards whose slot is taken can't go back — v2.42.1 says
+    // so (notice + quiet log) instead of dropping them silently. The notice
+    // is worked out on the current week; the setter re-runs it on the latest.
+    const ledgerArgs = { bandLessonId: bandAttrModal.lessonId, regularOn: plan.regularOn, regularOff: plan.regularOff, memberStates: stampedMemberStates, resolver: enrolmentResolver };
+    const ledgerPreview = applyAttributionLedger({ ...ledgerArgs, lessons: (weeklyTimetables[storageKey] || {}).lessons || [] });
     setWeeklyTimetables(prev => {
       const d = prev[storageKey];
       if (!d) return prev;
-      let lessons = d.lessons || [];
-      const band = lessons.find(l => l.id === bandAttrModal.lessonId);
-      if (!band) return prev;
-      let ledger = band.removedLessons || [];
-
-      // became regular → card(s) off the grid, into the ledger
-      for (const e of plan.regularOn) {
-        const cards = findMemberCards(lessons, e, enrolmentResolver);
-        if (cards.length === 0) continue;
-        const ids = new Set(cards.map(c => c.id));
-        lessons = lessons.filter(l => !ids.has(l.id));
-        ledger = [...ledger, ...cards];
-      }
-      // away from regular → out of the ledger either way; back onto the grid
-      // only if the slot is free, matching the "Remove band session" restore.
-      for (const e of plan.regularOff) {
-        const cards = findMemberCards(ledger, e, enrolmentResolver);
-        if (cards.length === 0) continue;
-        const ids = new Set(cards.map(c => c.id));
-        ledger = ledger.filter(l => !ids.has(l.id));
-        for (const rl of cards) {
-          const slotOccupied = lessons.some(l => l.day === rl.day && l.start === rl.start);
-          if (!slotOccupied) lessons = [...lessons, rl];
-          // If occupied, the student stays missing → unscheduled banner picks it up
-        }
-      }
-
-      lessons = lessons.map(l => l.id === bandAttrModal.lessonId
-        ? { ...l, memberStates: stampedMemberStates, removedLessons: ledger }
-        : l);
-      // v2.42.1 repair sweep — EVERY Regular member (not just the newly
-      // Regular) whose card is not in the ledger but is somewhere in this
-      // school-week (any day, any lane) has it moved in. No card: no-op.
-      lessons = sweepRegularIntoLedger(lessons, bandAttrModal.lessonId, enrolmentResolver);
-      return { ...prev, [storageKey]: { ...d, lessons } };
+      const out = applyAttributionLedger({ ...ledgerArgs, lessons: d.lessons || [] });
+      if (!out) return prev;
+      return { ...prev, [storageKey]: { ...d, lessons: out.lessons } };
     });
     // Rows entering and leaving catchups state happen in the SAME block as the
     // band change above. The departing rows are dropped here rather than after
@@ -1882,6 +1866,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
     setBandAttrModal(null);
     if (notify) notify("Band attribution saved");
+    reportUnrestoredCards(ledgerPreview && ledgerPreview.dropped);
 
     // (3) the deletes themselves — fire-and-report. State already reflects
     // them; a failure puts the row back so it renders visibly.
@@ -2553,6 +2538,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         : "";
       notify(`Imported ${result.importedCount} lessons for the week${extraNote}${skipNote}`);
     }
+    reportUnrestoredCards(result.droppedRestoreCards);
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
   };
@@ -4884,25 +4870,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     const linkedIds = new Set((removedBand.memberStates || []).map(e => e && e.catchupId).filter(Boolean));
                     deleteBandLinkedCatchups((catchups || []).filter(c => linkedIds.has(c.id)));
                   }
+                  // Cluster 5b — the band's absences go with it: stamped misses
+                  // removed, regular members' cards restored like the ledger,
+                  // skipping any whose slot is now occupied. v2.42.1: those are
+                  // named in a notice (planRemoveBandSession reports them).
+                  const removeBandId = contextMenu.lessonId;
+                  const removePreview = weeklyTimetables[storageKey] ? planRemoveBandSession(weeklyTimetables[storageKey], removeBandId) : null;
                   setWeeklyTimetables(prev => {
                     const d = prev[storageKey];
                     if (!d) return prev;
-                    const bandLesson = (d.lessons || []).find(l => l.id === contextMenu.lessonId);
-                    // Cluster 5b — the band's absences go with it: stamped misses
-                    // removed, regular members' cards restored like the ledger.
-                    const absences = planBandRemovalAbsences(contextMenu.lessonId, d.missed || []);
-                    const removedLessons = [...(bandLesson?.removedLessons || []), ...absences.cards];
-                    let lessons = d.lessons.filter(l => l.id !== contextMenu.lessonId);
-                    // Restore individual cards — skip any whose slot is now occupied
-                    for (const rl of removedLessons) {
-                      const slotOccupied = lessons.some(l => l.day === rl.day && l.start === rl.start);
-                      if (!slotOccupied) lessons = [...lessons, rl];
-                      // If occupied, student stays missing → unscheduled banner picks it up
-                    }
-                    return { ...prev, [storageKey]: { ...d, lessons, missed: absences.missed } };
+                    const out = planRemoveBandSession(d, removeBandId);
+                    return { ...prev, [storageKey]: { ...d, lessons: out.lessons, missed: out.missed } };
                   });
                   setContextMenu(null);
                   notify("Band session removed");
+                  reportUnrestoredCards(removePreview && removePreview.dropped);
                 }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
                   onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove band session</span>
@@ -6733,9 +6715,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               return { ...prev, [storageKey]: {
                                 ...entry,
                                 catchupStaged: (entry.catchupStaged || []).filter(sc => sc.id !== c.id),
-                                ...(hadAbsences ? { lessons: restoreLedgerCards(entry.lessons || [], absences.cards), missed: absences.missed } : {}),
+                                ...(hadAbsences ? { lessons: restoreCardsReporting(entry.lessons || [], absences.cards).lessons, missed: absences.missed } : {}),
                               } };
                             });
+                            // v2.42.1 — name any absentee card whose slot is taken.
+                            const strayEntry = weeklyTimetables[storageKey];
+                            if (strayEntry) reportUnrestoredCards(restoreCardsReporting(strayEntry.lessons || [], planBandRemovalAbsences(c.id, strayEntry.missed || []).cards).dropped);
                           }}
                           style={{ position: "absolute", top: 2, right: 5, fontSize: 11, color: colors.textMuted, cursor: "pointer", lineHeight: 1, fontWeight: 700 }}
                           title="Remove" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>

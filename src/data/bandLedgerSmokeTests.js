@@ -14,7 +14,8 @@
 // Weeks sit in 2099 so the past-week guards never move under a test.
 // ============================================================
 
-import { isExcludedByBands, restoreLedgerCards, isGenerateExcluded, withoutLedgeredDuplicates, displaceRegularIntoBands, sweepRegularIntoLedger } from "./bandMemberStates";
+import { isExcludedByBands, restoreLedgerCards, isGenerateExcluded, withoutLedgeredDuplicates, displaceRegularIntoBands, sweepRegularIntoLedger, restoreCardsReporting, restoreDropNotice, applyAttributionLedger } from "./bandMemberStates";
+import { planRemoveBandSession } from "./bandAbsence";
 import { makeEnrolmentResolver } from "../utils/enrolmentActivity";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 
@@ -177,4 +178,65 @@ export function runBandLedgerSaveSweepTests(assert) {
   assert("save sweep: legacy band / unknown band → untouched",
     [sweepRegularIntoLedger(legacyLessons, "BL", r) === legacyLessons, sweepRegularIntoLedger(lessons, "nope", r) === lessons], [true, true]);
   assert("save sweep: inputs not mutated", [band.removedLessons.length, lessons.length], [1, 4]);
+}
+
+// ── No silent drops on restore (C4) ──
+export function runBandLedgerRestoreTests(assert) {
+  const r = lresolver();
+  const annieM = lcard("W_ANNIE", "e_annie", "Monday", "11:30");
+  const graceM = lcard("W_GRACE", "e_grace", "Monday", "12:30");
+  const matt = { id: "W_MATT", enrolmentId: "e_x", studentId: "x", instrument: "Guitar", schoolId: "S", day: "Monday", start: "12:30", bucket_id: "lane_matt" };
+  const first = (c) => ({ annie: "Annie", grace: "Grace" }[c.studentId] || "?");
+
+  const rep = restoreCardsReporting([matt], [annieM, graceM]);
+  assert("restore report: free slot restored, taken slot reported (any lane)",
+    [rep.lessons.map(l => l.id), rep.dropped.map(c => c.id)], [["W_MATT", "W_ANNIE"], ["W_GRACE"]]);
+  assert("restore report: same lessons as restoreLedgerCards (rule unchanged)",
+    rep.lessons.map(l => l.id), restoreLedgerCards([matt], [annieM, graceM]).map(l => l.id));
+  assert("restore report: two cards for one slot — the second is reported",
+    restoreCardsReporting([], [annieM, { ...annieM, id: "W_ANNIE2" }]).dropped.map(c => c.id), ["W_ANNIE2"]);
+
+  assert("restore notice: one card",
+    restoreDropNotice([graceM], first),
+    "Couldn't put back Grace's lesson (Monday 12:30) — that slot is taken. Re-add it from the Master Timetable if needed.");
+  assert("restore notice: several cards",
+    restoreDropNotice([annieM, graceM], first),
+    "Couldn't put back Annie's lesson (Monday 11:30) and Grace's lesson (Monday 12:30) — those slots are taken. Re-add them from the Master Timetable if needed.");
+  assert("restore notice: nothing dropped → null", [restoreDropNotice([], first), restoreDropNotice(undefined, first)], [null, null]);
+
+  // Attribution Save: Grace leaves Regular while Matt's lane holds Monday 12:30
+  const band = lband("B1", "Wednesday", [lentry("e_annie"), lentry("e_grace")], [annieM, graceM]);
+  const offGrace = applyAttributionLedger({ lessons: [band, matt], bandLessonId: "B1", regularOn: [], regularOff: [lentry("e_grace")],
+    memberStates: [lentry("e_annie"), lentry("e_grace", "free")], resolver: r });
+  assert("save ledger: off-Regular card with a taken slot leaves the ledger and is REPORTED",
+    [offGrace.lessons.find(l => l.id === "B1").removedLessons.map(c => c.id), offGrace.lessons.filter(l => !l.isBandSession).map(l => l.id), offGrace.dropped.map(c => c.id)],
+    [["W_ANNIE"], ["W_MATT"], ["W_GRACE"]]);
+  const offFree = applyAttributionLedger({ lessons: [band], bandLessonId: "B1", regularOn: [], regularOff: [lentry("e_grace")],
+    memberStates: [lentry("e_annie"), lentry("e_grace", "free")], resolver: r });
+  assert("save ledger: off-Regular card with a free slot goes back, nothing reported",
+    [offFree.lessons.filter(l => !l.isBandSession).map(l => l.id), offFree.dropped], [["W_GRACE"], []]);
+  const on = applyAttributionLedger({ lessons: [lband("B1", "Wednesday", [lentry("e_annie")]), annieM], bandLessonId: "B1", regularOn: [lentry("e_annie")], regularOff: [],
+    memberStates: [lentry("e_annie")], resolver: r });
+  assert("save ledger: became Regular → into the ledger (as before)",
+    [on.lessons.find(l => l.id === "B1").removedLessons.map(c => c.id), on.lessons.length], [["W_ANNIE"], 1]);
+  const sweep = applyAttributionLedger({ lessons: [lband("B1", "Wednesday", [lentry("e_annie")]), annieM], bandLessonId: "B1", regularOn: [], regularOff: [],
+    memberStates: [lentry("e_annie")], resolver: r });
+  assert("save ledger: includes the repair sweep for an already-Regular member",
+    sweep.lessons.find(l => l.id === "B1").removedLessons.map(c => c.id), ["W_ANNIE"]);
+  assert("save ledger: band missing → null", applyAttributionLedger({ lessons: [], bandLessonId: "B1", resolver: r }), null);
+
+  // Remove band session
+  const rm = planRemoveBandSession({ lessons: [band, matt], missed: [] }, "B1");
+  assert("remove band: ledger cards back where free, taken slot reported",
+    [rm.lessons.map(l => l.id), rm.dropped.map(c => c.id)], [["W_MATT", "W_ANNIE"], ["W_GRACE"]]);
+  const stampedMiss = { ...lcard("W_X", "e_annie", "Tuesday", "10:00"), reason: "informed_absence", bandLessonId: "B1", ledgerCard: lcard("W_X", "e_annie", "Tuesday", "10:00") };
+  const rm2 = planRemoveBandSession({ lessons: [lband("B1", "Wednesday", [lentry("e_annie")])], missed: [stampedMiss, { id: "OTHER_MISS", day: "Friday" }] }, "B1");
+  assert("remove band: stamped misses go, absentee cards restored (as before)",
+    [rm2.lessons.map(l => l.id), rm2.missed.map(m => m.id), rm2.dropped], [["W_X"], ["OTHER_MISS"], []]);
+
+  // Day import of the band's own day: its other-day ledger card can't go back
+  const imp = buildMttImportForWeekSchool({ mtt: { lessons: [] }, schoolId: "S", weekDates: lweekDates(), existingEntry: { lessons: [lband("B5", "Wednesday", [lentry("e_grace")], [graceM]), matt], missed: [] },
+    targetDay: "Wednesday", enrolments: LENROL, dropBands: true, catchups: [] });
+  assert("day import: a removed band's card whose slot is taken is reported",
+    [imp.entry.lessons.map(l => l.id), imp.droppedRestoreCards.map(c => c.id)], [["W_MATT"], ["W_GRACE"]]);
 }

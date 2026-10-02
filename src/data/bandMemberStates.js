@@ -959,6 +959,80 @@ export function restoreLedgerCards(lessons, ledger) {
   return out;
 }
 
+/**
+ * restoreLedgerCards with a report (v2.42.1): the same occupied-slot rule
+ * (a card goes back only if no lesson in ANY lane holds its day + start),
+ * but the cards that could not go back are returned so the caller can say
+ * so instead of dropping them silently.
+ *
+ * @param {Array} lessons
+ * @param {Array} cards
+ * @returns {{lessons: Array, dropped: Array}}
+ */
+export function restoreCardsReporting(lessons, cards) {
+  let out = lessons || [];
+  const dropped = [];
+  for (const rl of (cards || [])) {
+    if (!rl) continue;
+    const slotOccupied = out.some((l) => l.day === rl.day && l.start === rl.start);
+    if (slotOccupied) dropped.push(rl);
+    else out = [...out, rl];
+  }
+  return { lessons: out, dropped };
+}
+
+/**
+ * The notice for cards restoreCardsReporting could not put back, or null.
+ * firstNameOf(card) gives the student's first name.
+ */
+export function restoreDropNotice(dropped, firstNameOf) {
+  const list = (dropped || []).filter(Boolean);
+  if (list.length === 0) return null;
+  const parts = list.map((c) => `${firstNameOf(c)}'s lesson (${c.day || "?"} ${c.start || "?"})`);
+  if (parts.length === 1) {
+    return `Couldn't put back ${parts[0]} — that slot is taken. Re-add it from the Master Timetable if needed.`;
+  }
+  const joined = parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+  return `Couldn't put back ${joined} — those slots are taken. Re-add them from the Master Timetable if needed.`;
+}
+
+/**
+ * The attribution window Save's ledger step, as one pure function (v2.42.1):
+ *   became Regular → card(s) off the grid, into the ledger;
+ *   left Regular   → out of the ledger, back on the grid where the slot is
+ *                    free (the occupied ones are reported in `dropped`);
+ *   then memberStates + ledger written onto the band, and the repair sweep
+ *   (sweepRegularIntoLedger) for every Regular member still missing a card.
+ * null when the band is not in `lessons`.
+ *
+ * @returns {{lessons: Array, dropped: Array}|null}
+ */
+export function applyAttributionLedger({ lessons, bandLessonId, regularOn, regularOff, memberStates, resolver } = {}) {
+  let ls = lessons || [];
+  const band = ls.find((l) => l && l.id === bandLessonId);
+  if (!band) return null;
+  let ledger = band.removedLessons || [];
+  for (const e of (regularOn || [])) {
+    const cards = findMemberCards(ls, e, resolver);
+    if (cards.length === 0) continue;
+    const ids = new Set(cards.map((c) => c.id));
+    ls = ls.filter((l) => !ids.has(l.id));
+    ledger = [...ledger, ...cards];
+  }
+  const dropped = [];
+  for (const e of (regularOff || [])) {
+    const cards = findMemberCards(ledger, e, resolver);
+    if (cards.length === 0) continue;
+    const ids = new Set(cards.map((c) => c.id));
+    ledger = ledger.filter((l) => !ids.has(l.id));
+    const r = restoreCardsReporting(ls, cards);
+    ls = r.lessons;
+    dropped.push(...r.dropped);
+  }
+  ls = ls.map((l) => (l.id === bandLessonId ? { ...l, memberStates, removedLessons: ledger } : l));
+  return { lessons: sweepRegularIntoLedger(ls, bandLessonId, resolver), dropped };
+}
+
 // ── Cluster 3c ──────────────────────────────────────────────────────
 
 /**

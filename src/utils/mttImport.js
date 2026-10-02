@@ -24,7 +24,7 @@
 import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
 import { planCleanImport } from "../data/bandAbsence";
-import { restoreLedgerCards, withoutLedgeredDuplicates, displaceRegularIntoBands } from "../data/bandMemberStates";
+import { withoutLedgeredDuplicates, displaceRegularIntoBands, restoreCardsReporting } from "../data/bandMemberStates";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -86,8 +86,14 @@ export function buildMttImportForWeekSchool({
     const dayImported = targetDay
       ? withoutLedgeredDuplicates(importedLessons, plan.lessons.filter(l => l.isBandSession), bandResolver)
       : importedLessons;
+    // Restore the removed bands' other-day cards under the occupied-slot
+    // rule; the ones that can't go back are reported (droppedRestoreCards)
+    // for the caller's notice rather than dropped silently.
+    const restored = targetDay
+      ? restoreCardsReporting([...plan.lessons.filter(l => l.day !== targetDay), ...dayImported], plan.restoreCards)
+      : null;
     const lessons = targetDay
-      ? displaceRegularIntoBands(restoreLedgerCards([...plan.lessons.filter(l => l.day !== targetDay), ...dayImported], plan.restoreCards), bandResolver)
+      ? displaceRegularIntoBands(restored.lessons, bandResolver)
       : importedLessons;
     return {
       entry: {
@@ -96,6 +102,7 @@ export function buildMttImportForWeekSchool({
         generatedAt: new Date().toISOString(),
       },
       importedCount: dayImported.length,
+      droppedRestoreCards: restored ? restored.dropped : [],
       preservedBandCount: 0,
       removedBandCount: plan.removedBandCount,
       rowsToDelete: plan.rowsToDelete,
