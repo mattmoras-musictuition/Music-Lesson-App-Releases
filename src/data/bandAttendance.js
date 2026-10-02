@@ -107,3 +107,28 @@ export function planDismissSuggestion({ band, entry, at } = {}) {
     : e));
   return { band: stampAdminOverride({ ...band, memberStates }, entry.enrolmentId, at) };
 }
+
+/**
+ * The Dashboard's "N catch-up suggestions" chip: pending suggestions across
+ * every week with band cards (no term limit — a suggestion stays until the
+ * admin Confirms or Dismisses it), and the earliest one to jump to (by week,
+ * then school, then band order). Legacy bands never count.
+ *
+ * @param {Object} weeklyTimetables  { "weekKey|schoolId": { lessons, missed } }
+ * @returns {{count: number, earliest: {weekKey, schoolId, bandLessonId}|null}}
+ */
+export function catchupSuggestionSummary(weeklyTimetables) {
+  let count = 0;
+  let earliest = null;
+  for (const sk of Object.keys(weeklyTimetables || {}).sort()) {
+    const [weekKey, schoolId] = sk.split("|");
+    for (const l of ((weeklyTimetables[sk] || {}).lessons || [])) {
+      if (!l || !l.isBandSession) continue;
+      const n = pendingSuggestions(l).length;
+      if (n === 0) continue;
+      count += n;
+      if (!earliest || weekKey < earliest.weekKey) earliest = { weekKey, schoolId, bandLessonId: l.id };
+    }
+  }
+  return { count, earliest };
+}

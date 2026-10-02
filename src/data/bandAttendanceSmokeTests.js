@@ -16,7 +16,9 @@ import {
   isMemberAbsent, absentMembers, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, memberAbsenceInfo,
 } from "./bandAbsence";
 import { sessionMemberRows, bandCardStatus } from "./bandSessionView";
-import { stampAdminOverride, isPendingSuggestion, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "./bandAttendance";
+import { stampAdminOverride, isPendingSuggestion, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion, catchupSuggestionSummary } from "./bandAttendance";
+import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan } from "./dashboardAlerts";
+import { ownerCase } from "./dashboardAlertsSmokeTests";
 
 const PW = "2020-03-09";                 // the band's week (past)
 const T1 = "2026-09-21T01:00:00.000Z";   // a teacher stamp's writtenAt
@@ -212,4 +214,37 @@ export function runBandAttendanceSuggestionTests(assert) {
     [planConfirmSuggestion({ band: b, entry: entryOf(b, cat), row: null, at: NOW }), planDismissSuggestion({ band: b, entry: entryOf(b, cat), at: NOW })],
     [null, null]);
   assert("suggestion: Confirm/Dismiss do not mutate the input", entryOf(b, bob), sugg);
+}
+
+// ── Dashboard "N catch-up suggestions" chip (C5) ──
+export function runBandAttendanceDashboardTests(assert) {
+  const abs = { reason: "other", reasonDetail: "", notes: "", makeupEligible: false, suggestOwed: true };
+  const pend = (e) => ms(e, "catchup", { catchupId: "CU_" + e.id, attended: false, absence: abs, writerTeacherId: "tw", teacherWrittenAt: T1 });
+  const wtt = {
+    "2099-03-16|S2": { lessons: [band({ id: "B3", memberStates: [pend(amy)] })], missed: [] },
+    "2099-03-09|S":  { lessons: [band({ id: "B1", memberStates: [pend(bob), pend(cat), ms(dan, "catchup", { attended: false, absence: { ...abs, suggestOwed: false } })] }),
+                                 { id: "L", studentId: "x" }], missed: [] },
+    "2099-03-09|S0": { lessons: [band({ id: "B0", memberStates: [ms(amy, "regular")] })], missed: [] },
+    "2099-03-02|S":  { lessons: [band({ id: "BL", memberStates: undefined, members: [] })], missed: [] },
+  };
+  assert("suggestion chip: counts pending suggestions across weeks, earliest week first",
+    catchupSuggestionSummary(wtt), { count: 3, earliest: { weekKey: "2099-03-09", schoolId: "S", bandLessonId: "B1" } });
+  assert("suggestion chip: none → count 0, no target", catchupSuggestionSummary({ "2099-03-09|S0": wtt["2099-03-09|S0"] }), { count: 0, earliest: null });
+  assert("suggestion chip: empty / missing timetables", [catchupSuggestionSummary({}), catchupSuggestionSummary(null)],
+    [{ count: 0, earliest: null }, { count: 0, earliest: null }]);
+  const conf = planConfirmSuggestion({ band: wtt["2099-03-16|S2"].lessons[0], entry: pend(amy), row: null, at: NOW });
+  assert("suggestion chip: Confirm removes it from the count",
+    catchupSuggestionSummary({ ...wtt, "2099-03-16|S2": { lessons: [conf.band], missed: [] } }).count, 2);
+
+  const c = ownerCase();
+  const d = deriveAlertData(c);
+  const ctx = { isAlertDismissed: (k) => !!c.dismissed[k], unassignedCount: c.unassignedCount, unschedCount: c.unschedCount,
+    uninvoicedRows: c.uninvoicedRows, unattributedBands: c.unattributedBands };
+  const chips0 = buildAlertChips(d, ctx);
+  const chips3 = buildAlertChips(d, { ...ctx, catchupSuggestionCount: 3 });
+  const chip = (cs) => cs.find(c => c.key === "catchup-suggestions");
+  assert("suggestion chip: hidden at 0, shown at N > 0", [chip(chips0).visible, chip(chips3).visible], [false, true]);
+  assert("suggestion chip: adds one to the alert badge", visibleChipCount(chips3) - visibleChipCount(chips0), 1);
+  assert("suggestion chip: not dismissible — Dismiss all writes nothing for it",
+    [chip(chips3).dismissKeys, JSON.stringify(dismissAllPlan(chips3)) === JSON.stringify(dismissAllPlan(chips0))], [[], true]);
 }

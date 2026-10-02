@@ -23,7 +23,7 @@ import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from 
 import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
 import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
 import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
-import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests } from "./bandAttendanceSmokeTests";
+import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests } from "./bandAttendanceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -353,6 +353,7 @@ export function runSmokeTests(logErrorFn) {
   runBandAttendanceCharacterizationTests(assert);
   runBandAttendanceStampTests(assert);
   runBandAttendanceSuggestionTests(assert);
+  runBandAttendanceDashboardTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

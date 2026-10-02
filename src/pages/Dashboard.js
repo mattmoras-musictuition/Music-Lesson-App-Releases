@@ -14,6 +14,7 @@ import { computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince } from "../utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
 import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup } from "../data/bandSessionView";
+import { catchupSuggestionSummary } from "../data/bandAttendance";
 import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan, groupInterruptions } from "../data/dashboardAlerts";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
@@ -1548,6 +1549,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const anchor = resolveAnchorTerm(interruptions, offerableWeekKey);
     return unattributedBandsForAlert(weeklyTimetables, anchor ? anchor.term : null, alertDismissals.dismissed);
   }, [interruptions, offerableWeekKey, weeklyTimetables, alertDismissals]);
+  // v2.42.0 — teachers' pending "catch-up owed" suggestions on band cards,
+  // across all weeks. From the weeklyTimetables PROP (never remounts).
+  const catchupSuggestions = React.useMemo(() => catchupSuggestionSummary(weeklyTimetables), [weeklyTimetables]);
 
   // ── Sidebar badge counts ────────────────────────────────────
   const unreadEmailCount = useMemo(() =>
@@ -2100,6 +2104,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   });
   const alertChips = buildAlertChips(alertData, {
     isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands,
+    catchupSuggestionCount: catchupSuggestions.count,
   });
   const alertChipCount = visibleChipCount(alertChips);
   const chipOn = (key) => !!alertChips.find(c => c.key === key && c.visible);
@@ -3533,6 +3538,22 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: `1px solid ${colors.amber}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Guitar size={11} /> {n} band session{n !== 1 ? "s" : ""} need{n === 1 ? "s" : ""} attributions set</span>
                             <DismissBtn color={colors.amber} onClick={() => dismissAlert(unattributedAlertDismissKey(unattributedBands.map(b => b.bandLessonId)))} />
+                          </div>
+                        );
+                      })()}
+                      {/* v2.42.0 — teachers' "catch-up owed" suggestions. Click opens the
+                          earliest week with one; no dismiss (Confirm / Dismiss on the card). */}
+                      {chipOn("catchup-suggestions") && (() => {
+                        const n = catchupSuggestions.count;
+                        const first = catchupSuggestions.earliest;
+                        const jump = () => {
+                          const school = first && schools.find(s => s.id === first.schoolId);
+                          if (school && onJumpToWeekly) onJumpToWeekly(school, weekOffsetBetween(toLocalDateStr(getCurrentWeekMonday()), first.weekKey));
+                        };
+                        return (
+                          <div onClick={jump} title="Open the earliest week with a suggestion"
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: `1px solid ${colors.amber}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            <span style={{ color: colors.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Guitar size={11} /> {n} catch-up suggestion{n !== 1 ? "s" : ""}</span>
                           </div>
                         );
                       })()}

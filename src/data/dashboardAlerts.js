@@ -209,11 +209,11 @@ const intrKeys = (intrs) => intrs.map(i => `alert-interruption-${i.id}`);
  *
  * @param {Object} d    deriveAlertData output.
  * @param {Object} ctx  { isAlertDismissed, unassignedCount, unschedCount,
- *   uninvoicedRows, unattributedBands }
+ *   uninvoicedRows, unattributedBands, catchupSuggestionCount }
  * @returns {Array}
  */
 export function buildAlertChips(d, ctx) {
-  const { isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows, unattributedBands } = ctx;
+  const { isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows, unattributedBands, catchupSuggestionCount = 0 } = ctx;
   const on = (key) => !isAlertDismissed(key);
   const simple = (key, alertKey, condition) => ({ key, visible: !!condition && on(alertKey), dismissKeys: [alertKey], seen: null });
   const responseVisible = (list) => list.filter(em => !isAlertDismissed(`alert-response-email-${em.id}`)).length > 0;
@@ -234,6 +234,9 @@ export function buildAlertChips(d, ctx) {
   ];
   const bandIds = (unattributedBands || []).map(b => b.bandLessonId);
   chips.push({ key: "band-attributions", visible: bandIds.length > 0, dismissKeys: bandIds.length ? [unattributedAlertDismissKey(bandIds)] : [], seen: null });
+  // v2.42.0 — teachers' "catch-up owed" suggestions. Not dismissible: it
+  // clears when each suggestion is Confirmed or Dismissed on its band card.
+  chips.push({ key: "catchup-suggestions", visible: catchupSuggestionCount > 0, dismissKeys: [], seen: null });
 
   const g = groupInterruptions(d.upcomingInterruptions.filter(i => !isAlertDismissed(`alert-interruption-${i.id}`)));
   if (g.publicHols.length > 0) chips.push({ key: "intr-public-holidays", visible: true, dismissKeys: intrKeys(g.publicHols), seen: null });
