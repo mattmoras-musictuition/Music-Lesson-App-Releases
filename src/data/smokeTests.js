@@ -23,7 +23,7 @@ import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from 
 import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
 import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
 import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
-import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests } from "./bandLedgerSmokeTests";
+import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -360,6 +360,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Band ledger integrity (v2.42.1) ──
   runBandLedgerCharacterizationTests(assert);
   runBandLedgerDisplacementTests(assert);
+  runBandLedgerSaveSweepTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

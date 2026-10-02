@@ -27,7 +27,7 @@ import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson
 import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
-import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, studentRows, applyStudentAttribution,
+import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, findMemberCards, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
@@ -1767,7 +1767,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       weekKey,
       absentEnrolmentIds: bandAttrModal.absentEnrolmentIds,
     });
-    if (!plan.changed) { setBandAttrModal(null); return; }
+    if (!plan.changed) {
+      // v2.42.1 — Save with no role changes still runs the repair sweep, so
+      // "open the window, press Save" ledgers any Regular member's stray card.
+      setWeeklyTimetables(prev => {
+        const d = prev[storageKey];
+        if (!d) return prev;
+        const lessons = sweepRegularIntoLedger(d.lessons || [], bandAttrModal.lessonId, enrolmentResolver);
+        return lessons === d.lessons ? prev : { ...prev, [storageKey]: { ...d, lessons } };
+      });
+      setBandAttrModal(null);
+      return;
+    }
 
     setBandAttrModal(prev => prev ? { ...prev, saving: true } : prev);
     const insertedRows = [];
@@ -1853,6 +1864,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       lessons = lessons.map(l => l.id === bandAttrModal.lessonId
         ? { ...l, memberStates: stampedMemberStates, removedLessons: ledger }
         : l);
+      // v2.42.1 repair sweep — EVERY Regular member (not just the newly
+      // Regular) whose card is not in the ledger but is somewhere in this
+      // school-week (any day, any lane) has it moved in. No card: no-op.
+      lessons = sweepRegularIntoLedger(lessons, bandAttrModal.lessonId, enrolmentResolver);
       return { ...prev, [storageKey]: { ...d, lessons } };
     });
     // Rows entering and leaving catchups state happen in the SAME block as the

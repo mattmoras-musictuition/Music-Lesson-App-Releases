@@ -14,7 +14,7 @@
 // Weeks sit in 2099 so the past-week guards never move under a test.
 // ============================================================
 
-import { isExcludedByBands, restoreLedgerCards, isGenerateExcluded, withoutLedgeredDuplicates, displaceRegularIntoBands } from "./bandMemberStates";
+import { isExcludedByBands, restoreLedgerCards, isGenerateExcluded, withoutLedgeredDuplicates, displaceRegularIntoBands, sweepRegularIntoLedger } from "./bandMemberStates";
 import { makeEnrolmentResolver } from "../utils/enrolmentActivity";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 
@@ -149,4 +149,32 @@ export function runBandLedgerDisplacementTests(assert) {
   assert("displace: Monday import ledgers a Regular member's card instead of leaving it beside the band",
     [imp.entry.lessons.find(l => l.id === "B3").removedLessons.map(c => c.enrolmentId), imp.entry.lessons.filter(l => !l.isBandSession).map(l => l.enrolmentId), imp.importedCount],
     [["e_annie"], ["e_x"], 2]);
+}
+
+// ── Attribution Save repair sweep (C3) ──
+export function runBandLedgerSaveSweepTests(assert) {
+  const r = lresolver();
+  const anelaW = lcard("W_ANELA", "e_anela", "Wednesday", "09:00");
+  const annieM = lcard("W_ANNIE", "e_annie", "Monday", "11:30");
+  const graceM = lcard("W_GRACE", "e_grace", "Monday", "12:30", { bucket_id: "lane_matt", teacherId: "t_matt" });
+  const other = { id: "W_O", enrolmentId: "e_x", studentId: "x", instrument: "Guitar", schoolId: "S", day: "Monday", start: "09:00" };
+  // The owner's band after the import repair: all Regular (none NEWLY
+  // Regular at this Save), Anela ledgered, Annie and Grace back on Monday.
+  const band = lband("B1", "Wednesday", [lentry("e_anela"), lentry("e_annie"), lentry("e_grace")], [anelaW]);
+  const lessons = [other, band, annieM, graceM];
+  const out = sweepRegularIntoLedger(lessons, "B1", r);
+  assert("save sweep: already-Regular members' cards (other day, any lane) go into the ledger",
+    [out.find(l => l.id === "B1").removedLessons.map(c => c.id), out.filter(l => !l.isBandSession).map(l => l.id)],
+    [["W_ANELA", "W_ANNIE", "W_GRACE"], ["W_O"]]);
+  assert("save sweep: running it again changes nothing (same array)", sweepRegularIntoLedger(out, "B1", r) === out, true);
+  const noCards = [other, band];
+  assert("save sweep: Regular member with no card anywhere → no-op, no error", sweepRegularIntoLedger(noCards, "B1", r) === noCards, true);
+  const cu = lband("B2", "Wednesday", [lentry("e_annie", "catchup")]);
+  const cuLessons = [cu, annieM];
+  assert("save sweep: non-Regular members are left on the grid", sweepRegularIntoLedger(cuLessons, "B2", r) === cuLessons, true);
+  const legacy = { id: "BL", isBandSession: true, members: [{ studentId: "annie" }], removedLessons: [] };
+  const legacyLessons = [legacy, annieM];
+  assert("save sweep: legacy band / unknown band → untouched",
+    [sweepRegularIntoLedger(legacyLessons, "BL", r) === legacyLessons, sweepRegularIntoLedger(lessons, "nope", r) === lessons], [true, true]);
+  assert("save sweep: inputs not mutated", [band.removedLessons.length, lessons.length], [1, 4]);
 }
