@@ -64,15 +64,15 @@ FROM (VALUES
   ('memberStates inert: A unchanged',                  el(wa_lessons('b_ms_inert'),'A1')->'memberStates'
                                                        = '[{"enrolmentId":"e1","studentId":"s1","instrument":"Guitar","consumption":"regular","catchupId":null,"consumedWeekKey":null,"fee":null,"attended":null,"writerTeacherId":null}]',
                                                                                                                        (el(wa_lessons('b_ms_inert'),'A1')->'memberStates')::text),
-  ('memberStates stamped: e1 attended/absence/writer from T',
+  ('v2-only memberStates stamped: e1 attended/absence/writer from T',
                                                        ms(wa_lessons('b_ms_stamped'),'A1','e1')
                                                        = '{"enrolmentId":"e1","consumption":"regular","catchupId":"CU1","consumedWeekKey":"2099-01-05","fee":40,"attended":false,"absence":{"reason":"Sick"},"writerTeacherId":"tw","absentCatchupSnapshot":{"x":1}}',
                                                                                                                        ms(wa_lessons('b_ms_stamped'),'A1','e1')::text),
-  ('memberStates stamped: e2 absence cleared, A''s consumption kept',
+  ('v2-only memberStates stamped: e2 absence cleared, A''s consumption kept',
                                                        ms(wa_lessons('b_ms_stamped'),'A1','e2')
                                                        = '{"enrolmentId":"e2","consumption":"catchup","catchupId":"CU2","fee":null,"attended":true,"writerTeacherId":"tw"}',
                                                                                                                        ms(wa_lessons('b_ms_stamped'),'A1','e2')::text),
-  ('memberStates stamped: e4 unchanged, T''s e3 not added, order kept',
+  ('v2-only memberStates stamped: e4 unchanged, T''s e3 not added, order kept',
                                                        ms(wa_lessons('b_ms_stamped'),'A1','e4') = '{"enrolmentId":"e4","consumption":"free","attended":null,"writerTeacherId":null}'
                                                        AND (SELECT string_agg(m->>'enrolmentId', ',' ORDER BY o) FROM jsonb_array_elements(el(wa_lessons('b_ms_stamped'),'A1')->'memberStates') WITH ORDINALITY j(m,o)) = 'e1,e2,e4',
                                                                                                                        (el(wa_lessons('b_ms_stamped'),'A1')->'memberStates')::text),
