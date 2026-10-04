@@ -15,7 +15,7 @@
 
 import { deriveTallyRows } from "../utils/tallyDerive";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { stampFirstPlacementStart } from "../utils/enrolmentPlacement";
+import { stampFirstPlacementStart, hasWeeklyHistoryBefore } from "../utils/enrolmentPlacement";
 import { checkOrphan } from "../utils/orphanCheck";
 
 const SCHOOL_WEEKS = ["2026-07-13", "2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10",
@@ -301,4 +301,34 @@ export function runTallyOverlapGateTests(assert) {
   }
   assert("gate: no teacher on any weekly entry leaves teacherName empty",
     deriveT3({ enrolments: [drums], wtt: bare, cards: [] }).tallyRows[0].teacherName, "");
+}
+
+// ── Commit 4: restamp guard (stampFirstPlacementStart) ──────────────────
+export function runRestampGuardTests(assert) {
+  const taught = { id: "e_bon_drm_live", studentId: "bon", instrument: "Drums", startDate: "2026-07-13" };
+  const wtt = { "2026-07-20|S": { lessons: [{ ...drumLesson("2026-07-20"), enrolmentId: "e_bon_drm_live" }], missed: [] } };
+  const stamp = (enrolment, weekMonday, weeklyTimetables, timetableLessons = []) =>
+    stampFirstPlacementStart({ enrolments: [enrolment], enrolmentId: enrolment.id, weekMonday, timetableLessons, weeklyTimetables })[0].startDate;
+
+  assert("restamp: re-placement after clearing keeps a start date that has earlier weekly lessons",
+    stamp(taught, "2026-10-05", wtt), "2026-07-13");
+  assert("restamp: a miss in an earlier week also blocks moving later",
+    stamp(taught, "2026-10-05", { "2026-08-03|S": { lessons: [], missed: [{ ...drumMiss("2026-08-03", true), enrolmentId: "e_bon_drm_live" }] } }), "2026-07-13");
+  assert("restamp: a legacy entry with no enrolmentId matches by student + instrument",
+    stamp(taught, "2026-10-05", { "2026-07-20|S": { lessons: [{ ...drumLesson("2026-07-20"), enrolmentId: undefined }], missed: [] } }), "2026-07-13");
+  assert("restamp: an entry stamped with a different enrolment is not this one's history",
+    stamp(taught, "2026-10-05", { "2026-07-20|S": { lessons: [{ ...drumLesson("2026-07-20"), enrolmentId: "e_other" }], missed: [] } }), "2026-10-05");
+  assert("restamp: weekly entries only in the candidate week or later do not block",
+    stamp(taught, "2026-10-05", { "2026-10-05|S": { lessons: [{ ...drumLesson("2026-10-05"), enrolmentId: "e_bon_drm_live" }], missed: [] } }), "2026-10-05");
+  assert("restamp: moving earlier still stamps despite history",
+    stamp({ ...taught, startDate: "2026-10-12" }, "2026-10-05", wtt), "2026-10-05");
+  assert("restamp: a fresh enrolment with no weekly history stamps as before",
+    stamp({ id: "e_new", studentId: "bon", instrument: "Piano", startDate: "2026-06-01" }, "2026-10-05", wtt), "2026-10-05");
+  assert("restamp: no weeklyTimetables passed behaves as before",
+    stamp(taught, "2026-10-05", undefined), "2026-10-05");
+  assert("restamp: band sessions never count as history",
+    hasWeeklyHistoryBefore(taught, "2026-10-05", { "2026-07-20|S": { lessons: [{ isBandSession: true, members: [{ studentId: "bon", instrument: "Drums" }] }], missed: [] } }), false);
+  const grp = { id: "e_g", studentId: "libby", instrument: "Ukulele", isGroup: true, groupId: "g_uke", startDate: "2026-07-13" };
+  assert("restamp: a group enrolment matches its group's legacy weekly card",
+    stamp(grp, "2026-10-05", { "2026-07-20|S": { lessons: [{ id: "G1", isGroup: true, groupId: "g_uke" }], missed: [] } }), "2026-07-13");
 }

@@ -40,6 +40,37 @@ export function isEnrolmentPlaced(enrolment, timetableLessons) {
   });
 }
 
+// Does this enrolment have a weekly lesson or miss in any week strictly
+// before `weekMonday`? Guards the restamp: when the master timetable is
+// cleared and the student re-placed, "no master card" looks like a first
+// placement, and stamping the new Monday would put the start date after
+// weeks that were really taught — the tally would then dash them, and the
+// term overlap gate would drop the row from those past terms entirely.
+//
+// The week comes from the storage key's leading segment ("<Monday>|<school>"),
+// so a plain string compare is the date compare. An entry stamped with this
+// enrolment's id counts; an entry with no enrolmentId (pre-stamping) counts
+// when its student + instrument, or group, matches. An entry stamped with a
+// DIFFERENT enrolment belongs to that one and is ignored. Band sessions carry
+// no top-level identity and never match. Generous in the safe direction: a
+// false "has history" only leaves the stored date where it was.
+export function hasWeeklyHistoryBefore(enrolment, weekMonday, weeklyTimetables) {
+  if (!enrolment || !weekMonday || !weeklyTimetables) return false;
+  const matches = (item) => {
+    if (!item || item.isBandSession) return false;
+    if (item.enrolmentId) return item.enrolmentId === enrolment.id;
+    if (enrolment.isGroup) return !!item.isGroup && !!item.groupId && item.groupId === enrolment.groupId;
+    return !item.isGroup && item.studentId === enrolment.studentId && item.instrument === enrolment.instrument;
+  };
+  for (const key of Object.keys(weeklyTimetables)) {
+    if (!(key.split("|")[0] < weekMonday)) continue;
+    const entry = weeklyTimetables[key];
+    if (!entry) continue;
+    if ((entry.lessons || []).some(matches) || (entry.missed || []).some(matches)) return true;
+  }
+  return false;
+}
+
 // Stamp startDate on ONE enrolment, but only when this is its first placement.
 //
 // Returns a new enrolments array, or the SAME array reference when nothing
@@ -57,7 +88,11 @@ export function isEnrolmentPlaced(enrolment, timetableLessons) {
 //   - the enrolment has ended (endDate set); its range is history, not a
 //     first placement
 //   - the value would not actually change
-export function stampFirstPlacementStart({ enrolments, enrolmentId, weekMonday, timetableLessons }) {
+//   - v2.44.0: the stamp would move startDate LATER and the enrolment already
+//     has a weekly lesson or miss in a week before weekMonday (see
+//     hasWeeklyHistoryBefore). Moving earlier, and stamping a fresh enrolment
+//     with no earlier weekly history, behave exactly as before.
+export function stampFirstPlacementStart({ enrolments, enrolmentId, weekMonday, timetableLessons, weeklyTimetables }) {
   const list = enrolments || [];
   if (!enrolmentId || !weekMonday) return list;
 
@@ -66,6 +101,8 @@ export function stampFirstPlacementStart({ enrolments, enrolmentId, weekMonday, 
   if (target.endDate) return list;
   if (isEnrolmentPlaced(target, timetableLessons)) return list;
   if (target.startDate === weekMonday) return list;
+  if (target.startDate && weekMonday > target.startDate
+      && hasWeeklyHistoryBefore(target, weekMonday, weeklyTimetables)) return list;
 
   return list.map(e => e.id === enrolmentId ? { ...e, startDate: weekMonday } : e);
 }

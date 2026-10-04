@@ -4689,6 +4689,7 @@ export default function MusicTimetableApp() {
         enrolmentId: lesson.enrolmentId,
         weekMonday: weekKeyForStamp,
         timetableLessons: (timetable?.lessons || []),
+        weeklyTimetables,
       }));
       // Keep student as pending — they are scheduled but still on the waiting list until explicitly activated
       return;
@@ -4775,6 +4776,7 @@ export default function MusicTimetableApp() {
         enrolmentId: lesson.enrolmentId,
         weekMonday: weekKey,
         timetableLessons: (timetable?.lessons || []),
+        weeklyTimetables,
       }));
     } else if (target === "weekly") {
       const storageKey = `${weekKey}|${student.schoolId}`;
@@ -6447,6 +6449,7 @@ export default function MusicTimetableApp() {
               enrolmentId: lesson.enrolmentId,
               weekMonday: toLocalDateStr(getCurrentWeekMonday()),
               timetableLessons: (timetable?.lessons || []),
+              weeklyTimetables,
             }));
           }} onPlacePending={(data, day, time) => {
             // Spec 2 cluster 10b Commit 2 — viewedLanes-aware destination + modal flow.
@@ -6518,6 +6521,7 @@ export default function MusicTimetableApp() {
               enrolmentId: lesson.enrolmentId,
               weekMonday: toLocalDateStr(getCurrentWeekMonday()),
               timetableLessons: (timetable?.lessons || []),
+              weeklyTimetables,
             }));
           }} onAllocatePlace={(studentId, instrument, kind, armedLane) => {
             // "Allocate to [teacher]" click-to-place: drop the student into the
@@ -6591,6 +6595,7 @@ export default function MusicTimetableApp() {
               enrolmentId: lesson.enrolmentId,
               weekMonday: toLocalDateStr(getCurrentWeekMonday()),
               timetableLessons: (timetable?.lessons || []),
+              weeklyTimetables,
             }));
           }} onUndo={undoTimetablePage} onRedo={redoTimetablePage} undoCount={ttPageUndoCount()} redoCount={ttPageRedoCount()} onDismissUnscheduled={(studentId, instrument) => {
               setTimetable(prev => ({
