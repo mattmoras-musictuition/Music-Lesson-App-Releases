@@ -14,6 +14,7 @@
 
 import {
   planAttributionSave, isGenerateExcluded, applyGroupAttribution, GROUP_CONSUMPTIONS,
+  applyStudentAttribution, applyAttributionLedger,
 } from "./bandMemberStates";
 import { deriveTallyRows, getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
@@ -21,8 +22,8 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { makeEnrolmentResolver } from "../utils/enrolmentActivity";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { buildForwardIndex, forwardFor } from "./bandForwardIndex";
-import { openForwardWeeks, isLessonDayClosed } from "./bandForward";
-import { GW, GROUP_UKE } from "./bandGroupSmokeTests";
+import { openForwardWeeks, isLessonDayClosed, forwardTermWeeks, forwardLessonContext, forwardWeekLabel } from "./bandForward";
+import { GW, GROUP_UKE, GENROL, INDIVIDUAL_MEMBERS, D15_SNAPSHOT, quietBuild, gentry as ugentry, groupCard, soloCard } from "./bandGroupSmokeTests";
 
 // Past term weeks (2020): the band sits in FB, the given-up week is FX.
 export const FB = "2020-03-09";
@@ -75,16 +76,18 @@ export function runBandForwardCharacterizationTests(assert) {
     stored: [fentry(eAG, null)], working: [fentry(eAG, "forward", { consumedWeekKey: FX })],
     missByEnrolment: {}, catchupsForBand: [], weekKey: FB,
   });
-  assert("forward char: planAttributionSave drops a forward entry's week (no row written or deleted)",
+  // Slice 1 deliberately changes this (commit 3): the week is now KEPT. Was null.
+  assert("forward char: planAttributionSave keeps a forward entry's week (no row written or deleted) — was dropped before slice 1",
     [plan.memberStates[0].consumption, plan.memberStates[0].consumedWeekKey, plan.inserts.length, plan.deletes.length, plan.changed],
-    ["forward", null, 0, 0, true]);
+    ["forward", FX, 0, 0, true]);
   // … and a change of week alone is reported as no change.
   plan = planAttributionSave({
     stored: [fentry(eAG, "forward", { consumedWeekKey: "2020-03-16" })], working: [fentry(eAG, "forward", { consumedWeekKey: FX })],
     missByEnrolment: {}, catchupsForBand: [], weekKey: FB,
   });
-  assert("forward char: a forward week-only change is reported as no change",
-    plan.changed, false);
+  // Slice 1 deliberately changes this (commit 3): a week-only change is a change. Was false.
+  assert("forward char: a forward week-only change is a change — was no change before slice 1",
+    [plan.changed, plan.memberStates[0].consumedWeekKey], [true, FX]);
 
   // getEnrolmentTermDeductionMath counts EVERY catchups row in range — a
   // row standing for a forward (no miss behind it) would be charged.
@@ -146,8 +149,12 @@ export function runBandForwardCharacterizationTests(assert) {
   // Group helpers reject forward.
   const ivy = fentry({ id: "e_ivy_uke", studentId: "ivy", instrument: "Ukulele" }, "regular", { consumedWeekKey: GW, groupId: GROUP_UKE.id, isGroup: true });
   const both = [ivy, { ...ivy, enrolmentId: "e_libby_uke", studentId: "libby" }];
-  assert("forward char: groups refuse forward (GROUP_CONSUMPTIONS, applyGroupAttribution returns its input)",
-    [GROUP_CONSUMPTIONS.includes("forward"), applyGroupAttribution(both, "g_uke", "forward", GW) === both], [false, true]);
+  // Slice 1 deliberately changes this (commit 3): groups accept forward, with
+  // a week. Without a week the input is still returned. Was refused outright.
+  assert("forward char: groups accept forward only with a week — was refused before slice 1",
+    [GROUP_CONSUMPTIONS.includes("forward"), applyGroupAttribution(both, "g_uke", "forward", GW) === both,
+      applyGroupAttribution(both, "g_uke", "forward", GW, null, FX).map(e => [e.consumption, e.consumedWeekKey])],
+    [true, true, [["forward", FX], ["forward", FX]]]);
 }
 
 // ── Commit 2: pure helpers — the cross-week index (D8) and the open-week walk (D3) ──
@@ -267,4 +274,121 @@ export function runBandForwardHelperTests(assert) {
     [forwardFor(idx, eAG, W5), forwardFor(idx, fenrol("e_noa", "noa", "Drums"), W3)], [null, null]);
   assert("forward index: scoped to given band weeks",
     buildForwardIndex(idxWtt, [W2, W3]).entries.length, 3);
+}
+
+// ── Commit 3: save path (D2, D5, D6, D7) ──
+export function runBandForwardSaveTests(assert) {
+  const eAG = fenrol("e_amy_gtr", "amy", "Guitar");
+  const eBD = fenrol("e_bob_drm", "bob", "Drums");
+  const save = (stored, working, extra = {}) => planAttributionSave({ stored, working, missByEnrolment: {}, catchupsForBand: [], weekKey: W2, ...extra });
+
+  // D2 — week kept, no catchups row either way.
+  let p = save([fentry(eAG, null)], [fentry(eAG, "forward", { consumedWeekKey: W6 })], { forwardWeekOpen: () => true });
+  assert("forward save: unattributed → forward keeps the week; no row inserted or deleted; nothing ledgered",
+    [p.memberStates[0].consumedWeekKey, p.memberStates[0].catchupId, p.inserts.length, p.deletes.length, p.regularOn.length, p.regularOff.length, p.changed, p.rejected],
+    [W6, null, 0, 0, 0, 0, true, []]);
+
+  // D5 — a week-only change is saved.
+  p = save([fentry(eAG, "forward", { consumedWeekKey: W6 })], [fentry(eAG, "forward", { consumedWeekKey: W5 })], { forwardWeekOpen: () => true });
+  assert("forward save: a change of week alone is a change and is saved",
+    [p.changed, p.memberStates[0].consumedWeekKey, p.inserts.length, p.deletes.length], [true, W5, 0, 0]);
+
+  // D5 — an invalid week is rejected: that student kept as stored, others saved.
+  const okWeek = (e) => e.consumedWeekKey !== W6;
+  p = save([fentry(eAG, null), fentry(eBD, null)], [fentry(eAG, "forward", { consumedWeekKey: W6 }), fentry(eBD, "free")], { forwardWeekOpen: okWeek });
+  assert("forward save: a week no longer open is rejected — the row stays as stored, the other row still saves",
+    [p.rejected, p.memberStates.map(e => [e.consumption, e.consumedWeekKey]), p.changed],
+    [[{ studentId: "amy", enrolmentId: "e_amy_gtr", groupId: null, consumedWeekKey: W6 }], [[null, null], ["free", null]], true]);
+  p = save([fentry(eAG, "forward", { consumedWeekKey: W5 })], [fentry(eAG, "forward", { consumedWeekKey: W6 })], { forwardWeekOpen: okWeek });
+  assert("forward save: moving to a closed week is rejected and the stored week kept",
+    [p.rejected.length, p.memberStates[0].consumedWeekKey, p.changed], [1, W5, false]);
+  p = save([fentry(eAG, null)], [fentry(eAG, "forward", { consumedWeekKey: null })]);
+  assert("forward save: forward with no week is always rejected",
+    [p.rejected.length, p.memberStates[0].consumption], [1, null]);
+  p = save([fentry(eAG, "forward", { consumedWeekKey: W6 }), fentry(eBD, null)],
+    [fentry(eAG, "forward", { consumedWeekKey: W6 }), fentry(eBD, "free")], { forwardWeekOpen: () => false });
+  assert("forward save: an UNCHANGED stored forward is never re-checked (a stale week cannot block another row's save)",
+    [p.rejected, p.memberStates[0].consumedWeekKey, p.memberStates[1].consumption], [[], W6, "free"]);
+  p = save([fentry(eAG, "regular", { consumedWeekKey: W2 })], [fentry(eAG, "forward", { consumedWeekKey: W6 })],
+    { forwardWeekOpen: () => false, absentEnrolmentIds: ["e_amy_gtr"] });
+  assert("forward save: an absence lock still wins (no rejection reported, stored kept)",
+    [p.rejected, p.memberStates[0].consumption], [[], "regular"]);
+  // The second instrument of a rejected student is kept as stored too.
+  const eAP = fenrol("e_amy_pno", "amy", "Piano");
+  p = save([fentry(eAG, null), fentry(eAP, "free")],
+    applyStudentAttribution([fentry(eAG, null), fentry(eAP, "free")], "amy", "e_amy_gtr", "forward", W6), { forwardWeekOpen: () => false });
+  assert("forward save: rejection keeps every entry of that student as stored",
+    p.memberStates.map(e => [e.enrolmentId, e.consumption]), [["e_amy_gtr", null], ["e_amy_pno", "free"]]);
+
+  // Leaving forward follows the destination role's rule.
+  p = save([fentry(eAG, "forward", { consumedWeekKey: W6 })], [fentry(eAG, "free", { consumedWeekKey: W6 })]);
+  assert("forward save: forward → Free clears the week",
+    [p.memberStates[0].consumedWeekKey, p.changed, p.deletes.length], [null, true, 0]);
+  p = save([fentry(eAG, "forward", { consumedWeekKey: W6 })], [fentry(eAG, "regular", { consumedWeekKey: W6 })]);
+  assert("forward save: forward → Regular takes the band's week and ledgers the card",
+    [p.memberStates[0].consumedWeekKey, p.regularOn.length], [W2, 1]);
+  const cuRow = { id: "CU1", resolvesEnrolmentId: "e_amy_gtr", resolvesWeekKey: "2099-02-02", resolvesOriginalDay: "Thursday", resolvesOriginalTime: "09:00" };
+  p = save([fentry(eAG, "catchup", { catchupId: "CU1", consumedWeekKey: "2099-02-02" })], [fentry(eAG, "forward", { consumedWeekKey: W6 })],
+    { catchupsForBand: [cuRow], forwardWeekOpen: () => true });
+  assert("forward save: catch-up → forward deletes only the catch-up's own row (catch-up's leave rule), inserts nothing",
+    [p.deletes.map(d => d.id), p.inserts.length, p.memberStates[0].catchupId, p.memberStates[0].consumedWeekKey], [["CU1"], 0, null, W6]);
+
+  // D6 — Regular → forward restores the band-week card through the existing path.
+  const card = fcard("W_AG", eAG, { day: "Tuesday", start: "09:00" });
+  const regBand = fband("B1", [fentry(eAG, "regular", { consumedWeekKey: W2 })], { removedLessons: [card] });
+  p = save(regBand.memberStates, [fentry(eAG, "forward", { consumedWeekKey: W6 })], { forwardWeekOpen: () => true });
+  const out = applyAttributionLedger({ lessons: [regBand], bandLessonId: "B1", regularOn: p.regularOn, regularOff: p.regularOff,
+    memberStates: p.memberStates, resolver: makeEnrolmentResolver([eAG]) });
+  assert("forward save: Regular → forward puts the band-week card back on the grid and empties the ledger",
+    [out.lessons.filter(l => !l.isBandSession).map(l => l.id), out.lessons.find(l => l.id === "B1").removedLessons.length, out.dropped],
+    [["W_AG"], 0, []]);
+
+  // D7 — a group: one week for every entry, saved together.
+  const BOTH_REG = [ugentry("e_libby_uke", "libby", "regular"), ugentry("e_ivy_uke", "ivy", "regular")];
+  const gWorking = applyGroupAttribution(BOTH_REG, "g_uke", "forward", GW, [], W6);
+  p = planAttributionSave({ stored: BOTH_REG, working: gWorking, missByEnrolment: {}, catchupsForBand: [], weekKey: GW, forwardWeekOpen: () => true });
+  assert("forward save (group): every entry of the group takes the same week; both leave Regular",
+    [p.memberStates.map(e => [e.consumption, e.consumedWeekKey]), p.regularOff.length, p.inserts.length, p.deletes.length],
+    [[["forward", W6], ["forward", W6]], 2, 0, 0]);
+  const gb = { id: "B1", isBandSession: true, memberStates: BOTH_REG, removedLessons: [groupCard()], day: "Tuesday", start: "13:30" };
+  const gOut = applyAttributionLedger({ lessons: [gb], bandLessonId: "B1", regularOn: p.regularOn, regularOff: p.regularOff,
+    memberStates: p.memberStates, resolver: makeEnrolmentResolver(GENROL) });
+  assert("forward save (group): Regular → forward puts the shared group card back once",
+    [gOut.lessons.filter(l => !l.isBandSession).map(l => l.id), gOut.lessons.find(l => l.id === "B1").removedLessons.length], [["W_UKE"], 0]);
+  p = planAttributionSave({ stored: BOTH_REG, working: gWorking, missByEnrolment: {}, catchupsForBand: [], weekKey: GW, forwardWeekOpen: () => false });
+  assert("forward save (group): a closed week rejects the whole group (both members kept as stored)",
+    [p.rejected.map(r => r.groupId), p.memberStates.map(e => e.consumption)], [["g_uke", "g_uke"], ["regular", "regular"]]);
+  assert("forward save (group): switching the group to Free clears the week on every entry",
+    applyGroupAttribution(gWorking, "g_uke", "free", GW).map(e => e.consumedWeekKey), [null, null]);
+
+  // Bands with no forward are untouched.
+  assert("forward save: D15 — an individuals-only band still builds byte-identically",
+    JSON.stringify(quietBuild(INDIVIDUAL_MEMBERS, GENROL, GW, { groups: [GROUP_UKE] })), D15_SNAPSHOT);
+  const lp = soloCard("W_LP", "e_liri_pno", "Tuesday", "09:00");
+  const indiv = quietBuild(INDIVIDUAL_MEMBERS, GENROL, GW, { groups: [GROUP_UKE] });
+  const reg = applyStudentAttribution(indiv, "liri", "e_liri_pno", "regular", GW);
+  p = planAttributionSave({ stored: indiv, working: reg, missByEnrolment: {}, catchupsForBand: [], weekKey: GW });
+  assert("forward save: a no-forward plan is unchanged apart from an empty rejected list",
+    [p.regularOn.map(e => e.enrolmentId), p.changed, p.rejected, p.memberStates.filter(e => e.consumption).map(e => [e.enrolmentId, e.consumedWeekKey]), lp.id],
+    [["e_liri_pno"], true, [], [["e_liri_pno", GW]], "W_LP"]);
+
+  // Window helpers.
+  const breaks = [
+    { type: "term_break", date: "2099-04-04", endDate: "2099-04-19" },
+    { type: "term_break", date: "2099-06-27", endDate: "2099-07-12" },
+  ];
+  const tw = forwardTermWeeks(breaks, "2099-05-04");
+  assert("forward helpers: forwardTermWeeks gives the band's term — school weeks then its holiday weeks",
+    [tw[0].weekKey, tw.filter(w => !w.isHoliday).length, tw.some(w => w.isHoliday), tw.find(w => w.weekKey === "2099-05-04").weekNum], ["2099-04-20", 10, true, 3]);
+  const holidayBand = "2099-04-06";
+  assert("forward helpers: a band in the holiday break has no week to bring forward (D4)",
+    openForwardWeeks({ subject: { enrolment: eAG }, bandWeekKey: holidayBand, termWeeks: forwardTermWeeks(breaks, holidayBand), weeklyTimetables: {} }), []);
+  assert("forward helpers: forwardTermWeeks with no term breaks → []", forwardTermWeeks([], "2099-05-04"), []);
+  const masters = [fmtt(eAG, { schoolId: "T", day: "Wednesday" }), { id: "MG", isGroup: true, groupId: "g_uke", schoolId: "S", day: "Thursday" }];
+  assert("forward helpers: lesson context from the master card (solo, group, fallback)",
+    [forwardLessonContext({ enrolment: eAG }, masters, []),
+      forwardLessonContext({ groupId: "g_uke", enrolments: [{ studentId: "ivy" }] }, masters, []),
+      forwardLessonContext({ enrolment: eBD }, masters, [fstudent("bob", "S")])],
+    [{ schoolId: "T", lessonDay: "Wednesday" }, { schoolId: "S", lessonDay: "Thursday" }, { schoolId: "S", lessonDay: "" }]);
+  assert("forward helpers: week label", forwardWeekLabel(10), "Week 10");
 }

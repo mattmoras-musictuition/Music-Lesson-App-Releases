@@ -375,9 +375,10 @@ export function runBandGroupRosterTests(assert) {
   assert("group roster: …Clear + Save puts the group card back once",
     [ledgerOf(gOut.lessons), nonBand(gOut.lessons)], [[], ["W_UKE"]]);
 
-  // Only the D2 roles are accepted for a group.
-  assert("group roster: catch-up / forward / billed are refused for a group (input returned)",
-    ["catchup", "forward", "billed"].map(c => applyGroupAttribution(BOTH_REG, "g_uke", c, GW) === BOTH_REG), [true, true, true]);
+  // Only the D2 roles are accepted for a group — plus forward since phase 3
+  // slice 1 (deliberate change: forward is now accepted, but only WITH a week).
+  assert("group roster: catch-up / billed / forward-without-a-week are refused for a group (input returned)",
+    ["catchup", "billed", "forward"].map(c => applyGroupAttribution(BOTH_REG, "g_uke", c, GW) === BOTH_REG), [true, true, true]);
 }
 
 // ── Commit 3: Tally (D9), "not scheduled this week" (D10), same-day warning (D11) ──

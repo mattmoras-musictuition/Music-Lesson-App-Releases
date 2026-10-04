@@ -777,7 +777,17 @@ function rowSettlesMiss(row, miss) {
  *     caller's occupancy test, matching "Remove band session".
  *
  * consumedWeekKey follows the consumption: regular → the band's week,
- * catchup → the settled miss's week, anything else → null.
+ * catchup → the settled miss's week, forward → the later week the owner
+ * chose (phase 3), anything else → null.
+ *
+ * FORWARD (phase 3, slice 1 — owner-approved spec change): recorded on the
+ * entry ONLY. No catchups row is written or deleted on its account (every
+ * catchups row counts toward Extra Lessons in the invoice math). A change of
+ * week alone is a change. When `forwardWeekOpen` is given, a forward entry
+ * that is NEW or whose week CHANGED must pass it; one that does not is
+ * rejected — every entry of that student is kept exactly as stored, like an
+ * absence lock — and reported in `rejected`. An unchanged stored forward is
+ * never re-checked, so a since-stale week cannot block an unrelated save.
  *
  * @param {Object} args
  * @param {MemberState[]} args.stored     memberStates as at window open.
@@ -792,10 +802,13 @@ function rowSettlesMiss(row, miss) {
  *        with no insert, delete or ledger move — so an absence can only be
  *        changed through Undo absence. In particular a catch-up absence that
  *        deleted its row (catchupId null) is never silently re-inserted.
+ * @param {Function} [args.forwardWeekOpen]  (entry) → boolean: is this
+ *        forward entry's consumedWeekKey still an open week? Omitted → accepted.
  * @returns {{inserts: Array, deletes: Array, regularOn: Array,
- *   regularOff: Array, memberStates: MemberState[], changed: boolean}}
+ *   regularOff: Array, memberStates: MemberState[], changed: boolean,
+ *   rejected: Array<{studentId: string, enrolmentId: string, groupId: string|null, consumedWeekKey: string|null}>}}
  */
-export function planAttributionSave({ stored, working, missByEnrolment, catchupsForBand, weekKey, absentEnrolmentIds } = {}) {
+export function planAttributionSave({ stored, working, missByEnrolment, catchupsForBand, weekKey, absentEnrolmentIds, forwardWeekOpen } = {}) {
   const storedList = stored || [];
   const workingList = working || [];
   const misses = missByEnrolment || {};
@@ -806,6 +819,19 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
     storedList.filter((e) => e && absentIds.has(e.enrolmentId)).map((e) => e.studentId)
   );
 
+  // Forward entries that are new or moved week must still be open.
+  const rejected = [];
+  const rejectedStudents = new Set();
+  for (const entry of workingList) {
+    if (!entry || entry.consumption !== CONSUMPTION.forward || lockedStudents.has(entry.studentId)) continue;
+    const before = storedByEnrolment.get(entry.enrolmentId) || null;
+    const unchanged = !!before && before.consumption === CONSUMPTION.forward && before.consumedWeekKey === entry.consumedWeekKey;
+    if (unchanged) continue;
+    if (entry.consumedWeekKey && (!forwardWeekOpen || forwardWeekOpen(entry))) continue;
+    rejected.push({ studentId: entry.studentId, enrolmentId: entry.enrolmentId, groupId: isGroupEntry(entry) ? entry.groupId : null, consumedWeekKey: entry.consumedWeekKey || null });
+    rejectedStudents.add(entry.studentId);
+  }
+
   const inserts = [];
   const deletes = [];
   const regularOn = [];
@@ -815,10 +841,14 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
     if (!entry) return entry;
     const before = storedByEnrolment.get(entry.enrolmentId) || null;
     if (lockedStudents.has(entry.studentId)) return before || entry;
+    if (rejectedStudents.has(entry.studentId)) {
+      return before || { ...entry, consumption: null, catchupId: null, consumedWeekKey: null };
+    }
     const wasCatchup = !!(before && before.consumption === CONSUMPTION.catchup);
     const isCatchup = entry.consumption === CONSUMPTION.catchup;
     const wasRegular = !!(before && before.consumption === CONSUMPTION.regular);
     const isRegular = entry.consumption === CONSUMPTION.regular;
+    const isForward = entry.consumption === CONSUMPTION.forward;
     const existingRow = before && before.catchupId
       ? rows.find((c) => c && c.id === before.catchupId) || null
       : null;
@@ -840,7 +870,7 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
     } else {
       if (existingRow) deletes.push(existingRow);
       catchupId = null;
-      consumedWeekKey = isRegular ? weekKey || null : null;
+      consumedWeekKey = isRegular ? weekKey || null : isForward ? entry.consumedWeekKey || null : null;
     }
 
     if (isRegular && !wasRegular) regularOn.push(entry);
@@ -853,10 +883,11 @@ export function planAttributionSave({ stored, working, missByEnrolment, catchups
     || regularOn.length > 0 || regularOff.length > 0
     || memberStates.some((e, i) => {
       const before = storedByEnrolment.get(e && e.enrolmentId) || null;
-      return !before || before.consumption !== e.consumption;
+      return !before || before.consumption !== e.consumption
+        || (e.consumption === CONSUMPTION.forward && before.consumedWeekKey !== e.consumedWeekKey);
     });
 
-  return { inserts, deletes, regularOn, regularOff, memberStates, changed };
+  return { inserts, deletes, regularOn, regularOff, memberStates, changed, rejected };
 }
 
 // ── Cluster 3b patch 1 ──────────────────────────────────────────────
@@ -1232,10 +1263,11 @@ export function canEnterStaging(lesson) {
 // holds a verbatim copy); the window uses attributionWindowRows instead.
 
 /**
- * The roles a group row may take. Catch-up, forward and billed are never
- * offered for a group; null clears.
+ * The roles a group row may take. Catch-up and billed are never offered for
+ * a group; null clears. Forward (phase 3, slice 1) is accepted with one week
+ * for the whole group.
  */
-export const GROUP_CONSUMPTIONS = Object.freeze([CONSUMPTION.regular, CONSUMPTION.free, CONSUMPTION.notInSession]);
+export const GROUP_CONSUMPTIONS = Object.freeze([CONSUMPTION.regular, CONSUMPTION.free, CONSUMPTION.notInSession, CONSUMPTION.forward]);
 
 /**
  * The attribution window's rows: one per GROUP and one per remaining
@@ -1339,7 +1371,9 @@ export function attributionWindowRows(memberStates, departedEnrolmentIds, member
  * Attribute a whole group at once, returning a new array.
  *
  * Every live entry of the group takes `consumption` (consumedWeekKey = the
- * band's week for regular, else null; catchupId null). Entries of the group
+ * band's week for regular, `forwardWeekKey` for forward, else null;
+ * catchupId null). Forward without a forwardWeekKey is refused (input
+ * returned). Entries of the group
  * that have departed (that member left the roster) are cleared — unless the
  * whole group has departed, when every entry takes `consumption` (that is
  * the departed row's Clear).
@@ -1358,11 +1392,13 @@ export function attributionWindowRows(memberStates, departedEnrolmentIds, member
  * @param {string|null} consumption
  * @param {string} weekKey
  * @param {Array<string>|Set<string>} [departedEnrolmentIds]
+ * @param {string|null} [forwardWeekKey]  The later week, for forward only.
  * @returns {MemberState[]}
  */
-export function applyGroupAttribution(memberStates, groupId, consumption, weekKey, departedEnrolmentIds) {
+export function applyGroupAttribution(memberStates, groupId, consumption, weekKey, departedEnrolmentIds, forwardWeekKey) {
   const list = memberStates || [];
   if (consumption != null && !GROUP_CONSUMPTIONS.includes(consumption)) return list;
+  if (consumption === CONSUMPTION.forward && !forwardWeekKey) return list;
   const departed = departedEnrolmentIds instanceof Set ? departedEnrolmentIds : new Set(departedEnrolmentIds || []);
   const targets = list.filter((e) => isGroupEntry(e) && e.groupId === groupId);
   if (targets.length === 0) return list;
@@ -1370,7 +1406,7 @@ export function applyGroupAttribution(memberStates, groupId, consumption, weekKe
   const liveStudents = new Set(targets.filter((e) => allDeparted || !departed.has(e.enrolmentId)).map((e) => e.studentId));
 
   const set = (entry, c) => ({ ...entry, consumption: c, catchupId: null,
-    consumedWeekKey: c === CONSUMPTION.regular ? weekKey || null : null });
+    consumedWeekKey: c === CONSUMPTION.regular ? weekKey || null : c === CONSUMPTION.forward ? forwardWeekKey : null });
   const clear = (entry) => (entry.consumption == null && entry.catchupId == null && entry.consumedWeekKey == null
     ? entry : { ...entry, consumption: null, catchupId: null, consumedWeekKey: null });
 

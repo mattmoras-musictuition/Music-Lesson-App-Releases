@@ -30,6 +30,8 @@
 import { deriveTallyCell } from "../utils/tallyDerive";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { buildForwardIndex } from "./bandForwardIndex";
+import { resolveAnchorTerm } from "../utils/catchupScope";
+import { getTermWeeks } from "../utils/termWeeks";
 
 const DAY_OFFSET = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
 
@@ -136,6 +138,66 @@ export function openForwardWeeks({ subject, bandWeekKey, bandLessonId = null, te
     out.push({ weekKey: w.weekKey, weekNum: w.weekNum });
   }
   return out;
+}
+
+/**
+ * The term weeks a band in `bandWeekKey` may bring a lesson forward from:
+ * its term's weeks (getTermWeeks shape), resolved exactly as the catch-up
+ * picker resolves a target week's term (resolveAnchorTerm, now = term end so
+ * the list never stretches to today). A band in a holiday break gets that
+ * break's term, whose weeks flag the holiday — openForwardWeeks then offers
+ * nothing (D4). No term found → [].
+ *
+ * @param {Array} interruptions
+ * @param {string} bandWeekKey
+ * @returns {Array<{weekKey: string, weekNum: number, label: string, isHoliday?: boolean}>}
+ */
+export function forwardTermWeeks(interruptions, bandWeekKey) {
+  const anchor = resolveAnchorTerm(interruptions, bandWeekKey);
+  if (!anchor) return [];
+  const T = anchor.term;
+  const termBreaks = (interruptions || []).filter((i) => i && i.type === "term_break")
+    .sort((a, b) => a.date.localeCompare(b.date));
+  return getTermWeeks({
+    activeTerm: { start: new Date(T.start + "T00:00:00"), end: new Date(T.end + "T00:00:00") },
+    termBreaks,
+    now: new Date(T.end + "T00:00:00"),
+  });
+}
+
+/**
+ * The lesson school and day of a forward subject, from its master card, for
+ * the whole-day closure test (e). A solo enrolment: the master card carrying
+ * its enrolmentId, else the student's non-group card on that instrument. A
+ * group: the group's master card. School falls back to the student's school;
+ * day falls back to "" (the closure test then treats the week as open).
+ *
+ * @param {Object} subject  { enrolment } or { groupId, enrolments }.
+ * @param {Array} masterLessons  timetable.lessons.
+ * @param {Array} students
+ * @returns {{schoolId: string, lessonDay: string}}
+ */
+export function forwardLessonContext(subject, masterLessons, students) {
+  const lessons = masterLessons || [];
+  let card = null;
+  let studentId = null;
+  if (subject && subject.groupId) {
+    card = lessons.find((l) => l && l.isGroup && l.groupId === subject.groupId) || null;
+    studentId = ((subject.enrolments || [])[0] || {}).studentId || null;
+  } else if (subject && subject.enrolment) {
+    const e = subject.enrolment;
+    card = lessons.find((l) => l && !l.isGroup && !l.isBandSession && l.enrolmentId === e.id)
+      || lessons.find((l) => l && !l.isGroup && !l.isBandSession && l.studentId === e.studentId && l.instrument === e.instrument)
+      || null;
+    studentId = e.studentId;
+  }
+  const st = studentId ? (students || []).find((s) => s && s.id === studentId) : null;
+  return { schoolId: (card && card.schoolId) || (st && st.schoolId) || "", lessonDay: (card && card.day) || "" };
+}
+
+/** "Week N" — how a forward week is named everywhere in the window. */
+export function forwardWeekLabel(weekNum) {
+  return `Week ${weekNum}`;
 }
 
 /** The disabled-option reason (D4). */
