@@ -215,9 +215,14 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     // mid-term, newly enrolled before MTT regen, group cards whose
     // enrolmentId lookup misses) rendered under an "UNKNOWN" day header in
     // TallyView's section grouping.
+    //
+    // v2.44.0 — the teacher on that same latest entry is captured too, for the
+    // same reason: an ended enrolment has no master card, and its row used to
+    // fall under "Unknown" in the by-teacher grouping.
     const cells = {};
     let hasWttData = false;
     let latestWttDay = "";
+    let latestWttTeacher = null;
     const pendingShimEntries = [];
     for (const week of termWeeks) {
       const sk = `${week.weekKey}|${schoolId}`;
@@ -306,6 +311,10 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       if (lessonMatch || missedMatch) hasWttData = true;
       if (lessonMatch?.day) latestWttDay = lessonMatch.day;
       else if (missedMatch?.day) latestWttDay = missedMatch.day;
+      const teacherSource = lessonMatch || missedMatch;
+      if (teacherSource?.teacherName) {
+        latestWttTeacher = { teacherId: teacherSource.teacherId || "", teacherName: teacherSource.teacherName };
+      }
 
       let wttWithKind = null;
       if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
@@ -335,15 +344,26 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     // "archived with tally data" behavior with WTT as the source.
     if (!mttCard && !hasWttData) continue;
 
+    // v2.44.0 — term overlap gate. A row needs at least one SCHOOL week in
+    // this term that is not inactive. Without it, a new enrolment starting
+    // after the term (or only in its holidays) rendered an all-dash row just
+    // because it already had a master card — in the live term and in the
+    // previous-term export alike. Checked before the lessonKey is claimed,
+    // so a group or duplicate enrolment that IS active that term still gets
+    // its turn below. Holiday-flagged weeks never count; callers that pass
+    // no isHoliday flags treat every week as a school week.
+    if (!termWeeks.some(w => !w.isHoliday && cells[w.weekKey].state !== "inactive")) continue;
+
     seen.add(lessonKey);
     for (const [k, v] of pendingShimEntries) entryMap[k] = v;
 
     // Row shape: spread MTT card if present (carries teacherName, groupName,
     // studentNames, id), else synthesize a minimal base from enrolment + student.
     // Day resolution order: mttCard.day → latestWttDay → "" (Spec 4 cluster 3).
-    // Session 3 / C7 — synthesised shape carries no teacher attribution;
-    // teacherName "" funnels these rows under the empty teacher group in
-    // TallyView's by-teacher grouping (acceptable for rows with no MTT card).
+    // Session 3 / C7 — synthesised shape carries no teacher attribution of
+    // its own. v2.44.0 — teacher falls back to the latest weekly entry's
+    // teacher (the same entry the day comes from); "" only when no entry
+    // carries one, which still groups under "Unknown".
     const baseLesson = mttCard ? { ...mttCard } : {
       id: lessonKey,
       studentId: e.studentId,
@@ -353,7 +373,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       isGroup: e.isGroup || false,
       instrument: e.instrument,
       schoolId,
-      teacherName: "",
+      ...(latestWttTeacher || { teacherName: "" }),
       day: latestWttDay || "",
     };
 

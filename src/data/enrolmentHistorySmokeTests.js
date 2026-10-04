@@ -100,28 +100,26 @@ const DRUMS_SNAPSHOT = {
 
 // ── Commit 1: characterization (current behaviour) ──────────────────────
 export function runEnrolmentHistoryCharacterizationTests(assert) {
-  // a. Ended Drums + new Piano: today both get a term 3 row. Piano's row
-  //    exists only because it has a master card; every cell is inactive.
+  // a. Ended Drums + new Piano. Before v2.44.0 both got a term 3 row and
+  //    Piano's was all inactive (it existed only through its master card).
+  //    The term overlap gate drops it: no school week of term 3 is active.
   const a = deriveT3({ enrolments: [drums, piano] });
-  assert("history char a: ended Drums + new Piano → 2 term 3 rows today",
-    a.tallyRows.map(r => r.lessonKey).sort(), ["bon|Drums", "bon|Piano"]);
-  assert("history char a: today's Piano row is all inactive",
-    cellStates(a.tallyRows.find(r => r.lessonKey === "bon|Piano")).every(s => s === "inactive"), true);
-  // Variant: Piano starting in holiday week 2 — active in H2 only.
+  assert("history a: ended Drums + new Piano → only the Drums row in term 3",
+    a.tallyRows.map(r => r.lessonKey).sort(), ["bon|Drums"]);
+  // Variant: Piano starting in holiday week 2 — active in H2 only, which is
+  // a holiday week and so never earns a row.
   const pianoH2 = { ...piano, startDate: "2026-09-28" };
   const aH = deriveT3({ enrolments: [drums, pianoH2] });
-  assert("history char a (holiday start): still 2 rows today",
-    aH.tallyRows.map(r => r.lessonKey).sort(), ["bon|Drums", "bon|Piano"]);
-  assert("history char a (holiday start): Piano cells inactive except H2",
-    cellStates(aH.tallyRows.find(r => r.lessonKey === "bon|Piano")),
-    [...SCHOOL_WEEKS.map(() => "inactive"), "inactive", "blank"]);
+  assert("history a (holiday start): only the Drums row",
+    aH.tallyRows.map(r => r.lessonKey).sort(), ["bon|Drums"]);
 
   // b. Drums row: cells, counts and tiles. The term tiles already equal the
   //    Drums row's because Piano's all-inactive cells subtract themselves.
   assert("history char b: Drums snapshot", drumsSnapshot(a), DRUMS_SNAPSHOT);
   const drumsRow = a.tallyRows.find(r => r.lessonKey === "bon|Drums");
-  assert("history char b: Drums row has no teacher today (no master card), day from weekly data",
-    [drumsRow.teacherName, drumsRow.day], ["", "Wednesday"]);
+  // P3: the teacher now comes from the latest weekly entry, like the day.
+  assert("history b: Drums row takes teacher and day from its latest weekly entry",
+    [drumsRow.teacherId, drumsRow.teacherName, drumsRow.day], ["t_sam", "Sam", "Wednesday"]);
 
   // c. Archived students: the enrolment-overlap fast exit.
   const arch = { ...bonnie, status: "archived" };
@@ -159,13 +157,20 @@ export function runEnrolmentHistoryCharacterizationTests(assert) {
   assert("history char e: group with term activity → one row, all completed",
     gActive.tallyRows.map(r => [r.lessonKey, r.enrolmentId, cellStates(r).slice(0, 10).every(s => s === "completed")]),
     [["group|g_uke", "e_ivy_uke", true]]);
-  // Ivy joins after the term: her later start puts her row first, so today it
-  // claims the group row and every school week dashes despite the lessons.
+  // Ivy joins after the term: her later start puts her row first. Before
+  // v2.44.0 it claimed the group row and every school week dashed despite the
+  // lessons. The gate now passes it over unclaimed, so Libby's enrolment —
+  // active all term — claims the row and the lessons show.
   const gILate = { ...gI, startDate: "2026-10-05" };
   const gLate = deriveT3({ enrolments: [gL, gILate], students: [libby, ivy], wtt: groupWtt, cards: [groupCard] });
-  assert("history char e: late joiner claims the group row today, school weeks all inactive",
-    gLate.tallyRows.map(r => [r.lessonKey, r.enrolmentId, cellStates(r).slice(0, 10).every(s => s === "inactive")]),
-    [["group|g_uke", "e_ivy_uke", true]]);
+  assert("history e: late joiner no longer claims the group row; the active member's enrolment does",
+    gLate.tallyRows.map(r => [r.lessonKey, r.enrolmentId, cellStates(r).slice(0, 10).every(s => s === "completed")]),
+    [["group|g_uke", "e_libby_uke", true]]);
+  // Every member joined after the term: no member is active in a school
+  // week, so the group has no row.
+  const gLLate = { ...gL, startDate: "2026-10-05" };
+  assert("history e: group whose members all start after the term has no row",
+    deriveT3({ enrolments: [gLLate, gILate], students: [libby, ivy], wtt: {}, cards: [groupCard] }).tallyRows.length, 0);
 
   // f. Orphan predicate building block. checkOrphan lives inside an App.js
   //    effect today, so only its input is reachable here: the active-only
@@ -238,4 +243,62 @@ export function runOrphanCheckTests(assert) {
     [reason({ isGroup: true, groupId: "g", studentId: "ghost" }, "2026-08-10|S"),
      reason({ isBandSession: true, members: [] }, "2026-08-10|S"),
      reason({ isBandSession: true, members: [] }, "master")], [null, null, null]);
+}
+
+// ── Commit 3: Tally term overlap gate + teacher fallback ────────────────
+export function runTallyOverlapGateTests(assert) {
+  // Mid-term swap: Drums ends Wed of W5, Piano starts W6 with a card. Both
+  // have live school weeks in term 3, so both rows stay.
+  const drumsMid = { ...drums, endDate: "2026-08-12" };
+  const pianoMid = { ...piano, startDate: "2026-08-17" };
+  const wtt = {};
+  SCHOOL_WEEKS.forEach((wk, i) => {
+    wtt[`${wk}|S`] = i < 5
+      ? { lessons: [drumLesson(wk)], missed: [] }
+      : { lessons: [{ ...pianoCard, id: "P_" + wk }], missed: [] };
+  });
+  const mid = deriveT3({ enrolments: [drumsMid, pianoMid], wtt });
+  const byKey = Object.fromEntries(mid.tallyRows.map(r => [r.lessonKey, r]));
+  assert("gate: mid-term swap shows both rows",
+    Object.keys(byKey).sort(), ["bon|Drums", "bon|Piano"]);
+  assert("gate: mid-term swap — Drums active W1–W5, Piano W6–W10",
+    [cellStates(byKey["bon|Drums"]).slice(0, 10), cellStates(byKey["bon|Piano"]).slice(0, 10)],
+    [[...Array(5).fill("completed"), ...Array(5).fill("inactive")],
+     [...Array(5).fill("inactive"), ...Array(5).fill("completed")]]);
+  assert("gate: mid-term swap — each row keeps its own teacher",
+    [byKey["bon|Drums"].teacherName, byKey["bon|Piano"].teacherName], ["Sam", "Jess"]);
+
+  // Previous-term export: TallyView re-derives the old term with every
+  // school, school weeks then holiday weeks flagged isHoliday — the same
+  // shape as T3 here. It must give the same rows and tiles as on screen.
+  const onScreen = deriveT3({ enrolments: [drums, piano] });
+  const exported = deriveTallyRows({ enrolments: [drums, piano], students: [bonnie], termWeeks: T3,
+    weeklyTimetables: bonnieWtt(), timetable: { lessons: [pianoCard] }, schoolFilter: "all" });
+  assert("gate: previous-term export has the same rows as the on-screen term",
+    [exported.tallyRows.map(r => r.lessonKey), onScreen.tallyRows.map(r => r.lessonKey)], [["bon|Drums"], ["bon|Drums"]]);
+  assert("gate: previous-term export tiles match the Drums snapshot",
+    drumsSnapshot(exported), DRUMS_SNAPSHOT);
+
+  // Term 4 view of the same student: Drums has nothing live there and Piano
+  // has its card, so only Piano shows — the swap reads cleanly both ways.
+  const T4 = ["2026-10-05", "2026-10-12"].map((weekKey, i) => ({ weekKey, weekNum: i + 1, label: `W${i + 1}` }));
+  assert("gate: term 4 shows only the new Piano row",
+    deriveT3({ enrolments: [drums, piano], wtt: {}, termWeeks: T4 }).tallyRows.map(r => r.lessonKey), ["bon|Piano"]);
+
+  // Duplicate enrolments: a preferred row that is inactive all term no longer
+  // claims the lessonKey with a dead row — the older, live duplicate does.
+  const drumsNew = { id: "e_bon_drm_new", studentId: "bon", instrument: "Drums", startDate: "2026-10-05" };
+  const drumsNewCard = { ...pianoCard, id: "M_drm_new", enrolmentId: "e_bon_drm_new", instrument: "Drums" };
+  const dup = deriveT3({ enrolments: [drums, drumsNew], cards: [drumsNewCard] });
+  assert("gate: a duplicate starting after the term yields to the live one",
+    dup.tallyRows.map(r => [r.lessonKey, r.enrolmentId]), [["bon|Drums", "e_bon_drm"]]);
+
+  // No weekly entry carries a teacher → still "" (groups under Unknown).
+  const bare = bonnieWtt();
+  for (const k of Object.keys(bare)) {
+    bare[k].lessons = bare[k].lessons.map(l => ({ ...l, teacherId: undefined, teacherName: undefined }));
+    bare[k].missed = bare[k].missed.map(m => ({ ...m, teacherId: undefined, teacherName: undefined }));
+  }
+  assert("gate: no teacher on any weekly entry leaves teacherName empty",
+    deriveT3({ enrolments: [drums], wtt: bare, cards: [] }).tallyRows[0].teacherName, "");
 }
