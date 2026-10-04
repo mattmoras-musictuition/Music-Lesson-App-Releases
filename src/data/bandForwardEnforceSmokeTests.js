@@ -17,7 +17,8 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { buildForwardIndex, isForwardConsumedCard, withoutForwardConsumed } from "./bandForwardIndex";
-import { generateMasterLessons } from "./bandForward";
+import { generateMasterLessons, planForwardSave, consumeForwardWeeks, forwardSubjects } from "./bandForward";
+import { getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
 
 // The band sits in EB; it brings forward the lesson of EX (two weeks later).
 export const EB = "2099-03-09";
@@ -230,4 +231,92 @@ export function runForwardEnforceGenerateTests(assert) {
   });
   assert("forward D2: two forward entries in different weeks — both weeks lose Amy's card, the weeks between keep it",
     [EX, EY, W16].map(wk => origins(gen("S", wk, [], two).lessons).includes("e_amy_gtr")), [false, false, true]);
+}
+
+// ── Commit 4: save-time removal (D3, D4, D6) ──
+export function runForwardEnforceSaveTests(assert) {
+  const r = eresolver();
+  const other = ecard("M_amy", "W_zed", { enrolmentId: "e_zed", studentId: "zed", instrument: "Bass", start: "11:00" });
+  const generated = () => ({
+    [EX + "|S"]: { lessons: [ecard("M_amy", "W_amy"), ecard("M_uke", "W_uke"), other], missed: [], generatedAt: "2099-03-01" },
+    [EX + "|T"]: { lessons: [ecard("M_bob", "W_bob")], missed: [], generatedAt: "2099-03-01" },
+  });
+  const ids = (d) => (d.lessons || []).map(l => l.id);
+
+  // D3 — an existing card leaves the used-up week and is snapshotted.
+  let fw = planForwardSave({ stored: [eentry("e_amy_gtr", null)], saved: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })], weeklyTimetables: generated() });
+  assert("forward save D3: Amy's week-X card leaves that row and is snapshotted on her entry",
+    [Object.keys(fw.rows), ids(fw.rows[EX + "|S"]), fw.memberStates[0].forwardCard.id, fw.removed.map(x => x.rowKey)],
+    [[EX + "|S"], ["W_uke", "W_zed"], "W_amy", [EX + "|S"]]);
+  assert("forward save D3: nothing is written to missed[] and no other row is touched",
+    [fw.rows[EX + "|S"].missed, EX + "|T" in fw.rows], [[], false]);
+
+  // Ungenerated week, or a generated week without the card → nothing stored.
+  fw = planForwardSave({ stored: [], saved: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EY })], weeklyTimetables: generated() });
+  assert("forward save D3: an ungenerated week changes nothing and stores no snapshot",
+    [Object.keys(fw.rows), "forwardCard" in fw.memberStates[0]], [[], false]);
+  fw = planForwardSave({ stored: [], saved: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })],
+    weeklyTimetables: { [EX + "|S"]: { lessons: [other], missed: [] } } });
+  assert("forward save D3: a generated week without the card stores no snapshot",
+    [Object.keys(fw.rows), "forwardCard" in fw.memberStates[0]], [[], false]);
+
+  // Cross-school: Bob's card is in school T's row although the band is in S's.
+  fw = planForwardSave({ stored: [], saved: [eentry("e_bob_drm", "forward", { consumedWeekKey: EX })], weeklyTimetables: generated() });
+  assert("forward save D3: the used-up row is the card's own school (T), not the band's",
+    [Object.keys(fw.rows), ids(fw.rows[EX + "|T"]), fw.memberStates[0].forwardCard.schoolId], [[EX + "|T"], [], "T"]);
+
+  // Group: one card out, one snapshot on the first group entry only.
+  fw = planForwardSave({ stored: [], saved: [eentry("e_libby_uke", "forward", { consumedWeekKey: EX }), eentry("e_ivy_uke", "forward", { consumedWeekKey: EX })],
+    weeklyTimetables: generated() });
+  assert("forward save D3 (group): the group card leaves once; snapshot on the first group entry only",
+    [ids(fw.rows[EX + "|S"]), fw.memberStates.map(e => (e.forwardCard ? e.forwardCard.id : null)), forwardSubjects(fw.memberStates)[0].forwardCard.id],
+    [["W_amy", "W_zed"], ["W_uke", null], "W_uke"]);
+
+  // D4 — removedLessons is never touched; the card is in no ledger.
+  const ledgered = ecard("M_bob", "W_bob_B");
+  const band = eband("B2", [eentry("e_amy_gtr", null), eentry("e_bob_drm", "regular", { consumedWeekKey: EB })], { removedLessons: [ledgered] });
+  const plan = planAttributionSave({ stored: band.memberStates, working: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX }), band.memberStates[1]],
+    missByEnrolment: {}, catchupsForBand: [], weekKey: EB, forwardWeekOpen: () => true });
+  fw = planForwardSave({ stored: band.memberStates, saved: plan.memberStates, weeklyTimetables: generated() });
+  const out = applyAttributionLedger({ lessons: [band], bandLessonId: "B2", regularOn: plan.regularOn, regularOff: plan.regularOff, memberStates: fw.memberStates, resolver: r });
+  const b2 = out.lessons.find(l => l.id === "B2");
+  assert("forward save D4: removedLessons unchanged by a forward save; the week-X card is in no ledger",
+    [JSON.stringify(b2.removedLessons), b2.removedLessons.some(c => c.id === "W_amy"), b2.memberStates[0].forwardCard.id], [JSON.stringify([ledgered]), false, "W_amy"]);
+
+  // Both weeks come out of one plan (the handler spreads them into one update).
+  const prev = { [EB + "|S"]: { lessons: [band], missed: [] }, ...generated() };
+  const next = { ...prev, ...fw.rows, [EB + "|S"]: { ...prev[EB + "|S"], lessons: out.lessons } };
+  assert("forward save: band week and used-up week change in the same update",
+    [next[EB + "|S"] !== prev[EB + "|S"], next[EX + "|S"] !== prev[EX + "|S"], next[EX + "|T"] === prev[EX + "|T"]], [true, true, true]);
+
+  // D6 — repair on Save for an unchanged forward.
+  const saved = [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })];
+  fw = planForwardSave({ stored: saved, saved, weeklyTimetables: generated() });
+  assert("forward save D6: an unchanged forward whose card is back in its week has it removed and snapshotted",
+    [ids(fw.rows[EX + "|S"]), fw.memberStates[0].forwardCard.id, fw.released], [["W_uke", "W_zed"], "W_amy", []]);
+  const held = [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX, forwardCard: ecard("M_amy", "W_amy") })];
+  fw = planForwardSave({ stored: held, saved: held, weeklyTimetables: { [EX + "|S"]: { lessons: [other], missed: [] } } });
+  assert("forward save D6: an unchanged forward with its card already gone keeps its snapshot and writes nothing",
+    [Object.keys(fw.rows), fw.memberStates[0] === held[0]], [[], true]);
+
+  // Week change: the new week starts without the old snapshot; the old one is released.
+  fw = planForwardSave({ stored: held, saved: [{ ...held[0], consumedWeekKey: EY }], weeklyTimetables: generated() });
+  assert("forward save: a week change drops the old snapshot from the entry and reports the old week as released",
+    ["forwardCard" in fw.memberStates[0], fw.released.map(x => [x.weekKey, x.snapshot && x.snapshot.id])], [false, [[EX, "W_amy"]]]);
+  // Leaving forward strips the snapshot too.
+  fw = planForwardSave({ stored: held, saved: [{ ...held[0], consumption: "free", consumedWeekKey: null }], weeklyTimetables: generated() });
+  assert("forward save: leaving forward strips the snapshot and reports the week as released",
+    ["forwardCard" in fw.memberStates[0], fw.released.length, Object.keys(fw.rows)], [false, 1, []]);
+
+  // consumeForwardWeeks returns the same memberStates array when nothing moves.
+  const plain = [eentry("e_amy_gtr", "free")];
+  assert("forward save: no forward entries → memberStates untouched, no rows",
+    [consumeForwardWeeks(generated(), plain).memberStates === plain, Object.keys(consumeForwardWeeks(generated(), plain).rows)], [true, []]);
+
+  // Invoice math identical with the card removed (it reads misses and catchups only).
+  const math = (wtt) => JSON.stringify(getEnrolmentTermDeductionMath({ weeklyTimetables: wtt, catchups: [], enrolmentId: "e_amy_gtr", instrument: "Guitar",
+    prevTerm: { start: "2099-02-02", end: "2099-04-03" }, interruptions: [], nextTermStart: "2099-04-20" }));
+  fw = planForwardSave({ stored: [], saved: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })], weeklyTimetables: generated() });
+  assert("forward save: invoice math identical before and after the week-X card is removed",
+    math({ ...generated(), ...fw.rows }), math(generated()));
 }

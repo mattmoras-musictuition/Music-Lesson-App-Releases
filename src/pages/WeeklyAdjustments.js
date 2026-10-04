@@ -40,7 +40,7 @@ import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/b
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
-import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons } from "../data/bandForward";
+import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons, planForwardSave } from "../data/bandForward";
 import { buildForwardIndex, withoutForwardConsumed } from "../data/bandForwardIndex";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1945,11 +1945,20 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!plan.changed) {
       // v2.42.1 — Save with no role changes still runs the repair sweep, so
       // "open the window, press Save" ledgers any Regular member's stray card.
+      // Slice 2 (D6) — and clears a brought-forward subject's card out of its
+      // used-up week if it is there (entries saved under v2.45.0, cards re-added).
       setWeeklyTimetables(prev => {
         const d = prev[storageKey];
         if (!d) return prev;
-        const lessons = sweepRegularIntoLedger(d.lessons || [], bandAttrModal.lessonId, enrolmentResolver);
-        return lessons === d.lessons ? prev : { ...prev, [storageKey]: { ...d, lessons } };
+        let lessons = sweepRegularIntoLedger(d.lessons || [], bandAttrModal.lessonId, enrolmentResolver);
+        const band = lessons.find(l => l.id === bandAttrModal.lessonId);
+        const fw = band && hasMemberStates(band)
+          ? planForwardSave({ stored: band.memberStates, saved: band.memberStates, weeklyTimetables: prev }) : null;
+        const msChanged = !!fw && fw.memberStates.some((e, i) => e !== band.memberStates[i]);
+        if (msChanged) lessons = lessons.map(l => (l.id === band.id ? { ...l, memberStates: fw.memberStates } : l));
+        const rows = fw ? fw.rows : {};
+        if (lessons === d.lessons && Object.keys(rows).length === 0) return prev;
+        return { ...prev, ...rows, [storageKey]: { ...d, lessons } };
       });
       setBandAttrModal(null);
       return;
@@ -2014,12 +2023,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // is worked out on the current week; the setter re-runs it on the latest.
     const ledgerArgs = { bandLessonId: bandAttrModal.lessonId, regularOn: plan.regularOn, regularOff: plan.regularOff, memberStates: stampedMemberStates, resolver: enrolmentResolver };
     const ledgerPreview = applyAttributionLedger({ ...ledgerArgs, lessons: (weeklyTimetables[storageKey] || {}).lessons || [] });
+    // Slice 2 (D3/D4/D6) — a brought-forward subject's card leaves its
+    // used-up week (any school's row) in this SAME update, snapshotted on the
+    // entry as forwardCard — never into removedLessons.
     setWeeklyTimetables(prev => {
       const d = prev[storageKey];
       if (!d) return prev;
-      const out = applyAttributionLedger({ ...ledgerArgs, lessons: d.lessons || [] });
+      const storedNow = ((d.lessons || []).find(l => l.id === bandAttrModal.lessonId) || {}).memberStates || bandAttrModal.stored;
+      const fw = planForwardSave({ stored: storedNow, saved: stampedMemberStates, weeklyTimetables: prev });
+      const out = applyAttributionLedger({ ...ledgerArgs, memberStates: fw.memberStates, lessons: d.lessons || [] });
       if (!out) return prev;
-      return { ...prev, [storageKey]: { ...d, lessons: out.lessons } };
+      return { ...prev, ...fw.rows, [storageKey]: { ...d, lessons: out.lessons } };
     });
     // Rows entering and leaving catchups state happen in the SAME block as the
     // band change above. The departing rows are dropped here rather than after

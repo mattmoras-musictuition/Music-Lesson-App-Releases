@@ -221,5 +221,152 @@ export function generateMasterLessons(masterLessons, weekBands, resolver, weekKe
   return withoutForwardConsumed(banded, weekKey, forwardIndex);
 }
 
+// ── Slice 2: the used-up week's card at save time (D3, D4, D6) ──────
+//
+// The card a forward entry displaces lives in ANOTHER week's row (any school)
+// and is snapshotted on the entry itself as `forwardCard` (a group: on its
+// first entry only). It is NEVER put in the band's removedLessons: the
+// drain's ledger check matches day + enrolment, not week, so a later week's
+// card there would make the drain drop the band week's real lesson, and the
+// ledger restore / repair / absence paths would put it in the band's week.
+
+/**
+ * One forward subject per solo enrolment or per group, from memberStates.
+ * forwardCard is read from whichever entry of the subject carries it.
+ *
+ * @param {Array} memberStates
+ * @returns {Array<{key: string, groupId: string|null, enrolmentId: string, studentId: string,
+ *   instrument: string, consumedWeekKey: string|null, forwardCard: Object|null, entries: Array}>}
+ */
+export function forwardSubjects(memberStates) {
+  const out = [];
+  const byKey = new Map();
+  for (const e of (memberStates || [])) {
+    if (!e || e.consumption !== "forward") continue;
+    const isGroup = e.isGroup === true && !!e.groupId;
+    const key = isGroup ? "group:" + e.groupId : "enrolment:" + e.enrolmentId;
+    let sub = byKey.get(key);
+    if (!sub) {
+      sub = { key, groupId: isGroup ? e.groupId : null, enrolmentId: e.enrolmentId, studentId: e.studentId,
+        instrument: e.instrument || "", consumedWeekKey: e.consumedWeekKey || null, forwardCard: null, entries: [] };
+      byKey.set(key, sub);
+      out.push(sub);
+    }
+    sub.entries.push(e);
+    if (!sub.consumedWeekKey && e.consumedWeekKey) sub.consumedWeekKey = e.consumedWeekKey;
+    if (!sub.forwardCard && e.forwardCard) sub.forwardCard = e.forwardCard;
+  }
+  return out;
+}
+
+/**
+ * True if `card` is the subject's own regular card: the group's card, or a
+ * solo card matched on enrolmentId or studentId + instrument (the forward
+ * index's rule, so generation and save agree). Bands and merged catch-ups
+ * never match.
+ */
+export function subjectOwnsCard(subject, card) {
+  if (!subject || !card || card.isBandSession || card.__isCatchup) return false;
+  if (subject.groupId) return !!card.isGroup && card.groupId === subject.groupId;
+  return !card.isGroup && (card.enrolmentId === subject.enrolmentId
+    || (card.studentId === subject.studentId && card.instrument === subject.instrument));
+}
+
+// Every weekly row key of `weekKey`, any school, in key order.
+function rowKeysOfWeek(weeklyTimetables, rows, weekKey) {
+  const prefix = weekKey + "|";
+  const keys = new Set([...Object.keys(weeklyTimetables || {}), ...Object.keys(rows || {})].filter((k) => k.startsWith(prefix)));
+  return [...keys].sort();
+}
+
+// memberStates with `snapshot` on the subject's first entry and on no other
+// entry of it (null clears them all).
+function withSnapshot(memberStates, subject, snapshot) {
+  const first = subject.entries[0];
+  const mine = new Set(subject.entries);
+  return (memberStates || []).map((e) => {
+    if (!mine.has(e)) return e;
+    if (e === first && snapshot) return { ...e, forwardCard: snapshot };
+    if (!("forwardCard" in e)) return e;
+    const { forwardCard, ...rest } = e;
+    return rest;
+  });
+}
+
+/**
+ * D3 / D6 — take each forward subject's card out of its used-up week.
+ * Every row of that week (any school) is searched; matching cards are
+ * removed and the first one is snapshotted on the subject (forwardCard).
+ * A week with no row, or no such card, changes nothing and keeps any
+ * snapshot the subject already holds. Pure; rows are returned, not written.
+ *
+ * @param {Object} weeklyTimetables
+ * @param {Array} memberStates
+ * @param {Object} [rows]  Row updates already planned (read in preference).
+ * @returns {{rows: Object, memberStates: Array, removed: Array<{rowKey: string, card: Object}>}}
+ */
+export function consumeForwardWeeks(weeklyTimetables, memberStates, rows = {}) {
+  let ms = memberStates || [];
+  const outRows = { ...rows };
+  const removed = [];
+  for (const subject of forwardSubjects(ms)) {
+    if (!subject.consumedWeekKey) continue;
+    let snapshot = null;
+    for (const sk of rowKeysOfWeek(weeklyTimetables, outRows, subject.consumedWeekKey)) {
+      const d = outRows[sk] || (weeklyTimetables || {})[sk];
+      const lessons = (d && d.lessons) || [];
+      const mine = lessons.filter((l) => subjectOwnsCard(subject, l));
+      if (mine.length === 0) continue;
+      outRows[sk] = { ...d, lessons: lessons.filter((l) => !subjectOwnsCard(subject, l)) };
+      for (const c of mine) removed.push({ rowKey: sk, card: c });
+      if (!snapshot) snapshot = mine[0];
+    }
+    if (snapshot) {
+      // Re-read the subject from the current list so the snapshot lands on
+      // the entries as they are now.
+      const current = forwardSubjects(ms).find((x) => x.key === subject.key);
+      ms = withSnapshot(ms, current, snapshot);
+    }
+  }
+  return { rows: outRows, memberStates: ms, removed };
+}
+
+/**
+ * The forward side of an attribution-window Save (slice 2). Compares the
+ * stored memberStates with the saved ones:
+ *   • every entry that is no longer forward loses any forwardCard;
+ *   • a subject that is NEW or whose week CHANGED starts with no snapshot;
+ *   • then every forward subject's used-up week is cleared of its card
+ *     (consumeForwardWeeks) — new, moved and unchanged alike (D6 repair).
+ * Subjects that stopped using a week are reported in `released` with the
+ * week and the snapshot they held, for the caller to put back.
+ *
+ * @param {Object} args
+ * @param {Array} args.stored  memberStates as stored before the save.
+ * @param {Array} args.saved   memberStates being saved.
+ * @param {Object} args.weeklyTimetables
+ * @returns {{rows: Object, memberStates: Array, removed: Array,
+ *   released: Array<{subject: Object, weekKey: string, snapshot: Object|null}>}}
+ */
+export function planForwardSave({ stored, saved, weeklyTimetables } = {}) {
+  const before = forwardSubjects(stored);
+  const after = forwardSubjects(saved);
+  const afterWeek = new Map(after.map((x) => [x.key, x.consumedWeekKey]));
+  const beforeWeek = new Map(before.map((x) => [x.key, x.consumedWeekKey]));
+  const released = before
+    .filter((x) => x.consumedWeekKey && afterWeek.get(x.key) !== x.consumedWeekKey)
+    .map((x) => ({ subject: x, weekKey: x.consumedWeekKey, snapshot: x.forwardCard || null }));
+
+  const fresh = new Set(after.filter((x) => beforeWeek.get(x.key) !== x.consumedWeekKey).flatMap((x) => x.entries));
+  const cleaned = (saved || []).map((e) => {
+    if (!e || !("forwardCard" in e)) return e;
+    if (e.consumption === "forward" && !fresh.has(e)) return e;
+    const { forwardCard, ...rest } = e;
+    return rest;
+  });
+  const consumed = consumeForwardWeeks(weeklyTimetables, cleaned);
+  return { ...consumed, released };
+}
+
 /** The disabled-option reason (D4). */
 export const NO_FORWARD_WEEK_TEXT = "No later lesson this term to bring forward";
