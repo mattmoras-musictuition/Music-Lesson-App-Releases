@@ -4388,11 +4388,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // isLessonPresentThisWeek helper (utils/weeklyPresence). A placed GROUP
             // card does NOT cover a separate INDIVIDUAL lesson; a new band covers
             // only its Regular members, a legacy band all of them.
-            const missing = mttLessons.filter(ml => !isLessonPresentThisWeek(ml, wttLessons, wttMissed));
             // contextMenu.weekKey is the composite `${weekKey}|${schoolId}` storage
             // key; the activity test needs the PLAIN Monday date. Same split
             // placeLesson performs below.
             const plainMenuWeekKey = (contextMenu.weekKey || "").split("|")[0];
+            // Slice 2 — a lesson brought forward into this week is not unscheduled.
+            const missing = mttLessons.filter(ml => !isLessonPresentThisWeek(ml, wttLessons, wttMissed, { forwardIndex: fwdIndex, weekKey: plainMenuWeekKey }));
                 // Helper to place a lesson directly at the right-clicked slot
                 const placeLesson = (s, opts) => {
                   const activeEnrolment = (enrolments || []).find(e =>
@@ -5741,7 +5742,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               // shared isLessonPresentThisWeek helper (utils/weeklyPresence). A
               // placed GROUP card does NOT cover a separate INDIVIDUAL lesson; a
               // new band covers only its Regular members, a legacy band all of them.
-              const present = isLessonPresentThisWeek(ml, wttLessons, wttMissed);
+              const present = isLessonPresentThisWeek(ml, wttLessons, wttMissed, { forwardIndex: fwdIndex, weekKey });
               // Not started yet (or already ended) for THIS week — not a real
               // absence, so not a banner row. The heading count derives from
               // `missing`, so suppressing here corrects the number too.

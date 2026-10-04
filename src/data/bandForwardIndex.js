@@ -115,3 +115,35 @@ export function forwardFor(index, enrolment, weekKey) {
   return index.entries.find((f) => !f.groupId && f.consumedWeekKey === weekKey
     && f.studentId === enrolment.studentId && f.instrument === enrolment.instrument) || null;
 }
+
+/**
+ * True if `card` (a master or weekly card) is the regular lesson of a subject
+ * whose `weekKey` is used up by a forward entry — so the card must not be in
+ * that week (slice 2). A group card matches its group; any other non-band
+ * card matches its enrolment (enrolmentId, then studentId + instrument, as
+ * forwardFor). An entry marked attended:false does not consume (the Tally's
+ * rule). Band cards never match.
+ *
+ * @param {Object} card
+ * @param {string} weekKey
+ * @param {{byEnrolment: Map, byGroup: Map, entries: Array}|null} index
+ * @returns {boolean}
+ */
+export function isForwardConsumedCard(card, weekKey, index) {
+  if (!card || !weekKey || !index || card.isBandSession || card.__isCatchup) return false;
+  const f = card.isGroup
+    ? (card.groupId ? index.byGroup.get(`${card.groupId}|${weekKey}`) || null : null)
+    : forwardFor(index, { id: card.enrolmentId, studentId: card.studentId, instrument: card.instrument }, weekKey);
+  return !!f && f.attended !== false;
+}
+
+/**
+ * `cards` without the ones isForwardConsumedCard removes from `weekKey`.
+ * Returns `cards` itself when nothing is removed.
+ */
+export function withoutForwardConsumed(cards, weekKey, index) {
+  const list = cards || [];
+  if (!index || !weekKey) return list;
+  const out = list.filter((c) => !isForwardConsumedCard(c, weekKey, index));
+  return out.length === list.length ? list : out;
+}

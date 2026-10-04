@@ -16,6 +16,7 @@ import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { lweekDates } from "./bandLedgerSmokeTests";
+import { buildForwardIndex, isForwardConsumedCard, withoutForwardConsumed } from "./bandForwardIndex";
 
 // The band sits in EB; it brings forward the lesson of EX (two weeks later).
 export const EB = "2099-03-09";
@@ -113,8 +114,9 @@ export function runForwardEnforceCharacterizationTests(assert) {
     eentry("e_libby_uke", "regular", { consumedWeekKey: EB }),
     eentry("e_ivy_uke", "regular", { consumedWeekKey: EB }),
   ]);
-  assert("forward enforce char: Regular group with NO ledgered card → flagged; Regular individual with none → covered",
-    [isLessonPresentThisWeek(EMASTER[2], [regBand], []), isLessonPresentThisWeek(EMASTER[0], [regBand], [])], [false, true]);
+  // Slice 2 deliberately changes this (commit 2, D8): the group is covered too. Was [false, true].
+  assert("forward enforce char: Regular group with NO ledgered card is now covered like a Regular individual — was flagged before slice 2",
+    [isLessonPresentThisWeek(EMASTER[2], [regBand], []), isLessonPresentThisWeek(EMASTER[0], [regBand], [])], [true, true]);
 
   // Band removal and clean import touch only the band's own week.
   const bandWeek = { lessons: [FORWARD_BAND, ecard("M_amy", "W_amy_B", { day: "Thursday" })], missed: [] };
@@ -136,4 +138,43 @@ export function runForwardEnforceCharacterizationTests(assert) {
   const b2 = out.lessons.find(l => l.id === "B2");
   assert("forward enforce char: a forward save leaves removedLessons exactly as it was",
     [hasMemberStates(b2), JSON.stringify(b2.removedLessons)], [true, JSON.stringify([ledgered])]);
+}
+
+// ── Commit 2: presence (D7) and the group banner gap (D8) ──
+export function runForwardEnforcePresenceTests(assert) {
+  const wtt = { [EB + "|S"]: { lessons: [FORWARD_BAND], missed: [] } };
+  const idx = buildForwardIndex(wtt);
+  const opts = (weekKey) => ({ forwardIndex: idx, weekKey });
+
+  assert("forward presence: the consumed week counts as scheduled for Amy, Bob (band in another school's row) and the group",
+    EMASTER.map(ml => isLessonPresentThisWeek(ml, [], [], opts(EX))), [true, true, true]);
+  assert("forward presence: any other week is unaffected (still flagged with no card)",
+    EMASTER.map(ml => isLessonPresentThisWeek(ml, [], [], opts(EY))), [false, false, false]);
+  assert("forward presence: without the index the rule is the week-only one (unchanged)",
+    isLessonPresentThisWeek(EMASTER[0], [], []), false);
+  const otherBob = { ...EMASTER[1], id: "M_bob2", enrolmentId: "e_bob_other", studentId: "bob", instrument: "Piano" };
+  assert("forward presence: another instrument of the same student is not covered",
+    isLessonPresentThisWeek(otherBob, [], [], opts(EX)), false);
+  const absentIdx = buildForwardIndex({ [EB + "|S"]: { lessons: [eband("B1", [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX, attended: false })])], missed: [] } });
+  assert("forward presence: an entry marked attended:false does not consume (Tally's rule)",
+    isLessonPresentThisWeek(EMASTER[0], [], [], { forwardIndex: absentIdx, weekKey: EX }), false);
+
+  // isForwardConsumedCard / withoutForwardConsumed — the shared card test.
+  const weekly = [ecard("M_amy", "W_amy"), ecard("M_uke", "W_uke"), ecard("M_bob", "W_bob"), FORWARD_BAND];
+  assert("forward card test: consumed cards (solo, group, cross-school) match; the band never does",
+    weekly.map(c => isForwardConsumedCard(c, EX, idx)), [true, true, true, false]);
+  assert("forward card test: an unstamped card matches by student + instrument",
+    isForwardConsumedCard({ ...ecard("M_amy", "W_x"), enrolmentId: undefined }, EX, idx), true);
+  assert("forward card test: withoutForwardConsumed keeps the array when nothing goes",
+    [withoutForwardConsumed(weekly, EY, idx) === weekly, withoutForwardConsumed(weekly, EX, idx).map(c => c.id)], [true, ["B1"]]);
+
+  // D8 — the Regular group is covered with or without a ledgered card; Free is not.
+  const regGroup = (removedLessons) => eband("BR", [eentry("e_libby_uke", "regular", { consumedWeekKey: EB }), eentry("e_ivy_uke", "regular", { consumedWeekKey: EB })], { removedLessons });
+  assert("group banner gap: Regular group covered with and without its card in the ledger",
+    [isLessonPresentThisWeek(EMASTER[2], [regGroup([ecard("M_uke", "W_uke")])], []), isLessonPresentThisWeek(EMASTER[2], [regGroup([])], [])], [true, true]);
+  const freeGroup = eband("BF", [eentry("e_libby_uke", "free"), eentry("e_ivy_uke", "free")]);
+  assert("group banner gap: Free / another group's Regular / legacy band still do not cover",
+    [isLessonPresentThisWeek(EMASTER[2], [freeGroup], []),
+      isLessonPresentThisWeek({ ...EMASTER[2], groupId: "g_other" }, [regGroup([])], []),
+      isLessonPresentThisWeek(EMASTER[2], [{ id: "L", isBandSession: true, members: [{ studentId: "ivy" }] }], [])], [false, false, false]);
 }

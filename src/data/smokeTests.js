@@ -27,7 +27,7 @@ import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, run
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
 import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupRosterTests, runBandGroupTallyPresenceClashTests, runBandGroupRosterUiTests, runBandGroupLabelTests } from "./bandGroupSmokeTests";
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
-import { runForwardEnforceCharacterizationTests } from "./bandForwardEnforceSmokeTests";
+import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -391,6 +391,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Band forward enforcement (phase 3, slice 2) ──
   runForwardEnforceCharacterizationTests(assert);
+  runForwardEnforcePresenceTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

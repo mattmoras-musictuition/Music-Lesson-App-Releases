@@ -1443,10 +1443,12 @@ export function restoreCardName(card, firstNameOf) {
 
 /**
  * Does this band account for a GROUP's lesson this week, for the "not
- * scheduled this week" check (v2.43.0)? Only a NEW band whose group entries
- * for that group are "regular" AND whose ledger holds the group's card —
- * exactly the case where the band took the card off the grid. Legacy bands,
- * and a group that is free / not in session / not set, never cover it.
+ * scheduled this week" check (v2.43.0)? A NEW band with a "regular" group
+ * entry for that group. v2.46.0: whether or not the ledger holds the group's
+ * card — mirroring individuals (bandCoversStudentForPresence), so a group set
+ * Regular after its card could not go back is not reported unscheduled.
+ * Legacy bands, and a group that is free / not in session / not set, never
+ * cover it.
  *
  * Lives here, not in bandSessionView.js (the teacher app copies that file).
  *
@@ -1456,6 +1458,5 @@ export function restoreCardName(card, firstNameOf) {
  */
 export function bandCoversGroupForPresence(band, groupId) {
   if (!band || !band.isBandSession || !groupId || !hasMemberStates(band)) return false;
-  return stillRegularGroup(band.memberStates, groupId)
-    && (band.removedLessons || []).some((c) => c && c.isGroup && c.groupId === groupId);
+  return stillRegularGroup(band.memberStates, groupId);
 }

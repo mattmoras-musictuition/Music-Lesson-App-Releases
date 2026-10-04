@@ -7,6 +7,7 @@
 
 import { bandCoversStudentForPresence } from "../data/bandSessionView";
 import { bandCoversGroupForPresence } from "../data/bandMemberStates";
+import { isForwardConsumedCard } from "../data/bandForwardIndex";
 
 // A master lesson (ml) counts as PRESENT (i.e. scheduled this week) when:
 //   • GROUP master lesson      → a matching group card (by groupId) is placed,
@@ -30,9 +31,19 @@ import { bandCoversGroupForPresence } from "../data/bandMemberStates";
 // own card, so a missing card for them is flagged (cluster 6b, closing the
 // case where an attribution moved away from regular and the card could not
 // go back because its slot had been taken).
-export function isLessonPresentThisWeek(ml, wttLessons, wttMissed) {
+//
+// FORWARD (phase 3, slice 2): a subject whose week is used up by a "Lesson
+// brought forward" entry — on a band in an EARLIER week, any school's row —
+// counts as scheduled in that week. The cross-week index comes in through
+// `opts` (bandForwardIndex.buildForwardIndex over all weekly rows) with the
+// week's plain Monday key; without it the rule is the week-only one above.
+//
+// v2.46.0: a Regular GROUP on a new band covers the group whether or not its
+// card reached the ledger, mirroring individuals (bandCoversGroupForPresence).
+export function isLessonPresentThisWeek(ml, wttLessons, wttMissed, opts = {}) {
   const lessons = wttLessons || [];
   const missed = wttMissed || [];
+  if (opts && opts.forwardIndex && opts.weekKey && isForwardConsumedCard(ml, opts.weekKey, opts.forwardIndex)) return true;
   if (ml.isGroup) {
     return lessons.some(wl => wl.groupId === ml.groupId)
         || missed.some(wm => wm.groupId === ml.groupId)

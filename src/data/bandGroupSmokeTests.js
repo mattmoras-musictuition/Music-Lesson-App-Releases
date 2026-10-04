@@ -418,8 +418,10 @@ export function runBandGroupTallyPresenceClashTests(assert) {
   const freeB = { ...ledgeredBand, memberStates: applyGroupAttribution(BOTH_REG, "g_uke", "free", GW), removedLessons: [] };
   assert("group presence: Free group with no card → still flagged (missing)",
     isLessonPresentThisWeek(master, [freeB], []), false);
-  assert("group presence: Regular but card not in the ledger → flagged",
-    isLessonPresentThisWeek(master, [{ ...ledgeredBand, removedLessons: [] }], []), false);
+  // v2.46.0 deliberate change (D8): a Regular group counts as scheduled even
+  // when its card is not in the ledger, mirroring individuals. Was false.
+  assert("group presence: Regular but card not in the ledger → covered (v2.46.0; was flagged)",
+    isLessonPresentThisWeek(master, [{ ...ledgeredBand, removedLessons: [] }], []), true);
   assert("group presence: legacy band never covers a group",
     isLessonPresentThisWeek(master, [tallyBand(null, [groupCard()], { members: [{ studentId: "ivy" }] })], []), false);
   assert("group presence: the group card on the grid still counts (unchanged)",
