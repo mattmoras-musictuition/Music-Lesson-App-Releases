@@ -17,6 +17,7 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { buildForwardIndex, isForwardConsumedCard, withoutForwardConsumed } from "./bandForwardIndex";
+import { generateMasterLessons } from "./bandForward";
 
 // The band sits in EB; it brings forward the lesson of EX (two weeks later).
 export const EB = "2099-03-09";
@@ -177,4 +178,56 @@ export function runForwardEnforcePresenceTests(assert) {
     [isLessonPresentThisWeek(EMASTER[2], [freeGroup], []),
       isLessonPresentThisWeek({ ...EMASTER[2], groupId: "g_other" }, [regGroup([])], []),
       isLessonPresentThisWeek(EMASTER[2], [{ id: "L", isBandSession: true, members: [{ studentId: "ivy" }] }], [])], [false, false, false]);
+}
+
+// ── Commit 3: generation-time filter on every path (D2) ──
+export function runForwardEnforceGenerateTests(assert) {
+  const r = eresolver();
+  const wtt = { [EB + "|S"]: { lessons: [FORWARD_BAND], missed: [] } };
+  const idx = buildForwardIndex(wtt);
+  const gen = (schoolId, weekKey, bands = [], index = idx) => egenerate(generateMasterLessons(EMASTER, bands, r, weekKey, index), schoolId, weekKey);
+
+  // Generate week / all schools / day.
+  assert("forward D2: generate week (S) leaves Amy and the group out of the consumed week",
+    origins(gen("S", EX).lessons), []);
+  assert("forward D2: generate all schools also leaves Bob out (school T; his band sits in S's row)",
+    ["S", "T"].flatMap(sid => origins(gen(sid, EX).lessons)), []);
+  assert("forward D2: generate day (Thursday) leaves them out of that day",
+    origins(gen("S", EX).lessons.filter(l => l.day === "Thursday")), []);
+  assert("forward D2: generating the BAND's own week keeps every card (band-week behaviour unchanged)",
+    ["S", "T"].flatMap(sid => origins(gen(sid, EB, sid === "S" ? [FORWARD_BAND] : []).lessons)).sort(), ["e_amy_gtr", "e_bob_drm", "e_ivy_uke"]);
+  assert("forward D2: a week nobody brought forward generates as before",
+    origins(gen("S", EY).lessons), ["e_amy_gtr", "e_ivy_uke"]);
+  assert("forward D2: with no index the generate filter is the old band filter",
+    origins(gen("S", EX, [], null).lessons), ["e_amy_gtr", "e_ivy_uke"]);
+
+  // Import (one school) and the Dashboard import — one builder; day-only import too.
+  const imp = (weekKey, extra = {}) => buildMttImportForWeekSchool({ mtt: { lessons: EMASTER }, schoolId: "S", weekDates: lweekDates(weekKey),
+    existingEntry: null, enrolments: EENROL, dropBands: true, catchups: [], forwardIndex: idx, ...extra });
+  let res = imp(EX);
+  assert("forward D2: import / Dashboard import leave the consumed cards out and count them apart from not-started ones",
+    [res.entry.lessons.map(l => l.enrolmentId), res.skippedForwardCount, res.skippedInactiveCount, res.importedCount], [[], 2, 0, 0]);
+  res = imp(EX, { targetDay: "Thursday", existingEntry: { lessons: [], missed: [] } });
+  assert("forward D2: a day-only import leaves them out of that day",
+    res.entry.lessons.map(l => l.enrolmentId), []);
+  res = imp(EB, { existingEntry: { lessons: [FORWARD_BAND], missed: [] } });
+  assert("forward D2: importing the band's own week keeps the cards (the clean import drops the band)",
+    res.entry.lessons.map(l => l.enrolmentId).sort(), ["e_amy_gtr", "e_ivy_uke"]);
+  res = imp(EX, { forwardIndex: undefined });
+  assert("forward D2: the builder without an index imports as before",
+    res.entry.lessons.map(l => l.enrolmentId).sort(), ["e_amy_gtr", "e_ivy_uke"]);
+
+  // Import all schools — its own loop.
+  const importAll = (sid, weekKey) => withoutForwardConsumed(EMASTER.filter(l => l.schoolId === sid).filter(l => !isCardInactiveForWeek(l, r, weekKey)), weekKey, idx);
+  assert("forward D2: import all schools leaves every consumed card out (both schools)",
+    [...importAll("S", EX), ...importAll("T", EX)].map(l => l.id), []);
+
+  // One subject, two forward entries in different weeks (two bands).
+  const W16 = "2099-03-16";
+  const two = buildForwardIndex({
+    [EB + "|S"]: { lessons: [eband("B1", [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })])], missed: [] },
+    [W16 + "|S"]: { lessons: [eband("B2", [eentry("e_amy_gtr", "forward", { consumedWeekKey: EY })])], missed: [] },
+  });
+  assert("forward D2: two forward entries in different weeks — both weeks lose Amy's card, the weeks between keep it",
+    [EX, EY, W16].map(wk => origins(gen("S", wk, [], two).lessons).includes("e_amy_gtr")), [false, false, true]);
 }

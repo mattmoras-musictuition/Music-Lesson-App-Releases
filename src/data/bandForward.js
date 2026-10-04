@@ -29,7 +29,8 @@
 
 import { deriveTallyCell } from "../utils/tallyDerive";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
-import { buildForwardIndex } from "./bandForwardIndex";
+import { buildForwardIndex, withoutForwardConsumed } from "./bandForwardIndex";
+import { isGenerateExcluded } from "./bandMemberStates";
 import { resolveAnchorTerm } from "../utils/catchupScope";
 import { getTermWeeks } from "../utils/termWeeks";
 
@@ -198,6 +199,26 @@ export function forwardLessonContext(subject, masterLessons, students) {
 /** "Week N" — how a forward week is named everywhere in the window. */
 export function forwardWeekLabel(weekNum) {
   return `Week ${weekNum}`;
+}
+
+/**
+ * The master lessons a GENERATE path feeds the generator for one week
+ * (slice 2, D2): the existing band filter (isGenerateExcluded against the
+ * week's own bands), then every card whose subject's week is used up by a
+ * forward entry on a band in another week (withoutForwardConsumed, index
+ * built over ALL schools' weekly rows). Shared by generate week, generate all
+ * schools and generate day so they cannot drift.
+ *
+ * @param {Array} masterLessons   timetable.lessons.
+ * @param {Array} weekBands       The week's band sessions (this school's row).
+ * @param {Function|null} resolver
+ * @param {string} weekKey        The week being generated (plain Monday).
+ * @param {Object|null} forwardIndex  buildForwardIndex(weeklyTimetables).
+ * @returns {Array}
+ */
+export function generateMasterLessons(masterLessons, weekBands, resolver, weekKey, forwardIndex) {
+  const banded = (masterLessons || []).filter((l) => !isGenerateExcluded(l, weekBands, resolver));
+  return withoutForwardConsumed(banded, weekKey, forwardIndex);
 }
 
 /** The disabled-option reason (D4). */

@@ -25,6 +25,7 @@ import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
 import { planCleanImport } from "../data/bandAbsence";
 import { withoutLedgeredDuplicates, displaceRegularIntoBands, restoreCardsReporting } from "../data/bandMemberStates";
+import { withoutForwardConsumed } from "../data/bandForwardIndex";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -35,6 +36,7 @@ export function buildMttImportForWeekSchool({
   enrolments = [],
   dropBands = false,
   catchups = [],
+  forwardIndex = null,
 }) {
   if (!mtt || !Array.isArray(mtt.lessons)) return null;
 
@@ -65,10 +67,15 @@ export function buildMttImportForWeekSchool({
   const candidateLessons = mtt.lessons.filter(l =>
     l.schoolId === schoolId && (!targetDay || l.day === targetDay)
   );
-  const mttLessons = guardActive
+  const activeLessons = guardActive
     ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolver, weekKey))
     : candidateLessons;
-  const skippedInactiveCount = candidateLessons.length - mttLessons.length;
+  const skippedInactiveCount = candidateLessons.length - activeLessons.length;
+  // Phase 3 slice 2 — a lesson brought forward into a band in another week
+  // is used up: its card is not imported into this week. `forwardIndex` is
+  // buildForwardIndex over ALL schools' weekly rows; null → no filter.
+  const mttLessons = withoutForwardConsumed(activeLessons, weekKey, forwardIndex);
+  const skippedForwardCount = activeLessons.length - mttLessons.length;
   const importedLessons = mttLessons.map(l => ({
     ...l,
     id: uid(),
@@ -107,6 +114,7 @@ export function buildMttImportForWeekSchool({
       removedBandCount: plan.removedBandCount,
       rowsToDelete: plan.rowsToDelete,
       skippedInactiveCount,
+      skippedForwardCount,
     };
   }
 
@@ -126,6 +134,7 @@ export function buildMttImportForWeekSchool({
       importedCount: importedLessons.length,
       preservedBandCount: preservedDayExtras.length,
       skippedInactiveCount,
+      skippedForwardCount,
     };
   }
 
@@ -141,6 +150,7 @@ export function buildMttImportForWeekSchool({
     importedCount: importedLessons.length,
     preservedBandCount: preservedExtras.length,
     skippedInactiveCount,
+    skippedForwardCount,
   };
 }
 

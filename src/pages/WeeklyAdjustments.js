@@ -27,7 +27,7 @@ import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson
 import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
-import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
+import { hasMemberStates, buildMemberStates, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, attributionWindowRows, applyGroupAttribution, isGroupEntry, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
@@ -40,8 +40,8 @@ import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/b
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
-import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT } from "../data/bandForward";
-import { buildForwardIndex } from "../data/bandForwardIndex";
+import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons } from "../data/bandForward";
+import { buildForwardIndex, withoutForwardConsumed } from "../data/bandForwardIndex";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
 // so it keeps the same identity across renders (never recreated), letting empty
@@ -2565,7 +2565,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // v2.42.1 — new bands skip only members whose card the ledger already
     // holds; a Regular member's card that never reached the ledger is
     // generated and then moved into it (displaceRegularIntoBands), never lost.
-    const filteredMasterLessons = timetable.lessons.filter(l => !isGenerateExcluded(l, existingBandSessions, enrolmentResolver));
+    // Slice 2 — and a lesson brought forward into a band in another week is
+    // used up here, so its card is left out (generateMasterLessons).
+    const filteredMasterLessons = generateMasterLessons(timetable.lessons, existingBandSessions, enrolmentResolver, weekKey, fwdIndex);
     const result = generateWeeklyTimetable(
       filteredMasterLessons, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks2, teacherCoverage, enrolments
     );
@@ -2637,7 +2639,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const schoolBreaks = (masterBreaks || []).filter(b => b.schoolId === school.id);
       const sk = weekDates[0].date + "|" + school.id;
       const existingBandSessionsAll = ((weeklyTimetables[sk] || {}).lessons || []).filter(l => l.isBandSession);
-      const filteredAll = timetable.lessons.filter(l => !isGenerateExcluded(l, existingBandSessionsAll, enrolmentResolver));
+      const filteredAll = generateMasterLessons(timetable.lessons, existingBandSessionsAll, enrolmentResolver, weekDates[0].date, fwdIndex);
       const result = generateWeeklyTimetable(
         filteredAll, school, students, teachers, specialists, interruptions, weekDates, [], schoolBreaks, teacherCoverage, enrolments
       );
@@ -2684,6 +2686,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // v2.40.1 clean import: in-scope band cards go, with their linked rows.
       dropBands: true,
       catchups,
+      // Slice 2 — lessons brought forward into a band in another week are used up.
+      forwardIndex: fwdIndex,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     const importedEntry = {
@@ -2734,10 +2738,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const sk = weekDates[0].date + "|" + school.id;
       allRowsToDelete.push(...planCleanImport(weeklyTimetables[sk] || null, catchups, { weekKey: weekKeyAll, schoolId: school.id }).rowsToDelete);
       const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
-      const mttLessons = guardAllActive
+      const activeLessons = guardAllActive
         ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
         : candidateLessons;
-      skippedAllCount += candidateLessons.length - mttLessons.length;
+      skippedAllCount += candidateLessons.length - activeLessons.length;
+      // Slice 2 — lessons brought forward into a band in another week are used up.
+      const mttLessons = withoutForwardConsumed(activeLessons, weekKeyAll, fwdIndex);
       const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
       // This path keeps no band sessions, so band absences cannot survive it;
       // carryBandMisses drops them with their band.
@@ -2854,7 +2860,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Generate the full week to get correct results for the target day
     const schoolMasterBreaks3 = (masterBreaks || []).filter(b => b.schoolId === selectedSchool);
     const existingBandSessionsDay = (weeklyData?.lessons || []).filter(l => l.isBandSession);
-    const filteredMasterDay = timetable.lessons.filter(l => !isGenerateExcluded(l, existingBandSessionsDay, enrolmentResolver));
+    const filteredMasterDay = generateMasterLessons(timetable.lessons, existingBandSessionsDay, enrolmentResolver, weekKey, fwdIndex);
     const result = generateWeeklyTimetable(
       filteredMasterDay, currentSchool, students, teachers, specialists, interruptions, weekDates, aiHints, schoolMasterBreaks3, teacherCoverage, enrolments
     );

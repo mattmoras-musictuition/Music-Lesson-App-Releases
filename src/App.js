@@ -45,6 +45,7 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 // ── Utilities ───────────────────────────────────────────────
 import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot, staffContactEmail } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
+import { buildForwardIndex } from "./data/bandForwardIndex";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
 import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDerive";
@@ -4381,6 +4382,8 @@ export default function MusicTimetableApp() {
       enrolments,
       dropBands: true,
       catchups,
+      // Slice 2 — lessons brought forward into a band in another week are used up.
+      forwardIndex: buildForwardIndex(weeklyTimetables),
     });
     if (!result) {
       notify("No master timetable to import from", "warning");
