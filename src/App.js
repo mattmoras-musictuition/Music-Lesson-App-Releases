@@ -50,6 +50,7 @@ import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
 import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts } from "./utils/catchupScope";
 import { stampFirstPlacementStart } from "./utils/enrolmentPlacement";
+import { checkOrphan as checkOrphanLesson } from "./utils/orphanCheck";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
@@ -2150,7 +2151,8 @@ export default function MusicTimetableApp() {
   // ── Reactive reconciliation: orphan-lesson detection ──
   // Session 3 / C5: trimmed to data-integrity orphan detection only. Detects
   // lessons that reference a deleted student or an instrument the student no
-  // longer has an active enrolment for. Teacher-attribution checks retired —
+  // longer has an active enrolment for (weekly lessons: no enrolment active in
+  // that lesson's week — see utils/orphanCheck). Teacher-attribution checks retired —
   // teacher comes from lane membership at render time (getCardTeacherId), not
   // from enrolment fields, so a "no teacher" or "teacher missing" condition
   // can no longer be evaluated from the enrolment side.
@@ -2183,34 +2185,12 @@ export default function MusicTimetableApp() {
     const t = setTimeout(() => {
       initialReconcileDoneRef.current = true;
 
-      const normalize = (s) => (s || "").trim().toLowerCase();
-
-      // Session 3 / C5 — two data-integrity conditions remain. The two
-      // teacher-attribution conditions (no enrolment teacher / teacher not
-      // found) were retired alongside enrolment.teacherId reads in C3/C4.
-      const checkOrphan = (lesson) => {
-        if (lesson.isGroup) return null; // groups carry their own teacherId; skip
-        // Bands are stored on weekly timetables with shape { isBandSession,
-        // members[], bandName/bandId, removedLessons[] } and intentionally
-        // carry NO top-level studentId / studentName / instrument — they
-        // aren't single-student lessons. Without this skip the band falls
-        // through to the studentId lookup, fails, and surfaces in Settings
-        // → Data Health as "(no name) · (no instrument) · student not
-        // found". That entry's Delete then wipes the band AND the regular
-        // lessons it absorbed (stashed in band.removedLessons), so the
-        // mis-flag is destructive, not just cosmetic.
-        if (lesson.isBandSession) return null;
-
-        const stu = students.find(s => s.id === lesson.studentId);
-        if (!stu) return { reason: "student not found" };
-
-        const hasMatchingEnrolment = instrumentsFromEnrolments(stu.id, enrolments).some(
-          i => normalize(i.name) === normalize(lesson.instrument)
-        );
-        if (!hasMatchingEnrolment) return { reason: "instrument not in student record" };
-
-        return null;
-      };
+      // Session 3 / C5 — data-integrity conditions only; the teacher-
+      // attribution conditions retired with enrolment.teacherId reads.
+      // v2.44.0 — the predicate lives in utils/orphanCheck: master cards keep
+      // the running-enrolment rule, weekly lessons are checked against the
+      // enrolment's dates for their own week.
+      const checkOrphan = (lesson, where) => checkOrphanLesson(lesson, where, { students, enrolments });
 
       const orphans = [];
 
@@ -2219,7 +2199,7 @@ export default function MusicTimetableApp() {
       setTimetableRaw(prev => {
         if (prev?.lessons) {
           for (const l of prev.lessons) {
-            const r = checkOrphan(l);
+            const r = checkOrphan(l, "master");
             if (r) orphans.push({ where: "master", lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
           }
         }
@@ -2232,7 +2212,7 @@ export default function MusicTimetableApp() {
           const entry = prev[key];
           if (!entry || !entry.lessons) continue;
           for (const l of entry.lessons) {
-            const r = checkOrphan(l);
+            const r = checkOrphan(l, key);
             if (r) orphans.push({ where: key, lessonId: l.id, studentId: l.studentId, schoolId: l.schoolId, studentName: l.studentName, instrument: l.instrument, day: l.day, start: l.start, reason: r.reason });
           }
         }

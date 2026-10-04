@@ -1379,7 +1379,7 @@ export function SettingsManager({ apiKey, setApiKey, schools, students, enrolmen
                           </button>
                         )}
                         {onDeleteOrphanedLesson && (
-                          <button onClick={() => { if (window.confirm(`Delete this orphaned lesson?\n\n${orphan.studentName || "(no name)"} · ${orphan.instrument} · ${orphan.day}${orphan.start ? ` ${orphan.start}` : ""}\n\nThis removes the lesson from ${orphan.where === "master" ? "the master timetable" : "that weekly timetable"}.`)) onDeleteOrphanedLesson(orphan); }}
+                          <button onClick={() => { if (window.confirm(`Delete this orphaned lesson?\n\n${orphan.studentName || "(no name)"} · ${orphan.instrument} · ${orphan.day}${orphan.start ? ` ${orphan.start}` : ""}\n\nThis removes the lesson from ${orphan.where === "master" ? "the master timetable" : "that weekly timetable. This also removes the lesson from the Tally"}.`)) onDeleteOrphanedLesson(orphan); }}
                             title="Delete this lesson"
                             style={{ padding: "6px 10px", border: `1px solid ${colors.border}`, borderRadius: 6, background: colors.cardBg, color: colors.danger, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, fontFamily: "inherit", fontWeight: 600 }}>
                             <Trash2 size={13} /> Delete

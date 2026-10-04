@@ -16,6 +16,7 @@
 import { deriveTallyRows } from "../utils/tallyDerive";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { stampFirstPlacementStart } from "../utils/enrolmentPlacement";
+import { checkOrphan } from "../utils/orphanCheck";
 
 const SCHOOL_WEEKS = ["2026-07-13", "2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10",
   "2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07", "2026-09-14"];
@@ -198,4 +199,43 @@ export function runEnrolmentHistoryCharacterizationTests(assert) {
   const taught = { id: "e_bon_drm_live", studentId: "bon", instrument: "Drums", startDate: "2026-07-13" };
   assert("history char h: re-placement after clearing restamps later than history today",
     stampFirstPlacementStart({ enrolments: [taught], enrolmentId: "e_bon_drm_live", weekMonday: "2026-10-05", timetableLessons: [] })[0].startDate, "2026-10-05");
+}
+
+// ── Commit 2: Data Health orphan rule (utils/orphanCheck) ───────────────
+export function runOrphanCheckTests(assert) {
+  const ctx = { students: [bonnie], enrolments: [drums, piano] };
+  const reason = (lesson, where, c = ctx) => { const r = checkOrphan(lesson, where, c); return r ? r.reason : null; };
+  const lessonIn = (weekKey, extra = {}) => ({ ...drumLesson(weekKey), ...extra });
+
+  assert("orphan: weekly lesson inside the ended span is not an orphan",
+    reason(lessonIn("2026-08-10"), "2026-08-10|S"), null);
+  assert("orphan: the week containing the end date is still active",
+    reason(lessonIn("2026-09-28"), "2026-09-28|S"), null);
+  assert("orphan: weekly lesson after the end week is an orphan",
+    reason(lessonIn("2026-10-05"), "2026-10-05|S"), "enrolment not active that week");
+  assert("orphan: master card for an ended enrolment is an orphan (running-enrolment rule)",
+    reason({ ...drumLesson("x"), id: "M_drm" }, "master"), "instrument not in student record");
+  assert("orphan: master card for a running enrolment is fine",
+    reason(pianoCard, "master"), null);
+  assert("orphan: missing startDate counts as started",
+    reason(lessonIn("2020-02-03"), "2020-02-03|S", { students: [bonnie], enrolments: [{ ...drums, startDate: undefined }] }), null);
+  assert("orphan: missing student is an orphan",
+    reason({ ...lessonIn("2026-08-10"), studentId: "ghost" }, "2026-08-10|S"), "student not found");
+  assert("orphan: instrument match is case-insensitive (no enrolmentId on the lesson)",
+    reason(lessonIn("2026-08-10", { enrolmentId: undefined, instrument: " drums " }), "2026-08-10|S"), null);
+  assert("orphan: unknown instrument is an orphan",
+    reason(lessonIn("2026-08-10", { enrolmentId: undefined, instrument: "Violin" }), "2026-08-10|S"), "instrument not in student record");
+  // Two Drums enrolments: the old one ended, a new one running from term 4.
+  const drums2 = { id: "e_bon_drm2", studentId: "bon", instrument: "Drums", startDate: "2026-10-05" };
+  const two = { students: [bonnie], enrolments: [drums, drums2] };
+  assert("orphan: two same-instrument enrolments — a term 3 lesson stamped to the NEW one still matches the old by instrument",
+    reason(lessonIn("2026-08-10", { enrolmentId: "e_bon_drm2" }), "2026-08-10|S", two), null);
+  assert("orphan: two same-instrument enrolments — a term 4 lesson stamped to the OLD one matches the new by instrument",
+    reason(lessonIn("2026-10-12"), "2026-10-12|S", two), null);
+  assert("orphan: two same-instrument enrolments — a master card is fine while one is running",
+    reason({ ...drumLesson("x"), id: "M_drm" }, "master", two), null);
+  assert("orphan: groups and band sessions are skipped",
+    [reason({ isGroup: true, groupId: "g", studentId: "ghost" }, "2026-08-10|S"),
+     reason({ isBandSession: true, members: [] }, "2026-08-10|S"),
+     reason({ isBandSession: true, members: [] }, "master")], [null, null, null]);
 }

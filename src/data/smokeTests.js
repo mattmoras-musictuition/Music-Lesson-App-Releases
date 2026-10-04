@@ -26,7 +26,7 @@ import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests, runBandLedgerRestoreTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
 import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupRosterTests, runBandGroupTallyPresenceClashTests, runBandGroupRosterUiTests, runBandGroupLabelTests } from "./bandGroupSmokeTests";
-import { runEnrolmentHistoryCharacterizationTests } from "./enrolmentHistorySmokeTests";
+import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests } from "./enrolmentHistorySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -375,6 +375,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Ended-enrolment history (v2.44.0) ──
   runEnrolmentHistoryCharacterizationTests(assert);
+  runOrphanCheckTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
