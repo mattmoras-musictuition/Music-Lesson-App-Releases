@@ -26,10 +26,13 @@ const CONSUMPTION_OPTIONS = [
   { value: "regular", label: "Regular lesson" },
   { value: "catchup", label: "Catch-up" },
   { value: "free", label: "Free extra" },
+  { value: "forward", label: "Lesson brought forward" },
   { value: "not_in_session", label: "Not in this session" },
 ];
 
 // v2.43.0 — a group row takes one role for the whole group: never a catch-up.
+// Phase 3 slice 1 — "Lesson brought forward" is offered to groups too, with
+// one week for the whole group.
 const GROUP_OPTIONS = CONSUMPTION_OPTIONS.filter(o => o.value !== "catchup");
 
 /**
@@ -47,8 +50,13 @@ const GROUP_OPTIONS = CONSUMPTION_OPTIONS.filter(o => o.value !== "catchup");
  *   is the members' full names, one bold line like any student), offered
  *   Regular / Free / Not in this session only; disabledReason (a member's
  *   group enrolment can't be found) makes the row read-only.
+ *   Phase 3 slice 1 — every row also carries the "Lesson brought forward"
+ *   fields: forwardWeeks [{weekKey, label}] (the week control's options),
+ *   forwardWeekKey (the chosen week), forwardDisabledReason (the option is
+ *   disabled and shows why), forwardSubLine ("Extra lesson — uses week N")
+ *   and rowError (a save-time rejection to show on the row).
  * @param {Function} props.onChange     (studentId, patch) — patch carries any of
- *                                      { consumption, enrolmentId, missKey }.
+ *                                      { consumption, enrolmentId, missKey, forwardWeek }.
  * @param {Function} props.onSave
  * @param {Function} props.onCancel
  * @param {boolean}  props.saving       Disables the footer while writes are in flight.
@@ -113,6 +121,12 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   {row.disabledReason && (
                     <div style={{ fontSize: 11, color: colors.danger, marginTop: 2, whiteSpace: "normal" }}>{row.disabledReason}</div>
                   )}
+                  {!row.departed && row.consumption === "forward" && row.forwardSubLine && (
+                    <div style={{ marginTop: 2, fontSize: 11, color: colors.sidebarActive }}>{row.forwardSubLine}</div>
+                  )}
+                  {row.rowError && (
+                    <div style={{ fontSize: 11, color: colors.danger, marginTop: 2, whiteSpace: "normal" }}>{row.rowError}</div>
+                  )}
                   {!locked && !row.departed && !row.isGroupRow && row.consumption === "catchup" && (
                     <button
                       onClick={() => onChange(rowKey, { cycleMiss: true })}
@@ -129,7 +143,7 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   )}
                 </div>
 
-                <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
                   {row.departed ? (
                     <button onClick={() => onChange(rowKey, { consumption: "" })}
                       style={{ padding: "6px 12px", borderRadius: 8, background: colors.tagBg, color: colors.gray700, fontWeight: 600, fontSize: 12, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
@@ -140,7 +154,7 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                       {/* Which instrument it counts against only means something
                           when the slot draws on an enrolment. */}
                       {!row.isGroupRow && (row.instrumentOptions || []).length > 1
-                        && (row.consumption === "regular" || row.consumption === "catchup") && (
+                        && (row.consumption === "regular" || row.consumption === "catchup" || row.consumption === "forward") && (
                         <select
                           value={row.enrolmentId || ""}
                           onChange={e => onChange(rowKey, { enrolmentId: e.target.value })}
@@ -158,12 +172,28 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                         disabled={locked}
                         title={row.disabledReason ? row.disabledReason : locked ? "Undo the absence on the band card to change this" : undefined}
                         style={selectStyle(locked)}>
-                        {options.map(o => (
-                          <option key={o.value} value={o.value} disabled={o.value === "catchup" && noMisses}>
-                            {o.label}
-                          </option>
-                        ))}
+                        {options.map(o => {
+                          const fwdOff = o.value === "forward" && !!row.forwardDisabledReason;
+                          return (
+                            <option key={o.value} value={o.value} disabled={(o.value === "catchup" && noMisses) || fwdOff}
+                              title={fwdOff ? row.forwardDisabledReason : undefined}>
+                              {fwdOff ? `${o.label} — ${row.forwardDisabledReason}` : o.label}
+                            </option>
+                          );
+                        })}
                       </select>
+                      {row.consumption === "forward" && (row.forwardWeeks || []).length > 0 && (
+                        <select
+                          value={row.forwardWeekKey || ""}
+                          onChange={e => onChange(rowKey, { forwardWeek: e.target.value })}
+                          disabled={locked}
+                          title={locked ? "Undo the absence on the band card to change this" : "The later lesson this one replaces"}
+                          style={selectStyle(locked)}>
+                          {row.forwardWeeks.map(w => (
+                            <option key={w.weekKey} value={w.weekKey}>{w.label}</option>
+                          ))}
+                        </select>
+                      )}
                     </>
                   )}
                 </div>

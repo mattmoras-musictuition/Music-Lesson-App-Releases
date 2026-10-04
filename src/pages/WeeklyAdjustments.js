@@ -40,6 +40,8 @@ import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/b
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
+import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT } from "../data/bandForward";
+import { buildForwardIndex } from "../data/bandForwardIndex";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
 // so it keeps the same identity across renders (never recreated), letting empty
@@ -1339,6 +1341,33 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     seedBandAttribution(lesson);
   };
 
+  // ── Lesson brought forward (phase 3, slice 1) ──
+  // The band's term weeks and the cross-week forward index, for the window's
+  // week control and the save-time re-check. A subject is one solo enrolment
+  // ({ enrolment }) or one group ({ groupId, enrolments }).
+  const fwdTermWeeks = useMemo(() => forwardTermWeeks(interruptions, weekKey), [interruptions, weekKey]);
+  const fwdIndex = useMemo(() => buildForwardIndex(weeklyTimetables), [weeklyTimetables]);
+  const forwardWeekNum = (wk) => (fwdTermWeeks.find(w => w.weekKey === wk && !w.isHoliday) || {}).weekNum;
+  const forwardWeekName = (wk) => { const n = forwardWeekNum(wk); return n != null ? forwardWeekLabel(n) : `Week of ${wk}`; };
+  const forwardSubjectOf = (entry, allEntries) => {
+    if (!entry) return null;
+    if (isGroupEntry(entry)) {
+      const mine = (allEntries || []).filter(x => isGroupEntry(x) && x.groupId === entry.groupId);
+      return { groupId: entry.groupId, enrolments: mine.map(x => (enrolments || []).find(en => en.id === x.enrolmentId)
+        || { id: x.enrolmentId, studentId: x.studentId, instrument: x.instrument, isGroup: true, groupId: x.groupId }) };
+    }
+    const en = (enrolments || []).find(x => x.id === entry.enrolmentId);
+    return en ? { enrolment: en } : null;
+  };
+  const forwardWeeksFor = (subject, bandLessonId) => (!subject ? [] : openForwardWeeks({
+    subject, bandWeekKey: weekKey, bandLessonId, termWeeks: fwdTermWeeks, weeklyTimetables,
+    forwardIndex: fwdIndex, interruptions, ...forwardLessonContext(subject, timetable?.lessons, students),
+  }));
+  // The week a forward choice lands on: the one asked for, else the current
+  // one while it is still open, else the latest open week. null → none.
+  const pickForwardWeek = (open, asked, current) => asked
+    || (current && open.some(w => w.weekKey === current) ? current : (open[0] ? open[0].weekKey : null));
+
   const seedBandAttribution = (lesson) => {
     if (!lesson || !hasMemberStates(lesson)) return;
     const liveBand = (bands || []).find(b => b.id === lesson.bandId);
@@ -1428,7 +1457,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // clears the student's other entries, so no combination of clicks can leave
   // two consumptions on one student.
   const handleBandAttrChange = (studentId, patch) => {
-    setBandAttrModal(prev => {
+    // The current forward week of the row, when it is forward on `eid`.
+    const current0 = (cur, eid) => (cur && cur.consumption === CONSUMPTION.forward && cur.enrolmentId === eid ? cur.consumedWeekKey : null);
+    const nextAttrState = (prev) => {
       if (!prev) return prev;
       // v2.43.0 — a group row ("group:<id>") is set as a whole: every entry of
       // the group takes the one role (applyGroupAttribution).
@@ -1438,6 +1469,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         if (!gRow.departed && gRow.unresolvedStudentIds.length > 0) return prev;
         if (gRow.studentIds.some(sid => prev.absentLabels && prev.absentLabels[sid])) return prev;
         const gConsumption = patch.consumption !== undefined ? (patch.consumption || null) : gRow.consumption;
+        if (gConsumption === CONSUMPTION.forward) {
+          const departedSet = new Set(prev.departedEnrolmentIds || []);
+          const live = gRow.entries.filter(e => gRow.departed || !departedSet.has(e.enrolmentId));
+          const open = forwardWeeksFor(forwardSubjectOf(live[0], live), prev.lessonId);
+          const current = gRow.consumption === CONSUMPTION.forward ? ((live.find(e => e.consumedWeekKey) || {}).consumedWeekKey || null) : null;
+          const week = pickForwardWeek(open, patch.forwardWeek, current);
+          if (!week) return prev;
+          return { ...prev, working: applyGroupAttribution(prev.working, gRow.groupId, CONSUMPTION.forward, weekKey, prev.departedEnrolmentIds, week) };
+        }
         return { ...prev, working: applyGroupAttribution(prev.working, gRow.groupId, gConsumption, weekKey, prev.departedEnrolmentIds) };
       }
       const rows = studentRows(prev.working, prev.departedEnrolmentIds);
@@ -1491,11 +1531,33 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           working: applyStudentAttribution(prev.working, studentId, enrolmentId, CONSUMPTION.catchup, miss.weekKey),
         };
       }
+      if (consumption === CONSUMPTION.forward) {
+        // Counts against the chosen instrument; with none chosen and no open
+        // week on it, the first instrument that has one.
+        const weeksOf = (eid) => forwardWeeksFor(forwardSubjectOf(row.entries.find(e => e.enrolmentId === eid), row.entries), prev.lessonId);
+        let open = weeksOf(enrolmentId);
+        if (open.length === 0 && patch.enrolmentId === undefined) {
+          const other = row.entries.find(e => e.enrolmentId !== enrolmentId && weeksOf(e.enrolmentId).length > 0);
+          if (other) { enrolmentId = other.enrolmentId; open = weeksOf(enrolmentId); }
+        }
+        const curWeek = current0(current, enrolmentId);
+        const week = pickForwardWeek(open, patch.forwardWeek, curWeek);
+        if (!week) return prev;
+        return { ...prev, working: applyStudentAttribution(prev.working, studentId, enrolmentId, CONSUMPTION.forward, week) };
+      }
       return {
         ...prev,
         working: applyStudentAttribution(prev.working, studentId, enrolmentId, consumption,
           consumption === CONSUMPTION.regular ? weekKey : null),
       };
+    };
+    // Any edit to a row clears the save-time error shown on it.
+    setBandAttrModal(prev => {
+      const next = nextAttrState(prev);
+      if (!next || next === prev || !next.rowErrors || !next.rowErrors[studentId]) return next;
+      const rowErrors = { ...next.rowErrors };
+      delete rowErrors[studentId];
+      return { ...next, rowErrors };
     });
   };
 
@@ -1509,6 +1571,24 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // v2.43.0 — one row per GROUP plus one per remaining student
     // (attributionWindowRows). A band with no groups yields exactly the rows
     // studentRows gave before, in the same order.
+    // Lesson brought forward: the week control's options (open weeks, latest
+    // first, plus the row's current week if it has since closed), the disabled
+    // reason (D4), the sub-line, and any save-time error.
+    const forwardFields = (rowKey, subject, consumption, currentWeek, anyOpen) => {
+      const open = forwardWeeksFor(subject, bandAttrModal.lessonId);
+      const isFwd = consumption === CONSUMPTION.forward;
+      const weeks = open.map(w => ({ weekKey: w.weekKey, label: forwardWeekLabel(w.weekNum) }));
+      if (isFwd && currentWeek && !weeks.some(w => w.weekKey === currentWeek)) {
+        weeks.unshift({ weekKey: currentWeek, label: forwardWeekName(currentWeek) });
+      }
+      return {
+        forwardWeeks: weeks,
+        forwardWeekKey: isFwd ? (currentWeek || "") : "",
+        forwardDisabledReason: !isFwd && !(anyOpen != null ? anyOpen : open.length > 0) ? NO_FORWARD_WEEK_TEXT : "",
+        forwardSubLine: isFwd && currentWeek ? `Extra lesson — uses ${forwardWeekName(currentWeek).replace(/^Week/, "week")}` : "",
+        rowError: (bandAttrModal.rowErrors && bandAttrModal.rowErrors[rowKey]) || "",
+      };
+    };
     return attributionWindowRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds, bandAttrModal.rosterMembers).map(row => {
       if (row.kind === "group") {
         // v2.43.1 — a group is named by its members (the group's own order),
@@ -1519,7 +1599,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const disabledReason = unresolved.length === 0 ? ""
           : `${unresolved.join(" and ")} ${unresolved.length === 1 ? "has" : "have"} no group enrolment for ${groupLessonNoun(memberIds.map(firstOf))} — check the Students page`;
         const absent = row.studentIds.find(sid => bandAttrModal.absentLabels && bandAttrModal.absentLabels[sid]);
+        const departedSet = new Set(bandAttrModal.departedEnrolmentIds || []);
+        const liveEntries = row.entries.filter(e => row.departed || !departedSet.has(e.enrolmentId));
+        const gWeek = row.consumption === CONSUMPTION.forward ? ((liveEntries.find(e => e.consumedWeekKey) || {}).consumedWeekKey || null) : null;
         return {
+          ...forwardFields(row.key, forwardSubjectOf(liveEntries[0], liveEntries), row.consumption, gWeek),
           rowKey: row.key,
           studentId: row.key,
           isGroupRow: true,
@@ -1539,7 +1623,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const attributed = row.attributedEntry;
       const chosenMiss = attributed ? bandAttrModal.missByEnrolment[attributed.enrolmentId] : null;
       const st = students.find(s => s.id === row.studentId);
+      const fwdEntry = attributed || row.entries[0];
+      const anyOpen = row.entries.some(e => forwardWeeksFor(forwardSubjectOf(e, row.entries), bandAttrModal.lessonId).length > 0);
       return {
+        ...forwardFields(row.studentId, forwardSubjectOf(fwdEntry, row.entries), attributed ? attributed.consumption : null,
+          attributed && attributed.consumption === CONSUMPTION.forward ? attributed.consumedWeekKey : null, anyOpen),
         studentId: row.studentId,
         studentName: st?.name || row.entries[0]?.studentId || "—",
         entries: row.entries,
@@ -1554,7 +1642,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         absentLabel: (bandAttrModal.absentLabels && bandAttrModal.absentLabels[row.studentId]) || "",
       };
     });
-  }, [bandAttrModal, catchups, openMissesFlat, students, groups]);
+  }, [bandAttrModal, catchups, openMissesFlat, students, groups, enrolments, timetable, weeklyTimetables, interruptions, weekKey, fwdIndex, fwdTermWeeks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A band's linked catch-ups follow it to a new slot. Without this the rows
   // keep the old day/time, band and catch-ups silently separate, and the
@@ -1828,6 +1916,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!lesson) { setBandAttrModal(null); return; }
 
     const linkedRows = (catchups || []).filter(c => c.bandLessonId === lesson.id);
+    // Lesson brought forward — a new or moved week must still be open now.
+    // This band's own forward entries never block it.
+    const forwardWeekOpen = (entry) => forwardWeeksFor(forwardSubjectOf(entry, bandAttrModal.working), lesson.id)
+      .some(w => w.weekKey === entry.consumedWeekKey);
     const plan = planAttributionSave({
       stored: bandAttrModal.stored,
       working: bandAttrModal.working,
@@ -1835,7 +1927,21 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       catchupsForBand: linkedRows,
       weekKey,
       absentEnrolmentIds: bandAttrModal.absentEnrolmentIds,
+      forwardWeekOpen,
     });
+    if (plan.rejected.length > 0) {
+      // Nothing is saved: the rows say why, and the owner picks another week.
+      const rowErrors = {};
+      for (const r of plan.rejected) {
+        const key = r.groupId ? "group:" + r.groupId : r.studentId;
+        rowErrors[key] = r.consumedWeekKey
+          ? `${forwardWeekName(r.consumedWeekKey)} is no longer free — choose another week`
+          : "Choose a week to bring forward";
+      }
+      setBandAttrModal(prev => prev ? { ...prev, rowErrors } : prev);
+      notify("Not saved — a brought-forward week is no longer free", "warning");
+      return;
+    }
     if (!plan.changed) {
       // v2.42.1 — Save with no role changes still runs the repair sweep, so
       // "open the window, press Save" ledgers any Regular member's stray card.
