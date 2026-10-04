@@ -46,6 +46,8 @@ import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActual
 import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel, timeToMin, to12h, _getMondayOf, loadInstColorsFromSupabase, getLiveTeacherName, getStudentMTTTeacher, findAllocateSlot, staffContactEmail } from "./utils/helpers";
 import { buildMttImportForWeekSchool } from "./utils/mttImport";
 import { buildForwardIndex } from "./data/bandForwardIndex";
+import { releaseForwardWeeks, releasedByBands, bandsGone } from "./data/bandForward";
+import { restoreDropNotice, restoreCardName } from "./data/bandMemberStates";
 import { getTerms, getCurrentTerm } from "./utils/termWeeks";
 import { mergeCatchupsIntoLessons } from "./data/catchupsDerive";
 import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDerive";
@@ -4393,8 +4395,16 @@ export default function MusicTimetableApp() {
       ...result.entry,
       missed: carryBandMisses(result.entry.missed, (weeklyTimetables[storageKey] || {}).missed, result.entry.lessons),
     };
-    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: importedEntry }));
+    // Slice 2 (D5) — bands the clean import removed give their brought-forward
+    // weeks back (snapshot, or rebuilt from the master into a generated week).
+    const goneBands = bandsGone((weeklyTimetables[storageKey] || {}).lessons, result.entry.lessons);
+    const releaseOpts = { masterLessons: timetable.lessons || [], enrolments };
+    const fwdPreview = releaseForwardWeeks(weeklyTimetables, releasedByBands(goneBands), releaseOpts);
+    setWeeklyTimetables(prev => ({ ...prev, ...releaseForwardWeeks(prev, releasedByBands(goneBands), releaseOpts).rows, [storageKey]: importedEntry }));
     removeCatchupsInBackground(result.rowsToDelete, { setCatchups, notify, logError });
+    const fwdNotice = restoreDropNotice(fwdPreview.dropped, c => restoreCardName(c, cc =>
+      ((students.find(st => st.id === cc.studentId)?.name) || cc.studentName || "").split(" ")[0] || "A student"));
+    if (fwdNotice) notify(fwdNotice, "warning", 9000);
     const extraNote = result.preservedBandCount > 0
       ? ` (${result.preservedBandCount} band ${result.preservedBandCount === 1 ? "session" : "sessions"} preserved)`
       : "";

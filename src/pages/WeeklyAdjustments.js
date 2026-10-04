@@ -40,7 +40,8 @@ import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/b
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
-import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons, planForwardSave } from "../data/bandForward";
+import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons, planForwardSave,
+  releaseForwardWeeks, releasedByBands, bandsGone } from "../data/bandForward";
 import { buildForwardIndex, withoutForwardConsumed } from "../data/bandForwardIndex";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -1363,6 +1364,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     subject, bandWeekKey: weekKey, bandLessonId, termWeeks: fwdTermWeeks, weeklyTimetables,
     forwardIndex: fwdIndex, interruptions, ...forwardLessonContext(subject, timetable?.lessons, students),
   }));
+  // Slice 2 (D5) — give back the weeks in `released` (planForwardSave's, or a
+  // removed band's): snapshot back where it was, else rebuilt from the master
+  // into a generated week, never into an ungenerated one. Pure over `wtt`.
+  const releaseForwardRows = (wtt, released, rows = {}) =>
+    releaseForwardWeeks(wtt, released, { rows, masterLessons: timetable?.lessons || [], enrolments });
+
   // The week a forward choice lands on: the one asked for, else the current
   // one while it is still open, else the latest open week. null → none.
   const pickForwardWeek = (open, asked, current) => asked
@@ -2023,6 +2030,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // is worked out on the current week; the setter re-runs it on the latest.
     const ledgerArgs = { bandLessonId: bandAttrModal.lessonId, regularOn: plan.regularOn, regularOff: plan.regularOff, memberStates: stampedMemberStates, resolver: enrolmentResolver };
     const ledgerPreview = applyAttributionLedger({ ...ledgerArgs, lessons: (weeklyTimetables[storageKey] || {}).lessons || [] });
+    // Slice 2 (D5) — weeks this save stops using get their card back; the
+    // ones whose slot is taken join the same "Couldn't put back" notice.
+    const fwPreview = planForwardSave({
+      stored: (((weeklyTimetables[storageKey] || {}).lessons || []).find(l => l.id === bandAttrModal.lessonId) || {}).memberStates || bandAttrModal.stored,
+      saved: stampedMemberStates, weeklyTimetables });
+    const releasePreview = releaseForwardRows(weeklyTimetables, fwPreview.released, fwPreview.rows);
     // Slice 2 (D3/D4/D6) — a brought-forward subject's card leaves its
     // used-up week (any school's row) in this SAME update, snapshotted on the
     // entry as forwardCard — never into removedLessons.
@@ -2031,9 +2044,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       if (!d) return prev;
       const storedNow = ((d.lessons || []).find(l => l.id === bandAttrModal.lessonId) || {}).memberStates || bandAttrModal.stored;
       const fw = planForwardSave({ stored: storedNow, saved: stampedMemberStates, weeklyTimetables: prev });
+      const rel = releaseForwardRows(prev, fw.released, fw.rows);
       const out = applyAttributionLedger({ ...ledgerArgs, memberStates: fw.memberStates, lessons: d.lessons || [] });
       if (!out) return prev;
-      return { ...prev, ...fw.rows, [storageKey]: { ...d, lessons: out.lessons } };
+      return { ...prev, ...rel.rows, [storageKey]: { ...d, lessons: out.lessons } };
     });
     // Rows entering and leaving catchups state happen in the SAME block as the
     // band change above. The departing rows are dropped here rather than after
@@ -2047,7 +2061,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
     setBandAttrModal(null);
     if (notify) notify("Band attribution saved");
-    reportUnrestoredCards(ledgerPreview && ledgerPreview.dropped);
+    reportUnrestoredCards([...((ledgerPreview && ledgerPreview.dropped) || []), ...releasePreview.dropped]);
 
     // (3) the deletes themselves — fire-and-report. State already reflects
     // them; a failure puts the row back so it renders visibly.
@@ -2708,7 +2722,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       ...result.entry,
       missed: carryBandMisses(result.entry.missed, (weeklyTimetables[storageKey] || {}).missed, result.entry.lessons),
     };
-    setWeeklyTimetables(prev => ({ ...prev, [storageKey]: importedEntry }));
+    // Slice 2 (D5) — bands the clean import removed give their brought-forward weeks back.
+    const goneBands = bandsGone((weeklyTimetables[storageKey] || {}).lessons, result.entry.lessons);
+    const fwdImportPreview = releaseForwardRows(weeklyTimetables, releasedByBands(goneBands));
+    setWeeklyTimetables(prev => ({ ...prev, ...releaseForwardRows(prev, releasedByBands(goneBands)).rows, [storageKey]: importedEntry }));
     deleteBandLinkedCatchups(result.rowsToDelete, { bulk: true });
     // Say what was left out. Silent skipping would repeat the original fault:
     // the app quietly disagreeing with itself about which lessons exist.
@@ -2723,7 +2740,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         : "";
       notify(`Imported ${result.importedCount} lessons for the week${extraNote}${skipNote}`);
     }
-    reportUnrestoredCards(result.droppedRestoreCards);
+    reportUnrestoredCards([...(result.droppedRestoreCards || []), ...fwdImportPreview.dropped]);
     setConfirmImportExpanded(false);
     setExpandedBtn(null);
   };
@@ -2764,8 +2781,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const importedMissed = carryBandMisses([], (weeklyTimetables[sk] || {}).missed, importedLessons);
       allUpdates[sk] = { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() };
     }
-    setWeeklyTimetables(prev => ({ ...prev, ...allUpdates }));
+    // Slice 2 (D5) — every band this import removed gives its brought-forward weeks back.
+    const goneAll = Object.keys(allUpdates).flatMap(sk => bandsGone((weeklyTimetables[sk] || {}).lessons, allUpdates[sk].lessons));
+    const fwdAllPreview = releaseForwardRows(weeklyTimetables, releasedByBands(goneAll));
+    setWeeklyTimetables(prev => {
+      const rel = releaseForwardRows(prev, releasedByBands(goneAll));
+      const relRows = Object.fromEntries(Object.entries(rel.rows).filter(([sk]) => !(sk in allUpdates)));
+      return { ...prev, ...relRows, ...allUpdates };
+    });
     deleteBandLinkedCatchups(allRowsToDelete, { bulk: true });
+    reportUnrestoredCards(fwdAllPreview.dropped);
     const skipNoteAll = skippedAllCount > 0 ? ` (${skippedAllCount} not started yet)` : "";
     notify(`Imported from MTT for all schools${skipNoteAll}`);
     setConfirmImportAllWeeks(false);
@@ -5064,15 +5089,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // named in a notice (planRemoveBandSession reports them).
                   const removeBandId = contextMenu.lessonId;
                   const removePreview = weeklyTimetables[storageKey] ? planRemoveBandSession(weeklyTimetables[storageKey], removeBandId) : null;
+                  // Slice 2 (D5) — weeks its brought-forward members used get their card back.
+                  const fwdReleasePreview = releaseForwardRows(weeklyTimetables, releasedByBands([removedBand]));
                   setWeeklyTimetables(prev => {
                     const d = prev[storageKey];
                     if (!d) return prev;
                     const out = planRemoveBandSession(d, removeBandId);
-                    return { ...prev, [storageKey]: { ...d, lessons: out.lessons, missed: out.missed } };
+                    const goneBand = (d.lessons || []).find(l => l.id === removeBandId);
+                    const rel = releaseForwardRows(prev, releasedByBands([goneBand]));
+                    return { ...prev, ...rel.rows, [storageKey]: { ...d, lessons: out.lessons, missed: out.missed } };
                   });
                   setContextMenu(null);
                   notify("Band session removed");
-                  reportUnrestoredCards(removePreview && removePreview.dropped);
+                  reportUnrestoredCards([...((removePreview && removePreview.dropped) || []), ...fwdReleasePreview.dropped]);
                 }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 12px", background: "none", border: "none", fontSize: 13, cursor: "pointer", color: colors.danger, borderRadius: 6, fontFamily: "inherit" }}
                   onMouseEnter={e => e.currentTarget.style.background = darkMode ? "rgba(196,84,84,0.15)" : "#FEF2F2"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><X size={13} /> Remove band session</span>
@@ -6900,7 +6929,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               // under the same occupied-slot rule.
                               const absences = planBandRemovalAbsences(c.id, entry.missed || []);
                               const hadAbsences = absences.cards.length > 0 || absences.missed.length !== (entry.missed || []).length;
-                              return { ...prev, [storageKey]: {
+                              // Slice 2 (D5) — and its brought-forward weeks are given back.
+                              const rel = releaseForwardRows(prev, releasedByBands([c]));
+                              return { ...prev, ...rel.rows, [storageKey]: {
                                 ...entry,
                                 catchupStaged: (entry.catchupStaged || []).filter(sc => sc.id !== c.id),
                                 ...(hadAbsences ? { lessons: restoreCardsReporting(entry.lessons || [], absences.cards).lessons, missed: absences.missed } : {}),
@@ -6909,6 +6940,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             // v2.42.1 — name any absentee card whose slot is taken.
                             const strayEntry = weeklyTimetables[storageKey];
                             if (strayEntry) reportUnrestoredCards(restoreCardsReporting(strayEntry.lessons || [], planBandRemovalAbsences(c.id, strayEntry.missed || []).cards).dropped);
+                            reportUnrestoredCards(releaseForwardRows(weeklyTimetables, releasedByBands([c])).dropped);
                           }}
                           style={{ position: "absolute", top: 2, right: 5, fontSize: 11, color: colors.textMuted, cursor: "pointer", lineHeight: 1, fontWeight: 700 }}
                           title="Remove" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>

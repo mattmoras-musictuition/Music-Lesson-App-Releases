@@ -17,7 +17,9 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { buildForwardIndex, isForwardConsumedCard, withoutForwardConsumed } from "./bandForwardIndex";
-import { generateMasterLessons, planForwardSave, consumeForwardWeeks, forwardSubjects } from "./bandForward";
+import { generateMasterLessons, planForwardSave, consumeForwardWeeks, forwardSubjects,
+  releaseForwardWeeks, releaseForwardWeek, releasedByBands, bandsGone, isGeneratedRow } from "./bandForward";
+import { reconcileMemberStates, applyStudentAttribution, applyGroupAttribution, restoreDropNotice, restoreCardName } from "./bandMemberStates";
 import { getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
 
 // The band sits in EB; it brings forward the lesson of EX (two weeks later).
@@ -319,4 +321,106 @@ export function runForwardEnforceSaveTests(assert) {
   fw = planForwardSave({ stored: [], saved: [eentry("e_amy_gtr", "forward", { consumedWeekKey: EX })], weeklyTimetables: generated() });
   assert("forward save: invoice math identical before and after the week-X card is removed",
     math({ ...generated(), ...fw.rows }), math(generated()));
+}
+
+// ── Commit 5: giving a used-up week back (D5) ──
+export function runForwardEnforceReleaseTests(assert) {
+  const opts = { masterLessons: EMASTER, enrolments: EENROL, newId: () => "NEW" };
+  const other = ecard("M_amy", "W_zed", { enrolmentId: "e_zed", studentId: "zed", instrument: "Bass", start: "11:00" });
+  const snapAmy = ecard("M_amy", "W_amy");
+  const held = (week = EX, extra = {}) => eentry("e_amy_gtr", "forward", { consumedWeekKey: week, forwardCard: snapAmy, ...extra });
+  // Week X after the Save removed Amy's card; week Y generated with her card.
+  const wtt = () => ({
+    [EX + "|S"]: { lessons: [other], missed: [], generatedAt: "2099-03-01" },
+    [EY + "|S"]: { lessons: [ecard("M_amy", "W_amy_Y", { day: "Thursday" })], missed: [], generatedAt: "2099-03-01" },
+  });
+  const ids = (d) => ((d && d.lessons) || []).map(l => l.id);
+  const save = (stored, saved, w = wtt()) => {
+    const fw = planForwardSave({ stored, saved, weeklyTimetables: w });
+    return { fw, rel: releaseForwardWeeks(w, fw.released, { ...opts, rows: fw.rows }) };
+  };
+
+  // Role change: forward → Free.
+  let { rel } = save([held()], [eentry("e_amy_gtr", "free")]);
+  assert("forward D5: role change — the snapshot goes back into its week",
+    [ids(rel.rows[EX + "|S"]).sort(), rel.dropped], [["W_amy", "W_zed"], []]);
+
+  // Week change: old week restored, new week removed.
+  ({ rel } = save([held()], [{ ...held(), consumedWeekKey: EY }]));
+  assert("forward D5: week change — the old week gets the card back, the new week loses it",
+    [ids(rel.rows[EX + "|S"]).sort(), ids(rel.rows[EY + "|S"])], [["W_amy", "W_zed"], []]);
+
+  // Roster removal: the departed forward entry stays until cleared; clearing releases.
+  const rec = reconcileMemberStates([held()], []);
+  assert("forward D5: roster removal keeps the forward entry as departed (nothing moves yet)",
+    [rec.departedEnrolmentIds, rec.memberStates[0].consumption], [["e_amy_gtr"], "forward"]);
+  ({ rel } = save(rec.memberStates, applyStudentAttribution(rec.memberStates, "amy", "e_amy_gtr", null, null)));
+  assert("forward D5: …clearing the departed row gives the week back",
+    ids(rel.rows[EX + "|S"]).sort(), ["W_amy", "W_zed"]);
+
+  // Band session removal.
+  const band = eband("B1", [held(), eentry("e_bob_drm", "regular", { consumedWeekKey: EB })]);
+  rel = releaseForwardWeeks(wtt(), releasedByBands([band]), opts);
+  assert("forward D5: removing the band session gives its brought-forward weeks back",
+    ids(rel.rows[EX + "|S"]).sort(), ["W_amy", "W_zed"]);
+  assert("forward D5: legacy bands and bands with no forward release nothing",
+    [releasedByBands([{ id: "L", isBandSession: true, members: [] }]).length, releasedByBands([eband("B3", [eentry("e_amy_gtr", "free")])]).length], [0, 0]);
+
+  // Clean import of the band week: the import drops the band → its weeks come back.
+  const res = buildMttImportForWeekSchool({ mtt: { lessons: EMASTER }, schoolId: "S", weekDates: lweekDates(EB),
+    existingEntry: { lessons: [band], missed: [] }, enrolments: EENROL, dropBands: true, catchups: [] });
+  const gone = bandsGone([band], res.entry.lessons);
+  rel = releaseForwardWeeks(wtt(), releasedByBands(gone), opts);
+  assert("forward D5: clean import of the band week removes the band and gives its weeks back",
+    [gone.map(b => b.id), ids(rel.rows[EX + "|S"]).sort()], [["B1"], ["W_amy", "W_zed"]]);
+  assert("forward D5: a day import that keeps the band releases nothing",
+    bandsGone([band], [band, other]).length, 0);
+
+  // Slot taken → the usual notice, individual and group wording.
+  const taken = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_bob_in_slot", { enrolmentId: "e_x", studentId: "x", instrument: "Cello" })], missed: [], generatedAt: "2099-03-01" } };
+  rel = releaseForwardWeeks(taken, releasedByBands([band]), opts);
+  const firstOf = (c) => (ESTUDENTS.find(st => st.id === c.studentId) || { name: "" }).name.split(" ")[0];
+  assert("forward D5: slot taken → not put back, named in the usual notice",
+    [ids(rel.rows[EX + "|S"]), restoreDropNotice(rel.dropped, c => restoreCardName(c, firstOf))],
+    [[], "Couldn't put back Amy's lesson (Thursday 09:00) — that slot is taken. Re-add it from the Master Timetable if needed."]);
+  const gHeld = [eentry("e_libby_uke", "forward", { consumedWeekKey: EX, forwardCard: ecard("M_uke", "W_uke") }), eentry("e_ivy_uke", "forward", { consumedWeekKey: EX })];
+  const gTaken = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_in_10", { enrolmentId: "e_x", studentId: "x", instrument: "Cello", start: "10:00" })], missed: [], generatedAt: "2099-03-01" } };
+  rel = releaseForwardWeeks(gTaken, releasedByBands([eband("BG", gHeld)]), opts);
+  assert("forward D5 (group): slot taken → the notice names the group's members",
+    restoreDropNotice(rel.dropped, c => restoreCardName(c, firstOf)),
+    "Couldn't put back Ivy, Libby's group lesson (Thursday 10:00) — that slot is taken. Re-add it from the Master Timetable if needed.");
+  // Group role change gives the group card back once.
+  const gw = { [EX + "|S"]: { lessons: [other], missed: [], generatedAt: "2099-03-01" } };
+  ({ rel } = save(gHeld, applyGroupAttribution(gHeld, "g_uke", "free", EB), gw));
+  assert("forward D5 (group): leaving forward puts the group card back once",
+    ids(rel.rows[EX + "|S"]).sort(), ["W_uke", "W_zed"]);
+
+  // No snapshot → rebuilt from the master into a generated week; ungenerated → no-op.
+  const bare = eentry("e_amy_gtr", "forward", { consumedWeekKey: EX });
+  ({ rel } = save([bare], [eentry("e_amy_gtr", "free")]));
+  const rebuilt = rel.rows[EX + "|S"].lessons.find(l => l.id === "NEW");
+  assert("forward D5: no snapshot → the card is rebuilt from the master (import builder shape) in a generated week",
+    [rebuilt.enrolmentId, rebuilt.day, rebuilt.start, rebuilt.weekDate, rebuilt.adjusted, rebuilt.schoolId], ["e_amy_gtr", "Thursday", "09:00", "2099-03-26", false, "S"]);
+  ({ rel } = save([bare], [eentry("e_amy_gtr", "free")], { [EY + "|S"]: wtt()[EY + "|S"] }));
+  assert("forward D5: an ungenerated week is left alone (no row is created)",
+    [Object.keys(rel.rows), rel.dropped], [[], []]);
+  assert("forward D5: a row holding only bands is not 'generated'; one with a card or a stamp is",
+    [isGeneratedRow({ lessons: [FORWARD_BAND] }), isGeneratedRow({ lessons: [other] }), isGeneratedRow({ lessons: [], generatedAt: "x" }), isGeneratedRow(null)],
+    [false, true, true, false]);
+  ({ rel } = save([held()], [eentry("e_amy_gtr", "free")], {}));
+  assert("forward D5: a snapshot whose week has no row is left alone",
+    Object.keys(rel.rows), []);
+
+  // Already back, or the enrolment no longer active → nothing.
+  const already = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_amy_again"), other], missed: [], generatedAt: "x" } };
+  assert("forward D5: the card already in its week (any school row) → nothing doubled",
+    Object.keys(releaseForwardWeek({ weeklyTimetables: already, subject: forwardSubjects([held()])[0], weekKey: EX, snapshot: snapAmy, ...opts }).rows), []);
+  const ended = EENROL.map(e => (e.id === "e_amy_gtr" ? { ...e, endDate: "2099-03-15" } : e));
+  assert("forward D5: an enrolment no longer active that week gets nothing back",
+    Object.keys(releaseForwardWeek({ weeklyTimetables: wtt(), subject: forwardSubjects([held()])[0], weekKey: EX, snapshot: snapAmy, ...opts, enrolments: ended }).rows), []);
+
+  // Never a ledger, never a miss.
+  ({ rel } = save([held()], [eentry("e_amy_gtr", "free")]));
+  assert("forward D5: release writes no missed entry and touches no band ledger",
+    [rel.rows[EX + "|S"].missed, Object.values(rel.rows).flatMap(d => d.lessons).filter(l => l.isBandSession).length], [[], 0]);
 }

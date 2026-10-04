@@ -30,7 +30,9 @@
 import { deriveTallyCell } from "../utils/tallyDerive";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { buildForwardIndex, withoutForwardConsumed } from "./bandForwardIndex";
-import { isGenerateExcluded } from "./bandMemberStates";
+import { isGenerateExcluded, restoreCardsReporting } from "./bandMemberStates";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
+import { uid } from "../utils/helpers";
 import { resolveAnchorTerm } from "../utils/catchupScope";
 import { getTermWeeks } from "../utils/termWeeks";
 
@@ -366,6 +368,107 @@ export function planForwardSave({ stored, saved, weeklyTimetables } = {}) {
   });
   const consumed = consumeForwardWeeks(weeklyTimetables, cleaned);
   return { ...consumed, released };
+}
+
+// ── Slice 2: giving a used-up week back (D5) ────────────────────────
+
+/**
+ * True if a weekly row counts as GENERATED: it carries a generatedAt stamp or
+ * at least one non-band card. A row holding only bands, or none at all, is
+ * not — nothing is rebuilt into it.
+ */
+export function isGeneratedRow(d) {
+  return !!d && (!!d.generatedAt || (d.lessons || []).some((l) => l && !l.isBandSession));
+}
+
+/**
+ * Put one subject's card back into `weekKey`, which its forward entry no
+ * longer uses (D5). In order:
+ *   • the card is already in that week (any school's row) → nothing;
+ *   • a snapshot exists → it goes back into its own school's row, if that row
+ *     exists, through the ordinary slot-free rule (restoreCardsReporting);
+ *     a taken slot is returned in `dropped` for the usual notice;
+ *   • no snapshot, and that week's row for the master card's school is
+ *     generated → the card is rebuilt from the master timetable exactly as the
+ *     import builder shapes one (new id, weekDate, adjusted:false), under the
+ *     same slot-free rule;
+ *   • otherwise (week not generated, no master card) → nothing.
+ * A subject not active that week (v2.44.0 rule) never gets a card back.
+ * Pure: returns row updates (merged over `rows`).
+ *
+ * @returns {{rows: Object, dropped: Array, restored: Object|null}}
+ */
+export function releaseForwardWeek({ weeklyTimetables, rows = {}, subject, weekKey, snapshot = null,
+  masterLessons = [], enrolments = [], newId = uid } = {}) {
+  const outRows = { ...rows };
+  const none = { rows: outRows, dropped: [], restored: null };
+  if (!subject || !weekKey) return none;
+  const rowOf = (sk) => outRows[sk] || (weeklyTimetables || {})[sk] || null;
+  const present = rowKeysOfWeek(weeklyTimetables, outRows, weekKey)
+    .some((sk) => ((rowOf(sk) || {}).lessons || []).some((l) => subjectOwnsCard(subject, l)));
+  if (present) return none;
+  const resolver = (enrolments || []).length > 0 ? makeEnrolmentResolver(enrolments) : null;
+  const inactive = (card) => !!resolver && isCardInactiveForWeek(card, resolver, weekKey);
+
+  let card = null;
+  let sk = null;
+  if (snapshot) {
+    sk = `${weekKey}|${snapshot.schoolId || ""}`;
+    if (!rowOf(sk) || inactive(snapshot)) return none;
+    card = snapshot;
+  } else {
+    const master = (masterLessons || []).find((l) => subjectOwnsCard(subject, l)) || null;
+    if (!master) return none;
+    sk = `${weekKey}|${master.schoolId || ""}`;
+    if (!isGeneratedRow(rowOf(sk)) || inactive(master)) return none;
+    const offset = DAY_OFFSET[master.day];
+    card = { ...master, id: newId(), weekDate: offset === undefined ? undefined : addDays(weekKey, offset), adjusted: false };
+  }
+  const d = rowOf(sk);
+  const r = restoreCardsReporting(d.lessons || [], [card]);
+  if (r.dropped.length > 0) return { rows: outRows, dropped: r.dropped, restored: null };
+  outRows[sk] = { ...d, lessons: r.lessons };
+  return { rows: outRows, dropped: [], restored: card };
+}
+
+/**
+ * releaseForwardWeek for a list of { subject, weekKey, snapshot } (from
+ * planForwardSave's `released`, or a removed band's subjects), threading
+ * the row updates through so two releases into one row both land.
+ *
+ * @returns {{rows: Object, dropped: Array}}
+ */
+export function releaseForwardWeeks(weeklyTimetables, released, { rows = {}, masterLessons = [], enrolments = [], newId = uid } = {}) {
+  let outRows = { ...rows };
+  const dropped = [];
+  for (const x of (released || [])) {
+    const r = releaseForwardWeek({ weeklyTimetables, rows: outRows, subject: x.subject, weekKey: x.weekKey, snapshot: x.snapshot,
+      masterLessons, enrolments, newId });
+    outRows = r.rows;
+    dropped.push(...r.dropped);
+  }
+  return { rows: outRows, dropped };
+}
+
+/**
+ * Every forward week the given (removed) band cards were using, as
+ * releaseForwardWeeks input. Legacy bands contribute nothing.
+ */
+export function releasedByBands(bands) {
+  const out = [];
+  for (const b of (bands || [])) {
+    if (!b || !b.isBandSession || !Array.isArray(b.memberStates)) continue;
+    for (const sub of forwardSubjects(b.memberStates)) {
+      if (sub.consumedWeekKey) out.push({ subject: sub, weekKey: sub.consumedWeekKey, snapshot: sub.forwardCard || null });
+    }
+  }
+  return out;
+}
+
+/** The band cards in `before` that are not in `after` (by id). */
+export function bandsGone(before, after) {
+  const kept = new Set((after || []).filter((l) => l && l.isBandSession).map((l) => l.id));
+  return (before || []).filter((l) => l && l.isBandSession && !kept.has(l.id));
 }
 
 /** The disabled-option reason (D4). */
