@@ -51,6 +51,7 @@ import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDe
 import { getOfferableMisses, parseInvoiceDrafts } from "./utils/catchupScope";
 import { stampFirstPlacementStart } from "./utils/enrolmentPlacement";
 import { checkOrphan as checkOrphanLesson } from "./utils/orphanCheck";
+import { purgeWeeklyAfterArchive } from "./utils/archiveCascade";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
 import { anthropicFetch, anthropicStreamChat, getAnthropicHeaders, setAnthropicApiKey } from "./utils/api";
@@ -3410,16 +3411,10 @@ export default function MusicTimetableApp() {
         // Match the StudentsManager-prop onArchiveStudent card cleanup
         // (App.js:6200). The AI tool path was missing this pre-Spec-1; without
         // it, archived students kept visible MTT/WTT cards.
+        // v2.44.0 — same bounded weekly cleanup as the Students page archive.
         if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== studentId), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== studentId) }));
-        setWeeklyTimetables(prev => {
-          const next = { ...prev };
-          for (const key of Object.keys(next)) {
-            const entry = next[key];
-            if (!entry) continue;
-            next[key] = { ...entry, lessons: (entry.lessons || []).filter(l => l.studentId !== studentId) };
-          }
-          return next;
-        });
+        const archiveDate = melbourneToday();
+        setWeeklyTimetables(prev => purgeWeeklyAfterArchive(prev, studentId, archiveDate));
         notify(`Archived student: ${studentName}`, "success");
         return `Done — ${studentName} has been archived. They are hidden from all active views but can be restored from the Students page.`;
       }
@@ -6193,15 +6188,11 @@ export default function MusicTimetableApp() {
           {page === "students" && <StudentsManager students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} focusStudentId={focusStudentId} onClearFocus={() => setFocusStudentId(null)} returnPage={focusReturnPage} onReturn={() => { if (focusReturnPage) { setPage(focusReturnPage); setFocusReturnPage(null); } }} resetKey={resetKey} viewState={studentsViewState} setViewState={setStudentsViewState} newStudentPrefill={newStudentPrefill} onClearNewStudentPrefill={() => setNewStudentPrefill(null)} addParentPrefill={addParentPrefill} onClearAddParentPrefill={() => setAddParentPrefill(null)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} focusGroupId={focusGroupId} groupsCount={groups.length} onAddGroup={() => setTriggerNewGroup(n => n + 1)} initialTabRequest={studentsTabRequest} onClearTabRequest={() => setStudentsTabRequest(null)} waitingListSlot={<PendingManager embedded students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} teacherCoverage={teacherCoverage} teachers={teachers} laneOverrides={laneOverrides} viewedLanes={viewedLanes} temporaryLanes={temporaryLanes} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />} groupsView={<GroupsManager groups={groups} setGroups={setGroups} students={activeStudents} enrolments={enrolments} schools={schools} teachers={teachers} timetable={timetable} onRevertGroup={handleRevertGroup} onAddGroupToMaster={handleAddGroupToMaster} notify={notify} focusGroupId={focusGroupId} onClearFocusGroup={() => setFocusGroupId(null)} onReturn={() => { if (focusGroupReturnPage) { setPage(focusGroupReturnPage); setFocusGroupReturnPage(null); } }} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage(null); }} viewState={groupsViewState} setViewState={setGroupsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} hideTitle={true} triggerNew={triggerNewGroup} />} onArchiveStudent={(id) => {
               // Timetable cleanup only — student status is set by StudentsManager directly
               if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));
-              setWeeklyTimetables(prev => {
-                const next = { ...prev };
-                for (const key of Object.keys(next)) {
-                  const entry = next[key];
-                  if (!entry) continue;
-                  next[key] = { ...entry, lessons: (entry.lessons || []).filter(l => l.studentId !== id) };
-                }
-                return next;
-              });
+              // v2.44.0 — weekly cleanup is bounded like onEndEnrolment: only
+              // weeks starting after today are cleared (lessons and misses);
+              // past and current weeks keep their Tally history.
+              const archiveDate = melbourneToday();
+              setWeeklyTimetables(prev => purgeWeeklyAfterArchive(prev, id, archiveDate));
             }} onDeleteStudent={(id) => {
               // Same timetable cleanup as archive — student record is fully removed
               if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));

@@ -17,6 +17,7 @@ import { deriveTallyRows } from "../utils/tallyDerive";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { stampFirstPlacementStart, hasWeeklyHistoryBefore } from "../utils/enrolmentPlacement";
 import { checkOrphan } from "../utils/orphanCheck";
+import { purgeWeeklyAfterArchive } from "../utils/archiveCascade";
 
 const SCHOOL_WEEKS = ["2026-07-13", "2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10",
   "2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07", "2026-09-14"];
@@ -184,10 +185,10 @@ export function runEnrolmentHistoryCharacterizationTests(assert) {
     instrumentsFromEnrolments("bon", [drums, { ...drums, id: "e_bon_drm2", startDate: "2026-10-05", endDate: undefined }]).map(i => i.name), ["Drums"]);
 
   // g. Archive weekly purge: inline in App.js (onArchiveStudent and the
-  //    assistant's archive_student) with no extracted helper, so it cannot be
-  //    called from here. Today it filters the student's lessons out of EVERY
-  //    weekly entry, past and future, and leaves misses alone. Pinned after
-  //    extraction in commit 5.
+  //    assistant's archive_student) before v2.44.0, with no extracted helper,
+  //    so it could not be called from here. It filtered the student's lessons
+  //    out of EVERY weekly entry, past and future, and left misses alone.
+  //    Replaced by utils/archiveCascade — see runArchiveCascadeTests.
 
   // h. stampFirstPlacementStart.
   const fresh = { id: "e_new", studentId: "bon", instrument: "Piano", startDate: "2026-06-01" };
@@ -331,4 +332,37 @@ export function runRestampGuardTests(assert) {
   const grp = { id: "e_g", studentId: "libby", instrument: "Ukulele", isGroup: true, groupId: "g_uke", startDate: "2026-07-13" };
   assert("restamp: a group enrolment matches its group's legacy weekly card",
     stamp(grp, "2026-10-05", { "2026-07-20|S": { lessons: [{ id: "G1", isGroup: true, groupId: "g_uke" }], missed: [] } }), "2026-07-13");
+}
+
+// ── Commit 5: archive keeps past and current weeks (utils/archiveCascade) ─
+export function runArchiveCascadeTests(assert) {
+  const other = { ...drumLesson("x"), id: "OTHER", studentId: "zed", enrolmentId: "e_zed" };
+  const bandEntry = { id: "BAND1", isBandSession: true, members: [{ studentId: "bon", instrument: "Drums" }],
+    memberStates: [{ studentId: "bon", enrolmentId: "e_bon_drm", instrument: "Drums", consumption: "regular" }],
+    removedLessons: [{ studentId: "bon", instrument: "Drums", enrolmentId: "e_bon_drm" }] };
+  const week = (wk, withMiss) => ({
+    lessons: [drumLesson(wk), other, bandEntry],
+    missed: withMiss ? [drumMiss(wk, true)] : [],
+    notes: "n",
+  });
+  const wtt = {
+    "2026-09-28|S": week("2026-09-28", true),   // past week
+    "2026-10-05|S": week("2026-10-05", true),   // current week (archived Wed 7 Oct)
+    "2026-10-12|S": week("2026-10-12", true),   // future
+    "2026-10-19|S2": week("2026-10-19", false), // future, other school
+  };
+  const out = purgeWeeklyAfterArchive(wtt, "bon", "2026-10-07");
+  const ids = (k) => [out[k].lessons.map(l => l.id), out[k].missed.map(m => m.id)];
+  assert("archive: past week untouched (same object)", out["2026-09-28|S"] === wtt["2026-09-28|S"], true);
+  assert("archive: current week (contains the archive date) untouched", out["2026-10-05|S"] === wtt["2026-10-05|S"], true);
+  assert("archive: future week loses the student's lessons and misses, keeps others and the band",
+    ids("2026-10-12|S"), [["OTHER", "BAND1"], []]);
+  assert("archive: future week at another school cleared too", ids("2026-10-19|S2"), [["OTHER", "BAND1"], []]);
+  assert("archive: band memberStates and ledger left as they were",
+    out["2026-10-12|S"].lessons.find(l => l.id === "BAND1") === bandEntry, true);
+  assert("archive: other entry fields kept", out["2026-10-12|S"].notes, "n");
+  assert("archive: the input map is not mutated", wtt["2026-10-12|S"].lessons.length, 3);
+  // Archived on a Monday: that week is the current week and is kept.
+  assert("archive: archived on the Monday keeps that week",
+    purgeWeeklyAfterArchive(wtt, "bon", "2026-10-12")["2026-10-12|S"] === wtt["2026-10-12|S"], true);
 }

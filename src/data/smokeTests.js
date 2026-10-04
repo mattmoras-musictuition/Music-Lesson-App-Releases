@@ -26,7 +26,7 @@ import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests, runBandLedgerRestoreTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
 import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupRosterTests, runBandGroupTallyPresenceClashTests, runBandGroupRosterUiTests, runBandGroupLabelTests } from "./bandGroupSmokeTests";
-import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests } from "./enrolmentHistorySmokeTests";
+import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests } from "./enrolmentHistorySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -378,6 +378,7 @@ export function runSmokeTests(logErrorFn) {
   runOrphanCheckTests(assert);
   runTallyOverlapGateTests(assert);
   runRestampGuardTests(assert);
+  runArchiveCascadeTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
