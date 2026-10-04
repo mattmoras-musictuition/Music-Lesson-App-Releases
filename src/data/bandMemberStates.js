@@ -137,14 +137,24 @@ export function hasMemberStates(lesson) {
  *
  * Every entry is written UNATTRIBUTED: consumption and the rest are null.
  *
- * @param {Array<{studentId: string, instrument: string}>|null|undefined} members
+ * GROUPS (v2.43.0, owner-approved spec change). A member record carrying
+ * viaGroupId is in the band AS PART OF THAT GROUP. It yields exactly one
+ * entry — the student's OWN group enrolment (resolveGroupEnrolment), with the
+ * additive fields groupId and isGroup:true — and none for their solo
+ * enrolments, which the band never touches. A marker member whose group
+ * enrolment cannot be resolved yields no entry (the window says so). Members
+ * without the marker build exactly as before.
+ *
+ * @param {Array<{studentId: string, instrument: string, viaGroupId?: string}>|null|undefined} members
  *        The band record's members[].
  * @param {Array|null|undefined} enrolments  The full enrolments collection.
  * @param {string|null|undefined} weekKey    Monday of the band's week,
  *        YYYY-MM-DD. Decides which enrolments count as active.
+ * @param {{groups?: Array}} [opts]  The groups collection, for the group
+ *        instrument fallback in resolveGroupEnrolment.
  * @returns {MemberState[]} A new array; never null.
  */
-export function buildMemberStates(members, enrolments, weekKey) {
+export function buildMemberStates(members, enrolments, weekKey, { groups } = {}) {
   const list = enrolments || [];
   const resolver = makeEnrolmentResolver(list);
   const out = [];
@@ -155,6 +165,32 @@ export function buildMemberStates(members, enrolments, weekKey) {
     const studentId = member && member.studentId;
     if (!studentId || seenStudentIds.has(studentId)) continue;
     seenStudentIds.add(studentId);
+
+    if (member.viaGroupId) {
+      const group = (groups || []).find(g => g && g.id === member.viaGroupId) || null;
+      const enrolment = resolveGroupEnrolment(member, list, weekKey, { resolver, group });
+      if (enrolment && !seenEnrolmentIds.has(enrolment.id)) {
+        seenEnrolmentIds.add(enrolment.id);
+        out.push({
+          enrolmentId: enrolment.id,
+          studentId: enrolment.studentId,
+          instrument: enrolment.instrument || "",
+          consumption: null,
+          catchupId: null,
+          consumedWeekKey: null,
+          fee: null,
+          attended: null,
+          writerTeacherId: null,
+          groupId: member.viaGroupId,
+          isGroup: true,
+        });
+      } else if (!enrolment && process.env.NODE_ENV !== "production") {
+        console.warn("[band memberStates] group member has no resolvable group enrolment", {
+          studentId, groupId: member.viaGroupId, weekKey,
+        });
+      }
+      continue;
+    }
 
     // Group by instrument in first-appearance order, so the resulting
     // entry order is stable for the same enrolments array.
@@ -213,6 +249,59 @@ export function buildMemberStates(members, enrolments, weekKey) {
   return out;
 }
 
+/**
+ * The student's OWN group enrolment for the group a marker member joined
+ * through (v2.43.0), or null. Never invents one.
+ *
+ *   1. isGroup && groupId === member.viaGroupId, for this student;
+ *   2. otherwise, isGroup with NO groupId (rows added on the Students page are
+ *      saved without one) whose instrument equals the group's instrument,
+ *      case-insensitively — only when exactly one such row is active.
+ *
+ * Both narrow to rows active in `weekKey` first (same filter-then-pick rule as
+ * the solo path); step 1 then picks with pickEnrolment. A group-instrument row
+ * belonging to a DIFFERENT group is never taken by the fallback.
+ *
+ * @param {{studentId: string, viaGroupId: string, instrument?: string}} member
+ * @param {Array} enrolments
+ * @param {string} weekKey
+ * @param {{resolver?: Function, group?: Object|null}} [opts]  group supplies
+ *        the instrument for step 2; the member's own instrument (set from the
+ *        group when it was added) is the fallback.
+ * @returns {Object|null}
+ */
+export function resolveGroupEnrolment(member, enrolments, weekKey, { resolver, group } = {}) {
+  const studentId = member && member.studentId;
+  const groupId = member && member.viaGroupId;
+  if (!studentId || !groupId) return null;
+  const list = enrolments || [];
+  const res = resolver || makeEnrolmentResolver(list);
+  const activeOnly = (rows) => rows.filter(
+    (e) => !isCardInactiveForWeek({ studentId, instrument: e.instrument, enrolmentId: e.id }, res, weekKey)
+  );
+
+  const byGroup = activeOnly(list.filter((e) => e && e.isGroup && e.studentId === studentId && e.groupId === groupId));
+  const picked = pickEnrolment(byGroup);
+  if (picked) return picked;
+
+  const inst = ((group && group.instrument) || (member && member.instrument) || "").trim().toLowerCase();
+  if (!inst) return null;
+  const byInstrument = activeOnly(list.filter((e) => e && e.isGroup && e.studentId === studentId && !e.groupId
+    && (e.instrument || "").trim().toLowerCase() === inst));
+  return byInstrument.length === 1 ? byInstrument[0] : null;
+}
+
+/**
+ * True if `entry` is a group entry (v2.43.0): it stands for its group's
+ * shared card, not for a card of its own.
+ *
+ * @param {MemberState|null|undefined} entry
+ * @returns {boolean}
+ */
+export function isGroupEntry(entry) {
+  return !!(entry && entry.isGroup === true && entry.groupId);
+}
+
 // ── Attribution helpers (cluster 3a) ────────────────────────────────
 //
 // ONE CONSUMPTION PER STUDENT. The attribution window shows one row per
@@ -255,6 +344,29 @@ function cardMatchesEntry(lesson, entry, resolver) {
   if (lesson.enrolmentId) return lesson.enrolmentId === entry.enrolmentId;
   const resolved = resolver ? resolver(lesson) : null;
   return !!resolved && resolved.id === entry.enrolmentId;
+}
+
+/**
+ * True if `lesson` is the card `entry` stands for. The single card test used
+ * by every ledger path.
+ *
+ *   • GROUP entry (v2.43.0) — the group's own card: a group card (not a band,
+ *     not a merged catch-up) with the same groupId. The card's enrolmentId
+ *     names only ONE member's enrolment, so it is deliberately not compared:
+ *     every entry of the group matches the same card.
+ *   • any other entry — exactly as before: an attributable (solo) card,
+ *     matched by cardMatchesEntry.
+ *
+ * @param {Object} lesson
+ * @param {MemberState} entry
+ * @param {Function|null} resolver
+ * @returns {boolean}
+ */
+function entryOwnsCard(lesson, entry, resolver) {
+  if (isGroupEntry(entry)) {
+    return !!(lesson && lesson.isGroup && !lesson.isBandSession && !lesson.__isCatchup && lesson.groupId === entry.groupId);
+  }
+  return isAttributableCard(lesson) && cardMatchesEntry(lesson, entry, resolver);
 }
 
 /**
@@ -504,9 +616,7 @@ export function reconcileMemberStates(stored, fresh) {
  * @returns {Array} Matching cards, in weekLessons order.
  */
 export function findMemberCards(weekLessons, entry, resolver) {
-  return (weekLessons || []).filter(
-    (l) => isAttributableCard(l) && cardMatchesEntry(l, entry, resolver)
-  );
+  return (weekLessons || []).filter((l) => entryOwnsCard(l, entry, resolver));
 }
 
 /**
@@ -542,9 +652,8 @@ export function isExcludedByBands(masterLesson, weekBands, resolver) {
       if ((band.members || []).some((m) => m && m.studentId === masterLesson.studentId)) return true;
       continue;
     }
-    if (!isAttributableCard(masterLesson)) continue;
     const hit = (band.memberStates || []).some(
-      (e) => e && e.consumption === CONSUMPTION.regular && cardMatchesEntry(masterLesson, e, resolver)
+      (e) => e && e.consumption === CONSUMPTION.regular && entryOwnsCard(masterLesson, e, resolver)
     );
     if (hit) return true;
   }
@@ -852,10 +961,13 @@ function hasLedgerCard(band, entry, resolver) {
 // True if `card` belongs to a Regular entry of a NEW band whose ledger
 // already holds that entry's card — a second instance of a lesson the band
 // has already taken.
+//
+// One ledgered group card is consistent for every Regular entry of its group
+// (v2.43.0): entryOwnsCard matches all of them to that one card.
 function isLedgeredDuplicate(card, band, resolver) {
-  if (!hasMemberStates(band) || !isAttributableCard(card)) return false;
+  if (!hasMemberStates(band)) return false;
   return (band.memberStates || []).some((e) => e && e.consumption === CONSUMPTION.regular
-    && cardMatchesEntry(card, e, resolver) && hasLedgerCard(band, e, resolver));
+    && entryOwnsCard(card, e, resolver) && hasLedgerCard(band, e, resolver));
 }
 
 /**
@@ -1007,6 +1119,10 @@ export function restoreDropNotice(dropped, firstNameOf) {
  *
  * @returns {{lessons: Array, dropped: Array}|null}
  */
+function stillRegularGroup(memberStates, groupId) {
+  return (memberStates || []).some((m) => isGroupEntry(m) && m.groupId === groupId && m.consumption === CONSUMPTION.regular);
+}
+
 export function applyAttributionLedger({ lessons, bandLessonId, regularOn, regularOff, memberStates, resolver } = {}) {
   let ls = lessons || [];
   const band = ls.find((l) => l && l.id === bandLessonId);
@@ -1021,6 +1137,10 @@ export function applyAttributionLedger({ lessons, bandLessonId, regularOn, regul
   }
   const dropped = [];
   for (const e of (regularOff || [])) {
+    // v2.43.0 — a group card is shared: it stays in the ledger while ANY
+    // entry of that group is still Regular, so a partial change can never
+    // put it back early. The last group entry to leave Regular restores it.
+    if (isGroupEntry(e) && stillRegularGroup(memberStates, e.groupId)) continue;
     const cards = findMemberCards(ledger, e, resolver);
     if (cards.length === 0) continue;
     const ids = new Set(cards.map((c) => c.id));
@@ -1095,4 +1215,180 @@ export function attendsSession(entry) {
  */
 export function canEnterStaging(lesson) {
   return !!lesson && !lesson.isBandSession;
+}
+
+// ── Groups in band attribution (v2.43.0) ────────────────────────────
+//
+// Owner-approved spec change: a group joins a band as ONE unit with ONE
+// attribution. The data stays per enrolment — one group entry per member,
+// each on that member's own group enrolment — and these helpers present and
+// edit the group as a whole. studentRows is NOT changed (the teacher app
+// holds a verbatim copy); the window uses attributionWindowRows instead.
+
+/**
+ * The roles a group row may take. Catch-up, forward and billed are never
+ * offered for a group; null clears.
+ */
+export const GROUP_CONSUMPTIONS = Object.freeze([CONSUMPTION.regular, CONSUMPTION.free, CONSUMPTION.notInSession]);
+
+/**
+ * The attribution window's rows: one per GROUP and one per remaining
+ * student, in memberStates order (a group sits where its first entry does;
+ * a group with no entries at all is appended).
+ *
+ * Group row:
+ *   { kind: "group", key: "group:<id>", groupId, groupName, studentIds,
+ *     entries, consumption, isAttributed, departed, unresolvedStudentIds }
+ *   studentIds / groupName come from the band's members[] markers (falling
+ *   back to the entries for a group no longer on the roster).
+ *   departed — every entry of the group has departed (group removed).
+ *   unresolvedStudentIds — marker members with no entry: their group
+ *   enrolment could not be resolved, so the row cannot be set.
+ * Student row: studentRows' row plus { kind: "student", key: studentId }.
+ *
+ * A student who is in a live group on this band gets no row of their own for
+ * an UNATTRIBUTED leftover solo entry — they are in the band through the
+ * group. A leftover solo entry that is still attributed (a departed Regular,
+ * say) keeps its row so it is cleared deliberately.
+ *
+ * @param {MemberState[]} memberStates
+ * @param {Array<string>|Set<string>} departedEnrolmentIds
+ * @param {Array} members  The band's members[] (live record).
+ * @returns {Array<Object>}
+ */
+export function attributionWindowRows(memberStates, departedEnrolmentIds, members) {
+  const list = (memberStates || []).filter(Boolean);
+  const departed = departedEnrolmentIds instanceof Set ? departedEnrolmentIds : new Set(departedEnrolmentIds || []);
+
+  const rosterGroups = new Map();
+  for (const m of (members || [])) {
+    if (!m || !m.viaGroupId || !m.studentId) continue;
+    if (!rosterGroups.has(m.viaGroupId)) rosterGroups.set(m.viaGroupId, { groupName: m.groupName || "", studentIds: [] });
+    const g = rosterGroups.get(m.viaGroupId);
+    if (!g.groupName && m.groupName) g.groupName = m.groupName;
+    if (!g.studentIds.includes(m.studentId)) g.studentIds.push(m.studentId);
+  }
+
+  const groupEntries = new Map();
+  for (const e of list) {
+    if (!isGroupEntry(e)) continue;
+    if (!groupEntries.has(e.groupId)) groupEntries.set(e.groupId, []);
+    groupEntries.get(e.groupId).push(e);
+  }
+
+  const groupRow = (groupId) => {
+    const entries = groupEntries.get(groupId) || [];
+    const roster = rosterGroups.get(groupId) || null;
+    const isDeparted = !roster && entries.length > 0 && entries.every((e) => departed.has(e.enrolmentId));
+    const live = isDeparted ? entries : entries.filter((e) => !departed.has(e.enrolmentId));
+    const attributed = live.find((e) => e.consumption != null) || null;
+    const studentIds = roster ? roster.studentIds : [...new Set(entries.map((e) => e.studentId))];
+    const withEntry = new Set(live.map((e) => e.studentId));
+    return {
+      kind: "group",
+      key: "group:" + groupId,
+      groupId,
+      groupName: (roster && roster.groupName) || "",
+      studentIds,
+      entries,
+      consumption: attributed ? attributed.consumption : null,
+      isAttributed: !!attributed,
+      departed: isDeparted,
+      unresolvedStudentIds: isDeparted ? [] : studentIds.filter((sid) => !withEntry.has(sid)),
+    };
+  };
+
+  // Students in a live group on this band.
+  const inLiveGroup = new Set();
+  for (const g of rosterGroups.values()) for (const sid of g.studentIds) inLiveGroup.add(sid);
+
+  const soloEntries = list.filter((e) => !isGroupEntry(e)
+    && !(inLiveGroup.has(e.studentId) && e.consumption == null));
+  const soloRows = new Map(studentRows(soloEntries, departed).map((r) => [r.studentId, r]));
+
+  const rows = [];
+  const emittedGroups = new Set();
+  const emittedStudents = new Set();
+  for (const e of list) {
+    if (isGroupEntry(e)) {
+      if (emittedGroups.has(e.groupId)) continue;
+      emittedGroups.add(e.groupId);
+      rows.push(groupRow(e.groupId));
+      continue;
+    }
+    const r = soloRows.get(e.studentId);
+    if (!r || emittedStudents.has(e.studentId)) continue;
+    emittedStudents.add(e.studentId);
+    rows.push({ kind: "student", key: e.studentId, ...r });
+  }
+  for (const groupId of rosterGroups.keys()) {
+    if (emittedGroups.has(groupId)) continue;
+    emittedGroups.add(groupId);
+    rows.push(groupRow(groupId));
+  }
+  return rows;
+}
+
+/**
+ * Attribute a whole group at once, returning a new array.
+ *
+ * Every live entry of the group takes `consumption` (consumedWeekKey = the
+ * band's week for regular, else null; catchupId null). Entries of the group
+ * that have departed (that member left the roster) are cleared — unless the
+ * whole group has departed, when every entry takes `consumption` (that is
+ * the departed row's Clear).
+ *
+ * One consumption per student still holds: when a role is set, each live
+ * member's OTHER entries on this band (a leftover solo attribution from
+ * before they joined through the group) are cleared, so on Save a leftover
+ * Regular card goes back by the ordinary restore path.
+ *
+ * Only GROUP_CONSUMPTIONS or null are accepted; anything else returns the
+ * input unchanged. Never mutates; never touches fee, attended or
+ * writerTeacherId.
+ *
+ * @param {MemberState[]} memberStates
+ * @param {string} groupId
+ * @param {string|null} consumption
+ * @param {string} weekKey
+ * @param {Array<string>|Set<string>} [departedEnrolmentIds]
+ * @returns {MemberState[]}
+ */
+export function applyGroupAttribution(memberStates, groupId, consumption, weekKey, departedEnrolmentIds) {
+  const list = memberStates || [];
+  if (consumption != null && !GROUP_CONSUMPTIONS.includes(consumption)) return list;
+  const departed = departedEnrolmentIds instanceof Set ? departedEnrolmentIds : new Set(departedEnrolmentIds || []);
+  const targets = list.filter((e) => isGroupEntry(e) && e.groupId === groupId);
+  if (targets.length === 0) return list;
+  const allDeparted = targets.every((e) => departed.has(e.enrolmentId));
+  const liveStudents = new Set(targets.filter((e) => allDeparted || !departed.has(e.enrolmentId)).map((e) => e.studentId));
+
+  const set = (entry, c) => ({ ...entry, consumption: c, catchupId: null,
+    consumedWeekKey: c === CONSUMPTION.regular ? weekKey || null : null });
+  const clear = (entry) => (entry.consumption == null && entry.catchupId == null && entry.consumedWeekKey == null
+    ? entry : { ...entry, consumption: null, catchupId: null, consumedWeekKey: null });
+
+  return list.map((entry) => {
+    if (!entry) return entry;
+    if (isGroupEntry(entry) && entry.groupId === groupId) {
+      const live = allDeparted || !departed.has(entry.enrolmentId);
+      return live && consumption != null ? set(entry, consumption) : clear(entry);
+    }
+    if (consumption != null && liveStudents.has(entry.studentId)) return clear(entry);
+    return entry;
+  });
+}
+
+/**
+ * Display name for a ledger card in the "Couldn't put back…" notice: the
+ * group's name for a group card (its studentId is only its first member),
+ * otherwise firstNameOf(card).
+ *
+ * @param {Object} card
+ * @param {Function} firstNameOf
+ * @returns {string}
+ */
+export function restoreCardName(card, firstNameOf) {
+  if (card && card.isGroup) return card.groupName || "The group";
+  return firstNameOf(card);
 }

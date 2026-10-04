@@ -29,7 +29,7 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, selectableMissesForStudent,
-  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting } from "../data/bandMemberStates";
+  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
@@ -1341,7 +1341,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const seedBandAttribution = (lesson) => {
     if (!lesson || !hasMemberStates(lesson)) return;
     const liveBand = (bands || []).find(b => b.id === lesson.bandId);
-    const fresh = buildMemberStates(liveBand?.members || lesson.members, enrolments, weekKey);
+    const fresh = buildMemberStates(liveBand?.members || lesson.members, enrolments, weekKey, { groups });
     const { memberStates: reconciled, departedEnrolmentIds } = reconcileMemberStates(lesson.memberStates, fresh);
 
     // Selectable misses include the one each existing linked row already
@@ -1563,7 +1563,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // v2.42.1 — a band card that can't go back because its slot is taken is
   // never dropped silently: a notice names it, and a quiet log records it.
   const reportUnrestoredCards = (dropped) => {
-    const notice = restoreDropNotice(dropped, c => firstNameOf(c.studentId) || (c.studentName || "").split(" ")[0] || "A student");
+    // v2.43.0 — a group card is named by its group, not its first member.
+    const notice = restoreDropNotice(dropped, c => restoreCardName(c, cc => firstNameOf(cc.studentId) || (cc.studentName || "").split(" ")[0] || "A student"));
     if (!notice) return;
     if (notify) notify(notice, "warning", 9000);
     if (logError) logError("Band lesson not put back (slot taken)", (dropped || []).map(c => `${c.studentId}|${c.enrolmentId || ""}|${c.day} ${c.start}`).join(", "));
@@ -2242,7 +2243,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // displacement loop that stood here was unreachable once cluster 2 stamped
     // memberStates on every band created here, so it is gone; removedLessons
     // starts empty and the ledger fills only on attribution.
-    const newMemberStates = buildMemberStates(band.members, enrolments, weekKey);
+    const newMemberStates = buildMemberStates(band.members, enrolments, weekKey, { groups });
     // Band de-allocation — bands place into the chip-active lane of the
     // right-clicked day (same destination resolution as placeLesson /
     // handleWeeklyMoveLesson), not the band record's teacher.
