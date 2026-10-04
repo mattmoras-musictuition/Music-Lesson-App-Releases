@@ -107,3 +107,61 @@ export function reconcileBands(local, server, { pendingSaves = new Map(), pendin
 export function isStaleBandsRefresh({ refreshSeq, latestRefreshSeq, writeSeqAtStart, writeSeqNow }) {
   return refreshSeq !== latestRefreshSeq || writeSeqAtStart !== writeSeqNow;
 }
+
+// ── Groups on a band (v2.43.0) ──────────────────────────────────────
+// A group joins a band as one unit. members[] stays one record per student
+// (every members[] consumer keeps working); a group's members carry
+// viaGroupId + groupName. Membership is copied when the group is added —
+// later changes to the group are not followed (remove and re-add).
+
+// Edit Band "Add group". Every current group member is added with the marker
+// and the group's instrument; a student already on the band individually is
+// CONVERTED in place (same record id and position) rather than duplicated —
+// their second instrument goes, as a group row has one instrument. A student
+// already on the band through a DIFFERENT group is left as they are.
+export function addGroupToMembers(members, group, newId) {
+  const list = members || [];
+  if (!group || !group.id) return list;
+  if (list.some(m => m && m.viaGroupId === group.id)) return list;
+  const marker = { viaGroupId: group.id, groupName: group.name || "", instrument: group.instrument || "" };
+  const ids = (group.studentIds || []).filter(Boolean);
+  const out = list.map(m => {
+    if (!m || !ids.includes(m.studentId) || m.viaGroupId) return m;
+    const { instrument2, ...rest } = m;
+    return { ...rest, ...marker };
+  });
+  for (const sid of ids) {
+    if (out.some(m => m && m.studentId === sid)) continue;
+    out.push({ id: newId(), studentId: sid, ...marker });
+  }
+  return out;
+}
+
+// Edit Band group row's remove control: every member of that group goes.
+export function removeGroupFromMembers(members, groupId) {
+  return (members || []).filter(m => !(m && m.viaGroupId === groupId));
+}
+
+// Edit Band group row's single instrument control.
+export function setGroupInstrument(members, groupId, instrument) {
+  return (members || []).map(m => (m && m.viaGroupId === groupId ? { ...m, instrument } : m));
+}
+
+// The roster split for display: individuals in order, then one block per
+// group in first-appearance order ({ groupId, groupName, instrument, members }).
+export function bandRosterBlocks(members) {
+  const individuals = [];
+  const groups = [];
+  const byId = new Map();
+  for (const m of (members || [])) {
+    if (!m) continue;
+    if (!m.viaGroupId) { individuals.push(m); continue; }
+    if (!byId.has(m.viaGroupId)) {
+      const g = { groupId: m.viaGroupId, groupName: m.groupName || "", instrument: m.instrument || "", members: [] };
+      byId.set(m.viaGroupId, g);
+      groups.push(g);
+    }
+    byId.get(m.viaGroupId).members.push(m);
+  }
+  return { individuals, groups };
+}

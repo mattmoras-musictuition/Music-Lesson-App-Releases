@@ -23,6 +23,7 @@ import {
   restoreCardName, isExcludedByBands, sameDayClashCard, bandCoversGroupForPresence,
 } from "./bandMemberStates";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
+import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks, bandToRow, rowToBand } from "../utils/bandsSync";
 import { checkConstraints } from "../utils/constraints";
 import { eligibleForAbsence, planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -447,4 +448,53 @@ export function runBandGroupTallyPresenceClashTests(assert) {
   assert("group clash: individuals-only band — Ivy warned as before, and Libby now too (D11 membership list)",
     warn(quietBuild(INDIVIDUAL_MEMBERS, GENROL, GW), [groupCard()], INDIVIDUAL_MEMBERS),
     ["Libby X already has a lesson on Thursday (Ukulele)", "Ivy X already has a lesson on Thursday (Ukulele)"]);
+}
+
+// ── Commit 4: Edit Band roster helpers and the window's row list ──
+export function runBandGroupRosterUiTests(assert) {
+  let n = 0;
+  const newId = () => "new" + (++n);
+
+  // D4 — Add group converts individuals in place, adds the rest, no duplicates.
+  const withLibby2 = INDIVIDUAL_MEMBERS.map(m => (m.studentId === "libby" ? { ...m, instrument2: "Piano" } : m));
+  const added = addGroupToMembers(withLibby2, GROUP_UKE, newId);
+  assert("group roster ui: Add group converts Libby and Ivy in place (same ids, same order), no duplicates",
+    added.map(m => [m.id, m.studentId, m.instrument, m.viaGroupId || "", m.groupName || "", m.instrument2 || ""]),
+    [["m1", "liri", "Piano", "", "", ""], ["m2", "libby", "Ukulele", "g_uke", "Ukulele Group", ""],
+     ["m3", "ivy", "Ukulele", "g_uke", "Ukulele Group", ""], ["m4", "noa", "Guitar", "", "", ""]]);
+  const fromEmpty = addGroupToMembers([{ id: "m4", studentId: "noa", instrument: "Guitar" }], GROUP_UKE, newId);
+  assert("group roster ui: Add group appends every group member not already on the band",
+    fromEmpty.map(m => [m.studentId, m.viaGroupId || ""]), [["noa", ""], ["ivy", "g_uke"], ["libby", "g_uke"]]);
+  assert("group roster ui: adding the same group twice changes nothing",
+    addGroupToMembers(added, GROUP_UKE, newId) === added, true);
+  const otherGroup = { id: "g_two", name: "Two", instrument: "Guitar", studentIds: ["libby", "noa"] };
+  assert("group roster ui: a student already in another group on the band is left in that group",
+    addGroupToMembers(added, otherGroup, newId).map(m => [m.studentId, m.viaGroupId || ""]),
+    [["liri", ""], ["libby", "g_uke"], ["ivy", "g_uke"], ["noa", "g_two"]]);
+  assert("group roster ui: the group's single instrument control sets every member",
+    setGroupInstrument(added, "g_uke", "Voice").filter(m => m.viaGroupId).map(m => m.instrument), ["Voice", "Voice"]);
+  assert("group roster ui: the group's remove control removes all its members",
+    removeGroupFromMembers(added, "g_uke").map(m => m.studentId), ["liri", "noa"]);
+  const blocks = bandRosterBlocks(added);
+  assert("group roster ui: roster splits into individuals and ONE block per group",
+    [blocks.individuals.map(m => m.studentId), blocks.groups.map(g => [g.groupId, g.groupName, g.instrument, g.members.map(m => m.studentId)])],
+    [["liri", "noa"], [["g_uke", "Ukulele Group", "Ukulele", ["libby", "ivy"]]]]);
+  assert("group roster ui: markers survive the bands row round trip (members[] is JSON, no new column)",
+    rowToBand(bandToRow({ id: "B", members: added }, "u")).members, added);
+  const built = quietBuild(added, GENROL, GW, { groups: [GROUP_UKE] });
+  assert("group roster ui: the converted roster builds the group entries",
+    built.filter(e => e.isGroup).map(e => e.enrolmentId), ["e_libby_uke", "e_ivy_uke"]);
+
+  // D15 — a band with no groups gets exactly the rows studentRows gave, in order.
+  const plain = quietBuild(INDIVIDUAL_MEMBERS, GENROL, GW);
+  const attributed = applyStudentAttribution(plain, "noa", "e_noa_gtr", "regular", GW);
+  const departed = ["e_noa_gtr"];
+  assert("group roster ui: no groups → window rows identical to studentRows (keys = student ids)",
+    attributionWindowRows(attributed, departed, INDIVIDUAL_MEMBERS).map(({ kind, key, ...rest }) => [kind, key, rest]),
+    studentRows(attributed, departed).map(r => ["student", r.studentId, r]));
+
+  // The window's Riptide view after conversion: one group row, defaulted Regular.
+  const rows = attributionWindowRows(applyGroupAttribution(built, "g_uke", "regular", GW), [], added);
+  assert("group roster ui: Riptide window — Liri, Noa, ONE ukulele group row (Regular), no Libby or Ivy rows",
+    rows.map(r => [r.key, r.kind === "group" ? r.consumption : null]), [["liri", null], ["group:g_uke", "regular"], ["noa", null]]);
 }

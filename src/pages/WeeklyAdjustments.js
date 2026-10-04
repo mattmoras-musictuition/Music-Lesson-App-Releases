@@ -29,7 +29,7 @@ import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolment
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
   defaultAttributions, reconcileMemberStates, selectableMissesForStudent,
-  planAttributionSave, CONSUMPTION, applyRegularDisplacement, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
+  planAttributionSave, CONSUMPTION, applyRegularDisplacement, attributionWindowRows, applyGroupAttribution, isGroupEntry, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
@@ -1341,7 +1341,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const seedBandAttribution = (lesson) => {
     if (!lesson || !hasMemberStates(lesson)) return;
     const liveBand = (bands || []).find(b => b.id === lesson.bandId);
-    const fresh = buildMemberStates(liveBand?.members || lesson.members, enrolments, weekKey, { groups });
+    const rosterMembers = liveBand?.members || lesson.members || [];
+    const fresh = buildMemberStates(rosterMembers, enrolments, weekKey, { groups });
     const { memberStates: reconciled, departedEnrolmentIds } = reconcileMemberStates(lesson.memberStates, fresh);
 
     // Selectable misses include the one each existing linked row already
@@ -1378,13 +1379,24 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     }
 
     // Defaults for the undecided, applied through applyStudentAttribution so
-    // the one-consumption-per-student rule holds even here.
+    // the one-consumption-per-student rule holds even here. Group entries are
+    // left out (v2.43.0): a group is defaulted as a unit below, never per
+    // student and never to a catch-up.
     let working = reconciled;
-    for (const p of defaultAttributions(reconciled, { openMisses: openMissesFlat, enrolments })) {
+    for (const p of defaultAttributions(reconciled.filter(e => !isGroupEntry(e)), { openMisses: openMissesFlat, enrolments })) {
       if (absentLabels[p.studentId]) continue;
       working = applyStudentAttribution(working, p.studentId, p.enrolmentId, p.consumption,
         p.settlesMiss ? p.settlesMiss.weekKey : (p.consumption === CONSUMPTION.regular ? weekKey : null));
       if (p.settlesMiss) missByEnrolment[p.enrolmentId] = p.settlesMiss;
+    }
+    // v2.43.0 — an undecided group defaults to Regular lesson as a whole,
+    // unless a member's group enrolment can't be resolved (the row is then
+    // disabled) or a member is locked by an absence. Nothing is saved until
+    // the owner presses Save.
+    for (const row of attributionWindowRows(working, departedEnrolmentIds, rosterMembers)) {
+      if (row.kind !== "group" || row.isAttributed || row.departed || row.unresolvedStudentIds.length > 0) continue;
+      if (row.studentIds.some(sid => absentLabels[sid])) continue;
+      working = applyGroupAttribution(working, row.groupId, CONSUMPTION.regular, weekKey, departedEnrolmentIds);
     }
 
     setBandAttrModal({
@@ -1395,6 +1407,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       missByEnrolment,
       absentEnrolmentIds: [...absentIds],
       absentLabels,
+      rosterMembers,
       saving: false,
     });
   };
@@ -1416,6 +1429,16 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const handleBandAttrChange = (studentId, patch) => {
     setBandAttrModal(prev => {
       if (!prev) return prev;
+      // v2.43.0 — a group row ("group:<id>") is set as a whole: every entry of
+      // the group takes the one role (applyGroupAttribution).
+      if (typeof studentId === "string" && studentId.startsWith("group:")) {
+        const gRow = attributionWindowRows(prev.working, prev.departedEnrolmentIds, prev.rosterMembers).find(r => r.key === studentId);
+        if (!gRow) return prev;
+        if (!gRow.departed && gRow.unresolvedStudentIds.length > 0) return prev;
+        if (gRow.studentIds.some(sid => prev.absentLabels && prev.absentLabels[sid])) return prev;
+        const gConsumption = patch.consumption !== undefined ? (patch.consumption || null) : gRow.consumption;
+        return { ...prev, working: applyGroupAttribution(prev.working, gRow.groupId, gConsumption, weekKey, prev.departedEnrolmentIds) };
+      }
       const rows = studentRows(prev.working, prev.departedEnrolmentIds);
       const row = rows.find(r => r.studentId === studentId);
       if (!row) return prev;
@@ -1447,6 +1470,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         : (current ? current.enrolmentId : (row.entries[0] && row.entries[0].enrolmentId));
 
       if (consumption === null) {
+        // v2.43.0 — clearing a student's leftover (departed) solo role must not
+        // clear their entry in a group on this band: only their solo entries go.
+        if (prev.working.some(e => isGroupEntry(e) && e.studentId === studentId)) {
+          return { ...prev, working: prev.working.map(e => (e && e.studentId === studentId && !isGroupEntry(e)
+            ? { ...e, consumption: null, catchupId: null, consumedWeekKey: null } : e)) };
+        }
         return { ...prev, working: applyStudentAttribution(prev.working, studentId, enrolmentId, null, null) };
       }
       if (consumption === CONSUMPTION.catchup) {
@@ -1474,7 +1503,34 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   const bandAttrRows = useMemo(() => {
     if (!bandAttrModal) return [];
     const linkedRows = (catchups || []).filter(c => c.bandLessonId === bandAttrModal.lessonId);
-    return studentRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds).map(row => {
+    const firstOf = (sid) => ((students.find(s => s.id === sid)?.name) || "").split(" ")[0] || "?";
+    // v2.43.0 — one row per GROUP plus one per remaining student
+    // (attributionWindowRows). A band with no groups yields exactly the rows
+    // studentRows gave before, in the same order.
+    return attributionWindowRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds, bandAttrModal.rosterMembers).map(row => {
+      if (row.kind === "group") {
+        const groupName = row.groupName || (groups || []).find(g => g.id === row.groupId)?.name || "Group";
+        const unresolved = row.unresolvedStudentIds.map(firstOf);
+        const disabledReason = unresolved.length === 0 ? ""
+          : `${unresolved.join(" and ")} ${unresolved.length === 1 ? "has" : "have"} no group enrolment for ${groupName} — check the Students page`;
+        const absent = row.studentIds.find(sid => bandAttrModal.absentLabels && bandAttrModal.absentLabels[sid]);
+        return {
+          rowKey: row.key,
+          studentId: row.key,
+          isGroupRow: true,
+          studentName: groupName,
+          memberNames: row.studentIds.map(firstOf).join(", "),
+          entries: row.entries,
+          consumption: row.consumption || "",
+          enrolmentId: "",
+          instrumentOptions: [],
+          misses: [],
+          settlesLabel: "",
+          departed: row.departed,
+          absentLabel: absent ? bandAttrModal.absentLabels[absent] : "",
+          disabledReason: row.departed ? "" : disabledReason,
+        };
+      }
       const misses = selectableMissesForStudent(row.entries, openMissesFlat, linkedRows);
       const attributed = row.attributedEntry;
       const chosenMiss = attributed ? bandAttrModal.missByEnrolment[attributed.enrolmentId] : null;
@@ -1494,7 +1550,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         absentLabel: (bandAttrModal.absentLabels && bandAttrModal.absentLabels[row.studentId]) || "",
       };
     });
-  }, [bandAttrModal, catchups, openMissesFlat, students]);
+  }, [bandAttrModal, catchups, openMissesFlat, students, groups]);
 
   // A band's linked catch-ups follow it to a new slot. Without this the rows
   // keep the old day/time, band and catch-ups silently separate, and the

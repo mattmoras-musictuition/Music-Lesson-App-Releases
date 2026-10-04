@@ -3,11 +3,12 @@
 // ============================================================
 
 import React, { useState, useEffect } from "react";
-import { X, Trash2, Link, Piano, Eye, Printer, Mail, Library } from "lucide-react";
+import { X, Trash2, Link, Piano, Eye, Printer, Mail, Library, Users } from "lucide-react";
 import { BAND_LINK_CATEGORIES, BAND_COLOR, BAND_INSTRUMENTS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
+import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks } from "../utils/bandsSync";
 import { Card, PageTitle, NavButtons, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ResourcePicker } from "../components/ResourcePicker";
@@ -22,12 +23,13 @@ function bandDisplayName(student, allMembers) {
   return parts.length > 1 ? `${first} ${parts[1][0]}.` : first;
 }
 
-export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, students, enrolments, teachers, resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
+export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, students, enrolments, teachers, groups = [], resources = [], notify, goBack, goForward, historyCursor, pageHistory, hideTitle = false, triggerNew = 0, onCompose }) {
   const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [memberSearchIdx, setMemberSearchIdx] = useState(-1);
+  const [groupToAdd, setGroupToAdd] = useState("");
   const [filterSchool, setFilterSchool] = useState("");
   const [browserLink, setBrowserLink] = useState(null);
   const [resourcePicker, setResourcePicker] = useState(null);
@@ -62,6 +64,15 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
   };
 
   const removeMember = (memberId) => setForm(prev => ({ ...prev, members: prev.members.filter(m => m.id !== memberId) }));
+  // v2.43.0 — a group joins as one unit (bandsSync.addGroupToMembers).
+  const addGroup = (groupId) => {
+    const group = (groups || []).find(g => g.id === groupId);
+    if (!group) return;
+    setForm(prev => ({ ...prev, members: addGroupToMembers(prev.members, group, uid) }));
+    setGroupToAdd("");
+  };
+  const removeGroup = (groupId) => setForm(prev => ({ ...prev, members: removeGroupFromMembers(prev.members, groupId) }));
+  const firstNameOfStudent = (sid) => ((students.find(s => s.id === sid)?.name) || "").split(" ")[0] || "?";
   const addLink = () => setForm(prev => ({ ...prev, links: [...prev.links, { id: uid(), category: BAND_LINK_CATEGORIES[0], url: "", source: "url", label: "" }] }));
   const addResourceLink = (linkId, resource) => {
     setForm(prev => ({ ...prev, links: prev.links.map(l =>
@@ -81,7 +92,10 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
   const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 };
 
   if (form) {
-    const formMemberStudents = form.members.map(m => ({ ...m, student: students.find(s => s.id === m.studentId) })).filter(m => m.student);
+    const roster = bandRosterBlocks(form.members);
+    const formMemberStudents = roster.individuals.map(m => ({ ...m, student: students.find(s => s.id === m.studentId) })).filter(m => m.student);
+    const addableGroups = (groups || []).filter(g => g.schoolId === form.schoolId && (g.studentIds || []).length > 0
+      && !form.members.some(m => m.viaGroupId === g.id));
     return (
       <div>
         {!hideTitle && (
@@ -112,6 +126,23 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
 
         <Card style={{ marginBottom: 16 }}>
           <label style={{ ...labelStyle, marginBottom: 10 }}>Members ({form.members.length})</label>
+          {roster.groups.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: formMemberStudents.length > 0 ? 6 : 12 }}>
+              {roster.groups.map(g => (
+                <div key={g.groupId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: colors.bg, borderRadius: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontWeight: 600, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 5 }}><Users size={12} />{g.groupName || "Group"}</span>
+                    <span style={{ color: colors.textMuted, fontSize: 12, marginLeft: 8 }}>{g.members.map(m => firstNameOfStudent(m.studentId)).join(", ")}</span>
+                  </div>
+                  <select value={g.instrument} onChange={e => setForm(prev => ({ ...prev, members: setGroupInstrument(prev.members, g.groupId, e.target.value) }))} style={{ padding: "4px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", background: colors.cardBg }}>
+                    <option value="">No instrument</option>
+                    {(BAND_INSTRUMENTS.includes(g.instrument) || !g.instrument ? BAND_INSTRUMENTS : [g.instrument, ...BAND_INSTRUMENTS]).map(i => <option key={i} value={i}>{i}</option>)}
+                  </select>
+                  <button onClick={() => removeGroup(g.groupId)} title="Remove the whole group" style={{ border: "none", background: "none", color: colors.danger, cursor: "pointer", padding: 4, display: "inline-flex", alignItems: "center" }}><X size={14} /></button>
+                </div>
+              ))}
+            </div>
+          )}
           {formMemberStudents.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
               {formMemberStudents.map(({ id: memberId, instrument, instrument2, student }) => (
@@ -158,6 +189,18 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
                   ))}
                 </div>
               )}
+            </div>
+          )}
+          {form.schoolId && addableGroups.length > 0 && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <select style={{ ...inputStyle, flex: 1 }} value={groupToAdd} onChange={e => setGroupToAdd(e.target.value)}>
+                <option value="">Add a group…</option>
+                {addableGroups.map(g => <option key={g.id} value={g.id}>{g.name || "Group"} — {(g.studentIds || []).map(firstNameOfStudent).join(", ")}</option>)}
+              </select>
+              <button onClick={() => addGroup(groupToAdd)} disabled={!groupToAdd}
+                style={{ padding: "0 14px", background: groupToAdd ? colors.sidebarActive : colors.border, color: colors.cardBg, border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: groupToAdd ? "pointer" : "not-allowed", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                Add group
+              </button>
             </div>
           )}
           {!form.schoolId && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>Select a school first</div>}
@@ -289,8 +332,10 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
               .map(p => ({ teacher: teachers.find(t => t.id === p.teacherId), instrument: p.instrument }))
               .filter(p => p.teacher);
             const memberStudents = (band.members || [])
+              .filter(m => !m.viaGroupId)
               .map(m => ({ member: m, student: students.find(s => s.id === m.studentId) }))
               .filter(({ student }) => Boolean(student));
+            const groupChips = bandRosterBlocks(band.members).groups;
             const allStudents = memberStudents.map(({ student }) => student);
             return (
               <Card key={band.id} onClick={() => editBand(band)} style={{ borderLeft: `4px solid ${BAND_COLOR}`, padding: "14px 16px", cursor: "pointer" }}>
@@ -307,8 +352,13 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
                         ))}
                       </div>
                     )}
-                    {memberStudents.length > 0 && (
+                    {(memberStudents.length > 0 || groupChips.length > 0) && (
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                        {groupChips.map(g => (
+                          <span key={g.groupId} style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: BAND_COLOR + "22", color: BAND_COLOR, border: `1px solid ${BAND_COLOR}44` }}>
+                            {g.groupName || "Group"} ({g.members.map(m => firstNameOfStudent(m.studentId)).join(", ")}){g.instrument ? ` · ${g.instrument}` : ""}
+                          </span>
+                        ))}
                         {memberStudents.map(({ member, student }) => {
                           const name = bandDisplayName(student, allStudents);
                           return <span key={member.id} style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: BAND_COLOR + "22", color: BAND_COLOR, border: `1px solid ${BAND_COLOR}44` }}>{name}{member.instrument ? ` · ${member.instrument}` : ""}</span>;

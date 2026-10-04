@@ -29,6 +29,9 @@ const CONSUMPTION_OPTIONS = [
   { value: "not_in_session", label: "Not in this session" },
 ];
 
+// v2.43.0 — a group row takes one role for the whole group: never a catch-up.
+const GROUP_OPTIONS = CONSUMPTION_OPTIONS.filter(o => o.value !== "catchup");
+
 /**
  * @param {Object}   props
  * @param {string}   props.title        Band name.
@@ -39,6 +42,10 @@ const CONSUMPTION_OPTIONS = [
  *     settlesLabel, departed, absentLabel }
  *   absentLabel — "Absent — <reason>" (or "Absent") for a member recorded
  *   absent from this session; the row is then read-only (cluster 5b).
+ *   v2.43.0 group rows also carry { rowKey: "group:<id>", isGroupRow: true,
+ *   memberNames, disabledReason } — one row for the whole group, offered
+ *   Regular / Free / Not in this session only; disabledReason (a member's
+ *   group enrolment can't be found) makes the row read-only.
  * @param {Function} props.onChange     (studentId, patch) — patch carries any of
  *                                      { consumption, enrolmentId, missKey }.
  * @param {Function} props.onSave
@@ -82,9 +89,11 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
 
         {rows.map(row => {
           const noMisses = !row.misses || row.misses.length === 0;
-          const locked = !!row.absentLabel;
+          const locked = !!row.absentLabel || !!row.disabledReason;
+          const rowKey = row.rowKey || row.studentId;
+          const options = row.isGroupRow ? GROUP_OPTIONS : CONSUMPTION_OPTIONS;
           return (
-            <div key={row.studentId}
+            <div key={rowKey}
               style={{
                 padding: "10px 0", borderTop: `1px solid ${colors.borderLight}`,
                 opacity: row.departed ? 0.55 : 1,
@@ -94,15 +103,21 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {row.studentName}
                   </div>
+                  {row.isGroupRow && row.memberNames && (
+                    <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{row.memberNames}</div>
+                  )}
                   {row.departed && (
                     <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>No longer in band</div>
                   )}
-                  {locked && (
+                  {row.absentLabel && (
                     <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>{row.absentLabel}</div>
                   )}
-                  {!locked && !row.departed && row.consumption === "catchup" && (
+                  {row.disabledReason && (
+                    <div style={{ fontSize: 11, color: colors.danger, marginTop: 2, whiteSpace: "normal" }}>{row.disabledReason}</div>
+                  )}
+                  {!locked && !row.departed && !row.isGroupRow && row.consumption === "catchup" && (
                     <button
-                      onClick={() => onChange(row.studentId, { cycleMiss: true })}
+                      onClick={() => onChange(rowKey, { cycleMiss: true })}
                       disabled={noMisses || (row.misses || []).length < 2}
                       title={(row.misses || []).length > 1 ? "Choose a different missed lesson" : undefined}
                       style={{
@@ -118,7 +133,7 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
 
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                   {row.departed ? (
-                    <button onClick={() => onChange(row.studentId, { consumption: "" })}
+                    <button onClick={() => onChange(rowKey, { consumption: "" })}
                       style={{ padding: "6px 12px", borderRadius: 8, background: colors.tagBg, color: colors.gray700, fontWeight: 600, fontSize: 12, border: "none", cursor: "pointer", fontFamily: "inherit" }}>
                       Clear
                     </button>
@@ -126,11 +141,11 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                     <>
                       {/* Which instrument it counts against only means something
                           when the slot draws on an enrolment. */}
-                      {(row.instrumentOptions || []).length > 1
+                      {!row.isGroupRow && (row.instrumentOptions || []).length > 1
                         && (row.consumption === "regular" || row.consumption === "catchup") && (
                         <select
                           value={row.enrolmentId || ""}
-                          onChange={e => onChange(row.studentId, { enrolmentId: e.target.value })}
+                          onChange={e => onChange(rowKey, { enrolmentId: e.target.value })}
                           disabled={locked}
                           title={locked ? "Undo the absence on the band card to change this" : "Counts against"}
                           style={selectStyle(locked)}>
@@ -141,11 +156,11 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                       )}
                       <select
                         value={row.consumption || ""}
-                        onChange={e => onChange(row.studentId, { consumption: e.target.value })}
+                        onChange={e => onChange(rowKey, { consumption: e.target.value })}
                         disabled={locked}
-                        title={locked ? "Undo the absence on the band card to change this" : undefined}
+                        title={row.disabledReason ? row.disabledReason : locked ? "Undo the absence on the band card to change this" : undefined}
                         style={selectStyle(locked)}>
-                        {CONSUMPTION_OPTIONS.map(o => (
+                        {options.map(o => (
                           <option key={o.value} value={o.value} disabled={o.value === "catchup" && noMisses}>
                             {o.label}
                           </option>
