@@ -165,3 +165,85 @@ export function bandRosterBlocks(members) {
   }
   return { individuals, groups };
 }
+
+// ── Group display (v2.43.1) ─────────────────────────────────────────
+// Display only: owner-visible text names a group in a band by its MEMBERS,
+// never by the group's own name. Nothing here changes members[] shape,
+// memberStates or matching.
+
+// Student ids in the group's OWN member order (group.studentIds); ids the
+// group doesn't list keep their relative order after it. No group → as given.
+export function orderByGroup(studentIds, group) {
+  const ids = studentIds || [];
+  const order = (group && group.studentIds) || [];
+  if (order.length === 0) return [...ids];
+  const rank = (sid) => { const i = order.indexOf(sid); return i === -1 ? order.length : i; };
+  return ids.map((sid, i) => [sid, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+}
+
+// Full names (or first names) for student ids, in the order given. A student
+// who can't be found is skipped.
+export function studentNamesFor(studentIds, students, { first = false } = {}) {
+  return (studentIds || []).map(sid => {
+    const name = ((students || []).find(s => s && s.id === sid) || {}).name || "";
+    return first ? name.split(" ")[0] : name;
+  }).filter(Boolean);
+}
+
+// "Ivy, Libby's group lesson" — the noun form for a group in a sentence.
+export function groupLessonNoun(firstNames) {
+  const list = (firstNames || []).filter(Boolean);
+  return list.length ? `${list.join(", ")}'s group lesson` : "the group lesson";
+}
+
+// The instrument a group brings to a band when it is added: the group's own
+// instrument; if blank, the instrument of the members' group enrolments when
+// every member has one and they all agree (case-insensitive); otherwise "".
+// "Group" (the placeholder a blank-instrument group's cards carry) never
+// counts as an instrument. Display/default only — reads enrolments, writes
+// nothing. A member's group enrolment here is an un-ended isGroup row for
+// this group, or else their only un-ended isGroup row with no groupId.
+export function defaultGroupInstrument(group, enrolments) {
+  if (!group) return "";
+  const own = (group.instrument || "").trim();
+  if (own && own.toLowerCase() !== "group") return own;
+  const ids = group.studentIds || [];
+  if (ids.length === 0) return "";
+  const list = enrolments || [];
+  let agreed = null;
+  for (const sid of ids) {
+    const live = list.filter(e => e && e.isGroup && e.studentId === sid && !e.endDate);
+    const byGroup = live.filter(e => e.groupId === group.id);
+    const noGid = live.filter(e => !e.groupId);
+    const rows = byGroup.length > 0 ? byGroup : (noGid.length === 1 ? noGid : []);
+    const insts = [...new Set(rows.map(e => (e.instrument || "").trim()).filter(i => i && i.toLowerCase() !== "group"))];
+    if (insts.length !== 1) return "";
+    if (agreed === null) agreed = insts[0];
+    else if (agreed.toLowerCase() !== insts[0].toLowerCase()) return "";
+  }
+  return agreed || "";
+}
+
+// Edit Band "Search students to add…" results: the matching students exactly
+// as before (same school, active, not on the band, name contains the query,
+// first 6), followed by matching GROUPS — same school, with members, not
+// already on the band — where the query is in the group's name or in any
+// member's name. A group result is { kind: "group", group, label } with the
+// label its members' full names in the group's order; a student result is
+// { kind: "student", student }. Empty query → [].
+export function bandMemberSearchResults({ query, schoolId, students, groups, members, limit = 6 }) {
+  const q = query || "";
+  if (q.trim().length === 0) return [];
+  const needle = q.toLowerCase();
+  const onBand = members || [];
+  const studentHits = (students || []).filter(s => s.schoolId === schoolId && s.status === "active"
+    && !onBand.some(m => m.studentId === s.id) && s.name.toLowerCase().includes(needle)).slice(0, limit)
+    .map(student => ({ kind: "student", student }));
+  const groupHits = (groups || []).filter(g => g && g.schoolId === schoolId && (g.studentIds || []).length > 0
+    && !onBand.some(m => m && m.viaGroupId === g.id)
+    && ((g.name || "").toLowerCase().includes(needle)
+      || studentNamesFor(g.studentIds, students).some(n => n.toLowerCase().includes(needle))))
+    .slice(0, limit)
+    .map(group => ({ kind: "group", group, label: studentNamesFor(group.studentIds, students).join(", ") }));
+  return [...studentHits, ...groupHits];
+}

@@ -1106,7 +1106,7 @@ export function restoreCardsReporting(lessons, cards) {
 export function restoreDropNotice(dropped, firstNameOf) {
   const list = (dropped || []).filter(Boolean);
   if (list.length === 0) return null;
-  const parts = list.map((c) => `${firstNameOf(c)}'s lesson (${c.day || "?"} ${c.start || "?"})`);
+  const parts = list.map((c) => `${firstNameOf(c)}'s ${c.isGroup ? "group lesson" : "lesson"} (${c.day || "?"} ${c.start || "?"})`);
   if (parts.length === 1) {
     return `Couldn't put back ${parts[0]} — that slot is taken. Re-add it from the Master Timetable if needed.`;
   }
@@ -1386,16 +1386,22 @@ export function applyGroupAttribution(memberStates, groupId, consumption, weekKe
 }
 
 /**
- * Display name for a ledger card in the "Couldn't put back…" notice: the
- * group's name for a group card (its studentId is only its first member),
- * otherwise firstNameOf(card).
+ * Display name for a ledger card in the "Couldn't put back…" notice. A group
+ * card (whose studentId is only its first member) is named by ALL its
+ * members' first names, in the card's own (the group's) order — v2.43.1,
+ * never the group's name. Otherwise firstNameOf(card).
  *
  * @param {Object} card
- * @param {Function} firstNameOf
+ * @param {Function} firstNameOf  card → first name.
  * @returns {string}
  */
 export function restoreCardName(card, firstNameOf) {
-  if (card && card.isGroup) return card.groupName || "The group";
+  if (card && card.isGroup) {
+    const fromNames = (card.studentNames || []).map((n) => (n || "").split(" ")[0]).filter(Boolean);
+    const names = fromNames.length > 0 ? fromNames
+      : (card.studentIds || []).map((sid) => firstNameOf({ studentId: sid })).filter(Boolean);
+    return names.length > 0 ? names.join(", ") : "The group";
+  }
   return firstNameOf(card);
 }
 

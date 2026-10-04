@@ -31,6 +31,7 @@ import { hasMemberStates, buildMemberStates, isGenerateExcluded, displaceRegular
   defaultAttributions, reconcileMemberStates, selectableMissesForStudent,
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, attributionWindowRows, applyGroupAttribution, isGroupEntry, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
+import { orderByGroup, groupLessonNoun } from "../utils/bandsSync";
 import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
   absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport, planRemoveBandSession } from "../data/bandAbsence";
@@ -1504,22 +1505,25 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     if (!bandAttrModal) return [];
     const linkedRows = (catchups || []).filter(c => c.bandLessonId === bandAttrModal.lessonId);
     const firstOf = (sid) => ((students.find(s => s.id === sid)?.name) || "").split(" ")[0] || "?";
+    const fullOf = (sid) => (students.find(s => s.id === sid)?.name) || firstOf(sid);
     // v2.43.0 — one row per GROUP plus one per remaining student
     // (attributionWindowRows). A band with no groups yields exactly the rows
     // studentRows gave before, in the same order.
     return attributionWindowRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds, bandAttrModal.rosterMembers).map(row => {
       if (row.kind === "group") {
-        const groupName = row.groupName || (groups || []).find(g => g.id === row.groupId)?.name || "Group";
-        const unresolved = row.unresolvedStudentIds.map(firstOf);
+        // v2.43.1 — a group is named by its members (the group's own order),
+        // never by the group's name.
+        const grp = (groups || []).find(g => g.id === row.groupId);
+        const memberIds = orderByGroup(row.studentIds, grp);
+        const unresolved = orderByGroup(row.unresolvedStudentIds, grp).map(firstOf);
         const disabledReason = unresolved.length === 0 ? ""
-          : `${unresolved.join(" and ")} ${unresolved.length === 1 ? "has" : "have"} no group enrolment for ${groupName} — check the Students page`;
+          : `${unresolved.join(" and ")} ${unresolved.length === 1 ? "has" : "have"} no group enrolment for ${groupLessonNoun(memberIds.map(firstOf))} — check the Students page`;
         const absent = row.studentIds.find(sid => bandAttrModal.absentLabels && bandAttrModal.absentLabels[sid]);
         return {
           rowKey: row.key,
           studentId: row.key,
           isGroupRow: true,
-          studentName: groupName,
-          memberNames: row.studentIds.map(firstOf).join(", "),
+          studentName: memberIds.map(fullOf).join(", ") || "—",
           entries: row.entries,
           consumption: row.consumption || "",
           enrolmentId: "",

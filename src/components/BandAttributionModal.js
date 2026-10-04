@@ -43,7 +43,8 @@ const GROUP_OPTIONS = CONSUMPTION_OPTIONS.filter(o => o.value !== "catchup");
  *   absentLabel — "Absent — <reason>" (or "Absent") for a member recorded
  *   absent from this session; the row is then read-only (cluster 5b).
  *   v2.43.0 group rows also carry { rowKey: "group:<id>", isGroupRow: true,
- *   memberNames, disabledReason } — one row for the whole group, offered
+ *   disabledReason } — one row for the whole group (v2.43.1: its studentName
+ *   is the members' full names, one bold line like any student), offered
  *   Regular / Free / Not in this session only; disabledReason (a member's
  *   group enrolment can't be found) makes the row read-only.
  * @param {Function} props.onChange     (studentId, patch) — patch carries any of
@@ -103,9 +104,6 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {row.studentName}
                   </div>
-                  {row.isGroupRow && row.memberNames && (
-                    <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{row.memberNames}</div>
-                  )}
                   {row.departed && (
                     <div style={{ fontSize: 11, color: colors.danger, marginTop: 2 }}>No longer in band</div>
                   )}

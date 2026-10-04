@@ -23,7 +23,8 @@ import {
   restoreCardName, isExcludedByBands, sameDayClashCard, bandCoversGroupForPresence,
 } from "./bandMemberStates";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
-import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks, bandToRow, rowToBand } from "../utils/bandsSync";
+import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks, bandToRow, rowToBand,
+  orderByGroup, studentNamesFor, groupLessonNoun, defaultGroupInstrument, bandMemberSearchResults } from "../utils/bandsSync";
 import { checkConstraints } from "../utils/constraints";
 import { eligibleForAbsence, planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -266,9 +267,11 @@ export function runBandGroupCoreTests(assert) {
     memberStates: freeAll, resolver: r });
   assert("group core: slot taken → group card reported once, left off the grid and out of the ledger",
     [ledgerOf(takenOut.lessons), nonBand(takenOut.lessons), ids(takenOut.dropped)], [[], ["W_LP", "W_OTHER"], ["W_UKE"]]);
-  assert("group core: the notice names the group, not its first member",
+  // Updated in v2.43.1 (deliberately, owner decision D5): was "Ukulele
+  // Group's lesson" — a group is now named by its members.
+  assert("group core: the notice names the group by its members, not just its first member",
     restoreDropNotice(takenOut.dropped, c => restoreCardName(c, () => "Ivy")),
-    "Couldn't put back Ukulele Group's lesson (Thursday 10:00) — that slot is taken. Re-add it from the Master Timetable if needed.");
+    "Couldn't put back Ivy, Libby's group lesson (Thursday 10:00) — that slot is taken. Re-add it from the Master Timetable if needed.");
   assert("group core: restoreCardName leaves solo cards to firstNameOf",
     restoreCardName(libbyPiano, () => "Libby"), "Libby");
 
@@ -497,4 +500,67 @@ export function runBandGroupRosterUiTests(assert) {
   const rows = attributionWindowRows(applyGroupAttribution(built, "g_uke", "regular", GW), [], added);
   assert("group roster ui: Riptide window — Liri, Noa, ONE ukulele group row (Regular), no Libby or Ivy rows",
     rows.map(r => [r.key, r.kind === "group" ? r.consumption : null]), [["liri", null], ["group:g_uke", "regular"], ["noa", null]]);
+}
+
+// ── v2.43.1: a group on a band is named by its members (display only) ──
+export function runBandGroupLabelTests(assert) {
+  const students = [
+    { id: "liri", name: "Liri Hirsch", schoolId: "S", status: "active", className: "4A" },
+    { id: "libby", name: "Libby Gilby", schoolId: "S", status: "active", className: "4B" },
+    { id: "ivy", name: "Ivy O'Donnell", schoolId: "S", status: "active", className: "4B" },
+    { id: "noa", name: "Noa Boshari", schoolId: "S", status: "active", className: "5A" },
+    { id: "ian", name: "Ian Elsewhere", schoolId: "T", status: "active", className: "1A" },
+  ];
+  const otherSchool = { id: "g_t", name: "Ukulele T", schoolId: "T", studentIds: ["ian"] };
+  const empty = { id: "g_empty", name: "Ukulele Empty", schoolId: "S", studentIds: [] };
+  const groups = [GROUP_UKE, otherSchool, empty];
+  const search = (query, members = []) => bandMemberSearchResults({ query, schoolId: "S", students, groups, members })
+    .map(r => r.kind === "group" ? "group:" + r.label : "student:" + r.student.name);
+
+  // D1 — search results
+  assert("group label: searching a member's name shows the student AND her group (full names, group order)",
+    search("Ivy"), ["student:Ivy O'Donnell", "group:Ivy O'Donnell, Libby Gilby"]);
+  assert("group label: searching the group's name finds the group",
+    search("ukulele"), ["group:Ivy O'Donnell, Libby Gilby"]);
+  assert("group label: other schools' groups and empty groups are never offered",
+    search("Ian"), []);
+  assert("group label: a group already on the band is not offered (its students aren't either)",
+    search("Ivy", addGroupToMembers([], GROUP_UKE, () => "x")), []);
+  assert("group label: students-only results unchanged in order and limit; empty query → none",
+    [search("i").filter(x => x.startsWith("student:")), search("   ")],
+    [["student:Liri Hirsch", "student:Libby Gilby", "student:Ivy O'Donnell", "student:Noa Boshari"], []]);
+
+  // D2 / D3 / D4 / D7 — names in the group's own order
+  const rosterOrder = ["libby", "ivy"];  // after Riptide's in-place conversion
+  assert("group label: names follow the group's own order, not the roster's",
+    orderByGroup(rosterOrder, GROUP_UKE), ["ivy", "libby"]);
+  assert("group label: unknown ids keep their order after the group's; no group → as given",
+    [orderByGroup(["zed", "libby", "ivy"], GROUP_UKE), orderByGroup(rosterOrder, null)], [["ivy", "libby", "zed"], ["libby", "ivy"]]);
+  assert("group label: full-name form (Edit Band row, window row)",
+    studentNamesFor(orderByGroup(rosterOrder, GROUP_UKE), students).join(", "), "Ivy O'Donnell, Libby Gilby");
+  assert("group label: first-name form (band chip)",
+    studentNamesFor(orderByGroup(rosterOrder, GROUP_UKE), students, { first: true }).join(", ") + " · Ukulele", "Ivy, Libby · Ukulele");
+  assert("group label: noun form (D5)",
+    [groupLessonNoun(["Ivy", "Libby"]), groupLessonNoun([])], ["Ivy, Libby's group lesson", "the group lesson"]);
+  assert("group label: restore notice name for a card without studentNames falls back to its member ids",
+    restoreCardName({ isGroup: true, studentIds: ["ivy", "libby"] }, c => ({ ivy: "Ivy", libby: "Libby" })[c.studentId]), "Ivy, Libby");
+
+  // D6 — instrument default when adding a group
+  const blankGroup = { ...GROUP_UKE, instrument: "" };
+  assert("group label: instrument default — the group's own instrument first",
+    defaultGroupInstrument(GROUP_UKE, GENROL), "Ukulele");
+  assert("group label: blank group instrument → the members' agreed group-enrolment instrument",
+    defaultGroupInstrument(blankGroup, GENROL), "Ukulele");
+  assert("group label: members disagree, one has none, or the group is 'Group' → blank (as before)",
+    [defaultGroupInstrument(blankGroup, GENROL.map(e => (e.id === "e_ivy_uke" ? { ...e, instrument: "Guitar" } : e))),
+     defaultGroupInstrument(blankGroup, GENROL.filter(e => e.id !== "e_ivy_uke")),
+     defaultGroupInstrument({ ...GROUP_UKE, instrument: "Group" }, GENROL.map(e => (e.isGroup ? { ...e, instrument: "Group" } : e)))],
+    ["", "", ""]);
+  assert("group label: ended enrolments are ignored; a no-groupId row counts when it is the only one",
+    [defaultGroupInstrument(blankGroup, GENROL.map(e => (e.id === "e_ivy_uke" ? { ...e, endDate: "2021-01-01" } : e))),
+     defaultGroupInstrument(blankGroup, GENROL.map(e => (e.id === "e_ivy_uke" ? { ...e, groupId: undefined } : e)))],
+    ["", "Ukulele"]);
+  const added = addGroupToMembers([], { ...blankGroup, instrument: defaultGroupInstrument(blankGroup, GENROL) }, () => "n");
+  assert("group label: adding with the default preselects Ukulele; the group record itself is untouched",
+    [added.map(m => m.instrument), blankGroup.instrument], [["Ukulele", "Ukulele"], ""]);
 }

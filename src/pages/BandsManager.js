@@ -8,7 +8,8 @@ import { BAND_LINK_CATEGORIES, BAND_COLOR, BAND_INSTRUMENTS } from "../constants
 import { useTheme } from "../context/ThemeContext";
 import { uid } from "../utils/helpers";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks } from "../utils/bandsSync";
+import { addGroupToMembers, removeGroupFromMembers, setGroupInstrument, bandRosterBlocks,
+  orderByGroup, studentNamesFor, defaultGroupInstrument, bandMemberSearchResults } from "../utils/bandsSync";
 import { Card, PageTitle, NavButtons, Tag, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
 import { ResourcePicker } from "../components/ResourcePicker";
@@ -29,7 +30,6 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
   const [form, setForm] = useState(null);
   const [memberSearch, setMemberSearch] = useState("");
   const [memberSearchIdx, setMemberSearchIdx] = useState(-1);
-  const [groupToAdd, setGroupToAdd] = useState("");
   const [filterSchool, setFilterSchool] = useState("");
   const [browserLink, setBrowserLink] = useState(null);
   const [resourcePicker, setResourcePicker] = useState(null);
@@ -65,14 +65,21 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
 
   const removeMember = (memberId) => setForm(prev => ({ ...prev, members: prev.members.filter(m => m.id !== memberId) }));
   // v2.43.0 — a group joins as one unit (bandsSync.addGroupToMembers).
+  // v2.43.1 — offered from the member search; its instrument defaults to the
+  // group's, else its members' agreed group-enrolment instrument (display
+  // default only: the groups table is never written).
   const addGroup = (groupId) => {
     const group = (groups || []).find(g => g.id === groupId);
     if (!group) return;
-    setForm(prev => ({ ...prev, members: addGroupToMembers(prev.members, group, uid) }));
-    setGroupToAdd("");
+    const withInstrument = { ...group, instrument: defaultGroupInstrument(group, enrolments) || group.instrument || "" };
+    setForm(prev => ({ ...prev, members: addGroupToMembers(prev.members, withInstrument, uid) }));
+    setMemberSearch("");
   };
   const removeGroup = (groupId) => setForm(prev => ({ ...prev, members: removeGroupFromMembers(prev.members, groupId) }));
-  const firstNameOfStudent = (sid) => ((students.find(s => s.id === sid)?.name) || "").split(" ")[0] || "?";
+  // v2.43.1 — a group on a band is named by its members, in the group's own order.
+  const groupMemberIds = (groupId, memberRecords) =>
+    orderByGroup(memberRecords.map(m => m.studentId), (groups || []).find(g => g.id === groupId));
+  const pickSearchResult = (r) => { if (r.kind === "group") addGroup(r.group.id); else addMember(r.student); };
   const addLink = () => setForm(prev => ({ ...prev, links: [...prev.links, { id: uid(), category: BAND_LINK_CATEGORIES[0], url: "", source: "url", label: "" }] }));
   const addResourceLink = (linkId, resource) => {
     setForm(prev => ({ ...prev, links: prev.links.map(l =>
@@ -84,8 +91,9 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
   const removeLink = (linkId) => setForm(prev => ({ ...prev, links: prev.links.filter(l => l.id !== linkId) }));
 
   const filteredBands = filterSchool ? bands.filter(b => b.schoolId === filterSchool) : bands;
-  const memberResults = form && memberSearch.trim().length > 0
-    ? students.filter(s => s.schoolId === form.schoolId && s.status === "active" && !form.members.some(m => m.studentId === s.id) && s.name.toLowerCase().includes(memberSearch.toLowerCase())).slice(0, 6)
+  // v2.43.1 — students as before, then groups (name or any member's name).
+  const memberResults = form
+    ? bandMemberSearchResults({ query: memberSearch, schoolId: form.schoolId, students, groups, members: form.members })
     : [];
 
   const inputStyle = { width: "100%", padding: "8px 12px", border: `1px solid ${colors.inputBorder}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: colors.cardBg, color: colors.text };
@@ -94,8 +102,6 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
   if (form) {
     const roster = bandRosterBlocks(form.members);
     const formMemberStudents = roster.individuals.map(m => ({ ...m, student: students.find(s => s.id === m.studentId) })).filter(m => m.student);
-    const addableGroups = (groups || []).filter(g => g.schoolId === form.schoolId && (g.studentIds || []).length > 0
-      && !form.members.some(m => m.viaGroupId === g.id));
     return (
       <div>
         {!hideTitle && (
@@ -131,8 +137,7 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
               {roster.groups.map(g => (
                 <div key={g.groupId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: colors.bg, borderRadius: 8 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ fontWeight: 600, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 5 }}><Users size={12} />{g.groupName || "Group"}</span>
-                    <span style={{ color: colors.textMuted, fontSize: 12, marginLeft: 8 }}>{g.members.map(m => firstNameOfStudent(m.studentId)).join(", ")}</span>
+                    <span style={{ fontWeight: 600, fontSize: 13 }}>{studentNamesFor(groupMemberIds(g.groupId, g.members), students).join(", ")}</span>
                   </div>
                   <select value={g.instrument} onChange={e => setForm(prev => ({ ...prev, members: setGroupInstrument(prev.members, g.groupId, e.target.value) }))} style={{ padding: "4px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", background: colors.cardBg }}>
                     <option value="">No instrument</option>
@@ -171,36 +176,30 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
                 onKeyDown={e => {
                   if (e.key === "ArrowDown") { e.preventDefault(); setMemberSearchIdx(i => Math.min(i + 1, memberResults.length - 1)); return; }
                   if (e.key === "ArrowUp")   { e.preventDefault(); setMemberSearchIdx(i => Math.max(i - 1, -1)); return; }
-                  if (e.key === "Enter" && memberSearchIdx >= 0 && memberResults[memberSearchIdx]) { e.preventDefault(); addMember(memberResults[memberSearchIdx]); setMemberSearchIdx(-1); return; }
+                  if (e.key === "Enter" && memberSearchIdx >= 0 && memberResults[memberSearchIdx]) { e.preventDefault(); pickSearchResult(memberResults[memberSearchIdx]); setMemberSearchIdx(-1); return; }
                   if (e.key === "Escape") { setMemberSearch(""); setMemberSearchIdx(-1); }
                 }}
                 placeholder="Search students to add…" />
               <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: colors.textMuted }}>🔍</span>
               {memberResults.length > 0 && (
                 <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: colors.cardBg, border: `1px solid ${colors.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.1)", zIndex: 100, marginTop: 2 }}>
-                  {memberResults.map((s, idx) => (
-                    <button key={s.id} onClick={() => { addMember(s); setMemberSearchIdx(-1); }}
+                  {memberResults.map((r, idx) => (
+                    <button key={r.kind === "group" ? "g:" + r.group.id : r.student.id} onClick={() => { pickSearchResult(r); setMemberSearchIdx(-1); }}
                       style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "8px 12px", background: idx === memberSearchIdx ? colors.sidebarHover : "none", border: "none", fontSize: 13, cursor: "pointer", fontFamily: "inherit", textAlign: "left", color: colors.text }}
                       onMouseEnter={e => { setMemberSearchIdx(idx); e.currentTarget.style.background = colors.bg; }}
                       onMouseLeave={e => e.currentTarget.style.background = idx === memberSearchIdx ? colors.sidebarHover : "none"}>
-                      <span>{s.name}</span>
-                      <span style={{ fontSize: 11, color: colors.textMuted }}>{s.className} · {instrumentsFromEnrolments(s.id, enrolments).map(i => i.name).join(", ")}</span>
+                      {r.kind === "group" ? (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Users size={12} />{r.label}</span>
+                      ) : (
+                        <>
+                          <span>{r.student.name}</span>
+                          <span style={{ fontSize: 11, color: colors.textMuted }}>{r.student.className} · {instrumentsFromEnrolments(r.student.id, enrolments).map(i => i.name).join(", ")}</span>
+                        </>
+                      )}
                     </button>
                   ))}
                 </div>
               )}
-            </div>
-          )}
-          {form.schoolId && addableGroups.length > 0 && (
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <select style={{ ...inputStyle, flex: 1 }} value={groupToAdd} onChange={e => setGroupToAdd(e.target.value)}>
-                <option value="">Add a group…</option>
-                {addableGroups.map(g => <option key={g.id} value={g.id}>{g.name || "Group"} — {(g.studentIds || []).map(firstNameOfStudent).join(", ")}</option>)}
-              </select>
-              <button onClick={() => addGroup(groupToAdd)} disabled={!groupToAdd}
-                style={{ padding: "0 14px", background: groupToAdd ? colors.sidebarActive : colors.border, color: colors.cardBg, border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: groupToAdd ? "pointer" : "not-allowed", fontFamily: "inherit", whiteSpace: "nowrap" }}>
-                Add group
-              </button>
             </div>
           )}
           {!form.schoolId && <div style={{ fontSize: 12, color: colors.textMuted, fontStyle: "italic" }}>Select a school first</div>}
@@ -354,11 +353,16 @@ export function BandsManager({ bands, onSaveBand, onDeleteBand, schools, student
                     )}
                     {(memberStudents.length > 0 || groupChips.length > 0) && (
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-                        {groupChips.map(g => (
-                          <span key={g.groupId} style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: BAND_COLOR + "22", color: BAND_COLOR, border: `1px solid ${BAND_COLOR}44` }}>
-                            {g.groupName || "Group"} ({g.members.map(m => firstNameOfStudent(m.studentId)).join(", ")}){g.instrument ? ` · ${g.instrument}` : ""}
-                          </span>
-                        ))}
+                        {groupChips.map(g => {
+                          const grp = (groups || []).find(x => x.id === g.groupId);
+                          const inst = g.instrument || defaultGroupInstrument(grp, enrolments);
+                          const names = studentNamesFor(groupMemberIds(g.groupId, g.members), students, { first: true }).join(", ");
+                          return (
+                            <span key={g.groupId} style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: BAND_COLOR + "22", color: BAND_COLOR, border: `1px solid ${BAND_COLOR}44` }}>
+                              {names}{inst ? ` · ${inst}` : ""}
+                            </span>
+                          );
+                        })}
                         {memberStudents.map(({ member, student }) => {
                           const name = bandDisplayName(student, allStudents);
                           return <span key={member.id} style={{ padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 600, background: BAND_COLOR + "22", color: BAND_COLOR, border: `1px solid ${BAND_COLOR}44` }}>{name}{member.instrument ? ` · ${member.instrument}` : ""}</span>;
