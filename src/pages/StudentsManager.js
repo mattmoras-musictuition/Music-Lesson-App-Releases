@@ -6,7 +6,8 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { GraduationCap, StickyNote, AlertTriangle, Users, Trash2, Check, X, Plus, ClipboardList, ChevronUp, ChevronDown, Archive, RotateCcw, ChevronRight } from "lucide-react";
 import { instruments_colors, ANTHROPIC_MODEL } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { uid, getInstColor, getInitials, openCompose, getStudentMTTTeacher, buildStudentMTTTeacherIndex } from "../utils/helpers";
+import { uid, getInstColor, getInitials, openCompose, getStudentMTTTeacher, buildStudentMTTTeacherIndex, melbourneToday } from "../utils/helpers";
+import { validateEndDateEdit, isEndDateEditable, applyEndDateEdit, newlyEndedEnrolments } from "../utils/enrolmentEndDate";
 import { activeEnrolmentsFor } from "../utils/enrolmentsDB";
 import { anthropicFetch, getAnthropicHeaders, getPapa, getXLSX } from "../utils/api";
 import { parseStudentCSV } from "../data/parsers";
@@ -81,6 +82,8 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   // values are committed; blur clears the draft, so a field left empty
   // snaps back to the committed value. See the input at the enrolment row.
   const [startDateDraft, setStartDateDraft] = useState(null);
+  // v2.44.0 — History end-date edit draft: { id, value, error }.
+  const [endDateDraft, setEndDateDraft] = useState(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const filter = (viewState || {}).filter || { school: "", className: "", instrument: "", teacher: "", search: "" };
   const setFilter = (v) => setViewState(prev => ({ ...prev, filter: typeof v === "function" ? v(prev.filter || {}) : v }));
@@ -317,9 +320,10 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     // "forward" starts; App state does not yet hold the new endDate at the
     // moment the cascade fires, so reading it back there would find the row
     // still un-ended.
-    const newlyEnded = effectiveFormEnrolments
-      .filter(e => e.endDate && !priorEnrolments.find(p => p.id === e.id)?.endDate)
-      .map(e => ({ id: e.id, endDate: e.endDate }));
+    // v2.44.0 — shared with the History end-date edit: an enrolment already
+    // ended before the form opened is never "newly ended", so editing its end
+    // date never fires the cascade.
+    const newlyEnded = newlyEndedEnrolments(effectiveFormEnrolments, priorEnrolments);
 
     // Student writeback
     if (editing === "new") {
@@ -1277,7 +1281,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                           instrument: newEnrolmentDraft.instrument,
                           isGroup: newEnrolmentDraft.isGroup,
                           groupId: undefined,
-                          startDate: new Date().toISOString().split("T")[0],
+                          // v2.44.0 — Melbourne date, not UTC (UTC wrote
+                          // yesterday's date before 10/11am).
+                          startDate: melbourneToday(),
                           endDate: undefined,
                         }]);
                         setIsAddingEnrolment(false);
@@ -1303,13 +1309,54 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
                       <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
                         {endedFormEnrolments.map(e => {
                           const mttT = getStudentMTTTeacher(form.id, e.instrument, timetable, students, teachers, enrolments, teacherCoverage);
+                          // v2.44.0 — end date editable for enrolments that were
+                          // already ended when the form opened (see
+                          // isEndDateEditable), not for archived students' forms,
+                          // which stay read-only like their active rows. The
+                          // edit changes endDate only; no cascade runs.
+                          const canEditEnd = !isArchived && isEndDateEditable(e, allEnrolmentsFor(form.id, enrolments));
+                          const draft = endDateDraft && endDateDraft.id === e.id ? endDateDraft : null;
+                          const today = melbourneToday();
                           return (
-                            <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}`, opacity: 0.8 }}>
-                              <Tag color={getInstColor(e.instrument, e.isGroup)}>
-                                {e.isGroup ? <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span> : null}{e.instrument}
-                              </Tag>
-                              <span style={{ fontSize: 12, color: colors.text }}>{mttT?.teacherName || "—"}</span>
-                              <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)} – {formatDate(e.endDate)}</span>
+                            <div key={e.id} style={{ padding: "6px 10px", background: colors.bg, borderRadius: 6, border: `1px solid ${colors.border}`, opacity: canEditEnd ? 1 : 0.8 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                <Tag color={getInstColor(e.instrument, e.isGroup)}>
+                                  {e.isGroup ? <span style={{ display: "inline-flex", alignItems: "center", marginRight: 3 }}><Users size={10} /></span> : null}{e.instrument}
+                                </Tag>
+                                <span style={{ fontSize: 12, color: colors.text }}>{mttT?.teacherName || "—"}</span>
+                                {canEditEnd ? (
+                                  <label style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                    <span>{formatDate(e.startDate)} – Ended</span>
+                                    <input
+                                      type="date"
+                                      value={draft ? draft.value : (e.endDate || "")}
+                                      min={e.startDate || undefined}
+                                      max={today}
+                                      onChange={ev => {
+                                        const v = ev.target.value;
+                                        const error = validateEndDateEdit(v, e.startDate, today);
+                                        setEndDateDraft({ id: e.id, value: v, error });
+                                        // Commit only a valid date; an invalid one
+                                        // stays in the draft with its message.
+                                        if (!error) setFormEnrolments(prev => applyEndDateEdit(prev, e.id, v));
+                                      }}
+                                      onBlur={() => setEndDateDraft(null)}
+                                      title="The date this enrolment ended."
+                                      style={{ padding: "3px 6px", border: `1px solid ${draft?.error ? colors.danger : colors.inputBorder}`, borderRadius: 6, fontSize: 11, fontFamily: "inherit", color: colors.text, background: colors.cardBg, outline: "none" }}
+                                    />
+                                  </label>
+                                ) : (
+                                  <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: "auto" }}>{formatDate(e.startDate)} – {formatDate(e.endDate)}</span>
+                                )}
+                              </div>
+                              {canEditEnd && draft?.error && (
+                                <div style={{ fontSize: 11, marginTop: 4, textAlign: "right", color: colors.danger }}>{draft.error}</div>
+                              )}
+                              {canEditEnd && (
+                                <div style={{ fontSize: 11, marginTop: 4, textAlign: "right", color: colors.textMuted }}>
+                                  Changing this date does not add or remove any lessons.
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1364,7 +1411,9 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <Btn variant="secondary" onClick={() => setEndingEnrolment(null)}>Cancel</Btn>
                 <button onClick={() => {
-                  const todayISO = new Date().toISOString().split("T")[0];
+                  // v2.44.0 — Melbourne date, not UTC (UTC wrote yesterday's
+                  // date before 10/11am). Editable afterwards under History.
+                  const todayISO = melbourneToday();
                   setFormEnrolments(prev => prev.map(x => x.id === endingEnrolment.id ? { ...x, endDate: todayISO } : x));
                   setEndingEnrolment(null);
                 }}

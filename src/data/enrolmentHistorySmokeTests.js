@@ -18,6 +18,8 @@ import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
 import { stampFirstPlacementStart, hasWeeklyHistoryBefore } from "../utils/enrolmentPlacement";
 import { checkOrphan } from "../utils/orphanCheck";
 import { purgeWeeklyAfterArchive } from "../utils/archiveCascade";
+import { validateEndDateEdit, isEndDateEditable, applyEndDateEdit, newlyEndedEnrolments } from "../utils/enrolmentEndDate";
+import { melbourneToday } from "../utils/helpers";
 
 const SCHOOL_WEEKS = ["2026-07-13", "2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10",
   "2026-08-17", "2026-08-24", "2026-08-31", "2026-09-07", "2026-09-14"];
@@ -365,4 +367,45 @@ export function runArchiveCascadeTests(assert) {
   // Archived on a Monday: that week is the current week and is kept.
   assert("archive: archived on the Monday keeps that week",
     purgeWeeklyAfterArchive(wtt, "bon", "2026-10-12")["2026-10-12|S"] === wtt["2026-10-12|S"], true);
+}
+
+// ── Commit 6: Melbourne stamps + editable end date (utils/enrolmentEndDate) ─
+export function runEndDateEditTests(assert) {
+  const today = "2026-10-04";
+  assert("end date: empty is rejected", validateEndDateEdit("", "2026-01-27", today), "Enter an end date.");
+  assert("end date: before the start date is rejected",
+    validateEndDateEdit("2026-01-26", "2026-01-27", today), "End date can't be before the start date.");
+  assert("end date: after today is rejected",
+    validateEndDateEdit("2026-10-05", "2026-01-27", today), "End date can't be in the future.");
+  assert("end date: start date, today and a date between are accepted",
+    [validateEndDateEdit("2026-01-27", "2026-01-27", today), validateEndDateEdit(today, "2026-01-27", today),
+     validateEndDateEdit("2026-09-18", "2026-01-27", today)], [null, null, null]);
+  assert("end date: missing start date only checks empty and future",
+    validateEndDateEdit("2001-01-01", undefined, today), null);
+
+  // Editable only when the SAVED row is already ended.
+  const saved = [drums, piano];
+  assert("end date: editable for an enrolment ended before the form opened", isEndDateEditable(drums, saved), true);
+  assert("end date: not editable for one ended in this form session (not yet saved)",
+    isEndDateEditable({ ...piano, endDate: today }, saved), false);
+  assert("end date: not editable for a running enrolment", isEndDateEditable(piano, saved), false);
+
+  // The edit changes endDate and nothing else.
+  const form = [{ ...drums }, { ...piano }];
+  const edited = applyEndDateEdit(form, "e_bon_drm", "2026-09-18");
+  assert("end date: edit changes only that enrolment's endDate",
+    [edited[0], edited[1]], [{ ...drums, endDate: "2026-09-18" }, piano]);
+  assert("end date: edit leaves the form list unmutated", form[0].endDate, "2026-10-03");
+
+  // No cascade: saving an end-date edit newly ends nothing, so
+  // onEndEnrolment (which clears lessons, misses and master cards) never runs.
+  assert("end date: saving an end-date edit fires no End-enrolment cascade",
+    newlyEndedEnrolments(edited, saved), []);
+  // A real End in the same save still cascades, with its own date.
+  const endedNow = applyEndDateEdit(edited, "e_bon_pno", today);
+  assert("end date: a genuine End in the same save still cascades on its own",
+    newlyEndedEnrolments(endedNow, saved), [{ id: "e_bon_pno", endDate: today }]);
+
+  // D8: End/Add stamp the Melbourne date helper (a YYYY-MM-DD string).
+  assert("end date: melbourneToday is a YYYY-MM-DD date", /^\d{4}-\d{2}-\d{2}$/.test(melbourneToday()), true);
 }
