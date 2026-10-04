@@ -20,8 +20,10 @@ import {
   resolveGroupEnrolment, attributionWindowRows, applyGroupAttribution,
   applyRegularDisplacement, isGenerateExcluded, displaceRegularIntoBands,
   withoutLedgeredDuplicates, sweepRegularIntoLedger, restoreDropNotice,
-  restoreCardName, isExcludedByBands,
+  restoreCardName, isExcludedByBands, sameDayClashCard, bandCoversGroupForPresence,
 } from "./bandMemberStates";
+import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
+import { checkConstraints } from "../utils/constraints";
 import { eligibleForAbsence, planRemoveBandSession, planCleanImport } from "./bandAbsence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
@@ -372,4 +374,77 @@ export function runBandGroupRosterTests(assert) {
   // Only the D2 roles are accepted for a group.
   assert("group roster: catch-up / forward / billed are refused for a group (input returned)",
     ["catchup", "forward", "billed"].map(c => applyGroupAttribution(BOTH_REG, "g_uke", c, GW) === BOTH_REG), [true, true, true]);
+}
+
+// ── Commit 3: Tally (D9), "not scheduled this week" (D10), same-day warning (D11) ──
+export function runBandGroupTallyPresenceClashTests(assert) {
+  const TWK = "2020-03-09";
+  const reg = [gentry("e_libby_uke", "libby", "regular", TWK), gentry("e_ivy_uke", "ivy", "regular", TWK)];
+  const card = { ...groupCard(), day: "Tuesday" };
+
+  // D9 — Tally
+  const v = tallyView({ wttLessons: [tallyBand(reg, [card])] });
+  assert("group tally: NEW band, group Regular, card ledgered → the group row ticks from the band",
+    v["group|g_uke"], "completed:band");
+  assert("group tally: …and no member's solo row is ticked by the group entry",
+    [v["libby|Piano"], v["liri|Piano"]], ["blank", "blank"]);
+  const asFree = reg.map(e => ({ ...e, consumption: "free", consumedWeekKey: null }));
+  const asNis = reg.map(e => ({ ...e, consumption: "not_in_session", consumedWeekKey: null }));
+  assert("group tally: Free / Not in this session / not set → no band tick",
+    [tallyView({ wttLessons: [tallyBand(asFree, [])] })["group|g_uke"], tallyView({ wttLessons: [tallyBand(asNis, [])] })["group|g_uke"],
+     tallyView({ wttLessons: [tallyBand(reg.map(e => ({ ...e, consumption: null })), [])] })["group|g_uke"]], ["blank", "blank", "blank"]);
+  assert("group tally: every entry attended:false → no band tick",
+    tallyView({ wttLessons: [tallyBand(reg.map(e => ({ ...e, attended: false })), [card])] })["group|g_uke"], "blank");
+  assert("group tally: own card wins over the band (unchanged rule)",
+    tallyView({ wttLessons: [tallyBand(reg, []), card] })["group|g_uke"], "completed:W_UKE");
+  const miss = { ...card, id: "MS_UKE", reason: "sick", makeupEligible: true, madeUp: false };
+  assert("group tally: amendment B — a same-week group miss beats the band tick",
+    tallyView({ wttLessons: [tallyBand(reg, [])], wttMissed: [miss] })["group|g_uke"], "missed-makeup-owed:MS_UKE");
+  assert("group tally: LEGACY band still never band-matches a group (even with group entries' shape in members)",
+    tallyView({ wttLessons: [tallyBand(null, [card], { members: [{ studentId: "ivy", instrument: "Ukulele", viaGroupId: "g_uke" }] })] })["group|g_uke"], "blank");
+  assert("group tally: another group's Regular entry does not tick this group",
+    tallyView({ wttLessons: [tallyBand(reg.map(e => ({ ...e, groupId: "g_other" })), [])] })["group|g_uke"], "blank");
+
+  // D10 — presence
+  const master = groupCard("M_UKE");
+  const ledgeredBand = { ...tallyBand(BOTH_REG, [groupCard()]), id: "B1" };
+  assert("group presence: Regular group with its card ledgered counts as scheduled",
+    [isLessonPresentThisWeek(master, [ledgeredBand], []), bandCoversGroupForPresence(ledgeredBand, "g_uke")], [true, true]);
+  const freeB = { ...ledgeredBand, memberStates: applyGroupAttribution(BOTH_REG, "g_uke", "free", GW), removedLessons: [] };
+  assert("group presence: Free group with no card → still flagged (missing)",
+    isLessonPresentThisWeek(master, [freeB], []), false);
+  assert("group presence: Regular but card not in the ledger → flagged",
+    isLessonPresentThisWeek(master, [{ ...ledgeredBand, removedLessons: [] }], []), false);
+  assert("group presence: legacy band never covers a group",
+    isLessonPresentThisWeek(master, [tallyBand(null, [groupCard()], { members: [{ studentId: "ivy" }] })], []), false);
+  assert("group presence: the group card on the grid still counts (unchanged)",
+    isLessonPresentThisWeek(master, [groupCard()], []), true);
+
+  // D11 — same-day warning
+  const students = ["liri", "libby", "ivy", "noa"].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1) + " X", schoolId: "S", status: "active" }));
+  const ctx = { weekKey: GW, selectedSchool: "S", currentSchool: { id: "S", slots: [] }, weeklyTimetables: {}, teacherCoverage: [], laneOverrides: [],
+    students, enrolments: GENROL, teachers: [], schools: [{ id: "S", name: "S", slots: [] }], groups: [GROUP_UKE], weekDateMap: {},
+    weekInterruptions: [], specLookupRef: { current: null }, timetable: { lessons: [] } };
+  const warn = (memberStates, lessons, members = GROUP_MEMBERS) => {
+    const band = { id: "B1", isBandSession: true, bandId: "R", schoolId: "S", day: "Thursday", start: "13:30", members, memberStates, removedLessons: [] };
+    return checkConstraints(band, "Thursday", { start: "13:30", end: "14:00", type: "class" }, [band, ...lessons], ctx)
+      .filter(w => w.includes("already has a lesson"));
+  };
+  const thursPiano = soloCard("W_LP", "e_libby_pno", "Thursday", "09:00");
+  const unset = [gentry("e_libby_uke", "libby"), gentry("e_ivy_uke", "ivy")];
+  assert("group clash: not set → BOTH members warned about the group card (Libby too, not just its first member)",
+    warn(unset, [groupCard()]), ["Libby X already has a lesson on Thursday (Ukulele)", "Ivy X already has a lesson on Thursday (Ukulele)"]);
+  assert("group clash: Regular with the card ledgered (off the grid) → no warning, Libby's piano is expected",
+    warn(BOTH_REG, [thursPiano]), []);
+  assert("group clash: Regular but the group card survived on the grid → warns (a real problem)",
+    warn(BOTH_REG, [groupCard(), thursPiano]), ["Libby X already has a lesson on Thursday (Ukulele)", "Ivy X already has a lesson on Thursday (Ukulele)"]);
+  assert("group clash: Free / Not in this session → no warning for the group card",
+    [warn(applyGroupAttribution(BOTH_REG, "g_uke", "free", GW), [groupCard(), thursPiano]),
+     warn(applyGroupAttribution(BOTH_REG, "g_uke", "not_in_session", GW), [groupCard()])], [[], []]);
+  const soloReg = [{ ...blank("e_libby_pno", "libby", "Piano"), consumption: "regular" }];
+  assert("group clash: a solo Regular entry never treats a group card as its own",
+    sameDayClashCard({ isBandSession: true, memberStates: soloReg }, "libby", [groupCard()]), null);
+  assert("group clash: individuals-only band — Ivy warned as before, and Libby now too (D11 membership list)",
+    warn(quietBuild(INDIVIDUAL_MEMBERS, GENROL, GW), [groupCard()], INDIVIDUAL_MEMBERS),
+    ["Libby X already has a lesson on Thursday (Ukulele)", "Ivy X already has a lesson on Thursday (Ukulele)"]);
 }

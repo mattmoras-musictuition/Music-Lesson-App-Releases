@@ -6,10 +6,13 @@
 // ============================================================
 
 import { bandCoversStudentForPresence } from "../data/bandSessionView";
+import { bandCoversGroupForPresence } from "../data/bandMemberStates";
 
 // A master lesson (ml) counts as PRESENT (i.e. scheduled this week) when:
 //   • GROUP master lesson      → a matching group card (by groupId) is placed,
-//                                or a group-keyed Missed entry exists.
+//                                or a group-keyed Missed entry exists, or
+//                                (v2.43.0) a NEW band with that group Regular
+//                                holds the group's card in its ledger.
 //   • INDIVIDUAL master lesson → a direct individual card matches
 //                                (studentId + instrument), OR a placed BAND
 //                                session this week accounts for it, OR a
@@ -32,7 +35,8 @@ export function isLessonPresentThisWeek(ml, wttLessons, wttMissed) {
   const missed = wttMissed || [];
   if (ml.isGroup) {
     return lessons.some(wl => wl.groupId === ml.groupId)
-        || missed.some(wm => wm.groupId === ml.groupId);
+        || missed.some(wm => wm.groupId === ml.groupId)
+        || lessons.some(wl => wl.isBandSession && bandCoversGroupForPresence(wl, ml.groupId));
   }
   return lessons.some(wl => !wl.isBandSession && !wl.isGroup && wl.studentId === ml.studentId && wl.instrument === ml.instrument)
       || lessons.some(wl => wl.isBandSession && bandCoversStudentForPresence(wl, ml.studentId, ml.instrument))

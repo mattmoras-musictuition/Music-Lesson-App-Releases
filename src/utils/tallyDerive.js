@@ -262,9 +262,18 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       // Literal strings rather than CONSUMPTION: importing bandMemberStates
       // here would close the cycle tallyDerive → bandMemberStates →
       // enrolmentActivity → tallyDerive.
+      //
+      // v2.43.0 (groups in band attribution, owner-approved spec change) — a
+      // group entry (isGroup, groupId) stands for its GROUP's shared card, so
+      // it never ticks a solo row, and a GROUP row is band-matched — NEW bands
+      // only — when some group entry for that group is "regular" and not
+      // marked absent. Legacy bands still never band-match a group.
       const matchByMemberState = (item) => item.memberStates.some(ms =>
-        !!ms && ms.consumption === "regular" && ms.attended !== false &&
+        !!ms && ms.isGroup !== true && ms.consumption === "regular" && ms.attended !== false &&
         (ms.enrolmentId === e.id || (ms.studentId === e.studentId && ms.instrument === e.instrument)));
+      const matchGroupByMemberState = (item) => !!item.isBandSession && Array.isArray(item.memberStates)
+        && item.memberStates.some(ms => !!ms && ms.isGroup === true && !!e.groupId && ms.groupId === e.groupId
+          && ms.consumption === "regular" && ms.attended !== false);
 
       const matchByBandSession = (item) => {
         if (!item.isBandSession) return false;
@@ -281,7 +290,9 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 
       const ownMatch = (weekData.lessons || []).find(matchByEnrolment)
         || (weekData.lessons || []).find(matchByLessonKey);
-      const bandMatch = !ownMatch && !e.isGroup ? (weekData.lessons || []).find(matchByBandSession) : undefined;
+      const bandMatch = ownMatch ? undefined
+        : !e.isGroup ? (weekData.lessons || []).find(matchByBandSession)
+        : (weekData.lessons || []).find(matchGroupByMemberState);
       const findMissed = () => (weekData.missed || []).find(matchByEnrolment)
         || (weekData.missed || []).find(matchByLessonKey);
       // Cluster 4b — for a NEW band only, a missed entry for this enrolment in

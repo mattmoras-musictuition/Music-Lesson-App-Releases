@@ -906,7 +906,13 @@ export function sameDayClashCard(bandLesson, studentId, sameDayCards) {
   if (!entry) return first;                                  // unattributed
   if (entry.consumption !== CONSUMPTION.regular) return null; // catchup / free / not in session
 
-  return cards.find((c) => c && (
+  // v2.43.0 — a group entry's card is its group's card (a Regular group whose
+  // card was ledgered has none left to warn about); a solo entry's card is
+  // never a group card.
+  if (isGroupEntry(entry)) {
+    return cards.find((c) => c && c.isGroup && c.groupId === entry.groupId) || null;
+  }
+  return cards.find((c) => c && !c.isGroup && (
     c.enrolmentId ? c.enrolmentId === entry.enrolmentId : c.instrument === entry.instrument
   )) || null;
 }
@@ -1391,4 +1397,23 @@ export function applyGroupAttribution(memberStates, groupId, consumption, weekKe
 export function restoreCardName(card, firstNameOf) {
   if (card && card.isGroup) return card.groupName || "The group";
   return firstNameOf(card);
+}
+
+/**
+ * Does this band account for a GROUP's lesson this week, for the "not
+ * scheduled this week" check (v2.43.0)? Only a NEW band whose group entries
+ * for that group are "regular" AND whose ledger holds the group's card —
+ * exactly the case where the band took the card off the grid. Legacy bands,
+ * and a group that is free / not in session / not set, never cover it.
+ *
+ * Lives here, not in bandSessionView.js (the teacher app copies that file).
+ *
+ * @param {Object} band
+ * @param {string} groupId
+ * @returns {boolean}
+ */
+export function bandCoversGroupForPresence(band, groupId) {
+  if (!band || !band.isBandSession || !groupId || !hasMemberStates(band)) return false;
+  return stillRegularGroup(band.memberStates, groupId)
+    && (band.removedLessons || []).some((c) => c && c.isGroup && c.groupId === groupId);
 }

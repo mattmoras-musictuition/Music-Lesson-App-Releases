@@ -25,7 +25,7 @@ import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
 import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests, runBandLedgerRestoreTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
-import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupRosterTests } from "./bandGroupSmokeTests";
+import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupRosterTests, runBandGroupTallyPresenceClashTests } from "./bandGroupSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -368,6 +368,7 @@ export function runSmokeTests(logErrorFn) {
   runBandGroupCharacterizationTests(assert);
   runBandGroupCoreTests(assert);
   runBandGroupRosterTests(assert);
+  runBandGroupTallyPresenceClashTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

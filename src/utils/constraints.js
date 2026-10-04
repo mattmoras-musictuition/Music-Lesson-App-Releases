@@ -221,7 +221,10 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
       // lesson that day is expected, not a clash. Hence every same-day card is
       // collected, not just the first. Only this warning is affected; the
       // teacher-clash and interruption checks below still run for everyone.
-      const sameDayCards = lessonsToCheck.filter(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession && l.studentId === mid);
+      // v2.43.0 — a group card counts for EVERY member on its list, not just
+      // the first member its studentId names.
+      const sameDayCards = lessonsToCheck.filter(l => l.id !== lesson.id && l.day === newDay && !l.isBandSession
+        && (l.studentId === mid || (l.isGroup && Array.isArray(l.studentIds) && l.studentIds.includes(mid))));
       const memberLesson = sameDayClashCard(lesson, mid, sameDayCards);
       if (memberLesson) {
         const memberStudent = students.find(s => s.id === mid);
