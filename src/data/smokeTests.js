@@ -25,6 +25,7 @@ import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
 import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests, runBandLedgerRestoreTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
+import { runBandGroupCharacterizationTests } from "./bandGroupSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -362,6 +363,9 @@ export function runSmokeTests(logErrorFn) {
   runBandLedgerDisplacementTests(assert);
   runBandLedgerSaveSweepTests(assert);
   runBandLedgerRestoreTests(assert);
+
+  // ── Groups in band attribution (v2.43.0) ──
+  runBandGroupCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
