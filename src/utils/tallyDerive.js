@@ -23,6 +23,7 @@ import { getTermWeekLabel } from "./helpers";
 import { orderByPreference } from "./enrolmentPreference";
 import { isDayPast6pm } from "./tallyHelpers";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell } from "../data/catchupsDerive";
+import { buildForwardIndex, forwardFor } from "../data/bandForwardIndex";
 
 // Internal predicate — single source of "open catch-up" semantics.
 // Mirrors the audit's banked follow-up #1 (single-source predicate)
@@ -162,6 +163,12 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
 
   const termStart = termWeeks[0].weekKey;
   const termEnd = termWeeks[termWeeks.length - 1].weekKey;
+
+  // Phase 3 slice 1 — "Lesson brought forward". A forward band entry lives on
+  // a band card in the BAND's week (any school's row) and uses up a LATER
+  // week of the same term. Bands are scanned in this term's weeks only.
+  const forwardIndex = buildForwardIndex(weeklyTimetables, termWeeks.map(w => w.weekKey));
+  const weekNumByKey = new Map(termWeeks.filter(w => !w.isHoliday).map(w => [w.weekKey, w.weekNum]));
 
   // v2.34.0 — when a student holds several enrolments for one instrument, walk
   // the preferred one FIRST. This loop claims a lessonKey (seen.add) only after
@@ -305,10 +312,29 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       // planned member's tick (spec 3.9). A legacy band still beats a miss, and
       // an own-card match is never affected.
       const newBandMiss = bandMatch && Array.isArray(bandMatch.memberStates) ? findMissed() : undefined;
-      const lessonMatch = ownMatch || (newBandMiss ? undefined : bandMatch);
-      const missedMatch = !lessonMatch ? (newBandMiss || findMissed()) : null;
+      let lessonMatch = ownMatch || (newBandMiss ? undefined : bandMatch);
+      let missedMatch = !lessonMatch ? (newBandMiss || findMissed()) : null;
 
-      if (lessonMatch || missedMatch) hasWttData = true;
+      // Phase 3 slice 1 — the week a forward entry uses up. A miss for this
+      // enrolment (or group) that week beats the forward tick, through the
+      // ordinary path above. Otherwise the cell is the forward tick — even
+      // when the subject's own card is still on the timetable, which the
+      // hover says. The tick follows the BAND's 6pm close (its day, its
+      // week); the hover rides on the band-cell tooltip (notes).
+      const fwd = forwardFor(forwardIndex, e, week.weekKey);
+      let forwardEntry = null;
+      if (fwd && fwd.attended !== false && !findMissed()
+        && deriveTallyCell({ enrolment: e, week, wttEntry: null }) !== "inactive") {
+        const n = weekNumByKey.get(fwd.bandWeekKey);
+        const hover = (n != null ? `Extra lesson in week ${n}` : `Extra lesson in the week of ${fwd.bandWeekKey}`)
+          + (ownMatch ? " · regular lesson still on the timetable" : "");
+        forwardEntry = { id: fwd.bandLessonId, isBandSession: true, bandName: fwd.bandName, schoolId: fwd.schoolId,
+          day: fwd.day, notes: hover, forwardFromWeekKey: fwd.bandWeekKey, kind: "lesson" };
+        lessonMatch = undefined;
+        missedMatch = null;
+      }
+
+      if (lessonMatch || missedMatch || forwardEntry) hasWttData = true;
       if (lessonMatch?.day) latestWttDay = lessonMatch.day;
       else if (missedMatch?.day) latestWttDay = missedMatch.day;
       const teacherSource = lessonMatch || missedMatch;
@@ -317,10 +343,13 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       }
 
       let wttWithKind = null;
-      if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
+      if (forwardEntry) wttWithKind = forwardEntry;
+      else if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
       else if (missedMatch) wttWithKind = { ...missedMatch, kind: "missed" };
 
-      const state = deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind });
+      const state = forwardEntry
+        ? ((!forwardEntry.day || isDayPast6pm(forwardEntry.day, forwardEntry.forwardFromWeekKey)) ? "completed" : "blank")
+        : deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind });
       cells[week.weekKey] = { state, wttEntry: wttWithKind };
 
       const shimEntry = buildShimEntry({

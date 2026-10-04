@@ -110,14 +110,19 @@ export function runBandForwardCharacterizationTests(assert) {
     [FB + "|S"]: { lessons: [fwdBand], missed: [] },
     [FX + "|S"]: { lessons: [], missed: [] },
   } });
-  assert("forward char: forward ticks nothing in the band week or the given-up week",
-    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"][FX]], ["blank", "blank"]);
+  // Slice 1 deliberately changes this (commit 4): the given-up week now ticks
+  // from the band. Was ["blank", "blank"]. The band week still ticks nothing.
+  assert("forward char: forward ticks the given-up week, not the band week — was neither before slice 1",
+    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"][FX]], ["blank", "completed:band"]);
   d = ftally({ students: [amy], enrolments: [eAG], wtt: {
     [FB + "|S"]: { lessons: [fwdBand, fcard("OWN_B", eAG)], missed: [] },
     [FX + "|S"]: { lessons: [fcard("OWN_X", eAG)], missed: [] },
   } });
-  assert("forward char: own cards tick both weeks as ordinary lessons",
-    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"][FX]], ["completed:OWN_B", "completed:OWN_X"]);
+  // Slice 1 deliberately changes this (commit 4): in the given-up week the
+  // forward tick shows even with the own card still there (the hover says so).
+  // Was ["completed:OWN_B", "completed:OWN_X"].
+  assert("forward char: own card ticks the band week; the given-up week shows the forward tick — was the own card before slice 1",
+    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"][FX]], ["completed:OWN_B", "completed:band"]);
 
   // A band in a DIFFERENT school's row from the student is never read.
   d = ftally({ students: [amy], enrolments: [eAG], wtt: {
@@ -391,4 +396,102 @@ export function runBandForwardSaveTests(assert) {
       forwardLessonContext({ enrolment: eBD }, masters, [fstudent("bob", "S")])],
     [{ schoolId: "T", lessonDay: "Wednesday" }, { schoolId: "S", lessonDay: "Thursday" }, { schoolId: "S", lessonDay: "" }]);
   assert("forward helpers: week label", forwardWeekLabel(10), "Week 10");
+}
+
+// ── Commit 4: Tally (D9) ──
+export function runBandForwardTallyTests(assert) {
+  const amy = fstudent("amy");
+  const eAG = fenrol("e_amy_gtr", "amy", "Guitar");
+  const fwd = (extra = {}, consumed = FX) => fband("B1", [fentry(eAG, "forward", { consumedWeekKey: consumed, ...extra })]);
+  const run = (wtt, weeks) => ftally({ students: [amy], enrolments: [eAG], wtt, weeks });
+
+  // Timing: the BAND's day and week decide, not the given-up week's.
+  const FUT_B = "2099-03-09", FUT_X = "2099-03-23";
+  const mixed = [{ weekKey: FB, label: "W1", weekNum: 1 }, { weekKey: FUT_X, label: "W2", weekNum: 2 }];
+  let d = run({ [FB + "|S"]: { lessons: [fwd({}, FUT_X)], missed: [] } }, mixed);
+  assert("forward tally: band day past 6pm → the (future) given-up week already ticks",
+    d.view["amy|Guitar"][FUT_X], "completed:band");
+  const future = [{ weekKey: FUT_B, label: "W1", weekNum: 1 }, { weekKey: FUT_X, label: "W2", weekNum: 2 }];
+  d = run({ [FUT_B + "|S"]: { lessons: [fwd({}, FUT_X)], missed: [] } }, future);
+  assert("forward tally: band day not yet past 6pm → nothing in the given-up week yet",
+    d.view["amy|Guitar"][FUT_X], "blank:band");
+
+  // Hover, both forms, through the band-cell tooltip (shim notes, bandSession).
+  d = run({ [FB + "|S"]: { lessons: [fwd()], missed: [] } });
+  let shim = d.entryMap["amy|Guitar|" + FX];
+  assert("forward tally: hover reads \"Extra lesson in week N\" (N = the band's term week); a normal completed tick",
+    [shim.status, shim.bandSession, shim.notes], ["completed", true, "Extra lesson in week 2"]);
+  d = run({ [FB + "|S"]: { lessons: [fwd()], missed: [] }, [FX + "|S"]: { lessons: [fcard("OWN_X", eAG)], missed: [] } });
+  shim = d.entryMap["amy|Guitar|" + FX];
+  assert("forward tally: own card still on the timetable → the hover says so",
+    [d.view["amy|Guitar"][FX], shim.notes], ["completed:band", "Extra lesson in week 2 · regular lesson still on the timetable"]);
+
+  // Precedence: a miss beats the forward tick.
+  const miss = { id: "MS", enrolmentId: "e_amy_gtr", studentId: "amy", instrument: "Guitar", schoolId: "S", day: "Thursday", reason: "sick", makeupEligible: true, madeUp: false };
+  d = run({ [FB + "|S"]: { lessons: [fwd()], missed: [] }, [FX + "|S"]: { lessons: [], missed: [miss] } });
+  assert("forward tally: a miss in the given-up week beats the forward tick",
+    d.view["amy|Guitar"][FX], "missed-makeup-owed:MS");
+  d = run({ [FB + "|S"]: { lessons: [fwd({ attended: false })], missed: [] } });
+  assert("forward tally: an entry marked attended:false ticks nothing",
+    d.view["amy|Guitar"][FX], "blank");
+
+  // A band in another school's row still ticks the student's row.
+  d = run({ [FB + "|T"]: { lessons: [fband("B2", [fentry(eAG, "forward", { consumedWeekKey: FX })], { schoolId: "T" })], missed: [] } });
+  assert("forward tally: a band in another school's row ticks the given-up week",
+    d.view["amy|Guitar"][FX], "completed:band");
+
+  // Inactive weeks stay inactive; other weeks are untouched.
+  d = ftally({ students: [amy], enrolments: [{ ...eAG, endDate: "2020-03-15" }], wtt: { [FB + "|S"]: { lessons: [fwd()], missed: [] } } });
+  assert("forward tally: an ended enrolment's given-up week stays inactive",
+    d.view["amy|Guitar"][FX], "inactive");
+  d = run({ [FB + "|S"]: { lessons: [fwd(), fcard("OWN_B", eAG)], missed: [] }, "2020-03-16|S": { lessons: [fcard("OWN_3", eAG)], missed: [] } });
+  assert("forward tally: band week and other weeks keep their own cards",
+    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"]["2020-03-16"]], ["completed:OWN_B", "completed:OWN_3"]);
+
+  // A forward for the PIANO enrolment never ticks the guitar row.
+  const eAP = fenrol("e_amy_pno", "amy", "Piano");
+  d = ftally({ students: [amy], enrolments: [eAG, eAP], wtt: { [FB + "|S"]: { lessons: [fband("B1", [fentry(eAG, null), fentry(eAP, "forward", { consumedWeekKey: FX })])], missed: [] } } });
+  assert("forward tally: multi-instrument — only the forward instrument's row ticks",
+    [d.view["amy|Piano"][FX], d.view["amy|Guitar"][FX]], ["completed:band", "blank"]);
+
+  // Group rows tick by groupId.
+  const libby = fstudent("libby"), ivy = fstudent("ivy");
+  const eL = fenrol("e_libby_uke", "libby", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const eI = fenrol("e_ivy_uke", "ivy", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const gEntries = [fentry(eL, "forward", { consumedWeekKey: FX, groupId: "g_uke", isGroup: true }), fentry(eI, "forward", { consumedWeekKey: FX, groupId: "g_uke", isGroup: true })];
+  const gCards = [{ id: "MG", isGroup: true, groupId: "g_uke", enrolmentId: "e_ivy_uke", studentId: "ivy", instrument: "Ukulele", schoolId: "S", day: "Thursday", start: "10:00" }];
+  d = ftally({ students: [libby, ivy], enrolments: [eL, eI], cards: gCards, wtt: { [FB + "|S"]: { lessons: [fband("B1", gEntries)], missed: [] } } });
+  assert("forward tally (group): the group row ticks the given-up week",
+    d.view["group|g_uke"][FX], "completed:band");
+  d = ftally({ students: [libby, ivy], enrolments: [eL, eI], cards: gCards, wtt: {
+    [FB + "|S"]: { lessons: [fband("B1", gEntries)], missed: [] },
+    [FX + "|S"]: { lessons: [], missed: [{ id: "GM", isGroup: true, groupId: "g_uke", studentId: "ivy", instrument: "Ukulele", day: "Thursday", reason: "sick", makeupEligible: true }] } } });
+  assert("forward tally (group): a whole-group miss beats the group's forward tick",
+    d.view["group|g_uke"][FX], "missed-makeup-owed:GM");
+
+  // Previous-term export calls deriveTallyRows with that term's weeks — the
+  // forward follows it; a band outside the given weeks is not scanned.
+  const prevWeeks = [{ weekKey: FB, label: "W7", weekNum: 7 }, { weekKey: FX, label: "W9", weekNum: 9 }];
+  d = run({ [FB + "|S"]: { lessons: [fwd()], missed: [] } }, prevWeeks);
+  assert("forward tally: previous-term weeks — tick plus that term's week number in the hover",
+    [d.view["amy|Guitar"][FX], d.entryMap["amy|Guitar|" + FX].notes], ["completed:band", "Extra lesson in week 7"]);
+  d = run({ "2020-03-02|S": { lessons: [fwd()], missed: [] } }, prevWeeks);
+  assert("forward tally: a band outside the term's weeks is not read",
+    d.view["amy|Guitar"][FX], "blank");
+
+  // Tiles count the cell — the shim is an ordinary completed entry.
+  d = run({ [FB + "|S"]: { lessons: [fwd()], missed: [] } });
+  assert("forward tally: tiles see one completed cell for the forward tick",
+    Object.values(d.entryMap).filter(x => x.status === "completed").length, 1);
+
+  // Invoice math is identical with and without forward entries.
+  const prevTerm = { start: "2020-02-03", end: "2020-04-03" };
+  const math = (wtt) => getEnrolmentTermDeductionMath({ weeklyTimetables: wtt, catchups: [], enrolmentId: "e_amy_gtr", instrument: "Guitar",
+    prevTerm, interruptions: [], nextTermStart: "2020-04-20" });
+  const base = { "2020-03-16|S": { lessons: [], missed: [miss] } };
+  const withFwd = { ...base, [FB + "|S"]: { lessons: [fwd()], missed: [] } };
+  const withFree = { ...base, [FB + "|S"]: { lessons: [fband("B1", [fentry(eAG, "free")])], missed: [] } };
+  assert("forward tally: invoice math identical with and without a forward entry",
+    [math(withFwd), math(withFree), math(base)].map(m => JSON.stringify(m)),
+    Array(3).fill(JSON.stringify({ mkpEligPending: 1, catchups: 0, deductions: 1, extras: 0 })));
 }
