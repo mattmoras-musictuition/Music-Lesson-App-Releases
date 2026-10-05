@@ -22,6 +22,8 @@ import { EB, EENROL, EMASTER, ESTUDENTS, eentry, eband, ecard, eresolver, egener
 import { regularAbsenceSubjects, regularAbsentSubjects, regularSubjectKeyForMiss, regularNoCardNote, planRegularAbsence, planRegularAbsenceUndo,
   withoutMarkedCards, originRestoresFor, restoreOriginCards, adminRemoveBandSession, adminBandRemovalAbsences, isMarkedBandMiss } from "./bandRegularAbsence";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
+import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { lweekDates } from "./bandLedgerSmokeTests";
 import { adminAbsentEnrolmentIds, adminMemberAbsenceInfo, adminSessionMemberRows, adminBandCardStatus, adminParentEmailStudentIds,
   absenceItemLabel } from "./bandForwardAbsence";
 import { bandPopoverGroups } from "./bandDisplay";
@@ -338,4 +340,18 @@ export function runRegularAbsenceWrapperTests(assert) {
     [am(aWtt({ bandNoCard: true })), am(aWtt({ ledgerCard: aCard })),
       ftally({ students: [fstudent("amy")], enrolments: [eA], wtt: aWtt({ bandNoCard: true }) }).view["amy|Guitar"][FB]],
     [am(aWtt({ ledgerCard: aCard })), { mkpEligPending: 1, catchups: 0, deductions: 1, extras: 0 }, "missed-makeup-owed:W_A"]);
+}
+
+// ── Commit 4: the import builder keeps marked cards off the grid ──
+export function runRegularAbsenceImportTests(assert) {
+  const amyCard = ecard("M_amy", "W_amy", { weekDate: "2099-03-12" });
+  const wtt = { [RS]: { lessons: [eband("B1", [amyReg()])], missed: [], generatedAt: "x" } };
+  const noCard = planRegularAbsence(planArgs(wtt, "regular:enrolment:e_amy_gtr")).rows[RS];
+  const held = planMarkAbsent({ band: eband("B1", [amyReg()], { removedLessons: [amyCard] }), entry: amyReg(), missed: [], enrolments: EENROL });
+  const dayImport = (existingEntry) => buildMttImportForWeekSchool({ mtt: { lessons: EMASTER }, schoolId: "S", weekDates: lweekDates(EB),
+    existingEntry, targetDay: "Tuesday", enrolments: EENROL, dropBands: true, catchups: [] });
+  assert("reg-abs import: a day import removing the band does not put a built (no-card) lesson back on another day",
+    dayImport(noCard).entry.lessons.map(l => l.id), []);
+  assert("reg-abs import: …while a held card is still put back (unchanged)",
+    dayImport({ lessons: [held.band], missed: held.misses }).entry.lessons.map(l => l.id), ["W_amy"]);
 }

@@ -24,6 +24,7 @@
 import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
 import { planCleanImport } from "../data/bandAbsence";
+import { withoutMarkedCards } from "../data/bandRegularAbsence";
 import { withoutLedgeredDuplicates, displaceRegularIntoBands, restoreCardsReporting } from "../data/bandMemberStates";
 import { withoutForwardConsumed } from "../data/bandForwardIndex";
 
@@ -96,8 +97,10 @@ export function buildMttImportForWeekSchool({
     // Restore the removed bands' other-day cards under the occupied-slot
     // rule; the ones that can't go back are reported (droppedRestoreCards)
     // for the caller's notice rather than dropped silently.
+    // v2.48.0 — never a lesson a removed band never held (bandNoCard), nor
+    // one taken from another school's row (the caller returns it there).
     const restored = targetDay
-      ? restoreCardsReporting([...plan.lessons.filter(l => l.day !== targetDay), ...dayImported], plan.restoreCards)
+      ? restoreCardsReporting([...plan.lessons.filter(l => l.day !== targetDay), ...dayImported], withoutMarkedCards(plan.restoreCards))
       : null;
     const lessons = targetDay
       ? displaceRegularIntoBands(restored.lessons, bandResolver)
