@@ -32,9 +32,10 @@ import { hasMemberStates, buildMemberStates, displaceRegularIntoBands, sweepRegu
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, attributionWindowRows, applyGroupAttribution, isGroupEntry, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { orderByGroup, groupLessonNoun } from "../utils/bandsSync";
-import { absentEnrolmentIds, memberAbsenceInfo, withoutBandMisses, carryBandMisses, eligibleForAbsence, absentMembers,
-  absenceMenuLabel, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
+import { withoutBandMisses, carryBandMisses, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport, planRemoveBandSession } from "../data/bandAbsence";
+import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, findForwardSubject,
+  adminAbsentEnrolmentIds, adminMemberAbsenceInfo } from "../data/bandForwardAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
 import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
@@ -1405,12 +1406,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
     // Cluster 5b — members recorded absent are locked: no defaults, no edits,
     // skipped by the save plan. Their sub-line reads "Absent — <reason>".
+    // Refinement 1 — brought-forward absentees are locked too (admin wrapper).
     const weekMissed = weeklyTimetables[storageKey]?.missed || [];
-    const absentIds = absentEnrolmentIds(lesson, weekMissed);
+    const absentIds = adminAbsentEnrolmentIds(lesson, weekMissed);
     const absentLabels = {};
     for (const e of reconciled) {
       if (!e || !absentIds.has(e.enrolmentId)) continue;
-      const info = memberAbsenceInfo(lesson, e, weekMissed);
+      const info = adminMemberAbsenceInfo(lesson, e, weekMissed);
       const label = info && info.reason ? getMissedReasonLabel(info.reason, info.reasonDetail) : null;
       absentLabels[e.studentId] = label ? `Absent — ${label}` : "Absent";
     }
@@ -1856,6 +1858,97 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     });
     if (plan.reset) {
       notify(`${firstNameOf(entry.studentId)}'s missed lesson has since been booked elsewhere, so their band role has been reset to Not set.`, "warning", 9000);
+    } else {
+      notify("Absence undone");
+    }
+  };
+
+  // ── Brought-forward absence (phase 3, refinement 1) ─────────────
+  //
+  // A forward subject (one solo enrolment, or a whole group) is marked absent
+  // through the same reason prompt, in "forward" mode: nothing is written
+  // until Save, Cancel writes nothing. Never a catchups row, never missed[]
+  // (bandForwardAbsence.js). Catch-up owed gives the later week back here;
+  // no catch-up keeps it used up. Writes span two weeks' rows, so these go
+  // through setWeeklyTimetables directly, re-planned on the latest state.
+  const forwardSubjectName = (subject) => {
+    if (!subject) return "This student";
+    if (!subject.groupId) return firstNameOf(subject.studentId);
+    const grp = (groups || []).find(g => g.id === subject.groupId);
+    return orderByGroup([...new Set(subject.entries.map(e => e.studentId))], grp).map(firstNameOf).join(", ") || "The group";
+  };
+  // Replace the band card in the current week, merging any other rows.
+  const withBandAndRows = (prev, bandLessonId, band, rows) => {
+    const d = prev[storageKey];
+    const base = (rows && rows[storageKey]) || d;
+    return {
+      ...prev, ...(rows || {}),
+      [storageKey]: { ...base, lessons: (base.lessons || []).map(l => l.id === bandLessonId ? band : l) },
+    };
+  };
+
+  const handleForwardMarkAbsent = (bandLessonId, subjectKey) => {
+    setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const b = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+    const subject = findForwardSubject(b, subjectKey);
+    if (!subject) return;
+    setTallyPromptNotes(""); setTallyPromptCategory(null); setTallyPromptReasonDetail(""); setTallyPromptCatchup(null);
+    const grp = subject.groupId ? (groups || []).find(g => g.id === subject.groupId) : null;
+    const st = subject.groupId ? null : students.find(s => s.id === subject.studentId);
+    setTallyPrompt({
+      lesson: subject.groupId
+        ? { id: null, isGroup: true, groupName: absenceItemLabel(b, { groupId: subject.groupId, studentIds: [...new Set(subject.entries.map(e => e.studentId))] }, students, groups) || grp?.name || "Group",
+          instrument: subject.instrument || "", day: b.day || "" }
+        : { id: null, studentName: st?.name || "", instrument: subject.instrument || "", day: b.day || "", isGroup: false },
+      weekKey, weekNum: termWeek,
+      band: { mode: "forward", bandLessonId, subjectKey },
+    });
+  };
+
+  // Reason-prompt save for a brought-forward subject.
+  const handleForwardAbsenceSave = (bandLessonId, subjectKey, absence) => {
+    const at = new Date().toISOString();
+    const b = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+    const preview = applyForwardAbsence({ band: b, subjectKey, absence, at });
+    if (!preview) return;
+    const relPreview = releaseForwardRows(weeklyTimetables, preview.released);
+    setWeeklyTimetables(prev => {
+      const bb = (prev[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+      const p = applyForwardAbsence({ band: bb, subjectKey, absence, at });
+      if (!p) return prev;
+      return withBandAndRows(prev, bandLessonId, p.band, releaseForwardRows(prev, p.released).rows);
+    });
+    const displayReason = getMissedReasonLabel(absence.reason, absence.reasonDetail) || "Other";
+    notify(`Band absence recorded: ${displayReason}`);
+    reportUnrestoredCards(relPreview.dropped);
+  };
+
+  const handleForwardUndoAbsence = (bandLessonId, subjectKey) => {
+    setContextMenu(null); setAddLessonSubmenu(null); addLessonSubmenuType.current = null;
+    if (isLocked) { notify("This week is locked — press Edit to make changes", "warning"); return; }
+    const at = new Date().toISOString();
+    const b = (weeklyTimetables[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+    const subject = findForwardSubject(b, subjectKey);
+    if (!subject) return;
+    // Is the given-up week still open for this subject (its own band's entry
+    // never blocks it)? Decided once, on the state the owner is looking at.
+    const stillOpen = forwardWeeksFor(forwardSubjectOf(subject.entries[0], subject.entries), bandLessonId)
+      .some(w => w.weekKey === subject.consumedWeekKey);
+    const args = { subjectKey, weekStillOpen: () => stillOpen, at };
+    const preview = planForwardUndo({ band: b, weeklyTimetables, ...args });
+    if (!preview) return;
+    const relPreview = releaseForwardRows(weeklyTimetables, preview.released, preview.rows);
+    setWeeklyTimetables(prev => {
+      const bb = (prev[storageKey]?.lessons || []).find(l => l.id === bandLessonId);
+      const u = planForwardUndo({ band: bb, weeklyTimetables: prev, ...args });
+      if (!u) return prev;
+      return withBandAndRows(prev, bandLessonId, u.band, releaseForwardRows(prev, u.released, u.rows).rows);
+    });
+    if (preview.kind === "reset") {
+      const name = forwardSubjectName(subject);
+      notify(`${name}'s brought-forward ${forwardWeekName(subject.consumedWeekKey).replace(/^Week/, "week")} can no longer be used, so their band role has been reset to Not set.`, "warning", 9000);
+      reportUnrestoredCards(relPreview.dropped);
     } else {
       notify("Absence undone");
     }
@@ -3392,7 +3485,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         // Band absence (cluster 5b): "regular" mode edits the stamped miss
         // the band card just created, and Cancel puts the card back in the
         // band's ledger; "catchup" mode has no miss at all — Save records the
-        // absence on the member, Cancel writes nothing.
+        // absence on the member, Cancel writes nothing. "forward" mode
+        // (refinement 1) is the same as catchup: Save writes, Cancel doesn't.
         const bandMode = tallyPrompt.band || null;
         const closeBoth = () => {
           if (bandMode && bandMode.mode === "regular") undoRegularBandAbsence(bandMode.bandLessonId, bandMode.enrolmentId, bandMode.storageKey);
@@ -3414,6 +3508,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           const finalMakeup = tallyPromptCatchup === true;
           if (finalReasonDetail && finalReasonDetail.toLowerCase() !== "other" && !rememberedReasons.includes(finalReasonDetail)) {
             saveRememberedReasons([finalReasonDetail, ...rememberedReasons]);
+          }
+          if (bandMode && bandMode.mode === "forward") {
+            handleForwardAbsenceSave(bandMode.bandLessonId, bandMode.subjectKey, {
+              reason: finalReason, reasonDetail: finalReasonDetail, notes: finalDetails, makeupEligible: finalMakeup,
+            });
+            setTallyPrompt(null); setTallyConfirm(null);
+            return;
           }
           if (bandMode && bandMode.mode === "catchup") {
             handleCatchupAbsenceSave(bandMode.bandLessonId, bandMode.enrolmentId, {
@@ -5017,11 +5118,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // Band absence (cluster 5b) — new bands only. "Mark absent ▸"
                   // lists attributed regular / catch-up / free members not yet
                   // absent; "Undo absence ▸" appears only when someone is.
+                  // Refinement 1 — plus brought-forward members, a group as one
+                  // item (adminAbsenceMenu wraps the protected gate).
                   const bl = (weeklyData.lessons || []).find(l => l.id === contextMenu.lessonId);
                   if (!hasMemberStates(bl)) return null;
                   const wMissed = weeklyData.missed || [];
-                  const eligible = eligibleForAbsence(bl, wMissed);
-                  const absent = absentMembers(bl, wMissed);
+                  const { eligible, absent } = adminAbsenceMenu(bl, wMissed);
                   if (eligible.length === 0 && absent.length === 0) return null;
                   const subMenuW = 220;
                   const menuRect = contextMenuRef.current ? contextMenuRef.current.getBoundingClientRect() : null;
@@ -5045,13 +5147,15 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={{ padding: "6px 12px", fontSize: 11, color: subType === "bandAbsent" ? colors.danger : colors.text, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, borderBottom: `1px solid ${colors.borderLight}` }}>
                             {subType === "bandAbsent" ? "Mark absent" : "Undo absence"}
                           </div>
-                          {list.map(e => (
-                            <button key={e.enrolmentId}
-                              onClick={() => subType === "bandAbsent" ? handleBandMarkAbsent(bl.id, e.enrolmentId) : handleBandUndoAbsence(bl.id, e.enrolmentId)}
+                          {list.map(it => (
+                            <button key={it.key}
+                              onClick={() => it.forward
+                                ? (subType === "bandAbsent" ? handleForwardMarkAbsent(bl.id, it.subjectKey) : handleForwardUndoAbsence(bl.id, it.subjectKey))
+                                : (subType === "bandAbsent" ? handleBandMarkAbsent(bl.id, it.enrolmentId) : handleBandUndoAbsence(bl.id, it.enrolmentId))}
                               style={itemStyle(colors.text)}
                               onMouseEnter={ev => ev.currentTarget.style.background = subType === "bandAbsent" ? dangerHover : colors.bg}
                               onMouseLeave={ev => ev.currentTarget.style.background = "none"}>
-                              <span>{absenceMenuLabel(bl, e, students)}</span>
+                              <span>{absenceItemLabel(bl, it, students, groups)}</span>
                             </button>
                           ))}
                         </div>
