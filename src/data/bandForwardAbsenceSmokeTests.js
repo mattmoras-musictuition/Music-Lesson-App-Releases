@@ -25,7 +25,7 @@ import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
 import { EB, EX, EENROL, EMASTER, ESTUDENTS, eentry, eband, ecard, eresolver, egenerate, origins } from "./bandForwardEnforceSmokeTests";
-import { FB, FX, fstudent, fenrol, fentry, fband, ftally } from "./bandForwardSmokeTests";
+import { FB, FX, fstudent, fenrol, fentry, fband, fcard, ftally } from "./bandForwardSmokeTests";
 
 // The three absence shapes a forward entry can carry (refinement 1).
 export const OWED = { reason: "informed_absence", reasonDetail: "sick", notes: "", makeupEligible: true };
@@ -92,10 +92,10 @@ export function runForwardAbsenceCharacterizationTests(assert) {
   const eAG = fenrol("e_amy_gtr", "amy", "Guitar");
   const d = ftally({ students: [amy], enrolments: [eAG], wtt: {
     [FB + "|S"]: { lessons: [fband("B1", [fentry(eAG, "forward", { consumedWeekKey: FX, attended: false, absence: NOT_OWED })])], missed: [] } } });
-  // Commit 2 makes the week stay used up, so the cell is the forward tick
-  // until commit 5 draws the red X there. Was "blank".
-  assert("fwd-abs char: Tally — a no-catch-up forward absence keeps the given-up week (interim tick; was blank)",
-    d.view["amy|Guitar"][FX], "completed:band");
+  // Commit 2 makes the week stay used up; commit 5 draws the red X there.
+  // Was "blank" (and the forward tick between commits 2 and 5).
+  assert("fwd-abs char: Tally — a no-catch-up forward absence is the red X in the given-up week (was blank)",
+    d.view["amy|Guitar"][FX], "missed-no-catchup:B1");
 
   // Invoice math reads neither the band nor the absence.
   assert("fwd-abs char: invoice math identical across none / absent-owed / absent-not-owed",
@@ -244,6 +244,64 @@ export function runForwardAbsencePlannerTests(assert) {
   assert("fwd-abs lock: the window's absent sub-line reads the forward absence's reason",
     [adminMemberAbsenceInfo(a.band, a.band.memberStates[0], []), adminMemberAbsenceInfo(band, band.memberStates[0], []), isForwardAbsent(a.band.memberStates[0])],
     [{ reason: "uninformed_absence", reasonDetail: "" }, null, true]);
+}
+
+// ── Commit 5: the Tally's red X ──
+export function runForwardAbsenceTallyTests(assert) {
+  const amy = fstudent("amy");
+  const eAG = fenrol("e_amy_gtr", "amy", "Guitar");
+  const band = (extra) => fband("B1", [fentry(eAG, "forward", { consumedWeekKey: FX, ...extra })]);
+  const run = (wtt, weeks) => ftally({ students: [amy], enrolments: [eAG], wtt, weeks });
+
+  let d = run({ [FB + "|S"]: { lessons: [band({ attended: false, absence: NOT_OWED })], missed: [] } });
+  let shim = d.entryMap["amy|Guitar|" + FX];
+  assert("fwd-abs tally: no catch-up → red X in the given-up week with the brought-forward hover",
+    [d.view["amy|Guitar"][FX], shim.status, shim.makeupEligible, shim.madeUp, shim.forwardHover, shim.reason, shim.bandSession],
+    ["missed-no-catchup:B1", "missed", false, false, "Brought forward to week 2 band session — absent, no catch-up", "uninformed_absence", false]);
+  assert("fwd-abs tally: the band week and the other weeks are untouched",
+    [d.view["amy|Guitar"][FB], d.view["amy|Guitar"]["2020-03-16"]], ["blank", "blank"]);
+  assert("fwd-abs tally: tiles count one missed, no catch-up owed, nothing completed",
+    [Object.values(d.entryMap).filter(x => x.status === "missed").length, Object.values(d.entryMap).filter(x => x.status === "missed" && x.makeupEligible).length,
+      Object.values(d.entryMap).filter(x => x.status === "completed").length], [1, 0, 0]);
+  assert("fwd-abs tally: ordinary shim entries carry no forwardHover key",
+    "forwardHover" in run({ [FB + "|S"]: { lessons: [band({})], missed: [] } }).entryMap["amy|Guitar|" + FX], false);
+
+  // Not yet past the band day: the X shows at once, like any recorded miss.
+  const FUT_B = "2099-03-09", FUT_X = "2099-03-23";
+  d = run({ [FUT_B + "|S"]: { lessons: [fband("B1", [fentry(eAG, "forward", { consumedWeekKey: FUT_X, attended: false, absence: NOT_OWED })])], missed: [] } },
+    [{ weekKey: FUT_B, label: "W1", weekNum: 1 }, { weekKey: FUT_X, label: "W2", weekNum: 2 }]);
+  assert("fwd-abs tally: the X shows as soon as it is recorded (no 6pm wait)",
+    d.view["amy|Guitar"][FUT_X], "missed-no-catchup:B1");
+
+  // Catch-up owed: the tick is gone; the regular lesson's own card decides.
+  d = run({ [FB + "|S"]: { lessons: [band({ attended: false, absence: OWED })], missed: [] } });
+  assert("fwd-abs tally: catch-up owed → no tick, no X (no card back yet)",
+    d.view["amy|Guitar"][FX], "blank");
+  d = run({ [FB + "|S"]: { lessons: [band({ attended: false, absence: OWED })], missed: [] }, [FX + "|S"]: { lessons: [fcard("OWN_X", eAG)], missed: [] } });
+  assert("fwd-abs tally: catch-up owed → the put-back regular lesson ticks as itself",
+    d.view["amy|Guitar"][FX], "completed:OWN_X");
+
+  // A recorded miss in the given-up week still wins.
+  const miss = { id: "MS", enrolmentId: "e_amy_gtr", studentId: "amy", instrument: "Guitar", schoolId: "S", day: "Thursday", reason: "sick", makeupEligible: true, madeUp: false };
+  d = run({ [FB + "|S"]: { lessons: [band({ attended: false, absence: NOT_OWED })], missed: [] }, [FX + "|S"]: { lessons: [], missed: [miss] } });
+  assert("fwd-abs tally: a miss in the given-up week beats the forward X",
+    d.view["amy|Guitar"][FX], "missed-makeup-owed:MS");
+
+  // Hover fallback when the band's week number can't be resolved.
+  d = run({ [FB + "|S"]: { lessons: [band({ attended: false, absence: NOT_OWED })], missed: [] } },
+    [{ weekKey: FB, label: "W2", weekNum: 2, isHoliday: true }, { weekKey: FX, label: "W4", weekNum: 4 }]);
+  assert("fwd-abs tally: hover names the band's week by date when it has no term week number",
+    d.entryMap["amy|Guitar|" + FX].forwardHover, "Brought forward to the band session in the week of " + FB + " — absent, no catch-up");
+
+  // Groups: by groupId, one X for the group row.
+  const libby = fstudent("libby"), ivy = fstudent("ivy");
+  const eL = fenrol("e_libby_uke", "libby", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const eI = fenrol("e_ivy_uke", "ivy", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const gx = { consumedWeekKey: FX, groupId: "g_uke", isGroup: true, attended: false, absence: NOT_OWED };
+  const gCards = [{ id: "MG", isGroup: true, groupId: "g_uke", enrolmentId: "e_ivy_uke", studentId: "ivy", instrument: "Ukulele", schoolId: "S", day: "Thursday", start: "10:00" }];
+  d = ftally({ students: [libby, ivy], enrolments: [eL, eI], cards: gCards, wtt: { [FB + "|S"]: { lessons: [fband("B1", [fentry(eL, "forward", gx), fentry(eI, "forward", gx)])], missed: [] } } });
+  assert("fwd-abs tally (group): the group row shows the X in the given-up week",
+    d.view["group|g_uke"][FX], "missed-no-catchup:B1");
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the

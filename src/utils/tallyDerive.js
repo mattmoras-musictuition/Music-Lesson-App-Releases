@@ -137,6 +137,8 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKe
     madeUp: isMissed ? !!wttEntry.madeUp : false,
 
     bandSession: !!wttEntry.isBandSession,
+    // Refinement 1 — the brought-forward absence's own hover (missed cells only).
+    ...(wttEntry.forwardHover ? { forwardHover: wttEntry.forwardHover } : {}),
 
     // Legacy / not stored in WTT
     madeUpWeekKey: undefined, // not reconstructible from WTT post-5.7 — tooltip suffix drops the week label
@@ -321,15 +323,30 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       // when the subject's own card is still on the timetable, which the
       // hover says. The tick follows the BAND's 6pm close (its day, its
       // week); the hover rides on the band-cell tooltip (notes).
+      //
+      // Refinement 1 — a forward member marked absent from the band with NO
+      // catch-up still uses this week up (forwardConsumes), so the cell is
+      // the red "missed, no catch-up" X instead, with its own hover
+      // (forwardHover). Nothing is written to missed[] for it. Absent with a
+      // catch-up owed no longer consumes: the week is the regular lesson's.
       const fwd = forwardFor(forwardIndex, e, week.weekKey);
       let forwardEntry = null;
       if (fwd && forwardConsumes(fwd) && !findMissed()
         && deriveTallyCell({ enrolment: e, week, wttEntry: null }) !== "inactive") {
         const n = weekNumByKey.get(fwd.bandWeekKey);
-        const hover = (n != null ? `Extra lesson in week ${n}` : `Extra lesson in the week of ${fwd.bandWeekKey}`)
-          + (ownMatch ? " · regular lesson still on the timetable" : "");
-        forwardEntry = { id: fwd.bandLessonId, isBandSession: true, bandName: fwd.bandName, schoolId: fwd.schoolId,
-          day: fwd.day, notes: hover, forwardFromWeekKey: fwd.bandWeekKey, kind: "lesson" };
+        if (fwd.attended === false) {
+          const abs = fwd.absence || {};
+          forwardEntry = { id: fwd.bandLessonId, bandName: fwd.bandName, schoolId: fwd.schoolId, day: fwd.day,
+            reason: abs.reason || null, reasonDetail: abs.reasonDetail || "", makeupEligible: false, madeUp: false,
+            forwardHover: (n != null ? `Brought forward to week ${n} band session` : `Brought forward to the band session in the week of ${fwd.bandWeekKey}`)
+              + " — absent, no catch-up",
+            forwardFromWeekKey: fwd.bandWeekKey, kind: "missed" };
+        } else {
+          const hover = (n != null ? `Extra lesson in week ${n}` : `Extra lesson in the week of ${fwd.bandWeekKey}`)
+            + (ownMatch ? " · regular lesson still on the timetable" : "");
+          forwardEntry = { id: fwd.bandLessonId, isBandSession: true, bandName: fwd.bandName, schoolId: fwd.schoolId,
+            day: fwd.day, notes: hover, forwardFromWeekKey: fwd.bandWeekKey, kind: "lesson" };
+        }
         lessonMatch = undefined;
         missedMatch = null;
       }
@@ -347,7 +364,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       else if (lessonMatch) wttWithKind = { ...lessonMatch, kind: "lesson" };
       else if (missedMatch) wttWithKind = { ...missedMatch, kind: "missed" };
 
-      const state = forwardEntry
+      const state = forwardEntry && forwardEntry.kind === "lesson"
         ? ((!forwardEntry.day || isDayPast6pm(forwardEntry.day, forwardEntry.forwardFromWeekKey)) ? "completed" : "blank")
         : deriveTallyCell({ enrolment: e, week, wttEntry: wttWithKind });
       cells[week.weekKey] = { state, wttEntry: wttWithKind };

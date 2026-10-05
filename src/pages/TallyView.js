@@ -827,6 +827,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                   ? (displayEntry?.status === "completed" ? "Holiday — Completed" : displayEntry?.status === "missed" ? "Holiday — Missed" : "Holiday — Unmarked")
                                   : displayEntry?.status === "removed" ? "Inactive"
                                   : displayEntry?.status === "completed" ? (displayEntry.bandSession ? (displayEntry.notes || "Band Session") : "Completed" + (displayEntry.notes ? " — " + displayEntry.notes : ""))
+                                  : displayEntry?.forwardHover ? displayEntry.forwardHover
                                   : displayEntry?.status === "missed" && displayEntry?.madeUp ? ("↺ Caught up" + (madeUpWeekLabel ? " — " + madeUpWeekLabel : ""))
                                   : caughtUp ? caughtUpTooltip(bankingCatchup)
                                   : displayEntry?.status === "missed" ? ("Missed" + (missedReason ? " — " + missedReason : ""))
