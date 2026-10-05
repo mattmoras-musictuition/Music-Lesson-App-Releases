@@ -355,3 +355,26 @@ export function runRegularAbsenceImportTests(assert) {
   assert("reg-abs import: …while a held card is still put back (unchanged)",
     dayImport({ lessons: [held.band], missed: held.misses }).entry.lessons.map(l => l.id), ["W_amy"]);
 }
+
+// ── Commit 5: the window note ──
+export function runRegularAbsenceNoteTests(assert) {
+  const note = (band, wtt, key, name, extra) => {
+    const subj = regularAbsenceSubjects(band, ctxOf(wtt, extra)).filter(x => x.kind !== "held").find(x => x.key === key);
+    return regularNoCardNote(subj, name);
+  };
+  const bandA = (removedLessons = []) => eband("B1", [amyReg()], { removedLessons });
+  const row = (lessons, missed = []) => ({ [RS]: { lessons, missed, generatedAt: "x" } });
+  assert("reg-abs note: Regular, no card held → \"The band holds no Guitar lesson for Amy this week\"",
+    note(bandA(), row([bandA()]), "regular:enrolment:e_amy_gtr", "Amy"), "The band holds no Guitar lesson for Amy this week");
+  assert("reg-abs note (decision b): no master lesson → why it can't be marked absent",
+    note(bandA(), row([bandA()]), "regular:enrolment:e_amy_gtr", "Amy", { masterLessons: [] }), "No Guitar lesson on the master timetable for Amy — can't be marked absent");
+  const amyCard = ecard("M_amy", "W_amy");
+  assert("reg-abs note: card held → no note",
+    note(bandA([amyCard]), row([bandA([amyCard])]), "regular:enrolment:e_amy_gtr", "Amy"), "");
+  const p = planRegularAbsence(planArgs(row([bandA()]), "regular:enrolment:e_amy_gtr"));
+  assert("reg-abs note: recorded absent (band miss) → no note",
+    note(p.rows[RS].lessons[0], p.rows, "regular:enrolment:e_amy_gtr", "Amy"), "");
+  const bandG = eband("B1", groupReg());
+  assert("reg-abs note (group): the group's card not held → the note names its members",
+    note(bandG, row([bandG]), "regular:group:g_uke", "Ivy, Libby"), "The band holds no group lesson for Ivy, Libby this week");
+}

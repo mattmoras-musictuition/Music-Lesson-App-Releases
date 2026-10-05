@@ -34,7 +34,7 @@ import { BandAttributionModal } from "../components/BandAttributionModal";
 import { orderByGroup, groupLessonNoun } from "../utils/bandsSync";
 import { withoutBandMisses, carryBandMisses, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planCleanImport } from "../data/bandAbsence";
-import { regularAbsenceSubjects, planRegularAbsence, planRegularAbsenceUndo, regularSubjectKeyForMiss, adminRemoveBandSession,
+import { regularAbsenceSubjects, regularNoCardNote, planRegularAbsence, planRegularAbsenceUndo, regularSubjectKeyForMiss, adminRemoveBandSession,
   adminBandRemovalAbsences, originRestoresFor, restoreOriginCards } from "../data/bandRegularAbsence";
 import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, findForwardSubject,
   adminAbsentEnrolmentIds, adminMemberAbsenceInfo, adminSessionMembers, adminBandCardStatus, adminParentEmailStudentIds } from "../data/bandForwardAbsence";
@@ -1589,6 +1589,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // amber note while the row still holds that week.
     const staleBySubject = new Map(forwardWeekProblems({ weeklyTimetables, interruptions, enrolments, masterLessons: timetable?.lessons || [],
       students, bandLessonId: bandAttrModal.lessonId }).map(p => [p.subjectKey, p]));
+    // v2.48.0 — Regular members (and groups) the band holds no card for: an
+    // amber note on the row (bandRegularAbsence; no master lesson → why it
+    // can't be marked absent). Read from the band as stored.
+    const storedBand = ((weeklyTimetables[storageKey] || {}).lessons || []).find(l => l.id === bandAttrModal.lessonId);
+    const noCardBySubject = new Map((storedBand ? regularAbsenceSubjects(storedBand, { rowKey: storageKey, weeklyTimetables,
+      masterLessons: timetable?.lessons || [], enrolments, resolver: enrolmentResolver }) : [])
+      .filter(s => s.kind !== "held").map(s => [s.key, s]));
+    const noCardNote = (subjectKey, name) => regularNoCardNote(noCardBySubject.get(subjectKey), name);
     const forwardFields = (rowKey, subject, consumption, currentWeek, anyOpen, subjectKey) => {
       const open = forwardWeeksFor(subject, bandAttrModal.lessonId);
       const isFwd = consumption === CONSUMPTION.forward;
@@ -1636,6 +1644,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           departed: row.departed,
           absentLabel: absent ? bandAttrModal.absentLabels[absent] : "",
           disabledReason: row.departed ? "" : disabledReason,
+          regularNoCardNote: !row.departed && !absent && row.consumption === CONSUMPTION.regular
+            ? noCardNote("regular:group:" + row.groupId, memberIds.map(firstOf).join(", ")) : "",
         };
       }
       const misses = selectableMissesForStudent(row.entries, openMissesFlat, linkedRows);
@@ -1660,6 +1670,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         settlesLabel: chosenMiss ? formatCatchupCompletionLabel(chosenMiss) : "",
         departed: row.departed,
         absentLabel: (bandAttrModal.absentLabels && bandAttrModal.absentLabels[row.studentId]) || "",
+        regularNoCardNote: !row.departed && attributed && attributed.consumption === CONSUMPTION.regular
+          && !(bandAttrModal.absentLabels && bandAttrModal.absentLabels[row.studentId])
+          ? noCardNote("regular:enrolment:" + attributed.enrolmentId, firstOf(row.studentId)) : "",
       };
     });
   }, [bandAttrModal, catchups, openMissesFlat, students, groups, enrolments, timetable, weeklyTimetables, interruptions, weekKey, fwdIndex, fwdTermWeeks]); // eslint-disable-line react-hooks/exhaustive-deps

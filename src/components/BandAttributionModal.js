@@ -55,6 +55,9 @@ const GROUP_OPTIONS = CONSUMPTION_OPTIONS.filter(o => o.value !== "catchup");
  *   forwardWeekKey (the chosen week), forwardDisabledReason (the option is
  *   disabled and shows why), forwardSubLine ("Extra lesson — uses week N")
  *   and rowError (a save-time rejection to show on the row).
+ *   v2.48.0 — regularNoCardNote: an amber note on a Regular row the band
+ *   holds no lesson for ("No Piano lesson on the master timetable for Liri —
+ *   can't be marked absent" when there is none to miss).
  *   Refinement 2 — forwardStaleNote: an amber "Check week N — …" when the
  *   saved brought-forward week needs checking (flag only, never re-picked).
  * @param {Function} props.onChange     (studentId, patch) — patch carries any of
@@ -125,6 +128,9 @@ export function BandAttributionModal({ title, subtitle, rows = [], onChange, onS
                   )}
                   {!row.departed && row.consumption === "forward" && row.forwardSubLine && (
                     <div style={{ marginTop: 2, fontSize: 11, color: colors.sidebarActive }}>{row.forwardSubLine}</div>
+                  )}
+                  {!row.departed && row.consumption === "regular" && row.regularNoCardNote && (
+                    <div style={{ marginTop: 2, fontSize: 11, color: colors.amber, whiteSpace: "normal" }}>{row.regularNoCardNote}</div>
                   )}
                   {!row.departed && row.consumption === "forward" && row.forwardStaleNote && (
                     <div style={{ marginTop: 2, fontSize: 11, color: colors.amber, whiteSpace: "normal" }}>{row.forwardStaleNote}</div>
