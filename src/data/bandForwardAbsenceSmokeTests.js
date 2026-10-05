@@ -15,10 +15,13 @@
 import { eligibleForAbsence, absentMembers, absentEnrolmentIds } from "./bandAbsence";
 import { sessionMemberRows, bandCardStatus, parentEmailStudentIds } from "./bandSessionView";
 import { planAttributionSave } from "./bandMemberStates";
-import { buildForwardIndex, isForwardConsumedCard } from "./bandForwardIndex";
-import { consumeForwardWeeks } from "./bandForward";
+import { buildForwardIndex, isForwardConsumedCard, forwardConsumes } from "./bandForwardIndex";
+import { consumeForwardWeeks, generateMasterLessons, planForwardSave } from "./bandForward";
+import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
+import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { lweekDates } from "./bandLedgerSmokeTests";
 import { getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
-import { EB, EX, eentry, eband, ecard } from "./bandForwardEnforceSmokeTests";
+import { EB, EX, EENROL, EMASTER, eentry, eband, ecard, eresolver, egenerate, origins } from "./bandForwardEnforceSmokeTests";
 import { FB, FX, fstudent, fenrol, fentry, fband, ftally } from "./bandForwardSmokeTests";
 
 // The three absence shapes a forward entry can carry (refinement 1).
@@ -68,26 +71,70 @@ export function runForwardAbsenceCharacterizationTests(assert) {
   // Consumption today: ANY attended:false stops the week being used up.
   const wk = (entries) => buildForwardIndex({ [EB + "|S"]: { lessons: [eband("B1", entries)], missed: [] } });
   const card = ecard("M_amy", "W_amy");
-  assert("fwd-abs char: attended:false — with or without an absence — does not use the week up",
+  // Commit 2 deliberately changes the last value: absent with NO catch-up
+  // keeps the week used up. Was false.
+  assert("fwd-abs char: attended:false gives the week back — except absent with no catch-up (was: any attended:false)",
     [isForwardConsumedCard(card, EX, wk([amyFwd()])), isForwardConsumedCard(card, EX, wk([amyFwd({ attended: false })])),
       isForwardConsumedCard(card, EX, wk([amyFwd({ attended: false, absence: OWED })])), isForwardConsumedCard(card, EX, wk([amyFwd({ attended: false, absence: NOT_OWED })]))],
-    [true, false, false, false]);
-  // Save's consume step ignores attended entirely (it removes the card for every forward entry).
+    [true, false, false, true]);
+  // Save's consume step. Commit 2 deliberately changes this: a subject whose
+  // absence gave the week back is skipped. Was: the card removed (0 left).
   const rows = { [EX + "|S"]: { lessons: [card], missed: [], generatedAt: "x" } };
-  assert("fwd-abs char: the Save consume step removes the card even for an attended:false entry",
-    consumeForwardWeeks(rows, [amyFwd({ attended: false, absence: OWED })]).rows[EX + "|S"].lessons.length, 0);
+  const left = (entries) => ((consumeForwardWeeks(rows, entries).rows[EX + "|S"] || rows[EX + "|S"]).lessons).length;
+  assert("fwd-abs char: the Save consume step leaves the card of a catch-up-owed absentee (was: removed it)",
+    [left([amyFwd()]), left([amyFwd({ attended: false, absence: OWED })]), left([amyFwd({ attended: false, absence: NOT_OWED })])], [0, 1, 0]);
 
   // Tally today: the no-catch-up absence ticks nothing in the given-up week.
   const amy = fstudent("amy");
   const eAG = fenrol("e_amy_gtr", "amy", "Guitar");
   const d = ftally({ students: [amy], enrolments: [eAG], wtt: {
     [FB + "|S"]: { lessons: [fband("B1", [fentry(eAG, "forward", { consumedWeekKey: FX, attended: false, absence: NOT_OWED })])], missed: [] } } });
-  assert("fwd-abs char: Tally — a no-catch-up forward absence shows nothing in the given-up week",
-    d.view["amy|Guitar"][FX], "blank");
+  // Commit 2 makes the week stay used up, so the cell is the forward tick
+  // until commit 5 draws the red X there. Was "blank".
+  assert("fwd-abs char: Tally — a no-catch-up forward absence keeps the given-up week (interim tick; was blank)",
+    d.view["amy|Guitar"][FX], "completed:band");
 
   // Invoice math reads neither the band nor the absence.
   assert("fwd-abs char: invoice math identical across none / absent-owed / absent-not-owed",
     forwardAbsenceInvoiceMath(), Array(4).fill(JSON.stringify({ mkpEligPending: 1, catchups: 0, deductions: 1, extras: 0 })));
+}
+
+// ── Commit 2: an absence with no catch-up keeps the week used up ──
+export function runForwardAbsenceConsumeTests(assert) {
+  assert("fwd-abs consume: forwardConsumes — present, unmarked, owed, not owed, bare attended:false, null",
+    [forwardConsumes(amyFwd()), forwardConsumes(amyFwd({ attended: true })), forwardConsumes(amyFwd({ attended: false, absence: OWED })),
+      forwardConsumes(amyFwd({ attended: false, absence: NOT_OWED })), forwardConsumes(amyFwd({ attended: false })), forwardConsumes(null)],
+    [true, true, false, true, false, false]);
+
+  const idxOf = (entries) => buildForwardIndex({ [EB + "|S"]: { lessons: [eband("B1", entries)], missed: [] } });
+  const notOwed = idxOf([amyFwd({ attended: false, absence: NOT_OWED }), ...groupFwd({ attended: false, absence: NOT_OWED })]);
+  const owed = idxOf([amyFwd({ attended: false, absence: OWED }), ...groupFwd({ attended: false, absence: OWED })]);
+  assert("fwd-abs consume: the index carries the absence",
+    [notOwed.entries[0].absence, idxOf([amyFwd()]).entries[0].absence], [NOT_OWED, null]);
+
+  // Generation (the shared generate filter), presence and import all follow it.
+  const r = eresolver();
+  const gen = (idx) => origins(egenerate(generateMasterLessons(EMASTER, [], r, EX, idx), "S", EX).lessons);
+  assert("fwd-abs consume: generate — no catch-up leaves the solo and group lessons out; catch-up owed generates them",
+    [gen(notOwed), gen(owed)], [[], ["e_amy_gtr", "e_ivy_uke"]]);
+  assert("fwd-abs consume: presence — no catch-up counts as scheduled; catch-up owed does not",
+    [isLessonPresentThisWeek(EMASTER[0], [], [], { forwardIndex: notOwed, weekKey: EX }), isLessonPresentThisWeek(EMASTER[2], [], [], { forwardIndex: notOwed, weekKey: EX }),
+      isLessonPresentThisWeek(EMASTER[0], [], [], { forwardIndex: owed, weekKey: EX })], [true, true, false]);
+  const imp = (idx) => buildMttImportForWeekSchool({ mtt: { lessons: EMASTER }, schoolId: "S", weekDates: lweekDates(EX),
+    existingEntry: null, enrolments: EENROL, dropBands: true, catchups: [], forwardIndex: idx }).entry.lessons.map(l => l.enrolmentId).sort();
+  assert("fwd-abs consume: import — no catch-up leaves the lessons out; catch-up owed imports them",
+    [imp(notOwed), imp(owed)], [[], ["e_amy_gtr", "e_ivy_uke"]]);
+
+  // The window Save's consume step: a released subject keeps its card; the
+  // other subjects of the same band are still cleared (repair unchanged).
+  const wtt = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_amy"), ecard("M_uke", "W_uke")], missed: [], generatedAt: "x" } };
+  const ms = [amyFwd({ attended: false, absence: OWED }), ...groupFwd()];
+  const fw = planForwardSave({ stored: ms, saved: ms, weeklyTimetables: wtt });
+  assert("fwd-abs consume: Save repair clears the group's card but leaves the catch-up-owed absentee's card",
+    [fw.rows[EX + "|S"].lessons.map(l => l.id), fw.released.length], [["W_amy"], 0]);
+  const fw2 = planForwardSave({ stored: [amyFwd({ attended: false, absence: NOT_OWED })], saved: [amyFwd({ attended: false, absence: NOT_OWED })], weeklyTimetables: wtt });
+  assert("fwd-abs consume: Save repair still clears a no-catch-up absentee's card",
+    fw2.rows[EX + "|S"].lessons.map(l => l.id), ["W_uke"]);
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the

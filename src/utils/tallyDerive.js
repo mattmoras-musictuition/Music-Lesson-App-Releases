@@ -23,7 +23,7 @@ import { getTermWeekLabel } from "./helpers";
 import { orderByPreference } from "./enrolmentPreference";
 import { isDayPast6pm } from "./tallyHelpers";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell } from "../data/catchupsDerive";
-import { buildForwardIndex, forwardFor } from "../data/bandForwardIndex";
+import { buildForwardIndex, forwardFor, forwardConsumes } from "../data/bandForwardIndex";
 
 // Internal predicate — single source of "open catch-up" semantics.
 // Mirrors the audit's banked follow-up #1 (single-source predicate)
@@ -323,7 +323,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       // week); the hover rides on the band-cell tooltip (notes).
       const fwd = forwardFor(forwardIndex, e, week.weekKey);
       let forwardEntry = null;
-      if (fwd && fwd.attended !== false && !findMissed()
+      if (fwd && forwardConsumes(fwd) && !findMissed()
         && deriveTallyCell({ enrolment: e, week, wttEntry: null }) !== "inactive") {
         const n = weekNumByKey.get(fwd.bandWeekKey);
         const hover = (n != null ? `Extra lesson in week ${n}` : `Extra lesson in the week of ${fwd.bandWeekKey}`)

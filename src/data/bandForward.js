@@ -29,7 +29,7 @@
 
 import { deriveTallyCell } from "../utils/tallyDerive";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
-import { buildForwardIndex, withoutForwardConsumed } from "./bandForwardIndex";
+import { buildForwardIndex, withoutForwardConsumed, forwardConsumes } from "./bandForwardIndex";
 import { isGenerateExcluded, restoreCardsReporting } from "./bandMemberStates";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { uid } from "../utils/helpers";
@@ -300,7 +300,10 @@ function withSnapshot(memberStates, subject, snapshot) {
  * Every row of that week (any school) is searched; matching cards are
  * removed and the first one is snapshotted on the subject (forwardCard).
  * A week with no row, or no such card, changes nothing and keeps any
- * snapshot the subject already holds. Pure; rows are returned, not written.
+ * snapshot the subject already holds. A subject that no longer uses its
+ * week up (forwardConsumes — absent with catch-up owed) is skipped, so a
+ * Save never takes back a lesson its absence gave back. Pure; rows are
+ * returned, not written.
  *
  * @param {Object} weeklyTimetables
  * @param {Array} memberStates
@@ -312,7 +315,7 @@ export function consumeForwardWeeks(weeklyTimetables, memberStates, rows = {}) {
   const outRows = { ...rows };
   const removed = [];
   for (const subject of forwardSubjects(ms)) {
-    if (!subject.consumedWeekKey) continue;
+    if (!subject.consumedWeekKey || !forwardConsumes(subject.entries[0])) continue;
     let snapshot = null;
     for (const sk of rowKeysOfWeek(weeklyTimetables, outRows, subject.consumedWeekKey)) {
       const d = outRows[sk] || (weeklyTimetables || {})[sk];

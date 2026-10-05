@@ -29,6 +29,7 @@
  * @property {string} instrument
  * @property {string|null} groupId   Set for a group entry.
  * @property {boolean|null} attended
+ * @property {Object|null} absence    The admin absence (refinement 1), if any.
  */
 
 /**
@@ -78,6 +79,7 @@ export function buildForwardIndex(weeklyTimetables, bandWeekKeys) {
           instrument: e.instrument || "",
           groupId: isGroup ? e.groupId : null,
           attended: e.attended === undefined ? null : e.attended,
+          absence: e.absence || null,
         };
         entries.push(info);
         if (isGroup) {
@@ -91,6 +93,20 @@ export function buildForwardIndex(weeklyTimetables, bandWeekKeys) {
     }
   }
   return { byEnrolment, byGroup, entries };
+}
+
+/**
+ * True if a forward entry (or ForwardInfo) still uses up its week.
+ * Refinement 1: marked absent with NO catch-up owed, the week stays used up
+ * (the lesson is forfeited — the Tally shows the red X there). Any other
+ * attended:false — catch-up owed, or no absence recorded — gives it back.
+ *
+ * @param {{attended?: boolean|null, absence?: Object|null}} f
+ * @returns {boolean}
+ */
+export function forwardConsumes(f) {
+  if (!f) return false;
+  return f.attended !== false || (!!f.absence && f.absence.makeupEligible === false);
 }
 
 /**
@@ -121,8 +137,8 @@ export function forwardFor(index, enrolment, weekKey) {
  * whose `weekKey` is used up by a forward entry — so the card must not be in
  * that week (slice 2). A group card matches its group; any other non-band
  * card matches its enrolment (enrolmentId, then studentId + instrument, as
- * forwardFor). An entry marked attended:false does not consume (the Tally's
- * rule). Band cards never match.
+ * forwardFor). An entry that no longer consumes (forwardConsumes — the
+ * Tally's rule) does not match. Band cards never match.
  *
  * @param {Object} card
  * @param {string} weekKey
@@ -134,7 +150,7 @@ export function isForwardConsumedCard(card, weekKey, index) {
   const f = card.isGroup
     ? (card.groupId ? index.byGroup.get(`${card.groupId}|${weekKey}`) || null : null)
     : forwardFor(index, { id: card.enrolmentId, studentId: card.studentId, instrument: card.instrument }, weekKey);
-  return !!f && f.attended !== false;
+  return !!f && forwardConsumes(f);
 }
 
 /**
