@@ -23,6 +23,7 @@ import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUnd
   adminParentEmailStudentIds } from "./bandForwardAbsence";
 import { bandPopoverGroups, bandCardMemberNames } from "./bandDisplay";
 import { bandStudentFirstNames } from "./exportHelpers";
+import { forwardWeekProblems, forwardProblemText, forwardStaleNote } from "./bandForwardStale";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
@@ -333,6 +334,80 @@ export function runForwardAbsenceDisplayTests(assert) {
     [["Bob Bell"], [["Amy Ash", "Absent (informed_absence: camp)"], ["Libby Gilby", "Absent (informed_absence: sick)"], ["Ivy O'Donnell", "Absent (informed_absence: sick)"]]]);
   assert("fwd-abs display: timetable export band names drop them too (with missed passed)",
     [bandStudentFirstNames(marked, ESTUDENTS, []), bandStudentFirstNames(marked, ESTUDENTS)], ["Bob", "Amy, Bob, Libby, Ivy"]);
+}
+
+// ── Commit 7: the stale given-up week selector ──
+// A term holding EB (week 6) and EX (week 8).
+export const STALE_BREAKS = [
+  { type: "term_break", date: "2098-12-20", endDate: "2099-02-01" },
+  { type: "term_break", date: "2099-04-04", endDate: "2099-04-19" },
+];
+export function runForwardStaleTests(assert) {
+  const other = ecard("M_amy", "W_zed", { enrolmentId: "e_zed", studentId: "zed", instrument: "Bass", start: "11:00" });
+  const exRow = (lessons = [other], missed = []) => ({ lessons, missed, generatedAt: "2099-03-01" });
+  const wttWith = (entries, x = exRow(), extra = {}) => ({ [EB + "|S"]: { lessons: [eband("B1", entries), ecard("M_amy", "W_amy_B")], missed: [] }, [EX + "|S"]: x, ...extra });
+  const run = (wtt, over = {}) => forwardWeekProblems({ weeklyTimetables: wtt, interruptions: STALE_BREAKS, enrolments: EENROL, masterLessons: EMASTER, students: ESTUDENTS, ...over });
+  const reasons = (list) => list.map(p => [p.subjectKey, p.reasons]);
+
+  let p = run(wttWith([amyFwd(), ...groupFwd()]));
+  assert("fwd-stale: a clean brought-forward week is not flagged (the band's own week keeps its cards)",
+    p, []);
+  p = run(wttWith([amyFwd()]), { interruptions: [STALE_BREAKS[0], { type: "term_break", date: "2099-03-21", endDate: "2099-04-19" }] });
+  assert("fwd-stale: the given-up week became a holiday",
+    reasons(p), [["enrolment:e_amy_gtr", ["not_school_week"]]]);
+  p = run(wttWith([amyFwd()]), { interruptions: [...STALE_BREAKS, { type: "public_holiday", schoolId: "all", date: "2099-03-26", affectsClasses: "all" }] });
+  assert("fwd-stale: the lesson day (Thursday) is closed that week",
+    reasons(p), [["enrolment:e_amy_gtr", ["day_closed"]]]);
+  p = run(wttWith([amyFwd()]), { enrolments: EENROL.map(e => (e.id === "e_amy_gtr" ? { ...e, endDate: "2099-03-15" } : e)) });
+  assert("fwd-stale: the enrolment ended before the given-up week",
+    reasons(p), [["enrolment:e_amy_gtr", ["inactive"]]]);
+  const amyMiss = { id: "MS", enrolmentId: "e_amy_gtr", studentId: "amy", instrument: "Guitar", day: "Thursday", reason: "sick", makeupEligible: true };
+  p = run(wttWith([amyFwd()], exRow([other], [amyMiss])));
+  assert("fwd-stale: an absence is recorded in the given-up week",
+    reasons(p), [["enrolment:e_amy_gtr", ["missed"]]]);
+  p = run(wttWith([amyFwd()], exRow([other, ecard("M_amy", "W_amy_X")])));
+  assert("fwd-stale: the regular lesson has reappeared in the given-up week",
+    reasons(p), [["enrolment:e_amy_gtr", ["card_present"]]]);
+  p = run(wttWith([amyFwd({ attended: false, absence: NOT_OWED })], exRow([other, ecard("M_amy", "W_amy_X")], [amyMiss])));
+  assert("fwd-stale: a no-catch-up absentee still uses the week up, so it is checked the same way (several reasons together)",
+    reasons(p), [["enrolment:e_amy_gtr", ["missed", "card_present"]]]);
+
+  // Groups and other schools.
+  const gMiss = { id: "GM", isGroup: true, groupId: "g_uke", studentId: "ivy", instrument: "Ukulele", day: "Thursday", reason: "sick" };
+  p = run(wttWith([...groupFwd()], exRow([other], [gMiss])));
+  assert("fwd-stale (group): a whole-group miss in the given-up week flags the group once",
+    reasons(p), [["group:g_uke", ["missed"]]]);
+  p = run(wttWith([eentry("e_bob_drm", "forward", { consumedWeekKey: EX })], exRow(), { [EX + "|T"]: exRow([ecard("M_bob", "W_bob_X")]) }));
+  assert("fwd-stale: a card back in another school's row is found",
+    reasons(p), [["enrolment:e_bob_drm", ["card_present"]]]);
+
+  // Absence-release (catch-up owed): flagged only when the card could not go back.
+  const owedAmy = amyFwd({ attended: false, absence: OWED, forwardCard: ecard("M_amy", "W_amy") });
+  p = run(wttWith([owedAmy], exRow([ecard("M_amy", "W_in_slot", { enrolmentId: "e_x", studentId: "x", instrument: "Cello" })])));
+  assert("fwd-stale: catch-up owed, lesson not back in a generated week → could not be put back",
+    reasons(p), [["enrolment:e_amy_gtr", ["not_put_back"]]]);
+  p = run(wttWith([owedAmy], exRow([other, ecard("M_amy", "W_amy")])));
+  assert("fwd-stale: catch-up owed and the lesson is back → nothing",
+    p, []);
+  p = run({ [EB + "|S"]: { lessons: [eband("B1", [owedAmy])], missed: [] } });
+  assert("fwd-stale: catch-up owed into a week not generated yet → nothing (it will be generated normally)",
+    p, []);
+  p = run(wttWith([amyFwd({ attended: false })]));
+  assert("fwd-stale: a bare attended:false (no absence) is never flagged",
+    p, []);
+
+  // Scope, shape and wording.
+  const w = wttWith([amyFwd()], exRow([other], [amyMiss]));
+  p = run(w)[0];
+  assert("fwd-stale: the row names the band and both weeks",
+    [p.bandLessonId, p.bandName, p.bandWeekKey, p.schoolId, p.day, p.consumedWeekKey, p.consumedWeekNum, p.studentIds],
+    ["B1", "Riptide", EB, "S", "Tuesday", EX, 8, ["amy"]]);
+  assert("fwd-stale: fromWeekKey and bandLessonId narrow the scan",
+    [run(w, { fromWeekKey: "2099-03-16" }).length, run(w, { bandLessonId: "B2" }).length, run(w, { bandLessonId: "B1" }).length], [0, 0, 1]);
+  assert("fwd-stale: the window note and the reason wording",
+    [forwardStaleNote(p, "Week 8"), forwardProblemText(["not_school_week", "day_closed", "inactive", "card_present", "not_put_back"]), forwardStaleNote(null, "Week 8")],
+    ["Check week 8 — an absence is recorded that week",
+      "it is no longer a school week; the lesson day is closed that week; the enrolment has ended by then; the regular lesson is back on the timetable; the regular lesson could not be put back", ""]);
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the
