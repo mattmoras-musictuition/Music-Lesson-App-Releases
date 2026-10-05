@@ -29,6 +29,7 @@ import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupR
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
 import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests, runForwardEnforceGenerateTests, runForwardEnforceSaveTests, runForwardEnforceReleaseTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
+import { runForwardAbsenceCharacterizationTests } from "./bandForwardAbsenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -395,6 +396,9 @@ export function runSmokeTests(logErrorFn) {
   runForwardEnforceGenerateTests(assert);
   runForwardEnforceSaveTests(assert);
   runForwardEnforceReleaseTests(assert);
+
+  // ── Band forward absence + stale given-up week (phase 3, refinements 1-2) ──
+  runForwardAbsenceCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
