@@ -43,6 +43,7 @@ import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons, planForwardSave,
   releaseForwardWeeks, releasedByBands, bandsGone } from "../data/bandForward";
 import { buildForwardIndex, withoutForwardConsumed } from "../data/bandForwardIndex";
+import { forwardWeekProblems, forwardStaleNote } from "../data/bandForwardStale";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
 // so it keeps the same identity across renders (never recreated), letting empty
@@ -1582,7 +1583,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     // Lesson brought forward: the week control's options (open weeks, latest
     // first, plus the row's current week if it has since closed), the disabled
     // reason (D4), the sub-line, and any save-time error.
-    const forwardFields = (rowKey, subject, consumption, currentWeek, anyOpen) => {
+    // Refinement 2 — the saved week's problems (bandForwardStale), shown as an
+    // amber note while the row still holds that week.
+    const staleBySubject = new Map(forwardWeekProblems({ weeklyTimetables, interruptions, enrolments, masterLessons: timetable?.lessons || [],
+      students, bandLessonId: bandAttrModal.lessonId }).map(p => [p.subjectKey, p]));
+    const forwardFields = (rowKey, subject, consumption, currentWeek, anyOpen, subjectKey) => {
       const open = forwardWeeksFor(subject, bandAttrModal.lessonId);
       const isFwd = consumption === CONSUMPTION.forward;
       const weeks = open.map(w => ({ weekKey: w.weekKey, label: forwardWeekLabel(w.weekNum) }));
@@ -1595,6 +1600,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         forwardDisabledReason: !isFwd && !(anyOpen != null ? anyOpen : open.length > 0) ? NO_FORWARD_WEEK_TEXT : "",
         forwardSubLine: isFwd && currentWeek ? `Extra lesson — uses ${forwardWeekName(currentWeek).replace(/^Week/, "week")}` : "",
         rowError: (bandAttrModal.rowErrors && bandAttrModal.rowErrors[rowKey]) || "",
+        forwardStaleNote: (() => {
+          const p = isFwd && currentWeek && subjectKey ? staleBySubject.get(subjectKey) : null;
+          return p && p.consumedWeekKey === currentWeek ? forwardStaleNote(p, forwardWeekName(currentWeek)) : "";
+        })(),
       };
     };
     return attributionWindowRows(bandAttrModal.working, bandAttrModal.departedEnrolmentIds, bandAttrModal.rosterMembers).map(row => {
@@ -1611,7 +1620,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         const liveEntries = row.entries.filter(e => row.departed || !departedSet.has(e.enrolmentId));
         const gWeek = row.consumption === CONSUMPTION.forward ? ((liveEntries.find(e => e.consumedWeekKey) || {}).consumedWeekKey || null) : null;
         return {
-          ...forwardFields(row.key, forwardSubjectOf(liveEntries[0], liveEntries), row.consumption, gWeek),
+          ...forwardFields(row.key, forwardSubjectOf(liveEntries[0], liveEntries), row.consumption, gWeek, undefined, "group:" + row.groupId),
           rowKey: row.key,
           studentId: row.key,
           isGroupRow: true,
@@ -1635,7 +1644,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const anyOpen = row.entries.some(e => forwardWeeksFor(forwardSubjectOf(e, row.entries), bandAttrModal.lessonId).length > 0);
       return {
         ...forwardFields(row.studentId, forwardSubjectOf(fwdEntry, row.entries), attributed ? attributed.consumption : null,
-          attributed && attributed.consumption === CONSUMPTION.forward ? attributed.consumedWeekKey : null, anyOpen),
+          attributed && attributed.consumption === CONSUMPTION.forward ? attributed.consumedWeekKey : null, anyOpen,
+          attributed ? "enrolment:" + attributed.enrolmentId : null),
         studentId: row.studentId,
         studentName: st?.name || row.entries[0]?.studentId || "—",
         entries: row.entries,

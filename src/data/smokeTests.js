@@ -29,7 +29,7 @@ import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupR
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
 import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests, runForwardEnforceGenerateTests, runForwardEnforceSaveTests, runForwardEnforceReleaseTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
-import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests } from "./bandForwardAbsenceSmokeTests";
+import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -404,6 +404,7 @@ export function runSmokeTests(logErrorFn) {
   runForwardAbsenceTallyTests(assert);
   runForwardAbsenceDisplayTests(assert);
   runForwardStaleTests(assert);
+  runForwardStaleChipTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

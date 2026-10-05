@@ -13,9 +13,10 @@ import { uid, melbourneNow, melbourneToday, melbourneDayName, toLocalDateStr, to
 import { computeTermKey } from "../utils/tallyHelpers";
 import { getMissedSince } from "../utils/tallyDerive";
 import { getOfferableMisses, parseInvoiceDrafts, resolveAnchorTerm } from "../utils/catchupScope";
-import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup } from "../data/bandSessionView";
+import { unattributedBandsForAlert, unattributedAlertDismissKey, weekOffsetBetween, bandNameForCatchup, termWeekKeys } from "../data/bandSessionView";
 import { catchupSuggestionSummary } from "../data/bandAttendance";
 import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan, groupInterruptions } from "../data/dashboardAlerts";
+import { forwardWeekProblems, forwardProblemText } from "../data/bandForwardStale";
 // v2.18.0 — uninvoiced-students alert chip. Same derivation + term resolution
 // the Invoicing tab uses (NOT termWeeks' getCurrentTerm — invoicing terms come
 // from detectTerms over term-break interruptions).
@@ -1549,6 +1550,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const anchor = resolveAnchorTerm(interruptions, offerableWeekKey);
     return unattributedBandsForAlert(weeklyTimetables, anchor ? anchor.term : null, alertDismissals.dismissed);
   }, [interruptions, offerableWeekKey, weeklyTimetables, alertDismissals]);
+  // Refinement 2 — brought-forward lessons whose given-up week needs
+  // checking, for bands from the start of the anchor term (the same scope as
+  // the attributions chip). From PROPS only (Dashboard never remounts).
+  const staleForwards = React.useMemo(() => {
+    const anchor = resolveAnchorTerm(interruptions, offerableWeekKey);
+    const fromWeekKey = anchor ? termWeekKeys(anchor.term)[0] : null;
+    if (!fromWeekKey) return [];
+    return forwardWeekProblems({ weeklyTimetables, interruptions, enrolments, masterLessons: timetable?.lessons || [], students, fromWeekKey });
+  }, [interruptions, offerableWeekKey, weeklyTimetables, enrolments, timetable, students]);
   // v2.42.0 — teachers' pending "catch-up owed" suggestions on band cards,
   // across all weeks. From the weeklyTimetables PROP (never remounts).
   const catchupSuggestions = React.useMemo(() => catchupSuggestionSummary(weeklyTimetables), [weeklyTimetables]);
@@ -2104,7 +2114,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   });
   const alertChips = buildAlertChips(alertData, {
     isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands,
-    catchupSuggestionCount: catchupSuggestions.count,
+    catchupSuggestionCount: catchupSuggestions.count, staleForwardCount: staleForwards.length,
   });
   const alertChipCount = visibleChipCount(alertChips);
   const chipOn = (key) => !!alertChips.find(c => c.key === key && c.visible);
@@ -3169,12 +3179,13 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                     onMouseLeave={isClickable ? e => { e.currentTarget.style.boxShadow = "none"; } : undefined}
                     style={{ padding: "4px 10px", background: item.chipBg || (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2"), border: `1px solid ${item.chipBorder || borderColor || colors.danger}`, borderRadius: 16, fontSize: 11, cursor: item.dragPayload ? "grab" : isClickable ? "pointer" : "default", display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap", userSelect: "none", width: "100%", boxSizing: "border-box" }}>
                     <span style={{ color: item.chipColor || colors.danger, fontWeight: 700, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>{item.label}</span>
-                    <span onClick={e => { e.stopPropagation(); if (item.onDismiss) item.onDismiss(); else if (item.dismissKey) dismissAlert(item.dismissKey); removeDropdownItem(i, sectionIdx); }}
+                    {/* noDismiss (refinement 2): a row that clears only when its problem does. */}
+                    {!item.noDismiss && <span onClick={e => { e.stopPropagation(); if (item.onDismiss) item.onDismiss(); else if (item.dismissKey) dismissAlert(item.dismissKey); removeDropdownItem(i, sectionIdx); }}
                       style={{ color: item.chipColor || colors.danger, opacity: 0.4, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", flexShrink: 0, marginLeft: "auto" }}
                       onMouseEnter={e => e.currentTarget.style.opacity = "1"}
                       onMouseLeave={e => e.currentTarget.style.opacity = "0.4"}>
                       <X size={10} />
-                    </span>
+                    </span>}
                   </div>
                 );
               };
@@ -3538,6 +3549,43 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                             style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: `1px solid ${colors.amber}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
                             <span style={{ color: colors.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Guitar size={11} /> {n} band session{n !== 1 ? "s" : ""} need{n === 1 ? "s" : ""} attributions set</span>
                             <DismissBtn color={colors.amber} onClick={() => dismissAlert(unattributedAlertDismissKey(unattributedBands.map(b => b.bandLessonId)))} />
+                          </div>
+                        );
+                      })()}
+                      {/* Refinement 2 — brought-forward lessons whose given-up week needs
+                          checking. Row click opens the BAND's week; no dismiss anywhere —
+                          it clears when the problem does. */}
+                      {chipOn("forward-stale") && (() => {
+                        const n = staleForwards.length;
+                        const currentMondayKey = toLocalDateStr(getCurrentWeekMonday());
+                        const dayIdx = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
+                        const jumpTo = (p) => {
+                          const school = schools.find(s => s.id === p.schoolId);
+                          if (school && onJumpToWeekly) onJumpToWeekly(school, weekOffsetBetween(currentMondayKey, p.bandWeekKey));
+                        };
+                        const items = staleForwards.map(p => {
+                          const school = schools.find(s => s.id === p.schoolId);
+                          const d = new Date(p.bandWeekKey + "T00:00:00");
+                          d.setDate(d.getDate() + (dayIdx[p.day] ?? 0));
+                          const dateLabel = `${(p.day || "").slice(0, 3)} ${d.getDate()} ${d.toLocaleDateString("en-AU", { month: "short" })}`;
+                          const names = p.studentIds.map(sid => (students.find(s => s.id === sid)?.name) || "").filter(Boolean);
+                          const who = p.groupId ? names.map(nm => nm.split(" ")[0]).join(", ") : (names[0] || "Student");
+                          const week = p.consumedWeekNum != null ? `week ${p.consumedWeekNum}` : `week of ${p.consumedWeekKey}`;
+                          const scColor = school?.color || colors.amber;
+                          return {
+                            label: `${who} — ${p.bandName || "Band"} ${dateLabel} (${school ? getSchoolAcronym(school) : "?"}) · ${week}: ${forwardProblemText(p.reasons)}`,
+                            chipColor: scColor, chipBg: `${scColor}18`, chipBorder: `${scColor}60`,
+                            onSelect: () => jumpTo(p),
+                            noDismiss: true,
+                          };
+                        });
+                        return (
+                          <div
+                            onClick={() => jumpTo(staleForwards[0])}
+                            onMouseEnter={e => { clearTimeout(alertDropdownTimer.current); const r = e.currentTarget.getBoundingClientRect(); openAlertDropdown({ rect: r, title: "BROUGHT-FORWARD LESSONS", borderColor: colors.amber, items }); }}
+                            onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(217,119,6,0.15)" : "#FEF3C7", border: `1px solid ${colors.amber}`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+                            <span style={{ color: colors.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}><Guitar size={11} /> {n} brought-forward lesson{n !== 1 ? "s" : ""} need{n === 1 ? "s" : ""} checking</span>
                           </div>
                         );
                       })()}

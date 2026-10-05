@@ -24,6 +24,8 @@ import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUnd
 import { bandPopoverGroups, bandCardMemberNames } from "./bandDisplay";
 import { bandStudentFirstNames } from "./exportHelpers";
 import { forwardWeekProblems, forwardProblemText, forwardStaleNote } from "./bandForwardStale";
+import { deriveAlertData, buildAlertChips, visibleChipCount, dismissAllPlan } from "./dashboardAlerts";
+import { ownerCase } from "./dashboardAlertsSmokeTests";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
@@ -408,6 +410,25 @@ export function runForwardStaleTests(assert) {
     [forwardStaleNote(p, "Week 8"), forwardProblemText(["not_school_week", "day_closed", "inactive", "card_present", "not_put_back"]), forwardStaleNote(null, "Week 8")],
     ["Check week 8 — an absence is recorded that week",
       "it is no longer a school week; the lesson day is closed that week; the enrolment has ended by then; the regular lesson is back on the timetable; the regular lesson could not be put back", ""]);
+}
+
+// ── Commit 8: the Dashboard chip ──
+export function runForwardStaleChipTests(assert) {
+  const c = ownerCase();
+  const d = deriveAlertData(c);
+  const chips = (n, dismissed = {}) => buildAlertChips(d, { isAlertDismissed: (k) => !!dismissed[k], unassignedCount: 0, unschedCount: 0,
+    uninvoicedRows: c.uninvoicedRows, unattributedBands: [], staleForwardCount: n });
+  const chip = (list) => list.find(x => x.key === "forward-stale");
+  assert("fwd-stale chip: hidden at 0, shown with problems; counted in the badge",
+    [chip(chips(0)).visible, chip(chips(2)).visible, visibleChipCount(chips(2)) - visibleChipCount(chips(0))], [false, true, 1]);
+  assert("fwd-stale chip: no dismiss control — no dismiss keys, no seen set",
+    [chip(chips(2)).dismissKeys, chip(chips(2)).seen], [[], null]);
+  const plan = dismissAllPlan(chips(2));
+  const after = chips(2, plan.keys);
+  assert("fwd-stale chip: Dismiss all leaves it showing; it clears only when the problems do",
+    [chip(after).visible, chip(chips(0, plan.keys)).visible], [true, false]);
+  assert("fwd-stale chip: callers that pass no count see no chip (unchanged behaviour)",
+    chip(buildAlertChips(d, { isAlertDismissed: () => false, unassignedCount: 0, unschedCount: 0, uninvoicedRows: [], unattributedBands: [] })).visible, false);
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the
