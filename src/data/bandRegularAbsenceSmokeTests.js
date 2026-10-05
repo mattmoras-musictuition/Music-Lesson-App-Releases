@@ -18,10 +18,16 @@ import { sessionMemberRows } from "./bandSessionView";
 import { planAttributionSave, applyAttributionLedger, applyStudentAttribution, displaceRegularIntoBands } from "./bandMemberStates";
 import { generateMasterLessons } from "./bandForward";
 import { adminAbsenceMenu } from "./bandForwardAbsence";
-import { EB, EENROL, EMASTER, eentry, eband, ecard, eresolver, egenerate } from "./bandForwardEnforceSmokeTests";
+import { EB, EENROL, EMASTER, ESTUDENTS, eentry, eband, ecard, eresolver, egenerate } from "./bandForwardEnforceSmokeTests";
 import { regularAbsenceSubjects, regularAbsentSubjects, regularSubjectKeyForMiss, regularNoCardNote, planRegularAbsence, planRegularAbsenceUndo,
   withoutMarkedCards, originRestoresFor, restoreOriginCards, adminRemoveBandSession, adminBandRemovalAbsences, isMarkedBandMiss } from "./bandRegularAbsence";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
+import { adminAbsentEnrolmentIds, adminMemberAbsenceInfo, adminSessionMemberRows, adminBandCardStatus, adminParentEmailStudentIds,
+  absenceItemLabel } from "./bandForwardAbsence";
+import { bandPopoverGroups } from "./bandDisplay";
+import { bandStudentFirstNames } from "./exportHelpers";
+import { getGroupTermDeductionMath, getEnrolmentTermDeductionMath, getOpenCatchupRows } from "../utils/tallyDerive";
+import { FB, fstudent, fenrol, fentry, fband, ftally, FWEEKS } from "./bandForwardSmokeTests";
 import { GW, GENROL as GENROL_FOR_LIRI, gresolver, soloCard } from "./bandGroupSmokeTests";
 
 // A whole-group band miss as a Regular group absence would write it.
@@ -246,4 +252,90 @@ export function runRegularAbsencePlannerTests(assert) {
   assert("reg-abs: withoutMarkedCards / originRestoresFor",
     [withoutMarkedCards([{ id: "a" }, { id: "b", bandNoCard: true }, { id: "c", bandCardRow: RT }]).map(c => c.id), originRestoresFor(fromT[RS].missed, ["OTHER"])],
     [["a"], []]);
+}
+
+// ── Commit 3: the admin wrappers ──
+export function runRegularAbsenceWrapperTests(assert) {
+  const GROUPS = [{ id: "g_uke", studentIds: ["ivy", "libby"] }];
+  const members = [{ studentId: "amy", instrument: "Guitar" }, { studentId: "bob", instrument: "Drums" }, { studentId: "libby", instrument: "Ukulele" }, { studentId: "ivy", instrument: "Ukulele" }];
+  const uke = ecard("M_uke", "W_uke");
+  const bobCard = ecard("M_bob", "W_bob", { schoolId: "S" });
+  const band = eband("B1", [amyReg(), eentry("e_bob_drm", "regular", { consumedWeekKey: EB }), ...groupReg()], { removedLessons: [bobCard, uke], members });
+  const wtt = { [RS]: { lessons: [band], missed: [], generatedAt: "x" } };
+  const ctx = ctxOf(wtt);
+
+  // Menu: protected members first, then the Regular subjects, a group as ONE item.
+  let menu = adminAbsenceMenu(band, [], ctx);
+  assert("reg-abs menu: Bob (held) via the protected gate, then Amy (no card) and the group as one item",
+    [menu.eligible.map(i => [i.key, !!i.regular]), menu.absent], [[["e_bob_drm", false], ["regular:enrolment:e_amy_gtr", true], ["regular:group:g_uke", true]], []]);
+  assert("reg-abs menu: the group is labelled by its members in the group's order; Amy by name",
+    menu.eligible.slice(1).map(i => absenceItemLabel(band, i, ESTUDENTS, GROUPS)), ["Amy Ash", "Ivy O'Donnell, Libby Gilby"]);
+  assert("reg-abs menu: without a context no Regular subject is offered (v2.47.0 callers unchanged)",
+    adminAbsenceMenu(band, []).eligible.map(i => i.key), ["e_bob_drm"]);
+
+  // Both recorded absent.
+  let after = { ...wtt, ...planRegularAbsence(planArgs(wtt, "regular:group:g_uke", { ...OWED, reasonDetail: "camp" })).rows };
+  after = { ...after, ...planRegularAbsence(planArgs(after, "regular:enrolment:e_amy_gtr", NOT_OWED)).rows };
+  const b = after[RS].lessons[0];
+  const missed = after[RS].missed;
+  menu = adminAbsenceMenu(b, missed, ctxOf(after));
+  assert("reg-abs menu: Undo offers ONE group item (never one child's name) and Amy",
+    [menu.eligible.map(i => i.key), menu.absent.map(i => i.key)], [["e_bob_drm"], ["regular:enrolment:e_amy_gtr", "regular:group:g_uke"]]);
+
+  // Window lock + sub-line.
+  assert("reg-abs window: the lock set holds Amy and BOTH group entries",
+    [...adminAbsentEnrolmentIds(b, missed)].sort(), ["e_amy_gtr", "e_ivy_uke", "e_libby_uke"]);
+  assert("reg-abs window: every group member's sub-line reads the group's reason; Amy's reads hers",
+    [adminMemberAbsenceInfo(b, b.memberStates[2], missed), adminMemberAbsenceInfo(b, b.memberStates[3], missed), adminMemberAbsenceInfo(b, b.memberStates[0], missed)],
+    [{ reason: "informed_absence", reasonDetail: "camp" }, { reason: "informed_absence", reasonDetail: "camp" }, { reason: "uninformed_absence", reasonDetail: "" }]);
+
+  // Band card, popover, export and parent emails.
+  assert("reg-abs card: Amy and both children absent, Bob attending",
+    adminSessionMemberRows(b, missed).map(r => [r.studentId, r.status, r.absenceReasonDetail]),
+    [["amy", "absent", ""], ["bob", "attending", ""], ["libby", "absent", "camp"], ["ivy", "absent", "camp"]]);
+  assert("reg-abs card: \"N absent\" counts three; parent emails reach Bob only; export lists Bob only",
+    [adminBandCardStatus(b, missed).absentN, adminParentEmailStudentIds(b, missed), bandStudentFirstNames(b, ESTUDENTS, missed)], [3, ["bob"], "Bob"]);
+  const fns = { displayName: (n) => n, classTeacherName: () => "", reasonLabel: (r, d) => r + (d ? ": " + d : "") };
+  assert("reg-abs card: hover popover lists the whole group under Absent",
+    bandPopoverGroups(b, missed, ESTUDENTS, fns).absent.map(r => [r.name, r.absenceLabel]),
+    [["Amy Ash", "Absent (uninformed_absence)"], ["Libby Gilby", "Absent (informed_absence: camp)"], ["Ivy O'Donnell", "Absent (informed_absence: camp)"]]);
+
+  // Band removal: the held group card goes back on the grid; Amy's built card does not.
+  const rm = adminRemoveBandSession(after[RS], "B1");
+  assert("reg-abs remove band: the group card and Bob's card go back; Amy's built card does not; all misses go",
+    [rm.lessons.map(l => l.id).sort(), rm.missed, rm.dropped], [["W_bob", "W_uke"], [], []]);
+
+  // Tally, catch-ups and invoices downstream of a whole-group band miss (2020 weeks).
+  const libby = fstudent("libby"), ivy = fstudent("ivy");
+  const eL = fenrol("e_libby_uke", "libby", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const eI = fenrol("e_ivy_uke", "ivy", "Ukulele", { isGroup: true, groupId: "g_uke" });
+  const gx = { consumedWeekKey: FB, groupId: "g_uke", isGroup: true };
+  const gCard = { id: "MG", isGroup: true, groupId: "g_uke", enrolmentId: "e_ivy_uke", studentId: "ivy", instrument: "Ukulele", schoolId: "S", day: "Thursday", start: "10:00" };
+  const gMiss = (makeupEligible) => ({ ...gCard, id: "GM", enrolmentId: "e_ivy_uke", reason: "informed_absence", reasonDetail: "", notes: "", makeupEligible, madeUp: false,
+    cardNote: "", bandLessonId: "B1", ledgerCard: gCard });
+  const gWtt = (makeupEligible) => ({ [FB + "|S"]: { lessons: [fband("B1", [fentry(eL, "regular", gx), fentry(eI, "regular", gx)])], missed: [gMiss(makeupEligible)] } });
+  const d = ftally({ students: [libby, ivy], enrolments: [eL, eI], cards: [gCard], wtt: gWtt(true) });
+  assert("reg-abs tally: the group row shows the miss in the band's week (one group row, no per-member rows)",
+    [d.view["group|g_uke"][FB], Object.keys(d.view)], ["missed-makeup-owed:GM", ["group|g_uke"]]);
+  const open = getOpenCatchupRows({ weeklyTimetables: gWtt(true), enrolments: [eL, eI], students: [libby, ivy], timetable: { lessons: [gCard] }, termWeeks: FWEEKS, catchups: [] });
+  assert("reg-abs catch-ups: a catch-up-owed whole-group miss is an ordinary open group catch-up",
+    open.map(r => [r.weekKey, r.missed.groupId]), [[FB, "g_uke"]]);
+  const prevTerm = { start: "2020-02-03", end: "2020-04-03" };
+  const gm = (wttX) => getGroupTermDeductionMath({ weeklyTimetables: wttX, catchups: [], enrolments: [eL, eI], groupId: "g_uke", prevTerm, interruptions: [], nextTermStart: "2020-04-20" });
+  assert("reg-abs invoice: whole-group miss — catch-up owed → one group deduction; not owed → none",
+    [gm(gWtt(true)).deductions, gm(gWtt(false)).deductions], [1, 0]);
+  const solo = (wttX) => getEnrolmentTermDeductionMath({ weeklyTimetables: wttX, catchups: [], enrolmentId: "e_libby_pno", instrument: "Piano", prevTerm, interruptions: [], nextTermStart: "2020-04-20" });
+  assert("reg-abs invoice: a whole-group miss never touches a member's solo maths",
+    solo(gWtt(true)), { mkpEligPending: 0, catchups: 0, deductions: 0, extras: 0 });
+
+  // A no-card solo absence costs the same as a held-card one.
+  const eA = fenrol("e_amy_gtr", "amy", "Guitar");
+  const aCard = { id: "W_A", enrolmentId: "e_amy_gtr", studentId: "amy", instrument: "Guitar", schoolId: "S", day: "Thursday", start: "09:00" };
+  const aMiss = (extra) => ({ ...aCard, reason: "informed_absence", reasonDetail: "", notes: "", makeupEligible: true, madeUp: false, cardNote: "", bandLessonId: "B1", ...extra });
+  const aWtt = (extra) => ({ [FB + "|S"]: { lessons: [fband("B1", [fentry(eA, "regular", { consumedWeekKey: FB })])], missed: [aMiss(extra)] } });
+  const am = (wttX) => getEnrolmentTermDeductionMath({ weeklyTimetables: wttX, catchups: [], enrolmentId: "e_amy_gtr", instrument: "Guitar", prevTerm, interruptions: [], nextTermStart: "2020-04-20" });
+  assert("reg-abs invoice + tally: a built (no-card) absence and a held-card absence count and show the same",
+    [am(aWtt({ bandNoCard: true })), am(aWtt({ ledgerCard: aCard })),
+      ftally({ students: [fstudent("amy")], enrolments: [eA], wtt: aWtt({ bandNoCard: true }) }).view["amy|Guitar"][FB]],
+    [am(aWtt({ ledgerCard: aCard })), { mkpEligPending: 1, catchups: 0, deductions: 1, extras: 0 }, "missed-makeup-owed:W_A"]);
 }

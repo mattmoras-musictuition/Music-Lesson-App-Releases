@@ -29,7 +29,7 @@ import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupR
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
 import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests, runForwardEnforceGenerateTests, runForwardEnforceSaveTests, runForwardEnforceReleaseTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
-import { runRegularAbsenceCharacterizationTests, runRegularAbsencePlannerTests } from "./bandRegularAbsenceSmokeTests";
+import { runRegularAbsenceCharacterizationTests, runRegularAbsencePlannerTests, runRegularAbsenceWrapperTests } from "./bandRegularAbsenceSmokeTests";
 import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -410,6 +410,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Band Regular absence gaps: no held card, whole group (v2.48.0) ──
   runRegularAbsenceCharacterizationTests(assert);
   runRegularAbsencePlannerTests(assert);
+  runRegularAbsenceWrapperTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

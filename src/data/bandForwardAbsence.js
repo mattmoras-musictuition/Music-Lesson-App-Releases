@@ -27,6 +27,7 @@ import { forwardSubjects, consumeForwardWeeks } from "./bandForward";
 import { forwardConsumes } from "./bandForwardIndex";
 import { sessionMemberRows, bandCardStatus, parentEmailStudentIds, SESSION_STATUS } from "./bandSessionView";
 import { orderByGroup, studentNamesFor } from "../utils/bandsSync";
+import { regularAbsenceSubjects, regularAbsentSubjects } from "./bandRegularAbsence";
 
 /** True if a memberStates entry is a forward entry marked absent. */
 export function isForwardAbsent(entry) {
@@ -61,6 +62,14 @@ export function forwardAbsentSubjects(band) {
 function entryItem(e) {
   return { key: e.enrolmentId, forward: false, subjectKey: null, enrolmentId: e.enrolmentId, groupId: null, studentIds: [e.studentId], entry: e };
 }
+// v2.48.0 — a Regular subject from bandRegularAbsence.js (a whole Regular
+// group, or a solo member whose band holds no card).
+function regularItem(s) {
+  return {
+    key: s.key, forward: false, regular: true, subjectKey: s.key, enrolmentId: s.enrolmentId, groupId: s.groupId,
+    studentIds: s.studentIds, entry: s.entries[0],
+  };
+}
 function subjectItem(s) {
   return {
     key: "fwd:" + s.key, forward: true, subjectKey: s.key, enrolmentId: s.enrolmentId, groupId: s.groupId,
@@ -68,20 +77,35 @@ function subjectItem(s) {
   };
 }
 
+// The enrolmentIds of every entry belonging to a Regular subject recorded
+// absent through bandRegularAbsence.js (whole groups, marked solo misses).
+function regularAbsentIds(band, missed) {
+  return new Set(regularAbsentSubjects(band, missed).flatMap(s => s.entries.map(e => e.enrolmentId)));
+}
+
 /**
  * The band card's absence submenus, admin side: bandAbsence's eligible and
- * absent members (unchanged, in their order) followed by the forward
- * subjects — a group as ONE item.
+ * absent members (unchanged, in their order), then the Regular subjects the
+ * protected gate cannot offer (v2.48.0 — a whole Regular group as ONE item,
+ * a solo member whose band holds no card), then the forward subjects — a
+ * group as ONE item. Protected absent entries that belong to a Regular
+ * subject are listed only through that subject (one group item, never one
+ * child's name).
  *
  * @param {Object} band
  * @param {Array} missed  The band week's missed[].
+ * @param {Object} [ctx]  regularAbsenceSubjects' context; omitted → no
+ *        Regular subjects are offered (their Undo still is).
  * @returns {{eligible: Array, absent: Array}}
  */
-export function adminAbsenceMenu(band, missed) {
+export function adminAbsenceMenu(band, missed, ctx) {
   if (!hasMemberStates(band)) return { eligible: [], absent: [] };
+  const regularOffered = ctx ? regularAbsenceSubjects(band, ctx).filter(s => s.offered) : [];
+  const covered = regularAbsentIds(band, missed);
   return {
-    eligible: [...eligibleForAbsence(band, missed).map(entryItem), ...forwardAbsenceSubjects(band).map(subjectItem)],
-    absent: [...absentMembers(band, missed).map(entryItem), ...forwardAbsentSubjects(band).map(subjectItem)],
+    eligible: [...eligibleForAbsence(band, missed).map(entryItem), ...regularOffered.map(regularItem), ...forwardAbsenceSubjects(band).map(subjectItem)],
+    absent: [...absentMembers(band, missed).filter(e => !covered.has(e.enrolmentId)).map(entryItem),
+      ...regularAbsentSubjects(band, missed).map(regularItem), ...forwardAbsentSubjects(band).map(subjectItem)],
   };
 }
 
@@ -102,17 +126,33 @@ export function absenceItemLabel(band, item, students, groups) {
   return absenceMenuLabel(band, item.entry, students);
 }
 
-/** absentEnrolmentIds plus every forward-absent entry — the window's lock set. */
+/** absentEnrolmentIds plus every forward-absent entry and every entry of an absent Regular group — the window's lock set. */
 export function adminAbsentEnrolmentIds(band, missed) {
   const ids = absentEnrolmentIds(band, missed);
   if (hasMemberStates(band)) for (const e of band.memberStates) if (isForwardAbsent(e)) ids.add(e.enrolmentId);
+  for (const id of regularAbsentIds(band, missed)) ids.add(id);
   return ids;
 }
 
-/** memberAbsenceInfo, plus the reason of a forward-absent entry. */
+// The whole-group band miss of an absent Regular group, by groupId.
+function groupBandMisses(band, missed) {
+  const out = new Map();
+  for (const s of regularAbsentSubjects(band, missed)) {
+    if (!s.groupId) continue;
+    const m = (missed || []).find(x => x && x.bandLessonId === band.id && x.isGroup === true && x.groupId === s.groupId);
+    if (m) out.set(s.groupId, { subject: s, miss: m });
+  }
+  return out;
+}
+
+/** memberAbsenceInfo, plus the reason of a forward-absent entry or of an absent Regular group. */
 export function adminMemberAbsenceInfo(band, entry, missed) {
   if (isForwardAbsent(entry)) {
     return { reason: (entry.absence && entry.absence.reason) || null, reasonDetail: (entry.absence && entry.absence.reasonDetail) || "" };
+  }
+  if (entry && entry.isGroup === true && entry.groupId && entry.consumption === CONSUMPTION.regular) {
+    const g = groupBandMisses(band, missed).get(entry.groupId);
+    if (g) return { reason: g.miss.reason || null, reasonDetail: g.miss.reasonDetail || "" };
   }
   return memberAbsenceInfo(band, entry, missed);
 }
@@ -214,7 +254,9 @@ export function planForwardUndo({ band, subjectKey, weeklyTimetables, weekStillO
 
 /**
  * sessionMemberRows, with brought-forward absentees as absent (reason from
- * their absence). Every other row is exactly as the protected view gives it.
+ * their absence) and — v2.48.0 — every member of an absent Regular group
+ * absent (the protected view sees only the child named on the group miss).
+ * Every other row is exactly as the protected view gives it.
  *
  * @param {Object} band
  * @param {Array} missed  The band week's missed[].
@@ -222,13 +264,20 @@ export function planForwardUndo({ band, subjectKey, weeklyTimetables, weekStillO
 export function adminSessionMemberRows(band, missed) {
   const rows = sessionMemberRows(band, missed);
   if (!hasMemberStates(band)) return rows;
-  const fwdAbsent = new Map();
-  for (const e of band.memberStates) if (isForwardAbsent(e) && e.studentId && !fwdAbsent.has(e.studentId)) fwdAbsent.set(e.studentId, e);
-  if (fwdAbsent.size === 0) return rows;
+  const absentBy = new Map();
+  for (const e of band.memberStates) {
+    if (isForwardAbsent(e) && e.studentId && !absentBy.has(e.studentId)) {
+      absentBy.set(e.studentId, { reason: (e.absence && e.absence.reason) || null, detail: (e.absence && e.absence.reasonDetail) || "" });
+    }
+  }
+  for (const { subject, miss } of groupBandMisses(band, missed).values()) {
+    for (const sid of subject.studentIds) absentBy.set(sid, { reason: miss.reason || null, detail: miss.reasonDetail || "" });
+  }
+  if (absentBy.size === 0) return rows;
   return rows.map(r => {
-    const e = fwdAbsent.get(r.studentId);
-    if (!e || r.status !== SESSION_STATUS.attending) return r;
-    return { ...r, status: SESSION_STATUS.absent, absenceReason: (e.absence && e.absence.reason) || null, absenceReasonDetail: (e.absence && e.absence.reasonDetail) || "" };
+    const a = absentBy.get(r.studentId);
+    if (!a || (r.status !== SESSION_STATUS.attending && r.status !== SESSION_STATUS.absent)) return r;
+    return { ...r, status: SESSION_STATUS.absent, absenceReason: a.reason, absenceReasonDetail: a.detail };
   });
 }
 
