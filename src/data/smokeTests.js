@@ -29,6 +29,7 @@ import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupR
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
 import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests, runForwardEnforceGenerateTests, runForwardEnforceSaveTests, runForwardEnforceReleaseTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
+import { runRegularAbsenceCharacterizationTests } from "./bandRegularAbsenceSmokeTests";
 import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -405,6 +406,9 @@ export function runSmokeTests(logErrorFn) {
   runForwardAbsenceDisplayTests(assert);
   runForwardStaleTests(assert);
   runForwardStaleChipTests(assert);
+
+  // ── Band Regular absence gaps: no held card, whole group (v2.48.0) ──
+  runRegularAbsenceCharacterizationTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
