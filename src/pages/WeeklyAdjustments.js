@@ -35,9 +35,8 @@ import { orderByGroup, groupLessonNoun } from "../utils/bandsSync";
 import { withoutBandMisses, carryBandMisses, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
   planBandRemovalAbsences, planCleanImport, planRemoveBandSession } from "../data/bandAbsence";
 import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, findForwardSubject,
-  adminAbsentEnrolmentIds, adminMemberAbsenceInfo } from "../data/bandForwardAbsence";
+  adminAbsentEnrolmentIds, adminMemberAbsenceInfo, adminSessionMembers, adminBandCardStatus, adminParentEmailStudentIds } from "../data/bandForwardAbsence";
 import { bandCardMemberNames, bandSpecialistTags, bandPopoverGroups } from "../data/bandDisplay";
-import { sessionMembers, bandCardStatus, parentEmailStudentIds } from "../data/bandSessionView";
 import { stampAdminOverride, stampBandMissEdit, pendingSuggestions, planConfirmSuggestion, planDismissSuggestion } from "../data/bandAttendance";
 import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground } from "../utils/catchupsDB";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
@@ -1133,13 +1132,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       const teacherName = getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
       if (l.isBandSession) {
         // Cluster 6b: only students in this session (legacy bands: members[]).
-        const bandMembers = sessionMembers(l, weeklyData?.missed || EMPTY_LESSONS);
+        const bandMembers = adminSessionMembers(l, weeklyData?.missed || EMPTY_LESSONS);
         const memberNames = bandCardMemberNames(bandMembers, students);
         // Specialist conflicts across all members
         const sl = (currentSchool?.slots || []).find(s => s.start === l.start);
         const bandSpecTags = bandSpecialistTags(bandMembers, students, specLookupRef, l.schoolId, l.day, sl);
         // Cluster 6b status lines (new bands only; both false/0 for legacy).
-        const { needsAttribution, absentN } = bandCardStatus(l, weeklyData?.missed || EMPTY_LESSONS);
+        const { needsAttribution, absentN } = adminBandCardStatus(l, weeklyData?.missed || EMPTY_LESSONS);
         // v2.42.0: catch-up members a teacher marked absent with "catch-up owed" suggested.
         const suggestions = pendingSuggestions(l).map(e => ({
           enrolmentId: e.enrolmentId,
@@ -3982,8 +3981,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             const parentRows = []; // { name, email } for individual list
             dayLessons.forEach(l => {
               // v2.41.0 — band cards contribute the students attending that
-              // session (legacy bands: members[]); see parentEmailStudentIds.
-              const studentIds = parentEmailStudentIds(l, weeklyData?.missed || EMPTY_LESSONS);
+              // session (legacy bands: members[]); see parentEmailStudentIds
+              // (adminParentEmailStudentIds also drops brought-forward absentees).
+              const studentIds = adminParentEmailStudentIds(l, weeklyData?.missed || EMPTY_LESSONS);
               studentIds.forEach(sid => {
                 const st = students.find(s => s.id === sid);
                 if (!st) return;
@@ -6472,7 +6472,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         const warns = raw.filter(w => !(w.includes("already has") && w.includes("at this time")));
                                         let specs = [];
                                         if (dl.isBandSession) {
-                                          specs = bandSpecialistTags(sessionMembers(dl, weeklyData?.missed || EMPTY_LESSONS), students, specLookupRef, dl.schoolId, day, sl);
+                                          specs = bandSpecialistTags(adminSessionMembers(dl, weeklyData?.missed || EMPTY_LESSONS), students, specLookupRef, dl.schoolId, day, sl);
                                         } else {
                                           const st = students.find(s => s.id === dl.studentId);
                                           specs = st && st.className ? (specLookupRef[dl.schoolId + "|" + st.className + "|" + day] || []).filter(sp => { const sS = timeToMin(sl.start), sE = timeToMin(sl.end || sl.start); return sS < sp.end && sE > sp.start; }).map(sp => sp.subject || "Specialist") : [];

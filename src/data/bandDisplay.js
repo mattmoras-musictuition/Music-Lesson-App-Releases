@@ -9,7 +9,8 @@
 // ============================================================
 
 import { timeToMin } from "../utils/helpers";
-import { sessionMemberRows, SESSION_STATUS } from "./bandSessionView";
+import { SESSION_STATUS } from "./bandSessionView";
+import { adminSessionMemberRows } from "./bandForwardAbsence";
 
 /**
  * The band card's member subline: first name (plus surname initial when two
@@ -100,7 +101,7 @@ export function bandPopoverMembers(memberList, students, { displayName, classTea
  */
 export function bandPopoverGroups(band, missed, students, fns) {
   const out = { attending: [], absent: [], notInSession: [] };
-  for (const r of sessionMemberRows(band, missed)) {
+  for (const r of adminSessionMemberRows(band, missed)) {
     const [pm] = bandPopoverMembers([r], students, fns);
     if (!pm) continue;
     if (r.status === SESSION_STATUS.absent) {

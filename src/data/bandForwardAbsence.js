@@ -25,6 +25,7 @@ import { eligibleForAbsence, absentMembers, absentEnrolmentIds, memberAbsenceInf
 import { hasMemberStates, CONSUMPTION } from "./bandMemberStates";
 import { forwardSubjects, consumeForwardWeeks } from "./bandForward";
 import { forwardConsumes } from "./bandForwardIndex";
+import { sessionMemberRows, bandCardStatus, parentEmailStudentIds, SESSION_STATUS } from "./bandSessionView";
 import { orderByGroup, studentNamesFor } from "../utils/bandsSync";
 
 /** True if a memberStates entry is a forward entry marked absent. */
@@ -203,4 +204,49 @@ export function planForwardUndo({ band, subjectKey, weeklyTimetables, weekStillO
     ? [{ subject, weekKey: subject.consumedWeekKey, snapshot: subject.forwardCard || null }]
     : [];
   return { kind: "reset", band: { ...band, memberStates }, rows: {}, released };
+}
+
+// ── Band card display (refinement 1) ────────────────────────────────────
+//
+// The protected session view reads a forward attended:false member as
+// attending. These wrappers re-label them absent for every admin surface:
+// the card's names and "N absent", the hover popover and band parent emails.
+
+/**
+ * sessionMemberRows, with brought-forward absentees as absent (reason from
+ * their absence). Every other row is exactly as the protected view gives it.
+ *
+ * @param {Object} band
+ * @param {Array} missed  The band week's missed[].
+ */
+export function adminSessionMemberRows(band, missed) {
+  const rows = sessionMemberRows(band, missed);
+  if (!hasMemberStates(band)) return rows;
+  const fwdAbsent = new Map();
+  for (const e of band.memberStates) if (isForwardAbsent(e) && e.studentId && !fwdAbsent.has(e.studentId)) fwdAbsent.set(e.studentId, e);
+  if (fwdAbsent.size === 0) return rows;
+  return rows.map(r => {
+    const e = fwdAbsent.get(r.studentId);
+    if (!e || r.status !== SESSION_STATUS.attending) return r;
+    return { ...r, status: SESSION_STATUS.absent, absenceReason: (e.absence && e.absence.reason) || null, absenceReasonDetail: (e.absence && e.absence.reasonDetail) || "" };
+  });
+}
+
+/** sessionMembers over adminSessionMemberRows: attending plus unattributed. */
+export function adminSessionMembers(band, missed) {
+  return adminSessionMemberRows(band, missed).filter(r =>
+    r.status === SESSION_STATUS.attending || r.status === SESSION_STATUS.unattributed);
+}
+
+/** bandCardStatus with "N absent" counting brought-forward absentees too. */
+export function adminBandCardStatus(band, missed) {
+  const base = bandCardStatus(band, missed);
+  if (!hasMemberStates(band)) return base;
+  return { ...base, absentN: adminSessionMemberRows(band, missed).filter(r => r.status === SESSION_STATUS.absent).length };
+}
+
+/** parentEmailStudentIds, leaving brought-forward absentees out of a band. */
+export function adminParentEmailStudentIds(lesson, missed) {
+  if (lesson && lesson.isBandSession) return adminSessionMembers(lesson, missed).map(r => r.studentId).filter(Boolean);
+  return parentEmailStudentIds(lesson, missed);
 }

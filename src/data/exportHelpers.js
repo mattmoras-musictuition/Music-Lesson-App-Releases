@@ -12,7 +12,7 @@ import { timeToMin, getBreaksForSchool, getSchoolAcronym, downloadFile, getLiveT
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { DAYS, instruments_colors } from "../constants";
 import { getXLSX } from "../utils/api";
-import { sessionMembers } from "./bandSessionView";
+import { adminSessionMembers } from "./bandForwardAbsence";
 
 // Cluster 12a: opts-cascade resolver for stamped-teacherName-free exports.
 // Reads enrolments/laneOverrides/weekKey from opts (MTT exports pass null/null
@@ -68,10 +68,11 @@ function lessonDisplayName(l) {
 // Cluster 6b: pass the week's `missed` (WTT exports) to list only students in
 // this session — not-in-session and absent members drop out. Without it
 // (MTT exports, older callers) the full members[] is listed as before; a
-// legacy band lists members[] either way.
+// legacy band lists members[] either way. Brought-forward absentees drop out
+// too (refinement 1, adminSessionMembers).
 export function bandStudentFirstNames(l, students, missed) {
   if (!l || !l.isBandSession) return "";
-  var members = missed == null ? (l.members || []) : sessionMembers(l, missed);
+  var members = missed == null ? (l.members || []) : adminSessionMembers(l, missed);
   if (!members.length || !students) return "";
   var byId = {};
   for (var si = 0; si < students.length; si++) byId[students[si].id] = students[si];

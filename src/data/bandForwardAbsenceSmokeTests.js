@@ -19,7 +19,10 @@ import { buildForwardIndex, isForwardConsumedCard, forwardConsumes } from "./ban
 import { consumeForwardWeeks, generateMasterLessons, planForwardSave, releaseForwardWeeks } from "./bandForward";
 import { restoreDropNotice, restoreCardName } from "./bandMemberStates";
 import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, adminAbsentEnrolmentIds,
-  adminMemberAbsenceInfo, isForwardAbsent } from "./bandForwardAbsence";
+  adminMemberAbsenceInfo, isForwardAbsent, adminSessionMemberRows, adminSessionMembers, adminBandCardStatus,
+  adminParentEmailStudentIds } from "./bandForwardAbsence";
+import { bandPopoverGroups, bandCardMemberNames } from "./bandDisplay";
+import { bandStudentFirstNames } from "./exportHelpers";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
@@ -302,6 +305,34 @@ export function runForwardAbsenceTallyTests(assert) {
   d = ftally({ students: [libby, ivy], enrolments: [eL, eI], cards: gCards, wtt: { [FB + "|S"]: { lessons: [fband("B1", [fentry(eL, "forward", gx), fentry(eI, "forward", gx)])], missed: [] } } });
   assert("fwd-abs tally (group): the group row shows the X in the given-up week",
     d.view["group|g_uke"][FX], "missed-no-catchup:B1");
+}
+
+// ── Commit 6: the band card shows forward absentees ──
+export function runForwardAbsenceDisplayTests(assert) {
+  const members = [{ studentId: "amy", instrument: "Guitar" }, { studentId: "bob", instrument: "Drums" }, { studentId: "libby", instrument: "Ukulele" }, { studentId: "ivy", instrument: "Ukulele" }];
+  const plain = eband("B1", [amyFwd(), eentry("e_bob_drm", "free"), ...groupFwd()], { members });
+  const marked = eband("B1", [amyFwd({ attended: false, absence: { ...NOT_OWED, reason: "informed_absence", reasonDetail: "camp" } }), eentry("e_bob_drm", "free"),
+    ...groupFwd({ attended: false, absence: OWED })], { members });
+
+  assert("fwd-abs display: no forward absentee → every wrapper returns exactly the protected view's answer",
+    [adminSessionMemberRows(plain, []), adminSessionMembers(plain, []), adminBandCardStatus(plain, []), adminParentEmailStudentIds(plain, [])],
+    [sessionMemberRows(plain, []), sessionMemberRows(plain, []), bandCardStatus(plain, []), parentEmailStudentIds(plain, [])]);
+  assert("fwd-abs display: session rows — Amy and the whole group absent with their reasons, Bob attending",
+    adminSessionMemberRows(marked, []).map(r => [r.studentId, r.status, r.absenceReason, r.absenceReasonDetail]),
+    [["amy", "absent", "informed_absence", "camp"], ["bob", "attending", null, ""], ["libby", "absent", "informed_absence", "sick"], ["ivy", "absent", "informed_absence", "sick"]]);
+  assert("fwd-abs display: card names list only Bob; \"N absent\" counts three",
+    [bandCardMemberNames(adminSessionMembers(marked, []), ESTUDENTS), adminBandCardStatus(marked, []).absentN, adminBandCardStatus(marked, []).needsAttribution],
+    [bandCardMemberNames([{ studentId: "bob", instrument: "Drums" }], ESTUDENTS), 3, false]);
+  assert("fwd-abs display: band parent emails leave the forward absentees out; non-band lessons unchanged",
+    [adminParentEmailStudentIds(marked, []), adminParentEmailStudentIds({ id: "x", studentId: "amy" }, []), adminParentEmailStudentIds({ id: "g", isGroup: true, studentIds: ["ivy"] }, [])],
+    [["bob"], ["amy"], ["ivy"]]);
+  const fns = { displayName: (n) => n, classTeacherName: () => "", reasonLabel: (r, d) => r + (d ? ": " + d : "") };
+  const pg = bandPopoverGroups(marked, [], ESTUDENTS, fns);
+  assert("fwd-abs display: hover popover lists them under Absent with the reason",
+    [pg.attending.map(r => r.name), pg.absent.map(r => [r.name, r.absenceLabel])],
+    [["Bob Bell"], [["Amy Ash", "Absent (informed_absence: camp)"], ["Libby Gilby", "Absent (informed_absence: sick)"], ["Ivy O'Donnell", "Absent (informed_absence: sick)"]]]);
+  assert("fwd-abs display: timetable export band names drop them too (with missed passed)",
+    [bandStudentFirstNames(marked, ESTUDENTS, []), bandStudentFirstNames(marked, ESTUDENTS)], ["Bob", "Amy, Bob, Libby, Ivy"]);
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the
