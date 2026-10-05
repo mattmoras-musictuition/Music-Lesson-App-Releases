@@ -29,7 +29,7 @@ import { runBandGroupCharacterizationTests, runBandGroupCoreTests, runBandGroupR
 import { runEnrolmentHistoryCharacterizationTests, runOrphanCheckTests, runTallyOverlapGateTests, runRestampGuardTests, runArchiveCascadeTests, runEndDateEditTests } from "./enrolmentHistorySmokeTests";
 import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests, runForwardEnforceGenerateTests, runForwardEnforceSaveTests, runForwardEnforceReleaseTests } from "./bandForwardEnforceSmokeTests";
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
-import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests } from "./bandForwardAbsenceSmokeTests";
+import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests } from "./bandForwardAbsenceSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -400,6 +400,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Band forward absence + stale given-up week (phase 3, refinements 1-2) ──
   runForwardAbsenceCharacterizationTests(assert);
   runForwardAbsenceConsumeTests(assert);
+  runForwardAbsencePlannerTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

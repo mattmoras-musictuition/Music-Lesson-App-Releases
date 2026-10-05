@@ -16,12 +16,15 @@ import { eligibleForAbsence, absentMembers, absentEnrolmentIds } from "./bandAbs
 import { sessionMemberRows, bandCardStatus, parentEmailStudentIds } from "./bandSessionView";
 import { planAttributionSave } from "./bandMemberStates";
 import { buildForwardIndex, isForwardConsumedCard, forwardConsumes } from "./bandForwardIndex";
-import { consumeForwardWeeks, generateMasterLessons, planForwardSave } from "./bandForward";
+import { consumeForwardWeeks, generateMasterLessons, planForwardSave, releaseForwardWeeks } from "./bandForward";
+import { restoreDropNotice, restoreCardName } from "./bandMemberStates";
+import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, adminAbsentEnrolmentIds,
+  adminMemberAbsenceInfo, isForwardAbsent } from "./bandForwardAbsence";
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
 import { getEnrolmentTermDeductionMath } from "../utils/tallyDerive";
-import { EB, EX, EENROL, EMASTER, eentry, eband, ecard, eresolver, egenerate, origins } from "./bandForwardEnforceSmokeTests";
+import { EB, EX, EENROL, EMASTER, ESTUDENTS, eentry, eband, ecard, eresolver, egenerate, origins } from "./bandForwardEnforceSmokeTests";
 import { FB, FX, fstudent, fenrol, fentry, fband, ftally } from "./bandForwardSmokeTests";
 
 // The three absence shapes a forward entry can carry (refinement 1).
@@ -135,6 +138,112 @@ export function runForwardAbsenceConsumeTests(assert) {
   const fw2 = planForwardSave({ stored: [amyFwd({ attended: false, absence: NOT_OWED })], saved: [amyFwd({ attended: false, absence: NOT_OWED })], weeklyTimetables: wtt });
   assert("fwd-abs consume: Save repair still clears a no-catch-up absentee's card",
     fw2.rows[EX + "|S"].lessons.map(l => l.id), ["W_uke"]);
+}
+
+// ── Commit 3: the pure planners (bandForwardAbsence.js) ──
+export function runForwardAbsencePlannerTests(assert) {
+  const AT = "2099-03-10T10:00:00.000Z";
+  const GROUPS = [{ id: "g_uke", studentIds: ["ivy", "libby"] }];
+  const regCard = ecard("M_bob", "W_bob");
+  const snapAmy = ecard("M_amy", "W_amy");
+  const snapUke = ecard("M_uke", "W_uke");
+  const band = eband("B1", [
+    amyFwd({ forwardCard: snapAmy }),
+    ...groupFwd({}, { forwardCard: snapUke }),
+    eentry("e_bob_drm", "regular", { consumedWeekKey: EB }),
+  ], { removedLessons: [regCard] });
+
+  // Menu: bandAbsence's members first (unchanged), then one item per forward subject.
+  let menu = adminAbsenceMenu(band, []);
+  assert("fwd-abs menu: eligible = the regular member, then Amy, then the group as ONE item",
+    menu.eligible.map(i => i.key), ["e_bob_drm", "fwd:enrolment:e_amy_gtr", "fwd:group:g_uke"]);
+  assert("fwd-abs menu: labels — a solo by name, a group by its members in the group's order",
+    menu.eligible.map(i => absenceItemLabel(band, i, ESTUDENTS, GROUPS)), ["Bob Bell", "Amy Ash", "Ivy O'Donnell, Libby Gilby"]);
+  assert("fwd-abs menu: nothing absent yet; a legacy band gets nothing",
+    [menu.absent.length, adminAbsenceMenu({ id: "L", isBandSession: true, members: [] }, []).eligible.length], [0, 0]);
+
+  // Mark absent — catch-up owed: every entry of the subject, the same absence, stamped.
+  const g = applyForwardAbsence({ band, subjectKey: "group:g_uke", absence: OWED, at: AT });
+  const gEntries = g.band.memberStates.filter(e => e.groupId === "g_uke");
+  assert("fwd-abs mark (group, owed): both entries attended:false with one absence, stamped, week and snapshot kept",
+    gEntries.map(e => [e.attended, e.absence.makeupEligible, e.adminOverrideAt, e.writerTeacherId, e.consumedWeekKey, e.consumption, e.catchupId]),
+    [[false, true, AT, null, EX, "forward", null], [false, true, AT, null, EX, "forward", null]]);
+  assert("fwd-abs mark (group, owed): the snapshot stays on the first entry; the later week is released with it",
+    [gEntries[0].forwardCard.id, "forwardCard" in gEntries[1], g.released.map(x => [x.subject.key, x.weekKey, x.snapshot.id])],
+    [snapUke.id, false, [["group:g_uke", EX, snapUke.id]]]);
+  assert("fwd-abs mark: other members, removedLessons and the band otherwise untouched",
+    [g.band.memberStates[0], g.band.memberStates[3], g.band.removedLessons], [band.memberStates[0], band.memberStates[3], [regCard]]);
+  menu = adminAbsenceMenu(g.band, []);
+  assert("fwd-abs menu: an absent group moves to Undo absence as one item",
+    [menu.eligible.map(i => i.key), menu.absent.map(i => i.key)], [["e_bob_drm", "fwd:enrolment:e_amy_gtr"], ["fwd:group:g_uke"]]);
+  assert("fwd-abs mark: an absent subject cannot be marked again; an unknown subject is null",
+    [applyForwardAbsence({ band: g.band, subjectKey: "group:g_uke", absence: OWED, at: AT }), applyForwardAbsence({ band, subjectKey: "group:nope", absence: OWED, at: AT })], [null, null]);
+
+  // Mark absent — no catch-up: nothing released.
+  const a = applyForwardAbsence({ band, subjectKey: "enrolment:e_amy_gtr", absence: NOT_OWED, at: AT });
+  assert("fwd-abs mark (solo, not owed): attended:false, absence kept, nothing released",
+    [a.band.memberStates[0].attended, a.band.memberStates[0].absence, a.released], [false, NOT_OWED, []]);
+  assert("fwd-abs mark: the reason defaults to other and makeupEligible is strictly true/false",
+    applyForwardAbsence({ band, subjectKey: "enrolment:e_amy_gtr", absence: {}, at: AT }).band.memberStates[0].absence,
+    { reason: "other", reasonDetail: "", notes: "", makeupEligible: false });
+
+  // Giving the week back (the caller's releaseForwardRows), and the slot-taken notice.
+  const opts = { masterLessons: EMASTER, enrolments: EENROL, newId: () => "NEW" };
+  const wtt = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_zed", { enrolmentId: "e_zed", studentId: "zed", instrument: "Bass", start: "11:00" })], missed: [], generatedAt: "x" } };
+  const owedAmy = applyForwardAbsence({ band, subjectKey: "enrolment:e_amy_gtr", absence: OWED, at: AT });
+  let rel = releaseForwardWeeks(wtt, owedAmy.released, opts);
+  assert("fwd-abs release: catch-up owed puts the snapshot back in the given-up week",
+    [rel.rows[EX + "|S"].lessons.map(l => l.id).sort(), rel.dropped], [["W_amy", "W_zed"], []]);
+  const taken = { [EX + "|S"]: { lessons: [ecard("M_amy", "W_in_slot", { enrolmentId: "e_x", studentId: "x", instrument: "Cello" })], missed: [], generatedAt: "x" } };
+  const relTaken = releaseForwardWeeks(taken, owedAmy.released, opts);
+  const firstOf = (c) => (ESTUDENTS.find(st => st.id === c.studentId) || { name: "" }).name.split(" ")[0];
+  assert("fwd-abs release: slot taken → not put back, named in the usual notice",
+    restoreDropNotice(relTaken.dropped, c => restoreCardName(c, firstOf)),
+    "Couldn't put back Amy's lesson (Thursday 09:00) — that slot is taken. Re-add it from the Master Timetable if needed.");
+
+  // Undo — restore: the exact prior forward state (bar the admin stamp), the card out again.
+  const strip = (e) => { const { adminOverrideAt, writerTeacherId, ...rest } = e; return rest; };
+  let u = planForwardUndo({ band: owedAmy.band, subjectKey: "enrolment:e_amy_gtr", weeklyTimetables: rel.rows, weekStillOpen: () => true, at: AT });
+  assert("fwd-abs undo (owed): restore — the week is used up again: the card leaves it, the snapshot is retaken",
+    [u.kind, u.rows[EX + "|S"].lessons.map(l => l.id), u.band.memberStates[0].forwardCard.id, u.released], ["restore", ["W_zed"], "W_amy", []]);
+  assert("fwd-abs undo (owed): the member entry is exactly as before the absence (apart from the admin stamp)",
+    strip(u.band.memberStates[0]), strip(band.memberStates[0]));
+  assert("fwd-abs undo: stamps the entry as an admin action",
+    [u.band.memberStates[0].adminOverrideAt, u.band.memberStates[0].writerTeacherId], [AT, null]);
+  u = planForwardUndo({ band: a.band, subjectKey: "enrolment:e_amy_gtr", weeklyTimetables: wtt, weekStillOpen: () => true, at: AT });
+  assert("fwd-abs undo (not owed): restore — nothing moves, the entry is exactly as before",
+    [u.kind, Object.keys(u.rows), strip(u.band.memberStates[0])], ["restore", [], strip(band.memberStates[0])]);
+  u = planForwardUndo({ band: g.band, subjectKey: "group:g_uke", weeklyTimetables: { [EX + "|S"]: { lessons: [snapUke], missed: [], generatedAt: "x" } }, weekStillOpen: () => true, at: AT });
+  assert("fwd-abs undo (group): every entry cleared together and the group card leaves the week again",
+    [u.band.memberStates.filter(e => e.groupId).map(e => [e.attended, "absence" in e]), u.rows[EX + "|S"].lessons.length], [[[null, false], [null, false]], 0]);
+  u = planForwardUndo({ band: owedAmy.band, subjectKey: "group:g_uke", weeklyTimetables: wtt, at: AT });
+  assert("fwd-abs undo: a subject that is not absent has nothing to undo",
+    u, null);
+
+  // Undo — reset to Not set when the week can no longer be used.
+  u = planForwardUndo({ band: a.band, subjectKey: "enrolment:e_amy_gtr", weeklyTimetables: wtt, weekStillOpen: () => false, at: AT });
+  assert("fwd-abs undo fallback (not owed): the week fails the open-week rules → Not set, and the used-up week is given back",
+    [u.kind, u.band.memberStates[0].consumption, u.band.memberStates[0].consumedWeekKey, u.band.memberStates[0].attended,
+      "absence" in u.band.memberStates[0], "forwardCard" in u.band.memberStates[0], u.released.map(x => [x.weekKey, x.snapshot.id])],
+    ["reset", null, null, null, false, false, [[EX, "W_amy"]]]);
+  u = planForwardUndo({ band: owedAmy.band, subjectKey: "enrolment:e_amy_gtr", weeklyTimetables: wtt, weekStillOpen: () => false, at: AT });
+  assert("fwd-abs undo fallback (owed): Not set; the week was already given back, so nothing more is released",
+    [u.kind, u.band.memberStates[0].consumption, u.released], ["reset", null, []]);
+  u = planForwardUndo({ band: g.band, subjectKey: "group:g_uke", weeklyTimetables: wtt, weekStillOpen: () => false, at: AT });
+  assert("fwd-abs undo fallback (group): the whole group goes back to Not set together",
+    u.band.memberStates.filter(e => e.groupId).map(e => e.consumption), [null, null]);
+
+  // Window lock + sub-line.
+  const ids = adminAbsentEnrolmentIds(g.band, []);
+  assert("fwd-abs lock: forward absentees join the window's lock set (bandAbsence's own set unchanged)",
+    [...ids].sort(), ["e_ivy_uke", "e_libby_uke"]);
+  const plan = planAttributionSave({ stored: g.band.memberStates, working: g.band.memberStates.map(e => (e.groupId ? { ...e, consumption: "free" } : e)),
+    missByEnrolment: {}, catchupsForBand: [], weekKey: EB, absentEnrolmentIds: [...ids] });
+  assert("fwd-abs lock: Save keeps a locked forward absentee exactly as stored",
+    plan.memberStates.filter(e => e.groupId).map(e => [e.consumption, e.attended]), [["forward", false], ["forward", false]]);
+  assert("fwd-abs lock: the window's absent sub-line reads the forward absence's reason",
+    [adminMemberAbsenceInfo(a.band, a.band.memberStates[0], []), adminMemberAbsenceInfo(band, band.memberStates[0], []), isForwardAbsent(a.band.memberStates[0])],
+    [{ reason: "uninformed_absence", reasonDetail: "" }, null, true]);
 }
 
 // Invoice math for one ordinary miss plus: no band, a forward entry, the
