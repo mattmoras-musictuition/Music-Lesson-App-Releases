@@ -318,6 +318,52 @@ export function planRegularAbsenceUndo({ weeklyTimetables, rowKey, bandLessonId,
   return { rows, dropped };
 }
 
+// ── Regenerate / day import: no second copy of an absent lesson ───────────
+//
+// A Regular band absence moves the lesson out of the band's ledger into a
+// band-stamped miss that keeps the card (ledgerCard, or originCard). The
+// generate paths only skip cards the LEDGER holds (isGenerateExcluded), so
+// regenerating the week rebuilt the card and the band sweep put it back in
+// the ledger: Undo then held two copies and band removal reported one as
+// "Couldn't put back". The filter below drops, before generation, every
+// master card whose lesson a surviving band's absence already holds. A
+// built (bandNoCard) absence holds no card, so its lesson is generated and
+// swept into the ledger as usual — Undo adds nothing, so there is still one.
+
+/** The weekly rows of `weekKey`, any school. */
+export function weekRows(weeklyTimetables, weekKey) {
+  return weekRowKeys(weeklyTimetables, weekKey).map(k => weeklyTimetables[k]).filter(Boolean);
+}
+
+function sameLesson(ref, c) {
+  if (c.isGroup || ref.isGroup) return !!c.isGroup && !!ref.isGroup && c.groupId === ref.groupId;
+  if (ref.enrolmentId && c.enrolmentId) return ref.enrolmentId === c.enrolmentId;
+  return ref.studentId === c.studentId && ref.instrument === c.instrument;
+}
+
+/**
+ * `cards` without those whose lesson a band absence in `rows` holds. Only
+ * misses of bands still in their row count; bandNoCard misses never do.
+ * Returns `cards` itself when nothing is dropped.
+ *
+ * @param {Array} cards  Master (or imported) cards about to be generated.
+ * @param {Array} rows   Weekly rows ({ lessons, missed }) to read absences from.
+ * @returns {Array}
+ */
+export function withoutBandAbsentCards(cards, rows) {
+  const held = [];
+  for (const row of (rows || [])) {
+    const bandIds = new Set(((row && row.lessons) || []).filter(l => l && l.isBandSession).map(l => l.id));
+    for (const m of ((row && row.missed) || [])) {
+      if (m && m.bandLessonId && bandIds.has(m.bandLessonId) && m.bandNoCard !== true) held.push(m.ledgerCard || m.originCard || m);
+    }
+  }
+  const list = cards || [];
+  if (held.length === 0) return list;
+  const out = list.filter(c => !(c && !c.isBandSession && !c.__isCatchup && held.some(ref => sameLesson(ref, c))));
+  return out.length === list.length ? list : out;
+}
+
 // ── Keeping marked cards out of the protected restore paths ──────────────
 
 /** Cards to put back that are not marked (cardFromBandMiss keeps the markers). */

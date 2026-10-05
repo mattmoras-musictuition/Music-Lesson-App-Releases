@@ -19,7 +19,7 @@ import { planAttributionSave, applyAttributionLedger, applyStudentAttribution, d
 import { generateMasterLessons } from "./bandForward";
 import { adminAbsenceMenu } from "./bandForwardAbsence";
 import { EB, EENROL, EMASTER, ESTUDENTS, eentry, eband, ecard, eresolver, egenerate } from "./bandForwardEnforceSmokeTests";
-import { regularAbsenceSubjects, regularAbsentSubjects, regularSubjectKeyForMiss, regularNoCardNote, planRegularAbsence, planRegularAbsenceUndo,
+import { withoutBandAbsentCards, regularAbsenceSubjects, regularAbsentSubjects, regularSubjectKeyForMiss, regularNoCardNote, planRegularAbsence, planRegularAbsenceUndo,
   withoutMarkedCards, originRestoresFor, restoreOriginCards, adminRemoveBandSession, adminBandRemovalAbsences, isMarkedBandMiss } from "./bandRegularAbsence";
 import { enrolmentIdFor } from "../utils/enrolmentsDB";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
@@ -39,9 +39,10 @@ export const groupBandMiss = (bandId, card, extra = {}) => {
     cardNote: "", bandLessonId: bandId, ...(teacherId ? { ledgerTeacherId: teacherId } : {}), ledgerCard: card, ...extra };
 };
 
-// Regenerate one school's week the way the generate paths do: master filter,
-// generator, then the band sweep and the band-miss carry.
-export function regenerate(entry, schoolId, weekKey, filter = (cards) => cards) {
+// Regenerate one school's week the way the generate paths do: master filter
+// (since commit 6 including withoutBandAbsentCards), generator, then the band
+// sweep and the band-miss carry.
+export function regenerate(entry, schoolId, weekKey, filter = (cards) => withoutBandAbsentCards(cards, [entry])) {
   const bands = (entry.lessons || []).filter(l => l.isBandSession);
   const master = filter(generateMasterLessons(EMASTER.filter(l => l.schoolId === schoolId), bands, eresolver(), weekKey, null));
   const result = egenerate(master, schoolId, weekKey);
@@ -85,7 +86,8 @@ export function runRegularAbsenceCharacterizationTests(assert) {
     absentMembers(gView, gMissed).map(e => e.enrolmentId), ["e_ivy_uke"]);
 
   // Regenerate duplicate — Amy (Regular, card held) is marked absent, then the
-  // week is regenerated. Commit 6 deliberately changes the next two pins.
+  // week is regenerated. Commit 6 deliberately changed the next two pins
+  // (the generate paths now skip a lesson a band absence holds).
   const amyCard = ecard("M_amy", "W_amy", { weekDate: "2099-03-12" });
   const aBand = eband("B1", [eentry("e_amy_gtr", "regular", { consumedWeekKey: EB })], { removedLessons: [amyCard] });
   const p = planMarkAbsent({ band: aBand, entry: aBand.memberStates[0], missed: [], enrolments: EENROL });
@@ -93,11 +95,11 @@ export function runRegularAbsenceCharacterizationTests(assert) {
   const regen = regenerate(before, "S", EB);
   const regenBand = regen.lessons.find(l => l.id === "B1");
   const undone = planUndoAbsence({ band: regenBand, entry: regenBand.memberStates[0], missed: regen.missed, catchups: [] });
-  assert("reg-abs char: regenerate after a Regular absence → the card is swept back into the ledger AND kept on the miss (Undo → two ledger copies)",
-    [regenBand.removedLessons.length, regen.missed.filter(m => m.bandLessonId === "B1").length, undone.band.removedLessons.length], [1, 1, 2]);
+  assert("reg-abs char: regenerate after a Regular absence → the card is not rebuilt; Undo → one ledger copy (was 1 swept + 2 after Undo)",
+    [regenBand.removedLessons.length, regen.missed.filter(m => m.bandLessonId === "B1").length, undone.band.removedLessons.length], [0, 1, 1]);
   const removed = planRemoveBandSession({ lessons: regen.lessons, missed: regen.missed }, "B1");
-  assert("reg-abs char: …and removing the band then puts one card back and drops the copy (\"Couldn't put back\")",
-    [removed.lessons.filter(l => l.enrolmentId === "e_amy_gtr").length, removed.dropped.length], [1, 1]);
+  assert("reg-abs char: …and removing the band puts exactly one card back, nothing dropped (was 1 dropped: \"Couldn't put back\")",
+    [removed.lessons.filter(l => l.enrolmentId === "e_amy_gtr").length, removed.dropped.length], [1, 0]);
 }
 
 // ── Commit 2: the planners (bandRegularAbsence.js) ──
@@ -377,4 +379,60 @@ export function runRegularAbsenceNoteTests(assert) {
   const bandG = eband("B1", groupReg());
   assert("reg-abs note (group): the group's card not held → the note names its members",
     note(bandG, row([bandG]), "regular:group:g_uke", "Ivy, Libby"), "The band holds no group lesson for Ivy, Libby this week");
+}
+
+// ── Commit 6: no duplicate after regenerating ──
+export function runRegularAbsenceRegenTests(assert) {
+  const at = (entry) => ({ lessons: entry.lessons, missed: entry.missed });
+  const count = (lessons, pred) => lessons.filter(pred).length;
+  const raw = (cards) => cards;
+
+  // Solo held-card absence: regenerate, then Undo / remove band.
+  const amyCard = ecard("M_amy", "W_amy", { weekDate: "2099-03-12" });
+  const aBand = eband("B1", [amyReg()], { removedLessons: [amyCard] });
+  const p = planMarkAbsent({ band: aBand, entry: amyReg(), missed: [], enrolments: EENROL });
+  const solo = { lessons: [p.band], missed: p.misses };
+  const regen = regenerate(solo, "S", EB);
+  const band = regen.lessons.find(l => l.id === "B1");
+  assert("reg-abs regen (solo): no rebuilt card on the grid or in the ledger; the absence is carried",
+    [count(regen.lessons, l => l.enrolmentId === "e_amy_gtr" && !l.isBandSession), band.removedLessons.length, regen.missed.length], [0, 0, 1]);
+  const undone = planUndoAbsence({ band, entry: band.memberStates[0], missed: regen.missed, catchups: [] });
+  const rm = planRemoveBandSession(at(regen), "B1");
+  assert("reg-abs regen (solo): regenerate then Undo → one card held; regenerate then remove band → one card, no \"Couldn't put back\"",
+    [undone.band.removedLessons.length, count(rm.lessons, l => l.enrolmentId === "e_amy_gtr"), rm.dropped], [1, 1, []]);
+  assert("reg-abs regen: other lessons regenerate as before",
+    count(regenerate(solo, "S", EB).lessons, l => l.isGroup), count(regenerate(solo, "S", EB, raw).lessons, l => l.isGroup));
+
+  // Whole-group absence.
+  const wtt = { [RS]: { lessons: [eband("B1", groupReg(), { removedLessons: [ecard("M_uke", "W_uke")] })], missed: [], generatedAt: "x" } };
+  const g = planRegularAbsence(planArgs(wtt, "regular:group:g_uke")).rows[RS];
+  const gRegen = regenerate(g, "S", EB);
+  const gBand = gRegen.lessons.find(l => l.id === "B1");
+  const after = { [RS]: { ...gRegen, generatedAt: "x" } };
+  const gu = planRegularAbsenceUndo({ weeklyTimetables: after, rowKey: RS, bandLessonId: "B1", subjectKey: "regular:group:g_uke", at: AT });
+  const grm = adminRemoveBandSession(after[RS], "B1");
+  assert("reg-abs regen (group): the group card is not rebuilt; Undo → one ledger card; remove band → one card, nothing dropped",
+    [count(gRegen.lessons, l => l.isGroup), gBand.removedLessons.length, gu.rows[RS].lessons.find(l => l.id === "B1").removedLessons.length,
+      count(grm.lessons, l => l.isGroup), grm.dropped], [0, 0, 1, 1, []]);
+
+  // Built (no-card) absence: the lesson regenerates into the ledger; still one.
+  const nc = planRegularAbsence(planArgs({ [RS]: { lessons: [eband("B1", [amyReg()])], missed: [], generatedAt: "x" } }, "regular:enrolment:e_amy_gtr")).rows[RS];
+  const ncRegen = regenerate(nc, "S", EB);
+  const ncAfter = { [RS]: { ...ncRegen, generatedAt: "x" } };
+  const ncu = planRegularAbsenceUndo({ weeklyTimetables: ncAfter, rowKey: RS, bandLessonId: "B1", subjectKey: "regular:enrolment:e_amy_gtr", at: AT });
+  const ncrm = adminRemoveBandSession(ncAfter[RS], "B1");
+  assert("reg-abs regen (no card): the lesson is generated into the band's ledger; Undo keeps that one; remove band → one card",
+    [ncRegen.lessons.find(l => l.id === "B1").removedLessons.length, ncu.rows[RS].lessons.find(l => l.id === "B1").removedLessons.length,
+      count(ncrm.lessons, l => l.enrolmentId === "e_amy_gtr"), ncrm.dropped], [1, 1, 1, []]);
+
+  // Day import of the absent lesson's day keeps the other day's band: no copy.
+  const imp = buildMttImportForWeekSchool({ mtt: { lessons: EMASTER }, schoolId: "S", weekDates: lweekDates(EB),
+    existingEntry: at(solo), targetDay: "Thursday", enrolments: EENROL, dropBands: true, catchups: [] });
+  const impBand = imp.entry.lessons.find(l => l.id === "B1");
+  assert("reg-abs regen: a day import of Thursday does not rebuild Amy's absent lesson into the kept band's ledger",
+    [count(imp.entry.lessons, l => l.enrolmentId === "e_amy_gtr" && !l.isBandSession), impBand.removedLessons.length], [0, 0]);
+  assert("reg-abs regen: withoutBandAbsentCards ignores absences of bands no longer in the row, and built absences",
+    [withoutBandAbsentCards([amyCard], [{ lessons: [], missed: p.misses }]).length,
+      withoutBandAbsentCards([amyCard], [{ lessons: [p.band], missed: [{ ...p.misses[0], ledgerCard: undefined, bandNoCard: true }] }]).length,
+      withoutBandAbsentCards([amyCard], [{ lessons: [p.band], missed: p.misses }]).length], [1, 1, 0]);
 }
