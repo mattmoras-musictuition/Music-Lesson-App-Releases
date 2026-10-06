@@ -32,6 +32,7 @@ import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBand
 import { runRegularAbsenceCharacterizationTests, runRegularAbsencePlannerTests, runRegularAbsenceWrapperTests, runRegularAbsenceImportTests, runRegularAbsenceNoteTests, runRegularAbsenceRegenTests } from "./bandRegularAbsenceSmokeTests";
 import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
 import { runCalendarSegmentTests } from "./calendarSegmentsSmokeTests";
+import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -418,6 +419,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Calendar multi-day event bar ──
   runCalendarSegmentTests(assert);
+
+  // ── Dashboard to-do: one item per dragged email message ──
+  runTodoEmailKeyTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

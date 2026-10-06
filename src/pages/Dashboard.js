@@ -30,6 +30,7 @@ import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
+import { draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey } from "../utils/todoEmailKey";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -1663,12 +1664,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
   // Drop an email onto the To Do list — fully structured output.
   const dropEmailToTodo = React.useCallback((email, currentItems) => {
-    // Deduplicate
-    const alreadyExists = currentItems.some(t =>
-      t.emailId === email.id ||
-      (t.subItems || []).some(s => s.emailId === email.id)
-    );
-    if (alreadyExists) return currentItems;
+    // Deduplicate on the dragged message, not the thread — a new message in a
+    // thread that already has an item gets its own item.
+    if (todoCoversMessage(currentItems, email)) return currentItems;
+    const messageId = draggedMessageId(email);
+    const threadHasItem = currentItems.some(t => isSameThreadTodo(t, email));
 
     const category = classifyEmailFull(email);
     const fromAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
@@ -1699,13 +1699,15 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       const mName = m.from?.includes("<") ? m.from.split("<")[0].trim().replace(/^"|"$/g, "") : (m.from || "");
       const mFirst = preferredFirstName(mName) || mName.split(" ")[0];
       return { id: uid(), text: `Reply to ${mFirst}`, fullName: mName, replyTo: mAddr,
-        replyEmailId: email.id, senderName: mFirst, done: false, emailId: email.id,
+        replyEmailId: email.id, senderName: mFirst, done: false, emailId: email.id, messageId: m.messageId || m.id,
         composeSubject: email.subject ? reSubject(email.subject) : "",
         meta: { parentName: mName }, tag: "email", createdAt: new Date().toISOString() };
     };
 
     // === MULTI-SENDER THREAD (not a 1:1 conversation) ===
-    if (nonSentMsgs.length > 1 && !isConversation) {
+    // First drag of the thread only; once the thread has an item, each later
+    // message is its own item via the paths below.
+    if (nonSentMsgs.length > 1 && !isConversation && !threadHasItem) {
       const subItems = nonSentMsgs.map(msgSubItem);
       const replyAddrs = nonSentMsgs.map(m => m.from?.match(/<(.+)>/)?.[1] || m.from || "").filter(Boolean);
       // Detect if all senders are known parents
@@ -1719,7 +1721,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       const groupText = allParents
         ? `Contact parents re: ${cleanSubject || "(no subject)"} — ${nonSentMsgs.length}`
         : `Contact ${senderFirstNames.slice(0, 3).join(", ")}${senderFirstNames.length > 3 ? ` +${senderFirstNames.length - 3}` : ""} re: ${cleanSubject || "(no subject)"}`;
-      return [{ id: uid(), text: groupText, done: false, tag: "email", emailId: email.id,
+      return [{ id: uid(), text: groupText, done: false, tag: "email", emailId: email.id, messageId,
         composeSubject: email.subject ? reSubject(email.subject) : "",
         meta, subItems, replyAddrs, createdAt: new Date().toISOString() }, ...currentItems];
     }
@@ -1780,7 +1782,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
         { id: uid(), text: "Add to pending students", done: false, tag: "admin", navigateTo: "students", studentPrefill: prefill, createdAt: new Date().toISOString() },
         { id: uid(), text: "Schedule trial lesson", done: false, tag: "admin", navigateTo: "students", studentPrefill: { ...prefill, status: "trial" }, createdAt: new Date().toISOString() },
       ];
-      return [{ id: uid(), text: itemText, done: false, tag: "email", groupType: "enquiry", emailId: email.id, replyTo: fromAddr, senderName: enquiryFirst, composeSubject: email.subject ? reSubject(email.subject) : "", meta, subItems, createdAt: new Date().toISOString() }, ...currentItems];
+      return [{ id: uid(), text: itemText, done: false, tag: "email", groupType: "enquiry", emailId: email.id, messageId, replyTo: fromAddr, senderName: enquiryFirst, composeSubject: email.subject ? reSubject(email.subject) : "", meta, subItems, createdAt: new Date().toISOString() }, ...currentItems];
     }
 
     // === KNOWN PARENT with linked student ===
@@ -1795,27 +1797,22 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       itemExtra = { groupType: isParent ? "parent-reply" : undefined, replyTo: fromAddr, senderName: firstName, fullName: fromName };
     }
 
-    const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, composeSubject: email.subject ? reSubject(email.subject) : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
+    const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, messageId, composeSubject: email.subject ? reSubject(email.subject) : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
 
-    // Auto-group by subject if a matching item already exists
+    // Auto-group by subject if a matching item already exists (other threads
+    // only — never folds a message into its own thread's item)
     if (cleanSubject) {
-      const matchIdx = currentItems.findIndex(t => {
-        if (t.done || t.id === newItem.id) return false;
-        const tSubject = (t.emailId
-          ? (inboxEmails.find(e => e.id === t.emailId)?.subject || "").replace(/^(re:\s*)+/gi, "").trim()
-          : t.text
-        ).toLowerCase().replace(/^contact \S+ re: /i, "").replace(/^contact parents re: /i, "");
-        return tSubject === cleanSubject.toLowerCase() || t.text.toLowerCase().includes(cleanSubject.toLowerCase());
-      });
+      const matchIdx = findSubjectGroupIdx(currentItems, email, inboxEmails);
       if (matchIdx >= 0) {
         const target = currentItems[matchIdx];
         const newSubItem = { id: newItem.id, text: `Reply to ${firstName}`, fullName: fromName,
-          replyTo: fromAddr, replyEmailId: email.id, senderName: firstName, done: false, emailId: email.id,
-          composeSubject: email.subject ? reSubject(email.subject) : "", meta };
+          replyTo: fromAddr, replyEmailId: email.id, senderName: firstName, done: false, emailId: email.id, messageId,
+          composeSubject: email.subject ? reSubject(email.subject) : "", meta, createdAt: newItem.createdAt };
         const prevSubItems = target.subItems || [{ id: uid(), text: target.senderName ? `Reply to ${target.senderName}` : target.text,
           fullName: target.fullName, replyTo: target.replyTo, replyEmailId: target.emailId,
           composeSubject: target.composeSubject ?? (target.emailId ? (target.emailId ? reSubject(inboxEmails.find(e => e.id === target.emailId)?.subject || "") : "") : ""),
-          senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta }];
+          senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta,
+          ...(target.messageId ? { messageId: target.messageId } : {}), ...(target.createdAt ? { createdAt: target.createdAt } : {}) }];
         const newSubItems = [...prevSubItems, newSubItem];
         const allParents = newSubItems.every(s => s.replyTo &&
           students.some(st => studentMatchesParentEmail(st, s.replyTo)));
@@ -1869,9 +1866,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       const subItems = group.map(e => ({
         id: uid(), text: e.subject?.replace(/^(re:\s*)+/gi, "").trim() || "(no subject)",
         fullName: fromName, replyTo: fromAddr0, replyEmailId: e.id, senderName: firstName,
-        done: false, emailId: e.id, tag: "email", meta: { parentName: fromName }, createdAt: new Date().toISOString()
+        done: false, emailId: e.id, messageId: draggedMessageId(e), tag: "email", meta: { parentName: fromName }, createdAt: new Date().toISOString()
       }));
-      const alreadyExists = result.some(t => group.some(e => t.emailId === e.id || (t.subItems || []).some(s => s.emailId === e.id)));
+      const alreadyExists = group.some(e => todoCoversMessage(result, e));
       if (!alreadyExists) result = [{ id: uid(), text: groupText, done: false, tag: "email",
         replyTo: fromAddr0, senderName: firstName, fullName: fromName,
         subItems, createdAt: new Date().toISOString() }, ...result];
@@ -3122,7 +3119,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           const parent = items.find(t => t.id === parentId);
           if (!parent) return false;
           const newSubItems = (parent.subItems || []).filter(s => s.id !== subId);
-          const standalone = { id: uid(), text: subItem.text, done: false, tag: subItem.tag || parent.tag, emailId: subItem.emailId, meta: subItem.meta, createdAt: new Date().toISOString() };
+          const standalone = { id: uid(), text: subItem.text, done: false, tag: subItem.tag || parent.tag, emailId: subItem.emailId, ...todoMessageKey(subItem), meta: subItem.meta, createdAt: new Date().toISOString() };
           let updated;
           if (newSubItems.length === 0) {
             updated = items.filter(t => t.id !== parentId);
@@ -5070,8 +5067,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               // groupEmail: merge an email drag into this item
                               const groupEmail = (email) => {
                                 const fromName = email.from?.includes("<") ? email.from.split("<")[0].trim().replace(/^"|"$/g,"") : (email.from || "Unknown");
-                                const newSubItem = { id: uid(), text: `Reply to ${fromName} — ${email.subject || "(no subject)"}`, done: false, emailId: email.id };
-                                const prevSubItems = item.subItems || [{ id: uid(), text: item.text, done: false, emailId: item.emailId, meta: item.meta }];
+                                const newSubItem = { id: uid(), text: `Reply to ${fromName} — ${email.subject || "(no subject)"}`, done: false, emailId: email.id, messageId: draggedMessageId(email), createdAt: new Date().toISOString() };
+                                const prevSubItems = item.subItems || [{ id: uid(), text: item.text, done: false, emailId: item.emailId, meta: item.meta, ...todoMessageKey(item) }];
                                 const newSubItems = [...prevSubItems, newSubItem];
                                 const newText = `${item.text.replace(/\s*\+\d+$/, "")} +${newSubItems.length - 1}`;
                                 saveTodo(todoItemsRef.current.map(t => t.id === item.id ? { ...t, text: newText, subItems: newSubItems } : t));
@@ -5084,8 +5081,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 const done = items.filter(t => t.done);
                                 const dragged = active[srcIdx];
                                 if (!dragged || dragged.id === item.id) return;
-                                const newSubItem = { id: dragged.id, text: dragged.text, done: false, emailId: dragged.emailId, meta: dragged.meta, tag: dragged.tag };
-                                const prevSubItems = item.subItems || [{ id: uid(), text: item.text, done: false, emailId: item.emailId, meta: item.meta }];
+                                const newSubItem = { id: dragged.id, text: dragged.text, done: false, emailId: dragged.emailId, meta: dragged.meta, tag: dragged.tag, ...todoMessageKey(dragged) };
+                                const prevSubItems = item.subItems || [{ id: uid(), text: item.text, done: false, emailId: item.emailId, meta: item.meta, ...todoMessageKey(item) }];
                                 const newSubItems = [...prevSubItems, newSubItem];
                                 const newText = `${item.text.replace(/\s*\+\d+$/, "")} +${newSubItems.length - 1}`;
                                 const merged = active.filter((_, i) => i !== srcIdx).map(t => t.id === item.id ? { ...t, text: newText, subItems: newSubItems } : t);
@@ -5258,6 +5255,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         {item.emailId && isExpanded && (
                                           <button onClick={e => { e.stopPropagation();
                                               setInboxSelected(item.emailId);
+                                              if (item.messageId) setThreadMsgSelected(prev => ({ ...prev, [item.emailId]: item.messageId }));
                                               saveDashPanels({ ...dashPanels, emails: true });
                                               requestAnimationFrame(() => { requestAnimationFrame(() => {
                                                 const container = emailListRef.current;
@@ -5274,6 +5272,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                     {!(item.tag && item.tag !== "manual") && item.emailId && isExpanded && (
                                       <button onClick={e => { e.stopPropagation();
                                           setInboxSelected(item.emailId);
+                                          if (item.messageId) setThreadMsgSelected(prev => ({ ...prev, [item.emailId]: item.messageId }));
                                           saveDashPanels({ ...dashPanels, emails: true });
                                           requestAnimationFrame(() => { requestAnimationFrame(() => {
                                             const container = emailListRef.current;
@@ -5443,7 +5442,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                           {/* Ungroup button */}
                                           <button title="Remove from group" onClick={e => { e.stopPropagation();
                                             const newSubItems = item.subItems.filter(s => s.id !== sub.id);
-                                            const standalone = { id: uid(), text: sub.text, done: false, tag: sub.tag || item.tag, emailId: sub.emailId, meta: sub.meta, createdAt: new Date().toISOString() };
+                                            const standalone = { id: uid(), text: sub.text, done: false, tag: sub.tag || item.tag, emailId: sub.emailId, ...todoMessageKey(sub), meta: sub.meta, createdAt: new Date().toISOString() };
                                             if (newSubItems.length === 0) {
                                               // Parent becomes standalone again
                                               saveTodo([...todoItems.filter(t => t.id !== item.id).map(t => t), standalone]);
@@ -5458,7 +5457,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                           <button onClick={() => {
                                             const newSubItems = item.subItems.filter(s => s.id !== sub.id);
                                             if (newSubItems.length === 0) { saveTodo(todoItems.filter(t => t.id !== item.id)); }
-                                            else if (newSubItems.length === 1) { saveTodo(todoItems.map(t => t.id === item.id ? { ...t, text: newSubItems[0].text, subItems: undefined, count: undefined, emailId: newSubItems[0].emailId, meta: newSubItems[0].meta } : t)); }
+                                            else if (newSubItems.length === 1) { saveTodo(todoItems.map(t => t.id === item.id ? { ...t, text: newSubItems[0].text, subItems: undefined, count: undefined, emailId: newSubItems[0].emailId, messageId: newSubItems[0].messageId, meta: newSubItems[0].meta } : t)); }
                                             else {
                                               const newCount = newSubItems.length;
                                               const newText = item.text.replace(/\s*\+\d+$/, "") + ` +${newCount - 1}`;
@@ -5563,6 +5562,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                 const newSubItems = toGroup.map(t => {
                                   const sub = { id: t.id, text: t.text, done: false };
                                   if (t.emailId) sub.emailId = t.emailId;
+                                  if (t.messageId) sub.messageId = t.messageId;
                                   if (t.meta) sub.meta = t.meta;
                                   if (t.tag) sub.tag = t.tag;
                                   if (t.replyTo) sub.replyTo = t.replyTo;
