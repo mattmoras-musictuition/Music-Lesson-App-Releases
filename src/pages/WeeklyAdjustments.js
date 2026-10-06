@@ -11,7 +11,7 @@ import { loadData, saveData, saveStudents } from "../utils/backup";
 import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
-import { getMissedReasonLabel } from "../utils/missedReasonLabels";
+import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -6985,7 +6985,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       <div style={{ color: colors.textLight, fontSize: 11 }}>
                         {m.instrument}{m.day ? ` · was ${m.day} ${m.start}` : ""}
                       </div>
-                      {m.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(m.reason, m.reasonDetail)}</div> : null}
+                      {m.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{m.reason === "informed_absence" ? "Pre-marked absent" : getMissedTrayLabel(m)}</div> : null}
                     </div>
                     );
                   })}
@@ -7026,7 +7026,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           <div style={{ color: colors.textLight, fontSize: 11 }}>
                             {tm.instrument || ""}{tm.day ? ` · was ${tm.day} ${tm.start || ""}` : ""}
                           </div>
-                          {tm.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{tm.reason === "informed_absence" ? "Pre-marked absent" : getMissedReasonLabel(tm.reason, tm.reasonDetail)}</div> : null}
+                          {tm.reason ? <div style={{ color: colors.danger, fontSize: 10, marginTop: 2 }}>{tm.reason === "informed_absence" ? "Pre-marked absent" : getMissedTrayLabel(tm)}</div> : null}
                         </div>
                       );
                     })}

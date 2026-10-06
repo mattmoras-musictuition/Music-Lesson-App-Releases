@@ -34,6 +34,7 @@ import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, 
 import { runCalendarSegmentTests } from "./calendarSegmentsSmokeTests";
 import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
 import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
+import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -426,6 +427,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Card interruption warning respects affected classes ──
   runCardInterruptionTests(assert);
+
+  // ── Missed lesson tray reason label ──
+  runMissedTrayLabelTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

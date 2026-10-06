@@ -14,7 +14,32 @@ export function getMissedReasonLabel(reason, reasonDetail) {
   }
   const entry = TALLY_REASONS.find(r => r.value === reason);
   if (entry) return entry.label;
+  if (reason === "timetable_clash") return "Timetable clash";
   return reason;
+}
+
+/**
+ * Missed-lesson tray label. Display only — the stored entry is untouched.
+ * A generator miss is saved as reason "timetable_clash" with the original
+ * generator text kept in notes ("No available slot — Year 5 Camp",
+ * "Master break conflict"), so the event name is recovered from notes.
+ * Everything else falls through to getMissedReasonLabel.
+ *
+ *   { reason: "timetable_clash", notes: "No available slot — Year 5 Camp" } → "Year 5 Camp"
+ *   { reason: "timetable_clash", notes: "Master break conflict" }          → "Master break"
+ *   { reason: "timetable_clash", notes: "" }                               → "Timetable clash"
+ */
+export function getMissedTrayLabel(m) {
+  if (!m || !m.reason) return null;
+  if (m.reason === "timetable_clash") {
+    const notes = (m.notes || "").trim();
+    const slot = notes.match(/^No available slot\s*[—–-]\s*(.+)$/);
+    const name = slot ? slot[1].trim() : "";
+    if (name && name !== "Interruption / no slot") return name;
+    if (/master break/i.test(notes)) return "Master break";
+    return "Timetable clash";
+  }
+  return getMissedReasonLabel(m.reason, m.reasonDetail);
 }
 
 /**
