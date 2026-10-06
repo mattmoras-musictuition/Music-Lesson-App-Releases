@@ -33,6 +33,7 @@ import { runRegularAbsenceCharacterizationTests, runRegularAbsencePlannerTests, 
 import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
 import { runCalendarSegmentTests } from "./calendarSegmentsSmokeTests";
 import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
+import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -422,6 +423,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Dashboard to-do: one item per dragged email message ──
   runTodoEmailKeyTests(assert);
+
+  // ── Card interruption warning respects affected classes ──
+  runCardInterruptionTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

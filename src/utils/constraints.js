@@ -157,6 +157,18 @@ export function isConstraintVisibleForLesson(lesson, lessons, todayStr, weekDate
   return true;
 }
 
+// An interruption limited to some classes warns a group or band card only if
+// at least one member's class matches it — the same classMatchesInterruption
+// the scheduler uses. A blank class never counts: classMatchesInterruption("")
+// matches everything. "all" (or no value) affects every card, as before.
+export function interruptionAffectsMembers(intr, memberIds, students) {
+  if (!intr.affectsClasses || intr.affectsClasses === "all") return true;
+  return (memberIds || []).some(id => {
+    const cls = ((students || []).find(s => s.id === id)?.className || "").trim();
+    return !!cls && classMatchesInterruption(cls, intr.affectsClasses);
+  });
+}
+
 /**
  * Compute constraint warnings for a single lesson in a (day, slot, lessons)
  * context, with all environment data supplied via ctx.
@@ -247,11 +259,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
         if (intr.schoolId !== lesson.schoolId && intr.schoolId !== "all") continue;
         const iStart = intr.date, iEnd = intr.endDate || intr.date;
         if (targetDate < iStart || targetDate > iEnd) continue;
+        if (!interruptionAffectsMembers(intr, memberIds, students)) continue;
         if (intr.startTime && intr.endTime) {
           const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
           if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
         }
-        warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
+        warnings.push(`${intr.title} — interruption on ${newDay}`);
         break;
       }
     }
@@ -289,11 +302,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
         if (intr.schoolId !== lesson.schoolId && intr.schoolId !== "all") continue;
         const iStart = intr.date, iEnd = intr.endDate || intr.date;
         if (targetDate < iStart || targetDate > iEnd) continue;
+        if (!interruptionAffectsMembers(intr, memberIds, students)) continue;
         if (intr.startTime && intr.endTime) {
           const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
           if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
         }
-        warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
+        warnings.push(`${intr.title} — interruption on ${newDay}`);
         break;
       }
     }
@@ -315,7 +329,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     weekKey,
     reasons: ["informed_absence"],
   });
-  if (hasPreMarkedAbsence) warnings.push("⚠ Pre-marked absence this week — student not expected in");
+  if (hasPreMarkedAbsence) warnings.push("Pre-marked absence this week — student not expected in");
   const hasRequiredHere = (hints.requiredTimes || []).some(function(rt) { return rt.day === newDay && rt.start === slot.start; });
   if (slot.type === "before_school" && !student.availableBefore && !hasRequiredHere) warnings.push("Student not available before school");
   if (slot.type === "after_school" && !student.availableAfter && !hasRequiredHere) warnings.push("Student not available after school");
@@ -375,7 +389,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
         const sStart = timeToMin(slot.start), sEnd = timeToMin(slot.end);
         if (sStart >= timeToMin(intr.endTime) || sEnd <= timeToMin(intr.startTime)) continue;
       }
-      warnings.push(`⚠ ${intr.title} — interruption on ${newDay}`);
+      warnings.push(`${intr.title} — interruption on ${newDay}`);
       break;
     }
   }
