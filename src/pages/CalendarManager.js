@@ -10,6 +10,7 @@ import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { ANTHROPIC_MODEL } from "../constants";
 import { PageTitle, NavButtons, Btn } from "../components/ui/SharedUI";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
+import { getEventSegment, orderDayEvents } from "../utils/calendarSegments";
 import { loadTeacherSharedEvents, normaliseTeacherSharedEvent } from "../utils/interruptionsDB";
 
 // ---- Constants ----
@@ -601,19 +602,10 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
   const CORAL_LITE  = colors.accentLight;
   const WEEKEND_BG  = darkMode ? "#252232" : "#E8EDF5";
 
-  // ---- Span position ----
-  const getSpanPos = (ev, ds) => {
-    const start = ev.startDate || ev.date;
-    const end   = ev.endDate || start;
-    if (!end || end <= start) return "single";
-    if (!ev._cont && ds === start) return "start";
-    if (ev._cont  && ds === end)   return "end";
-    if (ev._cont)                  return "mid";
-    return "single";
-  };
-
   // ---- Event chip ----
-  const renderChip = (ev, idx, ds) => {
+  // Multi-day events render one filled segment per day (getEventSegment), so
+  // the days read as a single continuous bar.
+  const renderChip = (ev, idx, ds, di) => {
     const meta    = ev._teacherEventMeta || EVENT_TYPE_META[ev._displayType || ev.type] || EVENT_TYPE_META.personal;
     const isTeacherEvent = ev.type === "teacher_event";
     const teacherColor = isTeacherEvent ? (ev.teacher_color || "#7C3AED") : null;
@@ -622,18 +614,18 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
     const chipBorder = teacherColor || schoolColor || SLATE_BLUE;
     const chipBg     = teacherColor ? (darkMode ? `${teacherColor}22` : `${teacherColor}18`) : schoolColor ? (darkMode ? `${schoolColor}22` : `${schoolColor}18`) : (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.08)");
     const chipText   = teacherColor || schoolColor || (darkMode ? "rgba(255,255,255,0.85)" : colors.sidebarActive);
-    const spanPos = getSpanPos(ev, ds);
-    const isBar   = spanPos === "mid" || spanPos === "end";
-    const brLeft  = (spanPos === "start" || spanPos === "single") ? 3 : 0;
-    const brRight = (spanPos === "end"   || spanPos === "single") ? 3 : 0;
-    const mLeft   = isBar                                          ? -7 : 0;
-    const mRight  = spanPos === "start" || spanPos === "mid"       ? -7 : 0;
+    const seg     = getEventSegment(ev, ds, di);
+    const brLeft  = seg.joinLeft  ? 0 : 3;
+    const brRight = seg.joinRight ? 0 : 3;
+    // Joined edges bleed through the cell's 7px padding to meet the gridline.
+    const mLeft   = seg.joinLeft  ? -7 : 0;
+    const mRight  = seg.joinRight ? -7 : 0;
 
     return (
       <div key={`${ev.id}-${idx}`}
         onClick={e => { e.stopPropagation(); openEditEvent(ev); }}
         onMouseEnter={e => {
-          if (!isBar) {
+          if (!seg.multi) {
             e.currentTarget.style.whiteSpace = "normal";
             const fade = e.currentTarget.querySelector(".chip-fade");
             if (fade) fade.style.display = "none";
@@ -642,7 +634,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
           setHoverPopover({ ev, rect, meta });
         }}
         onMouseLeave={e => {
-          if (!isBar) {
+          if (!seg.multi) {
             e.currentTarget.style.whiteSpace = "nowrap";
             const fade = e.currentTarget.querySelector(".chip-fade");
             if (fade) fade.style.display = "block";
@@ -653,28 +645,25 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
           position:      "relative",
           fontSize:      11,
           fontWeight:    600,
-          paddingLeft:   isBar ? 0 : 5,
-          paddingRight:  5,
-          paddingTop:    isBar ? 0 : 2,
-          paddingBottom: isBar ? 0 : 2,
-          height:        isBar ? 8 : "auto",
+          paddingLeft:   seg.joinLeft ? 7 : 5,
+          paddingRight:  seg.joinRight ? 7 : 5,
+          paddingTop:    2,
+          paddingBottom: 2,
           borderRadius:  `${brLeft}px ${brRight}px ${brRight}px ${brLeft}px`,
           marginBottom:  2,
           marginLeft:    mLeft,
           marginRight:   mRight,
           background:    chipBg,
-          color:         isBar ? "transparent" : chipText,
-          borderLeft:    (spanPos === "start" || spanPos === "single") ? `3px solid ${chipBorder}` : "none",
-          borderTop:     isBar ? `2px solid ${chipBorder}` : "none",
-          borderBottom:  isBar ? `2px solid ${chipBorder}` : "none",
+          color:         chipText,
+          borderLeft:    seg.accent ? `3px solid ${chipBorder}` : "none",
           whiteSpace:    "nowrap",
           overflow:      "hidden",
           cursor:        "pointer",
           lineHeight:    1.5,
           zIndex:        1,
         }}>
-        {!isBar && (ev._cont ? "↳ " : "") + ev.title}
-        {!isBar && (
+        {seg.showLabel ? ev.title : " "}
+        {!seg.multi && (
           <span className="chip-fade" style={{ position:"absolute", top:0, right:0, bottom:0, width:22,
             background:`linear-gradient(to right, transparent, ${chipBg})`, pointerEvents:"none" }} />
         )}
@@ -969,9 +958,9 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                     ? (darkMode ? "rgba(52,69,101,0.25)" : "rgba(52,69,101,0.08)")
                     : baseBg;
                   const allDayEvs   = eventMap[ds] || [];
-                  const dayEvs      = activeFilters.length > 0
+                  const dayEvs      = orderDayEvents(activeFilters.length > 0
                     ? allDayEvs.filter(ev => activeFilters.includes(ev._displayType || ev.type))
-                    : allDayEvs;
+                    : allDayEvs);
                   return (
                     <div key={di}
                       onClick={e => {
@@ -1038,7 +1027,7 @@ export function CalendarManager({ interruptions, setInterruptions, schools, spec
                       )}
 
                       {tb && isCurrMonth && <HolidayBadge tb={tb} />}
-                      {dayEvs.slice(0, 3).map((ev, ei) => renderChip(ev, ei, ds))}
+                      {dayEvs.slice(0, 3).map((ev, ei) => renderChip(ev, ei, ds, di))}
                       {allDayEvs.length > 3 && activeFilters.length === 0 && (
                         <div style={{ fontSize:10, color:colors.textMuted, fontWeight:600, lineHeight:1.3 }}>
                           +{allDayEvs.length - 3} more

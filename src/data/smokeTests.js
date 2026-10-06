@@ -31,6 +31,7 @@ import { runForwardEnforceCharacterizationTests, runForwardEnforcePresenceTests,
 import { runBandForwardCharacterizationTests, runBandForwardHelperTests, runBandForwardSaveTests, runBandForwardTallyTests } from "./bandForwardSmokeTests";
 import { runRegularAbsenceCharacterizationTests, runRegularAbsencePlannerTests, runRegularAbsenceWrapperTests, runRegularAbsenceImportTests, runRegularAbsenceNoteTests, runRegularAbsenceRegenTests } from "./bandRegularAbsenceSmokeTests";
 import { runForwardAbsenceCharacterizationTests, runForwardAbsenceConsumeTests, runForwardAbsencePlannerTests, runForwardAbsenceTallyTests, runForwardAbsenceDisplayTests, runForwardStaleTests, runForwardStaleChipTests } from "./bandForwardAbsenceSmokeTests";
+import { runCalendarSegmentTests } from "./calendarSegmentsSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -414,6 +415,9 @@ export function runSmokeTests(logErrorFn) {
   runRegularAbsenceImportTests(assert);
   runRegularAbsenceNoteTests(assert);
   runRegularAbsenceRegenTests(assert);
+
+  // ── Calendar multi-day event bar ──
+  runCalendarSegmentTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
