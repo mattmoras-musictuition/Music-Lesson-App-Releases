@@ -340,7 +340,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
   );
 }
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, onWeekCleared = () => {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -3190,6 +3190,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
         notify(`${day} cleared`);
       }
     } else {
+      // v2.49.3 — record the clear so the next sync deletes the server row;
+      // otherwise the week loads straight back (sync is upsert-only).
+      onWeekCleared(storageKey);
       setWeeklyTimetables(prev => {
         const updated = { ...prev };
         delete updated[storageKey];

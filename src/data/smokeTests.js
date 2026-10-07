@@ -37,6 +37,7 @@ import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
 import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
+import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -436,6 +437,9 @@ export function runSmokeTests(logErrorFn) {
   // ── Hidden archived cards never count against visible ones (v2.49.1) ──
   runHiddenCardTests(assert);
   runHiddenCardOutputTests(assert);
+
+  // ── Clear full week really deletes (v2.49.3) ──
+  runWeekDeleteTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

@@ -39,7 +39,8 @@ import { loadSpecialistsFromSupabase, syncSpecialistsToSupabase } from "./utils/
 import { loadMasterBreaksFromSupabase, syncMasterBreaksToSupabase } from "./utils/masterBreaksDB";
 import { loadTallyEntriesFromSupabase, syncTallyEntriesToSupabase } from "./utils/tallyEntriesDB";
 import { loadTimetableFromSupabase, syncTimetableToSupabase } from "./utils/timetableDB";
-import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase } from "./utils/weeklyAdjustmentsDB";
+import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase, deleteWeeklyAdjustmentRow } from "./utils/weeklyAdjustmentsDB";
+import { planWeekDeletes, pollShouldSkipKey, withoutPendingDeletes, splitStorageKey, pendingWeekDeleteKeys, readPendingWeekDeletes, writePendingWeekDeletes } from "./utils/weekDeletes";
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
 // ── Utilities ───────────────────────────────────────────────
@@ -988,6 +989,21 @@ export default function MusicTimetableApp() {
   const wttOwnWrittenAtRef = useRef({}); // { "weekKey|schoolId": updated_at } — timestamps we wrote ourselves
   const wttPollLastSeenRef = useRef({}); // { "weekKey|schoolId": updated_at } — last polled state
   const wttPendingWriteRef = useRef(false); // true while debounce is pending or write is in-flight — poll skips all updates
+  // v2.49.3 — "Clear full week" deletes the server row (utils/weekDeletes.js).
+  // Pending deletes persist in localStorage so an offline clear is retried
+  // after a restart instead of the week loading back.
+  const wttClearedKeysRef = useRef(null);   // Set — keys the owner cleared (this session + persisted pending)
+  if (wttClearedKeysRef.current === null) wttClearedKeysRef.current = new Set(readPendingWeekDeletes());
+  const wttServerDeletedRef = useRef(new Set()); // Set — cleared keys whose server row is gone
+  const wttTombstoneRef = useRef({});            // { key: pollSeq when its delete landed }
+  const wttPollSeqRef = useRef(0);               // increments at each poll start
+  const wttSyncChainRef = useRef(Promise.resolve()); // syncs run one at a time, in order
+  const wttSyncInflightRef = useRef(0);
+  const handleWeekCleared = (storageKey) => {
+    wttClearedKeysRef.current.add(storageKey);
+    wttServerDeletedRef.current.delete(storageKey);
+    writePendingWeekDeletes([...readPendingWeekDeletes(), storageKey]);
+  };
   // Refs for latest state values — used by auto-tally timer to avoid stale closures
   const weeklyTimetablesRef = useRef({});
   const timetableRef = useRef(null);
@@ -2062,6 +2078,8 @@ export default function MusicTimetableApp() {
         logError("Failed to load weekly timetables from Supabase", err.message);
         wt = await loadData(STORAGE_KEYS.weeklyTimetables, {});
       }
+      // v2.49.3 — a cleared week whose delete has not landed stays cleared.
+      wt = withoutPendingDeletes(wt, readPendingWeekDeletes());
       // ── Tally entries: try Supabase first, fall back to localStorage ──
       let tally;
       try {
@@ -2393,22 +2411,51 @@ export default function MusicTimetableApp() {
       // Mark a pending write immediately — poll will skip all updates until this clears
       wttPendingWriteRef.current = true;
       const uid = sessionUserId; // capture for async closure
+      const snapshot = weeklyTimetables; // capture for the queued run
       wttSyncDebounceRef.current = setTimeout(() => {
         wttSyncDebounceRef.current = null;
-        syncWeeklyAdjustmentsToSupabase(weeklyTimetables, uid)
-          .then(upserted => {
+        wttSyncInflightRef.current += 1;
+        // v2.49.3 — syncs run one at a time, in order, so an older upsert can
+        // never land after a newer full-week delete and bring the row back.
+        wttSyncChainRef.current = wttSyncChainRef.current.then(async () => {
+          try {
+            const upserted = await syncWeeklyAdjustmentsToSupabase(snapshot, uid);
             if (upserted) {
               upserted.forEach(r => {
                 const k = `${r.week_key}|${r.school_id}`;
                 wttOwnWrittenAtRef.current[k] = r.updated_at;
               });
             }
-          })
-          .catch(err => logError("Weekly timetables Supabase sync failed", err.message))
-          .finally(() => {
-            // Write complete (success or failure) — poll can resume
-            wttPendingWriteRef.current = false;
+          } catch (err) {
+            logError("Weekly timetables Supabase sync failed", err.message);
+          }
+          // Full-week clears: delete the rows still owed (utils/weekDeletes.js).
+          const { toDelete, restored } = planWeekDeletes({
+            clearedKeys: wttClearedKeysRef.current, serverDeleted: wttServerDeletedRef.current, weeklyTimetables: snapshot,
           });
+          restored.forEach(k => { wttServerDeletedRef.current.delete(k); delete wttTombstoneRef.current[k]; });
+          for (const k of toDelete) {
+            // Re-check against the latest state: an Undo since this run was
+            // queued restores the week, and the next run saves it.
+            if (k in (weeklyTimetablesRef.current || {})) continue;
+            try {
+              const { weekKey, schoolId } = splitStorageKey(k);
+              await deleteWeeklyAdjustmentRow(weekKey, schoolId, uid);
+              wttServerDeletedRef.current.add(k);
+              wttTombstoneRef.current[k] = wttPollSeqRef.current;
+              delete wttOwnWrittenAtRef.current[k];
+              delete wttPollLastSeenRef.current[k];
+            } catch (err) {
+              logError("Clear week: server delete failed (will retry)", err.message);
+            }
+          }
+          writePendingWeekDeletes(pendingWeekDeleteKeys(wttClearedKeysRef.current, wttServerDeletedRef.current, weeklyTimetablesRef.current));
+        }).finally(() => {
+          wttSyncInflightRef.current -= 1;
+          // Write complete (success or failure) — poll can resume once nothing
+          // is queued, in flight, or waiting on the debounce.
+          if (wttSyncInflightRef.current === 0 && !wttSyncDebounceRef.current) wttPendingWriteRef.current = false;
+        });
       }, 2000);
     } else {
       console.warn("[sync] Weekly timetables — no Supabase session");
@@ -2438,6 +2485,7 @@ export default function MusicTimetableApp() {
       // Skip the entire poll cycle if we have a write pending or in-flight —
       // prevents the poll from overwriting the admin's own unsaved changes
       if (wttPendingWriteRef.current) return;
+      const pollSeq = ++wttPollSeqRef.current;
       try {
         const { data, error } = await supabase
           .from("weekly_adjustments")
@@ -2445,8 +2493,14 @@ export default function MusicTimetableApp() {
         if (error || !data) return;
         let changed = false;
         const updates = {};
+        const pendingDeletes = new Set(pendingWeekDeleteKeys(wttClearedKeysRef.current, wttServerDeletedRef.current, weeklyTimetablesRef.current));
         for (const row of data) {
           const k = `${row.week_key}|${row.school_id}`;
+          // v2.49.3 — a fully cleared week: skip its row while the delete is
+          // owed, and skip a copy fetched before the delete landed. A row seen
+          // by a poll that started after the delete is a genuinely new row
+          // (e.g. the drain) and is taken.
+          if (pollShouldSkipKey(k, pollSeq, pendingDeletes, wttTombstoneRef.current)) continue;
           // Skip if this updated_at is one we wrote ourselves
           if (wttOwnWrittenAtRef.current[k] === row.updated_at) continue;
           // Skip if we've already processed this version
@@ -6621,7 +6675,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setPage("students"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} ttAckedConstraints={ttAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} onWeekCleared={handleWeekCleared} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setPage("students"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} ttAckedConstraints={ttAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} catchups={catchups} groups={groups} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}

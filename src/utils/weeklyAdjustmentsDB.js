@@ -112,3 +112,32 @@ export async function syncWeeklyAdjustmentsToSupabase(weeklyTimetables, userId) 
   // This is used by the polling loop to skip rows that this app just wrote.
   return allUpserted;
 }
+
+// ── Delete one week (v2.49.3) ────────────────────────────────
+// "Clear full week" only. Deletes the (week_key, school_id) row. If the
+// delete removes nothing while the row still exists (the database refused
+// it), saves the week as empty instead so its lessons can never come back.
+// Returns "deleted" | "emptied" | "absent". Throws on a network/server error
+// so the caller keeps the key pending and retries on the next sync.
+export async function deleteWeeklyAdjustmentRow(weekKey, schoolId, userId) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .delete()
+    .eq("week_key", weekKey)
+    .eq("school_id", schoolId)
+    .select("week_key");
+  if (error) throw error;
+  if (data && data.length > 0) return "deleted";
+  const { data: still, error: selErr } = await supabase
+    .from(TABLE)
+    .select("week_key")
+    .eq("week_key", weekKey)
+    .eq("school_id", schoolId);
+  if (selErr) throw selErr;
+  if (!still || still.length === 0) return "absent";
+  await upsertBatchWithRetry([{
+    user_id: userId, week_key: weekKey, school_id: schoolId,
+    lessons: [], missed: [], notes: "", generated_at: "", breaks: [],
+  }]);
+  return "emptied";
+}
