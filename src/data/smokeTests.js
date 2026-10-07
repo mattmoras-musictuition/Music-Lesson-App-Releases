@@ -39,6 +39,7 @@ import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
+import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -444,6 +445,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Per-day admin edit stamps (v2.49.3) ──
   runDayEditTests(assert);
+
+  // ── Stale teacher-copy warning + Actuals pill after 6pm (v2.49.3) ──
+  runTeacherCopyTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

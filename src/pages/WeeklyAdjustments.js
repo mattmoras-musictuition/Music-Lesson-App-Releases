@@ -13,6 +13,7 @@ import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
 import { visibleLessons, visibleWeeklyTimetables, dayParentRows } from "../utils/hiddenCards";
+import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip } from "../utils/teacherCopy";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -866,6 +867,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       .filter(([k]) => k.startsWith(prefix))
       .flatMap(([, entry]) => entry.lessons || []);
   }, [teacherActuals, weekKey, selectedSchool]);
+
+  // v2.49.3 — days with a stored teacher copy (drain replaces them at 6pm).
+  const teacherCopyByDay = useMemo(
+    () => teacherCopyDays(teacherActuals, weekKey, selectedSchool),
+    [teacherActuals, weekKey, selectedSchool]
+  );
 
   // Parallel flatten for teacher-actuals missed entries — used by the
   // missed zone when a day's Actuals toggle is ON.
@@ -6460,6 +6467,13 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
                             )}
                             {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
+                            {/* v2.49.3 — read-only warning: a stored teacher copy replaces this day at 6pm */}
+                            {teacherCopyByDay[d] && showTeacherCopyNote(dayDateStr, melbourneToday()) && (
+                              <div title={teacherCopyTooltip(teacherCopyByDay[d], teachers)}
+                                style={{ fontSize: 9, fontWeight: 600, color: "#F59E0B", marginTop: 2, lineHeight: 1.25, cursor: "help" }}>
+                                Teacher copy stored: replaces this day at 6pm
+                              </div>
+                            )}
                             {/* Bottom row: lane chips (left, when 2+ lanes) + Actuals (right) */}
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
                               {dayLanes.length >= 2 ? (
@@ -6487,10 +6501,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 </div>
                               ) : <div />}
                               {(() => {
-                                // Suppress entirely on drained past days — pg_cron has already
+                                // Suppress entirely on drained days — pg_cron has already
                                 // merged teacher_actuals into weekly_adjustments, so the admin
-                                // view IS the actuals. No toggle needed.
-                                const isDayDrained = dayDateStr && dayDateStr < melbourneToday();
+                                // view IS the actuals. No toggle needed. v2.49.3 — today
+                                // counts as drained from 18:00 Melbourne.
+                                const isDayDrained = actualsPillHidden(dayDateStr, melbourneToday(), melbourneNow().getHours());
                                 if (isDayDrained) return null;
                                 const ghostKey = `${weekKey}|${selectedSchool}|${d}`;
                                 const ghostsVisible = !!dayGhostsVisible[ghostKey];
