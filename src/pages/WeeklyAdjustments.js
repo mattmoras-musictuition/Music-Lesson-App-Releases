@@ -12,7 +12,7 @@ import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
-import { isHiddenArchivedCard } from "../utils/hiddenCards";
+import { visibleLessons, visibleWeeklyTimetables, dayParentRows } from "../utils/hiddenCards";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1003,10 +1003,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // grid to lessons bound to the day's viewed lane (or, for legacy cards
   // without bucket_id, only show under the default first-added lane).
   // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
-  const displayLessons = useMemo(() => (weeklyData?.lessons || []).filter(l => {
-    if (isHiddenArchivedCard(l, students)) return false;
-    return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
-  }), [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool]);
+  const displayLessons = useMemo(() => visibleLessons(weeklyData?.lessons, students)
+    .filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool)),
+  [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool]);
 
   // Shared enriched catch-ups for the selected school. ONE source consumed by
   // the period grid (wLessons) AND the day-header export (PDF + Parents/Class
@@ -4085,34 +4084,19 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // uses, then apply the existing day + lane filter. This makes
             // catch-up students' parents and class teachers appear in the
             // Parents / Class Teachers email lists.
-            const dayLessons = mergeCatchupsIntoLessons(weeklyData?.lessons || [], enrichedCatchups, weekKey).filter(l => {
+            // v2.49.2 — visible lessons only: a hidden archived card adds no
+            // recipients (parents, class teachers, staff) and no export row.
+            const dayLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey).filter(l => {
               if (!activeDays.includes(l.day)) return false;
               return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
             });
-            // Collect all parent emails
-            const parentEmailSet = new Set();
-            const parentRows = []; // { name, email } for individual list
-            dayLessons.forEach(l => {
-              // v2.41.0 — band cards contribute the students attending that
-              // session (legacy bands: members[]); see parentEmailStudentIds
-              // (adminParentEmailStudentIds also drops brought-forward absentees).
-              const studentIds = adminParentEmailStudentIds(l, weeklyData?.missed || EMPTY_LESSONS);
-              studentIds.forEach(sid => {
-                const st = students.find(s => s.id === sid);
-                if (!st) return;
-                (st.parents || []).forEach(p => {
-                  const _e = (p.email || "").trim();
-                  if (_e && !parentEmailSet.has(_e.toLowerCase())) {
-                    parentEmailSet.add(_e.toLowerCase());
-                    parentRows.push({ name: p.name || _e, email: _e });
-                  }
-                });
-                // v2.18.2: top-level parentEmail shape (assistant-written records)
-                const _tE = (st.parentEmail || "").trim();
-                if (_tE && !parentEmailSet.has(_tE.toLowerCase())) { parentEmailSet.add(_tE.toLowerCase()); parentRows.push({ name: st.parentName || _tE, email: _tE }); }
-              });
-            });
-            const allParentEmails = [...parentEmailSet];
+            // Collect all parent emails. v2.41.0 — band cards contribute the
+            // students attending that session (legacy bands: members[]); see
+            // parentEmailStudentIds (adminParentEmailStudentIds also drops
+            // brought-forward absentees). Both parent shapes: parents[] and the
+            // v2.18.2 top-level parentEmail.
+            const parentRows = dayParentRows(dayLessons, students, l => adminParentEmailStudentIds(l, weeklyData?.missed || EMPTY_LESSONS));
+            const allParentEmails = parentRows.map(r => r.email.toLowerCase());
             // Collect all class teacher emails
             const teacherEmailSet = new Set();
             const teacherRows = []; // { name, email }
@@ -4190,7 +4174,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // Include catch-ups in the exported PDF (same enriched catch-ups
                 // as the grid + email lists). generateExportHtml filters this
                 // down by schoolId + day internally.
-                const exportSourceLessons = mergeCatchupsIntoLessons(weeklyData?.lessons || [], enrichedCatchups, weekKey);
+                const exportSourceLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey);
                 const html = generateExportHtml(
                   exportSourceLessons,
                   students, schools, teachers,
@@ -5728,7 +5712,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 }
                 onExport({ lessons: allWeekLessons, missed: allWeekMissed }, weekLabel, null, weekKey);
               }} title={isHolidayWeek ? "Disabled" : "Export"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Send size={13} /></Btn>
-            <Btn variant="secondary" onClick={() => !isHolidayWeek && printWeeklyTimetable(weeklyTimetables, schools, students, weekDates, weekLabel)} title={isHolidayWeek ? "Disabled" : "Print week"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Printer size={13} /></Btn>
+            <Btn variant="secondary" onClick={() => !isHolidayWeek && printWeeklyTimetable(visibleWeeklyTimetables(weeklyTimetables, students), schools, students, weekDates, weekLabel)} title={isHolidayWeek ? "Disabled" : "Print week"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Printer size={13} /></Btn>
             {confirmClearAllWeeks ? (
               <div style={{ display: "flex", gap: 6, alignItems: "center", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "4px 10px", whiteSpace: "nowrap", marginTop: -1 }}>
                 <span style={{ fontSize: 12, color: colors.cardBg, fontWeight: 500 }}>Clear all?</span>

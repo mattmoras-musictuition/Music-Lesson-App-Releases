@@ -15,6 +15,7 @@ import {
   exportLessons, exportTeacherSchedules,
   electronPrintToPdf, buildExportFilename
 } from "../data/exportHelpers";
+import { visibleLessons } from "../utils/hiddenCards";
 // Session 96: upload exported timetables to the private documents bucket and
 // register them as Documents so Matt can pick them up later when emailing.
 // Shared with the concert program export since Concerts cluster 5.
@@ -91,7 +92,13 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   }, [showPastDropdown]);
 
   const selectedWeek = source !== "master" ? (availableWeeks || []).find(w => w.weekKey === source) : null;
-  const sourceLessons = selectedWeek ? selectedWeek.lessons : lessons;
+  // v2.49.2 — exports show what the grid shows: hidden archived cards drop out
+  // of every format, the preview count, the teacher/class pickers and the
+  // parent recipient list (all of which read sourceLessons).
+  const sourceLessons = React.useMemo(
+    () => visibleLessons(selectedWeek ? selectedWeek.lessons : lessons, students),
+    [selectedWeek, lessons, students]
+  );
   const sourceLabel = selectedWeek ? selectedWeek.weekLabel : "Master";
 
   // Cluster 12a: WTT exports pass real laneOverrides + weekKey for override-aware

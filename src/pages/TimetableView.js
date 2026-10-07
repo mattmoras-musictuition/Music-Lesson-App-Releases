@@ -16,7 +16,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { ExportDialog } from "../components/ExportDialog";
 import { getRelationalPartnerIds, lessonTimeOverlaps, crossSchoolClashMsg } from "../utils/constraints";
-import { isHiddenArchivedCard, makeHiddenArchivedCardTest } from "../utils/hiddenCards";
+import { makeHiddenArchivedCardTest, visibleLessons } from "../utils/hiddenCards";
 
 // "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
 function buildPreferredDisplayName(name) {
@@ -795,10 +795,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   const allStu = allStudents || students;
 
   // Filter out lessons where the live student record is archived — slot becomes available
-  const schoolLessons = lessons.filter(l => {
-    if (l.schoolId !== selectedSchool) return false;
-    return !isHiddenArchivedCard(l, allStu);
-  });
+  const schoolLessons = visibleLessons(lessons, allStu).filter(l => l.schoolId === selectedSchool);
   let filteredLessons = schoolLessons;
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
   // Cluster 8b: in multi-lane days, restrict to the viewed lane's bucket_id;
@@ -917,7 +914,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             // Per-lesson because multi-day select means each lesson's day has its
             // own viewed lane. Lane resolved from l.schoolId (not selectedSchool)
             // since MTT spans schools when no school is selected.
-            const dayLessons = (timetable?.lessons || []).filter(l => {
+            // v2.49.2 — visible lessons only: hidden archived cards add no recipients.
+            const dayLessons = visibleLessons(timetable?.lessons, allStudents || students).filter(l => {
               if (!activeDays.includes(l.day)) return false;
               if (selectedSchool && l.schoolId !== selectedSchool) return false;
               return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, l.schoolId);
@@ -1450,7 +1448,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
           )}
         </div>
       )}
-      <PageTitle subtitle={`${lessons.length} lessons · ${schoolsWithLessons.length} ${schoolsWithLessons.length === 1 ? "school" : "schools"}${allSchoolUnscheduled.length > 0 ? " · " + allSchoolUnscheduled.length + " unscheduled" : ""}`}
+      <PageTitle subtitle={`${visibleLessons(lessons, allStu).length} lessons · ${schoolsWithLessons.length} ${schoolsWithLessons.length === 1 ? "school" : "schools"}${allSchoolUnscheduled.length > 0 ? " · " + allSchoolUnscheduled.length + " unscheduled" : ""}`}
           navButtons={<NavButtons goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           action={<>
             <Btn onClick={handleExportSchool} title="Export"><Send size={13} /></Btn>

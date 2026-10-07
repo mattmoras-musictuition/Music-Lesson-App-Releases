@@ -19,6 +19,7 @@ import { getUserTemplates, applyMergeCtx, schoolAcronym, schoolIdForSenderEmail,
 import { BUCKET_DOCUMENTS, downloadAsBase64 } from "../utils/storageHelpers";
 import { resolveSenderHeaders, getPrimaryAddress, buildLessonReferenceRows } from "../utils/emailHelpers";
 import { getCurrentWeekMonday, toLocalDateStr, staffContactEmail } from "../utils/helpers";
+import { visibleLessons, visibleWeeklyTimetables } from "../utils/hiddenCards";
 
 export function ComposeModal({ initial, schools, students, teachers, contacts, resources = [], documents = [], timetable = null, weeklyTimetables = {}, onClose, onCancelAll, notify, queueRemaining = 0, onSoundPlay, onSent }) {
   // Session 89 — v6 (HTML DOM-based stripping of quoted replies from initial.body)
@@ -82,7 +83,9 @@ export function ComposeModal({ initial, schools, students, teachers, contacts, r
     );
     if (linked.length === 0) return [];
     const currentMonday = toLocalDateStr(getCurrentWeekMonday());
-    return buildLessonReferenceRows(linked, { timetable, weeklyTimetables, currentMonday });
+    // v2.49.2 — reference rows show what the grid shows (no hidden archived cards).
+    const visibleTimetable = timetable ? { ...timetable, lessons: visibleLessons(timetable.lessons, students) } : timetable;
+    return buildLessonReferenceRows(linked, { timetable: visibleTimetable, weeklyTimetables: visibleWeeklyTimetables(weeklyTimetables, students), currentMonday });
   }, [to, students, timetable, weeklyTimetables]);
   const [sending, setSending] = React.useState(false);
   const [attachments, setAttachments] = React.useState(initial.attachments || []);

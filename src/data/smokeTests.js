@@ -36,6 +36,7 @@ import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
 import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
 import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
+import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -434,6 +435,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Hidden archived cards never count against visible ones (v2.49.1) ──
   runHiddenCardTests(assert);
+  runHiddenCardOutputTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

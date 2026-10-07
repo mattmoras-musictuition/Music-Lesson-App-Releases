@@ -31,6 +31,7 @@ import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
 import { draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey } from "../utils/todoEmailKey";
+import { visibleLessons } from "../utils/hiddenCards";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
@@ -352,7 +353,7 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
       for (const lane of dayLanes) {
         const school = schools.find(s => s.id === lane.schoolId);
         if (school) {
-          const dayLessons = timetable ? timetable.lessons.filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
+          const dayLessons = timetable ? visibleLessons(timetable.lessons, students).filter(l => getCardTeacherId(l, teacherCoverage) === teacher.id && l.schoolId === school.id && l.day === wd.day) : [];
           const lessonCount = dayLessons.length;
           let firstLesson = null, lastLesson = null;
           if (dayLessons.length > 0) {
@@ -2315,7 +2316,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
               if (school) {
                 const wttKey = `${rowMondayStr}|${school.id}`;
                 const wttEntry = weeklyTimetables[wttKey];
-                const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
+                const lessonsSource = visibleLessons(wttEntry ? wttEntry.lessons : (timetable ? timetable.lessons : []), students);
                 const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? rowMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                 const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                 const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
@@ -2501,7 +2502,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                 if (school) {
                   const wttKey = `${rowMondayStr}|${school.id}`;
                   const wttEntry = weeklyTimetables[wttKey];
-                  const lessonsSource = wttEntry ? (wttEntry.lessons || []) : (timetable ? timetable.lessons : []);
+                  const lessonsSource = visibleLessons(wttEntry ? wttEntry.lessons : (timetable ? timetable.lessons : []), students);
                   const dayLessons = lessonsSource.filter(l => getCardTeacherId(l, teacherCoverage, wttEntry ? laneOverrides : null, wttEntry ? rowMondayStr : null) === teacher.id && l.schoolId === school.id && l.day === wd.day);
                   const firstLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.start < b.start ? a : b) : null;
                   const lastLesson = dayLessons.length ? dayLessons.reduce((a, b) => a.end > b.end ? a : b) : null;
@@ -4702,9 +4703,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         const currentMonday = toLocalDateStr(getCurrentWeekMonday());
                                         const weeklyLessons = linkedStudents.flatMap(s => {
                                           const key = `${currentMonday}|${s.schoolId}`;
-                                          return (weeklyTimetables[key]?.lessons || []).filter(l => l.studentId === s.id);
+                                          return visibleLessons(weeklyTimetables[key]?.lessons, students).filter(l => l.studentId === s.id);
                                         });
-                                        const masterLessons = (timetable?.lessons || []).filter(l =>
+                                        const masterLessons = visibleLessons(timetable?.lessons, students).filter(l =>
                                           linkedStudents.some(s => s.id === l.studentId)
                                         );
                                         // Use weekly if we have data for at least one of their schools this week,
