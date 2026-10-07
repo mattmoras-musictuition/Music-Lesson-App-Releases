@@ -12,6 +12,7 @@ import { classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { getCardTeacherId } from "./teacherCoverageDB";
 import { sameDayClashCard } from "../data/bandMemberStates";
 import { getLiveTeacherId, isLessonUnassigned, timeToMin, to12h } from "./helpers";
+import { makeHiddenArchivedCardTest } from "./hiddenCards";
 
 // Single source of truth for the unassigned-teacher warning string. Exported so
 // catch-up card warnings (which carry no teacher by design) can suppress ONLY
@@ -199,6 +200,12 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     specLookupRef, timetable, temporaryLanes = [], crossSchoolLessons,
   } = ctx;
 
+  // A card the grid hides (non-group card of an archived student) gets no
+  // warnings of its own and is never counted against another card.
+  const isHidden = makeHiddenArchivedCardTest(students);
+  if (isHidden(lesson)) return [];
+  const visible = list => (list || []).filter(l => !isHidden(l));
+
   // Bug-2: same-teacher time-overlap clash detection. The teacher-double-booking
   // branches (solo/group/band) search this cross-school pool when supplied,
   // falling back to the single-school list otherwise so non-WTT callers are
@@ -208,7 +215,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   // the range clause adds true overlap across differing per-school slot grids.
   const teacherClash = (pool, conflictTeacherId, validatedLesson) =>
     (crossSchoolLessons || pool).find(l =>
-      l.id !== validatedLesson.id &&
+      l.id !== validatedLesson.id && !isHidden(l) &&
       getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes) === conflictTeacherId &&
       l.day === newDay &&
       lessonTimeOverlaps(l, slot)
@@ -222,7 +229,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const warnings = [];
     const memberIds = (lesson.members || []).map(m => m.studentId);
     const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-    const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
+    const lessonsToCheck = visible(_lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : [])));
     for (const mid of memberIds) {
       // Band Session Attribution — which same-day card (if any) deserves the
       // warning depends on how the member is attributed, so the choice lives
@@ -274,7 +281,7 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
     const warnings = [];
     const memberIds = lesson.studentIds || [];
     const _weeklyData = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-    const lessonsToCheck = _lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : []));
+    const lessonsToCheck = visible(_lessonList || (_weeklyData ? _weeklyData.lessons : (timetable ? timetable.lessons : [])));
     for (const mid of memberIds) {
       const memberLesson = lessonsToCheck.find(l => l.id !== lesson.id && l.day === newDay && (
         l.studentId === mid || (l.isGroup && l.studentIds && l.studentIds.includes(mid))
@@ -355,14 +362,14 @@ export function checkConstraints(lesson, newDay, slot, _lessonList, ctx) {
   if (teacher) {
     // Teacher double-booking: another lesson at the same time with the same teacher
     const _wd1 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-    const lessonsToCheck1 = _lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : []));
+    const lessonsToCheck1 = visible(_lessonList || (_wd1 ? _wd1.lessons : (timetable ? timetable.lessons : [])));
     const conflict1 = teacherClash(lessonsToCheck1, liveTeacherId, lesson);
     if (conflict1) warnings.push(conflict1.schoolId !== lesson.schoolId ? crossSchoolMsg(teacher.name, conflict1) : `${teacher.name} already has ${conflict1.isGroup ? conflict1.groupName || "Group" : (students.find(s => s.id === conflict1.studentId)?.name || conflict1.studentName)} at this time`);
   }
 
   // Multi-lesson students: must have lessons on different days
   const _wd2 = weeklyTimetables[`${weekKey}|${selectedSchool}`];
-  const lessonsToCheck2 = _lessonList || (_wd2 ? _wd2.lessons : (timetable ? timetable.lessons : []));
+  const lessonsToCheck2 = visible(_lessonList || (_wd2 ? _wd2.lessons : (timetable ? timetable.lessons : [])));
   const otherLessons = findSameDayConflicts(lesson, newDay, lessonsToCheck2);
   if (otherLessons.length > 0) {
     const studentObj = student || { name: lesson.studentName };

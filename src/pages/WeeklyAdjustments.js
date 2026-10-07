@@ -12,6 +12,7 @@ import { computeTermWeekNum, isDayPast6pm } from "../utils/tallyHelpers";
 import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
+import { isHiddenArchivedCard } from "../utils/hiddenCards";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1003,10 +1004,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // without bucket_id, only show under the default first-added lane).
   // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
   const displayLessons = useMemo(() => (weeklyData?.lessons || []).filter(l => {
-    if (!l.isGroup && l.studentId) {
-      const liveStu = students.find(s => s.id === l.studentId);
-      if (liveStu?.status === "archived") return false;
-    }
+    if (isHiddenArchivedCard(l, students)) return false;
     return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool);
   }), [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool]);
 

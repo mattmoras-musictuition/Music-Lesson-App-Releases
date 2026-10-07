@@ -16,6 +16,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { ExportDialog } from "../components/ExportDialog";
 import { getRelationalPartnerIds, lessonTimeOverlaps, crossSchoolClashMsg } from "../utils/constraints";
+import { isHiddenArchivedCard, makeHiddenArchivedCardTest } from "../utils/hiddenCards";
 
 // "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
 function buildPreferredDisplayName(name) {
@@ -539,7 +540,11 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   };
 
   const checkConstraints = (lesson, newDay, slot, _lessonList) => {
-    const lessonList = _lessonList || (timetable ? timetable.lessons : []);
+    // Hidden archived cards get no warnings and never count against another
+    // card — same rule as the grid (utils/hiddenCards.js).
+    const isHidden = makeHiddenArchivedCardTest(allStudents || students);
+    if (isHidden(lesson)) return [];
+    const lessonList = (_lessonList || (timetable ? timetable.lessons : [])).filter(l => !isHidden(l));
     if (lesson.isGroup) {
       const warnings = [];
       const memberIds = lesson.studentIds || [];
@@ -792,11 +797,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   // Filter out lessons where the live student record is archived — slot becomes available
   const schoolLessons = lessons.filter(l => {
     if (l.schoolId !== selectedSchool) return false;
-    if (!l.isGroup && l.studentId) {
-      const liveStu = allStu.find(s => s.id === l.studentId);
-      if (liveStu?.status === "archived") return false;
-    }
-    return true;
+    return !isHiddenArchivedCard(l, allStu);
   });
   let filteredLessons = schoolLessons;
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
