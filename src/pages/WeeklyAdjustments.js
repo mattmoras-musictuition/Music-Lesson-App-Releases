@@ -340,7 +340,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
   );
 }
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, onWeekCleared = () => {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, onWeekCleared = () => {}, onStampDays = () => {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -2542,6 +2542,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
           [dateStr]: [...(prev[dateStr] || []), ...data.map(r => ({ id: r.id, teacherId: r.teacher_id }))]
         }));
       }
+      // v2.49.3 — confirming asserts the admin's day: stamp it (no card changes).
+      onStampDays(storageKey, [dayName]);
       if (notify) notify("Day confirmed");
     } catch (e) {
       console.error("confirmDay error:", e);

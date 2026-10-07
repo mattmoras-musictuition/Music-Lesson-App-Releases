@@ -38,6 +38,7 @@ import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
+import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -440,6 +441,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Clear full week really deletes (v2.49.3) ──
   runWeekDeleteTests(assert);
+
+  // ── Per-day admin edit stamps (v2.49.3) ──
+  runDayEditTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

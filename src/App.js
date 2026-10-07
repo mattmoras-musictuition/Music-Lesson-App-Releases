@@ -39,7 +39,8 @@ import { loadSpecialistsFromSupabase, syncSpecialistsToSupabase } from "./utils/
 import { loadMasterBreaksFromSupabase, syncMasterBreaksToSupabase } from "./utils/masterBreaksDB";
 import { loadTallyEntriesFromSupabase, syncTallyEntriesToSupabase } from "./utils/tallyEntriesDB";
 import { loadTimetableFromSupabase, syncTimetableToSupabase } from "./utils/timetableDB";
-import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase, deleteWeeklyAdjustmentRow } from "./utils/weeklyAdjustmentsDB";
+import { loadWeeklyAdjustmentsFromSupabase, syncWeeklyAdjustmentsToSupabase, deleteWeeklyAdjustmentRow, WEEKLY_SELECT, MISSING_DAY_EDITED_MESSAGE } from "./utils/weeklyAdjustmentsDB";
+import { stampChangedDays, stampDays, normaliseDayEditedAt, isMissingDayEditedColumn } from "./utils/dayEdits";
 import { planWeekDeletes, pollShouldSkipKey, withoutPendingDeletes, splitStorageKey, pendingWeekDeleteKeys, readPendingWeekDeletes, writePendingWeekDeletes } from "./utils/weekDeletes";
 import { loadTeacherActualsFromSupabase, teacherActualsStorageKey, teacherActualsRowToEntry } from "./utils/teacherActualsDB";
 
@@ -941,9 +942,13 @@ export default function MusicTimetableApp() {
   const [weeklyTimetables, setWeeklyTimetablesRaw] = useState({}); // { "2025-W10|schoolId": { lessons, missed, notes } }
   const weeklyUndoStack = useRef([]);
   const weeklyRedoStack = useRef([]);
-  const setWeeklyTimetables = (valOrFn) => {
+  // v2.49.3 — every admin change stamps dayEditedAt on the days it touched
+  // (utils/dayEdits.js). { adopt: true } is for copies that are not admin
+  // edits (the poll taking a server row, migrations, restore): no stamping.
+  const setWeeklyTimetables = (valOrFn, opts) => {
     setWeeklyTimetablesRaw(prev => {
-      const newVal = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
+      const rawNewVal = typeof valOrFn === "function" ? valOrFn(prev) : valOrFn;
+      const newVal = opts && opts.adopt ? rawNewVal : stampChangedDays(prev, rawNewVal, new Date().toISOString());
       try { weeklyUndoStack.current.push(JSON.parse(JSON.stringify(prev))); } catch (e) { /* skip undo entry if state is not serialisable */ }
       if (weeklyUndoStack.current.length > 50) weeklyUndoStack.current.shift();
       weeklyRedoStack.current = [];
@@ -963,14 +968,16 @@ export default function MusicTimetableApp() {
     if (weeklyUndoStack.current.length === 0) return;
     setWeeklyTimetablesRaw(prev => {
       try { weeklyRedoStack.current.push(JSON.parse(JSON.stringify(prev))); } catch (e) { /* skip */ }
-      return weeklyUndoStack.current.pop();
+      // v2.49.3 — Undo is an admin change too: the days it changes are stamped
+      // now (stamps never move backwards).
+      return stampChangedDays(prev, weeklyUndoStack.current.pop(), new Date().toISOString());
     });
   };
   const redoWeekly = () => {
     if (weeklyRedoStack.current.length === 0) return;
     setWeeklyTimetablesRaw(prev => {
       try { weeklyUndoStack.current.push(JSON.parse(JSON.stringify(prev))); } catch (e) { /* skip */ }
-      return weeklyRedoStack.current.pop();
+      return stampChangedDays(prev, weeklyRedoStack.current.pop(), new Date().toISOString());
     });
   };
   // Teacher actuals — read-only mirror of teacher_actuals table for the
@@ -999,6 +1006,10 @@ export default function MusicTimetableApp() {
   const wttPollSeqRef = useRef(0);               // increments at each poll start
   const wttSyncChainRef = useRef(Promise.resolve()); // syncs run one at a time, in order
   const wttSyncInflightRef = useRef(0);
+  const wttMissingColumnNotifiedRef = useRef(false); // v2.49.3 — warn once per session
+  const handleStampDays = (storageKey, days) => {   // v2.49.3 — Confirm day
+    setWeeklyTimetables(prev => stampDays(prev, storageKey, days, new Date().toISOString()));
+  };
   const handleWeekCleared = (storageKey) => {
     wttClearedKeysRef.current.add(storageKey);
     wttServerDeletedRef.current.delete(storageKey);
@@ -1032,6 +1043,8 @@ export default function MusicTimetableApp() {
     setTimeout(() => setNotification(null), duration);
     if (type === "warning" || type === "danger") playUISound("toast_warning");
   };
+  const notifyRef = useRef(notify); // v2.49.3 — latest notify for async sync callbacks
+  notifyRef.current = notify;
   const [composeEmail, setComposeEmail] = useState(null); // null | { to[], from, subject, body }
   const [composeQueue, setComposeQueue] = useState([]); // queued sequential emails
   const [autoSendQueue, setAutoSendQueue] = useState([]); // { to, from, subject, bodyHtml, label }[]
@@ -2420,6 +2433,10 @@ export default function MusicTimetableApp() {
         wttSyncChainRef.current = wttSyncChainRef.current.then(async () => {
           try {
             const upserted = await syncWeeklyAdjustmentsToSupabase(snapshot, uid);
+            if (upserted && upserted.missingDayEditedColumn) {
+              logError("Weekly timetables: day edit times not saved", MISSING_DAY_EDITED_MESSAGE);
+              if (!wttMissingColumnNotifiedRef.current) { wttMissingColumnNotifiedRef.current = true; notifyRef.current(MISSING_DAY_EDITED_MESSAGE, "danger", 12000); }
+            }
             if (upserted) {
               upserted.forEach(r => {
                 const k = `${r.week_key}|${r.school_id}`;
@@ -2469,7 +2486,7 @@ export default function MusicTimetableApp() {
     if (Object.keys(weeklyTimetables || {}).length === 0) return;
     const result = runSpec1Commit5Transform({ weeklyTimetables });
     if (result.skipped) return;
-    setWeeklyTimetables(result.weeklyTimetables);
+    setWeeklyTimetables(result.weeklyTimetables, { adopt: true }); // shape migration, not an edit
     try { localStorage.setItem("mt-migration-spec1c5-done", new Date().toISOString()); } catch (e) {}
     console.log("[migration] Spec 1 Commit 5 transform applied:", result.stats);
   }, [weeklyTimetables]);
@@ -2487,9 +2504,14 @@ export default function MusicTimetableApp() {
       if (wttPendingWriteRef.current) return;
       const pollSeq = ++wttPollSeqRef.current;
       try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from("weekly_adjustments")
-          .select("week_key, school_id, lessons, missed, notes, generated_at, breaks, updated_at");
+          .select(WEEKLY_SELECT + ", updated_at");
+        if (error && isMissingDayEditedColumn(error)) {
+          ({ data, error } = await supabase
+            .from("weekly_adjustments")
+            .select("week_key, school_id, lessons, missed, notes, generated_at, breaks, updated_at"));
+        }
         if (error || !data) return;
         let changed = false;
         const updates = {};
@@ -2512,11 +2534,13 @@ export default function MusicTimetableApp() {
             notes:       row.notes        || "",
             generatedAt: row.generated_at || "",
             breaks:      row.breaks       || [],
+            dayEditedAt: normaliseDayEditedAt(row.day_edited_at),
           };
           changed = true;
         }
         if (changed) {
-          setWeeklyTimetables(prev => ({ ...prev, ...updates }));
+          // Adopting the server copy is not an admin edit: no stamping.
+          setWeeklyTimetables(prev => ({ ...prev, ...updates }), { adopt: true });
         }
       } catch (_) {}
     };
@@ -2768,7 +2792,7 @@ export default function MusicTimetableApp() {
   const undoClaudeAction = () => {
     const snap = claudeActionSnapshotRef.current;
     if (!snap) return;
-    setWeeklyTimetablesRaw(snap.weeklyTimetables);
+    setWeeklyTimetablesRaw(prev => stampChangedDays(prev, snap.weeklyTimetables, new Date().toISOString()));
     setStudents(snap.students);
     setTeachersRaw(snap.teachers);
     claudeActionSnapshotRef.current = null;
@@ -4307,7 +4331,7 @@ export default function MusicTimetableApp() {
     if (data.interruptions) { setInterruptions(data.interruptions); saveData(STORAGE_KEYS.interruptions, data.interruptions); }
     if (data.groups) { const mg = migrateData("groups", data.groups); setGroups(mg); saveData(STORAGE_KEYS.groups, mg); }
     if (data.timetable !== undefined) { setTimetableRaw(data.timetable); saveData(STORAGE_KEYS.timetable, data.timetable); }
-    if (data.weeklyTimetables) { setWeeklyTimetables(data.weeklyTimetables); saveData(STORAGE_KEYS.weeklyTimetables, data.weeklyTimetables); }
+    if (data.weeklyTimetables) { setWeeklyTimetables(data.weeklyTimetables, { adopt: true }); saveData(STORAGE_KEYS.weeklyTimetables, data.weeklyTimetables); }
     if (data.timetableVersions) saveData(STORAGE_KEYS.timetableVersions, data.timetableVersions);
     if (data.contacts) { setContacts(data.contacts); saveData(STORAGE_KEYS.contacts, data.contacts); }
     // Bands: upsert each restored band; nothing on the server is deleted (v2.41.2).
@@ -6675,7 +6699,7 @@ export default function MusicTimetableApp() {
               };
             });
           }} />}
-          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} onWeekCleared={handleWeekCleared} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setPage("students"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} ttAckedConstraints={ttAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
+          {page === "weekly" && <WeeklyAdjustments mainScrollRef={mainScrollRef} timetable={timetable} schools={schools} students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} setTeachers={setTeachers} teacherCoverage={teacherCoverage} laneOverrides={laneOverrides} temporaryLanes={temporaryLanes} setTemporaryLanes={setTemporaryLanes} catchups={catchups} setCatchups={setCatchups} onSetLaneOverride={handleSetLaneOverride} onClearLaneOverride={handleClearLaneOverride} viewedLanes={viewedLanes} onSwitchLane={handleSwitchLane} specialists={specialists} interruptions={interruptions} groups={groups} bands={bands} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} teacherActuals={teacherActuals} onWeekCleared={handleWeekCleared} onStampDays={handleStampDays} tallyEntries={tallyEntries} setTallyEntries={setTallyEntries} masterBreaks={masterBreaks} notify={notify} contacts={contacts} viewState={weeklyViewState} setViewState={setWeeklyViewState} sharedSchool={sharedSchool} setSharedSchool={setSharedSchool} sharedTimetableScroll={sharedTimetableScroll} setSharedTimetableScroll={setSharedTimetableScroll} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("weekly"); setPage("students"); }} onViewGroup={(groupId) => { setFocusGroupId(groupId); setFocusGroupReturnPage("weekly"); setPage("students"); }} logError={logError} onExport={handleExport} onUndo={undoWeekly} onRedo={redoWeekly} undoCount={weeklyUndoStack.current.length} redoCount={weeklyRedoStack.current.length} ackedConstraints={weeklyAckedConstraints} setAckedConstraints={setWeeklyAckedConstraints} ttAckedConstraints={ttAckedConstraints} onWarningsChange={(w) => setWeeklyConstraintWarnings(w)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} onSoundPlay={() => playUISound("drag_snap")} />}
           {page === "tally" && <TallyView timetable={timetable} schools={schools} students={students} enrolments={enrolments} setEnrolments={setEnrolments} teachers={teachers} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} catchups={catchups} groups={groups} notify={notify} onExport={handleExport} viewState={tallyViewState} setViewState={setTallyViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("tally"); setPage("students"); }} />}
           {page === "contacts" && <ContactsManager contacts={contacts} setContacts={setContacts} schools={schools} students={students} enrolments={enrolments} setStudents={setStudents} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} resetKey={resetKey} newContactPrefill={newContactPrefill} onClearNewContactPrefill={() => setNewContactPrefill(null)} viewState={contactsViewState} setViewState={setContactsViewState} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage("contacts"); setPage("students"); }} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "resources" && <DocumentsResourcesManager resources={resources} setResources={setResources} documents={documents} setDocuments={setDocuments} schools={schools} teachers={teachers} notify={notify} resetKey={resetKey} viewState={resourcesViewState} setViewState={setResourcesViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
@@ -6733,7 +6757,7 @@ export default function MusicTimetableApp() {
                 setWeeklyTimetablesRaw(prev => {
                   const entry = prev[orphan.where];
                   if (!entry || !entry.lessons) return prev;
-                  return { ...prev, [orphan.where]: { ...entry, lessons: entry.lessons.filter(l => l.id !== orphan.lessonId) } };
+                  return stampChangedDays(prev, { ...prev, [orphan.where]: { ...entry, lessons: entry.lessons.filter(l => l.id !== orphan.lessonId) } }, new Date().toISOString());
                 });
               }
             }}

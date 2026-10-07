@@ -8,7 +8,8 @@
 // Supabase table: weekly_adjustments
 //   id uuid PK, user_id uuid FK, week_key text, school_id text,
 //   lessons jsonb, missed jsonb, notes text, generated_at text,
-//   breaks jsonb, updated_at timestamptz
+//   breaks jsonb, updated_at timestamptz,
+//   day_edited_at jsonb NOT NULL DEFAULT '{}'  (v2.49.3 — utils/dayEdits.js)
 //   UNIQUE(week_key, school_id)
 //
 // syncWeeklyAdjustmentsToSupabase now returns the upserted rows
@@ -18,6 +19,7 @@
 // ============================================================
 
 import { supabase } from "../supabaseClient";
+import { normaliseDayEditedAt, isMissingDayEditedColumn } from "./dayEdits";
 
 const TABLE = "weekly_adjustments";
 
@@ -29,17 +31,27 @@ function rowToEntry(row) {
     notes:       row.notes        || "",
     generatedAt: row.generated_at || "",
     breaks:      row.breaks       || [],
+    dayEditedAt: normaliseDayEditedAt(row.day_edited_at),
   };
 }
+
+export const WEEKLY_SELECT = "week_key, school_id, lessons, missed, notes, generated_at, breaks, day_edited_at";
+const WEEKLY_SELECT_LEGACY = "week_key, school_id, lessons, missed, notes, generated_at, breaks";
+
+// Reported by the sync when the database lacks day_edited_at. The lessons are
+// still saved (retried without the column); only the day stamps are lost.
+export const MISSING_DAY_EDITED_MESSAGE =
+  "Weekly timetable saved, but the database is missing the day_edited_at column, so day edit times were not stored. Apply supabase/sql/add_day_edited_at.sql.";
 
 // ── Load ─────────────────────────────────────────────────────
 // Returns the full weeklyTimetables map: { "weekKey|schoolId": entry }
 // Returns {} (empty object) if the table is empty — caller falls back to localStorage.
 export async function loadWeeklyAdjustmentsFromSupabase() {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select("week_key, school_id, lessons, missed, notes, generated_at, breaks");
-
+  let { data, error } = await supabase.from(TABLE).select(WEEKLY_SELECT);
+  if (error && isMissingDayEditedColumn(error)) {
+    console.error("[weeklyAdjustmentsDB] " + MISSING_DAY_EDITED_MESSAGE);
+    ({ data, error } = await supabase.from(TABLE).select(WEEKLY_SELECT_LEGACY));
+  }
   if (error) throw error;
   if (!data || data.length === 0) return {};
 
@@ -54,7 +66,20 @@ export async function loadWeeklyAdjustmentsFromSupabase() {
 // ── Upsert with deadlock retry ────────────────────────────────────────────
 // PostgreSQL deadlocks (code 40P01) are transient — retrying after a short
 // back-off almost always succeeds. Cap at 3 attempts: 100ms → 200ms → 400ms.
+// Returns { rows, missingColumn }. If the database lacks day_edited_at the
+// batch is saved again without it — lessons are never dropped — and
+// missingColumn tells the caller to report it.
 async function upsertBatchWithRetry(batch, maxRetries = 3) {
+  try {
+    return { rows: await upsertBatchOnce(batch, maxRetries), missingColumn: false };
+  } catch (error) {
+    if (!isMissingDayEditedColumn(error)) throw error;
+    const rows = await upsertBatchOnce(batch.map(({ day_edited_at, ...row }) => row), maxRetries);
+    return { rows, missingColumn: true };
+  }
+}
+
+async function upsertBatchOnce(batch, maxRetries) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const { data, error } = await supabase
       .from(TABLE)
@@ -98,18 +123,23 @@ export async function syncWeeklyAdjustmentsToSupabase(weeklyTimetables, userId) 
       notes:        value.notes        || "",
       generated_at: value.generatedAt  || "",
       breaks:       value.breaks       || [],
+      day_edited_at: normaliseDayEditedAt(value.dayEditedAt),
     };
   });
 
   const BATCH = 200;
   const allUpserted = [];
+  let missingColumn = false;
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    const upserted = await upsertBatchWithRetry(batch);
-    if (upserted) allUpserted.push(...upserted);
+    const res = await upsertBatchWithRetry(batch);
+    if (res.rows) allUpserted.push(...res.rows);
+    if (res.missingColumn) missingColumn = true;
   }
   // Return the upserted rows so callers can record their own updated_at values.
   // This is used by the polling loop to skip rows that this app just wrote.
+  // v2.49.3 — missingDayEditedColumn flags a save that had to drop the stamps.
+  if (missingColumn) allUpserted.missingDayEditedColumn = true;
   return allUpserted;
 }
 
@@ -137,7 +167,7 @@ export async function deleteWeeklyAdjustmentRow(weekKey, schoolId, userId) {
   if (!still || still.length === 0) return "absent";
   await upsertBatchWithRetry([{
     user_id: userId, week_key: weekKey, school_id: schoolId,
-    lessons: [], missed: [], notes: "", generated_at: "", breaks: [],
+    lessons: [], missed: [], notes: "", generated_at: "", breaks: [], day_edited_at: {},
   }]);
   return "emptied";
 }
