@@ -3350,7 +3350,7 @@ export default function MusicTimetableApp() {
         // Mirror instruments[] into enrolments — form-side path does this via
         // commitSaveStudent; AI tools bypassed it pre-7.1.1.5 and produced
         // the missing-enrolment cases logged in session 117.
-        const todayISO = new Date().toISOString().split("T")[0];
+        const todayISO = melbourneToday();
         setEnrolments(prev => syncEnrolmentsFromInstruments({
           studentId: newStudent.id,
           newInstruments: newStudent.instruments || [],
@@ -3384,7 +3384,7 @@ export default function MusicTimetableApp() {
         // input. Skipping the guard would treat name-only edits as "remove all
         // instruments" and silently end-date every active enrolment.
         if (instruments !== undefined) {
-          const todayISO = new Date().toISOString().split("T")[0];
+          const todayISO = melbourneToday();
           setEnrolments(prev => syncEnrolmentsFromInstruments({
             studentId,
             newInstruments: patch.instruments,
@@ -3405,7 +3405,7 @@ export default function MusicTimetableApp() {
       if (name === "archive_student") {
         const { studentId, studentName } = input;
         if (!students.some(s => s.id === studentId)) return `No student found with ID ${studentId} — nothing changed.`;
-        const todayISO = new Date().toISOString().split("T")[0];
+        const todayISO = melbourneToday();
         setStudents(prev => prev.map(s => s.id !== studentId ? s : { ...s, status: "archived", archivedAt: new Date().toISOString() }));
         // Match commitSaveStudent's archive branch: stamp endDate on every
         // active enrolment for this student.

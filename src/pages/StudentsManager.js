@@ -156,7 +156,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
           instrument: prefillInstrument,
           isGroup: false,
           groupId: undefined,
-          startDate: new Date().toISOString().split("T")[0],
+          startDate: melbourneToday(),
           endDate: undefined,
         }]);
       } else {
@@ -297,7 +297,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
     const prevRecord = students.find(s => s.id === f.id);
     const isBecomingArchived = prevRecord && prevRecord.status !== "archived" && f.status === "archived";
     const record = f.status === "archived" && !f.archivedAt ? { ...f, archivedAt: new Date().toISOString() } : f;
-    const todayISO = new Date().toISOString().split("T")[0];
+    const todayISO = melbourneToday();
 
     // Strip instruments off the student record — student rows never carry an
     // instruments field post-migration. Enrolments live in their own collection.
@@ -404,7 +404,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   };
 
   const archiveStudent = (id) => {
-    const todayISO = new Date().toISOString().split("T")[0];
+    const todayISO = melbourneToday();
     setStudents(prev => prev.map(s => s.id === id ? { ...s, status: "archived", archivedAt: new Date().toISOString() } : s));
     // Mirror commitSaveStudent's archive path: stamp endDate on every active
     // enrolment. Without this, row-button archive leaves enrolments active
@@ -427,7 +427,7 @@ export function StudentsManager({ students, setStudents, enrolments, setEnrolmen
   const handleImport = (data, filename) => {
     const imported = parseStudentCSV(data, schools, teachers);
     if (imported.length === 0) { notify("No valid students found in file", "warning"); return; }
-    const todayISO = new Date().toISOString().split("T")[0];
+    const todayISO = melbourneToday();
 
     // Build enrolment rows from each imported student's instruments[].
     // Each instrument becomes one enrolment keyed to the student's id.
@@ -709,7 +709,7 @@ Respond ONLY with a JSON array, no other text, no markdown backticks.${userGuida
   const confirmStudentImport = () => {
     if (!preview) return;
     const valid = preview.entries.filter(e => e.name && e.instruments[0]?.name);
-    const todayISO = new Date().toISOString().split("T")[0];
+    const todayISO = melbourneToday();
 
     // Unwrap preview entries' instruments[] into enrolment rows.
     const newEnrolments = valid.flatMap(s =>
