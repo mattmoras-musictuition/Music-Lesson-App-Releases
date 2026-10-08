@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Local test runner for drain_teacher_actuals v1 / v2 / v3.
+# Local test runner for drain_teacher_actuals v1 / v2 / v3 / v4 (draft).
 #
 # Throwaway LOCAL Postgres only — never points at Supabase. Spins up a
 # private cluster in a temp dir on a unix socket, runs the same fixtures
@@ -11,7 +11,10 @@
 #   5. v2 vs v3 on every school without teacher stamps → must be identical;
 #   6. checks.sql (minus v2-only) and checks_v3.sql against v3 → all PASS;
 #   7. re-sends every stamped teacher row and drains again → no change;
-#   8. runs the v3 preview (P6) on an undrained copy.
+#   8. runs the v3 preview (P6) on an undrained copy;
+#   9. v3 vs v4 on every pre-v4 school (differences listed);
+#  10. checks.sql + checks_v3.sql + checks_v4.sql against v4 → all PASS;
+#  11. checks_v4.sql against v3 for contrast (m_* expected to FAIL).
 # The temp cluster is removed on exit.
 #
 # usage: supabase/sql/tests/run.sh       (PGBIN overrides the binaries dir)
@@ -135,5 +138,38 @@ $PSQL -d drain_pre3 -f $HERE/schema.sql -f $HERE/fixtures.sql -f $HERE/v3_fixtur
 $PSQL -d drain_pre3 -F ' | ' -f $SQL/drain_v3_preview.sql > $TMP/preview3.txt || { echo "   v3 preview FAILED to run"; exit 2; }
 awk -F' \\| ' '{ printf "     %-20s %-4s %-7s %s\n", $3, $7, $8, $16 }' $TMP/preview3.txt
 
-echo "== summary: v2 $((v2_total - v2_fail))/$v2_total; v3 $((v3_total - v3_fail))/$v3_total; v1-v2 non-band $([[ $nb_ok == 1 ]] && echo identical || echo DIFFERENT); v2-v3 $([[ $v23_ok == 1 ]] && echo identical || echo DIFFERENT); re-drain $([[ $idem_ok == 1 ]] && echo idempotent || echo CHANGED); Riptide $([[ $rip_ok == 1 ]] && echo PASS || echo FAIL)"
-[[ $v2_fail == 0 && $nb_ok == 1 && $rip_ok == 1 && $v3_fail == 0 && $v23_ok == 1 && $idem_ok == 1 ]]
+# ── v4 (DRAFT, not applied) ─────────────────────────────────────────
+# v3 and v4 both get every fixture PLUS the v4 fixtures (m_*, d_*).
+for v in v3x v4; do
+  $PGBIN/createdb drain_$v || exit 2
+  $PSQL -d drain_$v -f $HERE/schema.sql -f $HERE/fixtures.sql -f $HERE/v3_fixtures.sql -f $HERE/v4_fixtures.sql -f $HERE/snapshot.sql || exit 2
+  if [[ $v == v3x ]]; then f=$SQL/drain_teacher_actuals_v3.sql; else f=$SQL/drain_teacher_actuals_v4.sql; fi
+  $PSQL -d drain_$v -f $f || { echo "$v: function did not compile"; exit 2; }
+  $PSQL -d drain_$v -c "SELECT drain_teacher_actuals(NULL, true)" >/dev/null || { echo "$v: drain failed"; exit 2; }
+  dump drain_$v > $TMP/state_$v.txt
+done
+
+echo "== 9. v3 vs v4 on every pre-v4 school (differences listed, each must be a v4 accounting removal)"
+grep -v -e '|m_' -e '|d_' $TMP/state_v3x.txt > $TMP/o_v3.txt
+grep -v -e '|m_' -e '|d_' $TMP/state_v4.txt  > $TMP/o_v4.txt
+echo "   rows compared: $(wc -l < $TMP/o_v3.txt | tr -d ' ')"
+if diff $TMP/o_v3.txt $TMP/o_v4.txt > $TMP/o_diff.txt; then echo "   IDENTICAL"; else echo "   DIFFERENT rows (school | week):"; grep '^[<>]' $TMP/o_diff.txt | awk -F'|' '{ print "     " $1 " " $2 " " $3 }'; fi
+
+echo "== 10. checks against v4 (v2 + v3 + v4 checks)"
+$PSQL -d drain_v4 -F '  ' -f $HERE/checks.sql | grep -v '  v2-only ' > $TMP/checks_v4a.txt || exit 2
+$PSQL -d drain_v4 -F '  ' -f $HERE/checks_v3.sql > $TMP/checks_v4b.txt || exit 2
+$PSQL -d drain_v4 -F '  ' -f $HERE/checks_v4.sql > $TMP/checks_v4c.txt || exit 2
+awk -F'  ' '{ printf "   %s  %s\n", $1, $2; if ($1 == "FAIL") printf "         got: %s\n", $3 }' $TMP/checks_v4c.txt
+cat $TMP/checks_v4a.txt $TMP/checks_v4b.txt > $TMP/checks_v4ab.txt
+echo "   (+ $(wc -l < $TMP/checks_v4ab.txt | tr -d ' ') v2/v3 checks re-run on v4: $(grep -c '^PASS' $TMP/checks_v4ab.txt) PASS)"
+awk -F'  ' '$1 == "FAIL" { printf "   FAIL (v2/v3 check on v4)  %s\n         got: %s\n", $2, $3 }' $TMP/checks_v4ab.txt
+cat $TMP/checks_v4ab.txt $TMP/checks_v4c.txt > $TMP/checks_v4.txt
+v4_fail=$(grep -c '^FAIL' $TMP/checks_v4.txt)
+v4_total=$(wc -l < $TMP/checks_v4.txt | tr -d ' ')
+
+echo "== 11. v4 checks against v3 (contrast: m_* expected to FAIL — the Thu 8 Oct fault)"
+$PSQL -d drain_v3x -F '  ' -f $HERE/checks.sql >/dev/null || exit 2
+$PSQL -d drain_v3x -F '  ' -f $HERE/checks_v4.sql | awk -F'  ' '$1 == "FAIL" { printf "   v3 FAIL  %s\n         got: %s\n", $2, $3 }'
+
+echo "== summary: v2 $((v2_total - v2_fail))/$v2_total; v3 $((v3_total - v3_fail))/$v3_total; v1-v2 non-band $([[ $nb_ok == 1 ]] && echo identical || echo DIFFERENT); v2-v3 $([[ $v23_ok == 1 ]] && echo identical || echo DIFFERENT); re-drain $([[ $idem_ok == 1 ]] && echo idempotent || echo CHANGED); Riptide $([[ $rip_ok == 1 ]] && echo PASS || echo FAIL); v4 (draft) $((v4_total - v4_fail))/$v4_total"
+[[ $v2_fail == 0 && $nb_ok == 1 && $rip_ok == 1 && $v3_fail == 0 && $v23_ok == 1 && $idem_ok == 1 && $v4_fail == 0 ]]

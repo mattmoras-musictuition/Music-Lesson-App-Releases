@@ -10,6 +10,7 @@ CREATE TABLE weekly_adjustments (
   notes        text,
   generated_at text,
   breaks       jsonb,
+  day_edited_at jsonb NOT NULL DEFAULT '{}',   -- v2.49.3; read by v4 only
   UNIQUE (week_key, school_id)
 );
 

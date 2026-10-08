@@ -40,6 +40,33 @@
 --     memberStates[].writtenAt (v3 rules for writtenAt are unchanged).
 -- Never copy importedAt from the admin's weekly_adjustments cards (the
 -- admin does not set it; Import must set a fresh value).
+-- Identity on what the teacher app writes (v4 accounting, below):
+--   • sourceLessonId = the admin card's id, on every Import copy (lessons
+--     and missed) and carried onto the missed entry when a card is marked
+--     missed (today confirmMissed stores lessonId = the COPY's new id, which
+--     the admin side cannot resolve).
+--   • enrolmentId and groupId on every missed entry the teacher writes
+--     (today confirmMissed drops both; only studentId/instrument survive).
+--   • Keep the card's own teacherId as today (do not overwrite it).
+--
+-- ── v4 accounting (Thu 8 Oct 2026 fault: card AND drained miss both kept) ──
+-- v1–v3 remove an admin card only when one of the copy's remaining LESSONS
+-- matches it (same teacherId, or — when the admin card has no teacherId —
+-- same enrolmentId/groupId). A card the teacher marked missed has left the
+-- copy's lessons, and the teacher's miss carries no enrolmentId, so nothing
+-- removes the admin card: it survives next to the appended miss and Tally
+-- (card beats miss) shows Completed. v4 also removes any non-band admin
+-- card or miss (no bandLessonId) that the copy ACCOUNTS FOR, as a lesson or
+-- a missed entry, on a drained (not skipped) day, matched by the first key
+-- the copy entry has:
+--   1. sourceLessonId = admin id (future teacher app; no fallback after it)
+--   2. enrolmentId (both sides)      3. groupId (both sides)
+--   4. copy entry with neither: group ↔ group at the same start; else
+--      studentId + instrument, and the same start unless the admin day has
+--      only one such card (two enrolments of one instrument are legitimate)
+--   5. admin card with no enrolment/group/student: teacherId against the
+--      copy's teacherId / frozenTeacherId / writerTeacherId
+-- The v3 removal clause is kept unchanged alongside (OR).
 --
 -- ── v3 header (unchanged behaviour) ─────────────────────────────────────
 -- drain_teacher_actuals — v3 (teacher-recorded band attendance).
@@ -134,6 +161,7 @@ DECLARE
   dname          text;
   ts_copy        timestamptz;
   ts_adm         timestamptz;
+  acct           jsonb;   -- non-band entries the copy holds for drained days (lessons + missed)
 BEGIN
   IF NOT p_skip_hour_guard AND EXTRACT(HOUR FROM melb_now) <> 18 THEN
     RETURN;
@@ -270,12 +298,21 @@ BEGIN
         END IF;
       END LOOP;
 
-      -- ── v1 update. Removal text unchanged; only the appended arrays and
-      --    the missed removal input (B3) differ. ──
+      -- ── v4 accounting set: every non-band entry the copy holds for a
+      --    drained day, lessons AND missed (B3 band misses excluded). ──
+      acct := COALESCE((SELECT jsonb_agg(y) FROM jsonb_array_elements(use_lessons) AS j(y)
+                        WHERE COALESCE(y->>'isBandSession', 'false') <> 'true'), '[]'::jsonb)
+           || COALESCE((SELECT jsonb_agg(y) FROM jsonb_array_elements(use_missed) AS j(y)
+                        WHERE NULLIF(y->>'bandLessonId', '') IS NULL
+                          AND COALESCE(y->>'isBandSession', 'false') <> 'true'), '[]'::jsonb);
+
+      -- ── v1 update. v3 removal text kept; v4 adds the accounting OR-branch
+      --    (an admin card or miss the copy accounts for is removed) and uses
+      --    the skip-filtered inputs. ──
       UPDATE weekly_adjustments adjustments
       SET lessons = COALESCE((SELECT jsonb_agg(lsn) FROM jsonb_array_elements(adjustments.lessons) lsn
                               WHERE NOT (
-                                EXISTS (
+                                (EXISTS (
                                   SELECT 1 FROM jsonb_array_elements(use_lessons) past  -- v4: use_lessons
                                   WHERE past->>'day' = lsn->>'day'
                                     AND COALESCE(lsn->>'isBandSession', 'false') <> 'true'
@@ -285,11 +322,37 @@ BEGIN
                                       OR (lsn->>'teacherId' IS NULL AND lsn->>'groupId'    IS NOT NULL AND past->>'groupId'    = lsn->>'groupId')
                                     )
                                 )
+                                OR (COALESCE(lsn->>'isBandSession', 'false') <> 'true' AND NULLIF(lsn->>'bandLessonId', '') IS NULL
+                                    AND EXISTS (  -- v4 accounting: the copy holds this card as a lesson OR a missed entry
+                                      SELECT 1 FROM jsonb_array_elements(acct) c
+                                      WHERE c->>'day' = lsn->>'day'
+                                        AND CASE
+                                          WHEN NULLIF(c->>'sourceLessonId', '') IS NOT NULL THEN c->>'sourceLessonId' = lsn->>'id'
+                                          WHEN NULLIF(lsn->>'enrolmentId', '') IS NOT NULL AND NULLIF(c->>'enrolmentId', '') IS NOT NULL
+                                            THEN c->>'enrolmentId' = lsn->>'enrolmentId'
+                                          WHEN NULLIF(lsn->>'groupId', '') IS NOT NULL AND NULLIF(c->>'groupId', '') IS NOT NULL
+                                            THEN c->>'groupId' = lsn->>'groupId'
+                                          WHEN NULLIF(c->>'enrolmentId', '') IS NOT NULL OR NULLIF(c->>'groupId', '') IS NOT NULL THEN false
+                                          WHEN COALESCE(lsn->>'isGroup', 'false') = 'true' OR COALESCE(c->>'isGroup', 'false') = 'true'
+                                            THEN COALESCE(lsn->>'isGroup', 'false') = 'true' AND COALESCE(c->>'isGroup', 'false') = 'true'
+                                                 AND lsn->>'start' = c->>'start'
+                                          WHEN NULLIF(lsn->>'studentId', '') IS NOT NULL
+                                            THEN c->>'studentId' = lsn->>'studentId'
+                                                 AND COALESCE(c->>'instrument', '') = COALESCE(lsn->>'instrument', '')
+                                                 AND (lsn->>'start' = c->>'start'
+                                                      OR (SELECT count(*) FROM jsonb_array_elements(adjustments.lessons) o
+                                                          WHERE o->>'day' = lsn->>'day' AND o->>'studentId' = lsn->>'studentId'
+                                                            AND COALESCE(o->>'instrument', '') = COALESCE(lsn->>'instrument', '')
+                                                            AND COALESCE(o->>'isBandSession', 'false') <> 'true') = 1)
+                                          ELSE NULLIF(lsn->>'teacherId', '') IS NOT NULL
+                                               AND lsn->>'teacherId' IN (c->>'teacherId', c->>'frozenTeacherId', c->>'writerTeacherId')
+                                        END
+                                    )))
                                 AND (adjustments.week_key::date + (array_position(dow, lsn->>'day') - 1)) <= cutoff
                               )), '[]'::jsonb) || append_lessons,
           missed  = COALESCE((SELECT jsonb_agg(msd) FROM jsonb_array_elements(adjustments.missed) msd
                               WHERE NOT (
-                                EXISTS (
+                                (EXISTS (
                                   SELECT 1 FROM jsonb_array_elements(removal_missed) past
                                   WHERE past->>'day' = msd->>'day'
                                     AND COALESCE(msd->>'isBandSession', 'false') <> 'true'
@@ -299,6 +362,32 @@ BEGIN
                                       OR (msd->>'teacherId' IS NULL AND msd->>'groupId'    IS NOT NULL AND past->>'groupId'    = msd->>'groupId')
                                     )
                                 )
+                                OR (COALESCE(msd->>'isBandSession', 'false') <> 'true' AND NULLIF(msd->>'bandLessonId', '') IS NULL
+                                    AND EXISTS (  -- v4 accounting: the copy holds this card as a lesson OR a missed entry
+                                      SELECT 1 FROM jsonb_array_elements(acct) c
+                                      WHERE c->>'day' = msd->>'day'
+                                        AND CASE
+                                          WHEN NULLIF(c->>'sourceLessonId', '') IS NOT NULL THEN c->>'sourceLessonId' = msd->>'id'
+                                          WHEN NULLIF(msd->>'enrolmentId', '') IS NOT NULL AND NULLIF(c->>'enrolmentId', '') IS NOT NULL
+                                            THEN c->>'enrolmentId' = msd->>'enrolmentId'
+                                          WHEN NULLIF(msd->>'groupId', '') IS NOT NULL AND NULLIF(c->>'groupId', '') IS NOT NULL
+                                            THEN c->>'groupId' = msd->>'groupId'
+                                          WHEN NULLIF(c->>'enrolmentId', '') IS NOT NULL OR NULLIF(c->>'groupId', '') IS NOT NULL THEN false
+                                          WHEN COALESCE(msd->>'isGroup', 'false') = 'true' OR COALESCE(c->>'isGroup', 'false') = 'true'
+                                            THEN COALESCE(msd->>'isGroup', 'false') = 'true' AND COALESCE(c->>'isGroup', 'false') = 'true'
+                                                 AND msd->>'start' = c->>'start'
+                                          WHEN NULLIF(msd->>'studentId', '') IS NOT NULL
+                                            THEN c->>'studentId' = msd->>'studentId'
+                                                 AND COALESCE(c->>'instrument', '') = COALESCE(msd->>'instrument', '')
+                                                 AND (msd->>'start' = c->>'start'
+                                                      OR (SELECT count(*) FROM jsonb_array_elements(adjustments.missed) o
+                                                          WHERE o->>'day' = msd->>'day' AND o->>'studentId' = msd->>'studentId'
+                                                            AND COALESCE(o->>'instrument', '') = COALESCE(msd->>'instrument', '')
+                                                            AND COALESCE(o->>'isBandSession', 'false') <> 'true') = 1)
+                                          ELSE NULLIF(msd->>'teacherId', '') IS NOT NULL
+                                               AND msd->>'teacherId' IN (c->>'teacherId', c->>'frozenTeacherId', c->>'writerTeacherId')
+                                        END
+                                    )))
                                 AND (adjustments.week_key::date + (array_position(dow, msd->>'day') - 1)) <= cutoff
                               )), '[]'::jsonb) || append_missed
       WHERE adjustments.week_key = d.row_week_key AND adjustments.school_id = d.row_school_id;
