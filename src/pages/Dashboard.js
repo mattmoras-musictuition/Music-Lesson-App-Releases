@@ -30,7 +30,7 @@ import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
-import { draggedMessageId, todoCoversMessage, isSameThreadTodo, planEmailDrop, todoMessageKey } from "../utils/todoEmailKey";
+import { draggedMessageId, todoCoversMessage, planEmailDrop, plainEmailTask, todoMessageKey } from "../utils/todoEmailKey";
 import { visibleLessons } from "../utils/hiddenCards";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -1672,7 +1672,6 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     const plan = planEmailDrop(currentItems, email, { groupBySubject, inboxEmails });
     if (plan.action === "ignore") return currentItems;
     const { messageId } = plan;
-    const threadHasItem = currentItems.some(t => isSameThreadTodo(t, email));
 
     const category = classifyEmailFull(email);
     const fromAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
@@ -1691,44 +1690,8 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
     const meta = isEnquiry ? parseEnquiryMeta(email) : { parentName: fromName };
 
-    // Thread messages
-    const allMsgs = email.threadMessages || [];
-    const nonSentMsgs = allMsgs.filter(m => !m.isSent);
-    const uniqueSenderAddrs = new Set(nonSentMsgs.map(m => m.from?.match(/<(.+)>/)?.[1] || m.from || ""));
-    const isConversation = uniqueSenderAddrs.size <= 1; // single sender = 1:1 conversation regardless of sent msgs
-
-    // Helper: build a structured sub-item for a message
-    const msgSubItem = (m) => {
-      const mAddr = m.from?.match(/<(.+)>/)?.[1] || m.from || "";
-      const mName = m.from?.includes("<") ? m.from.split("<")[0].trim().replace(/^"|"$/g, "") : (m.from || "");
-      const mFirst = preferredFirstName(mName) || mName.split(" ")[0];
-      return { id: uid(), text: `Reply to ${mFirst}`, fullName: mName, replyTo: mAddr,
-        replyEmailId: email.id, senderName: mFirst, done: false, emailId: email.id, messageId: m.messageId || m.id,
-        composeSubject: email.subject ? reSubject(email.subject) : "",
-        meta: { parentName: mName }, tag: "email", createdAt: new Date().toISOString() };
-    };
-
-    // === MULTI-SENDER THREAD (not a 1:1 conversation) ===
-    // First drag of the thread only; once the thread has an item, each later
-    // message is its own item via the paths below.
-    if (nonSentMsgs.length > 1 && !isConversation && !threadHasItem) {
-      const subItems = nonSentMsgs.map(msgSubItem);
-      const replyAddrs = nonSentMsgs.map(m => m.from?.match(/<(.+)>/)?.[1] || m.from || "").filter(Boolean);
-      // Detect if all senders are known parents
-      const allParents = replyAddrs.every(addr => students.some(s => studentMatchesParentEmail(s, addr)));
-      // Build sender names in order for label
-      const senderFirstNames = [...new Map(nonSentMsgs.map(m => {
-        const addr = m.from?.match(/<(.+)>/)?.[1] || m.from || "";
-        const name = m.from?.includes("<") ? m.from.split("<")[0].trim().replace(/^"|"$/g, "") : (m.from || "");
-        return [addr, preferredFirstName(name) || name.split(" ")[0]];
-      })).values()];
-      const groupText = allParents
-        ? `Contact parents re: ${cleanSubject || "(no subject)"} — ${nonSentMsgs.length}`
-        : `Contact ${senderFirstNames.slice(0, 3).join(", ")}${senderFirstNames.length > 3 ? ` +${senderFirstNames.length - 3}` : ""} re: ${cleanSubject || "(no subject)"}`;
-      return [{ id: uid(), text: groupText, done: false, tag: "email", emailId: email.id, messageId,
-        composeSubject: email.subject ? reSubject(email.subject) : "",
-        meta, subItems, replyAddrs, createdAt: new Date().toISOString() }, ...currentItems];
-    }
+    // A thread with several senders is still one row → one task, built below
+    // from the row's sender (its latest incoming message), like any other row.
 
     // === ENQUIRY → structured sub-items ===
     if (isEnquiry) {
@@ -1789,19 +1752,11 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       return [{ id: uid(), text: itemText, done: false, tag: "email", groupType: "enquiry", emailId: email.id, messageId, replyTo: fromAddr, senderName: enquiryFirst, composeSubject: email.subject ? reSubject(email.subject) : "", meta, subItems, createdAt: new Date().toISOString() }, ...currentItems];
     }
 
-    // === KNOWN PARENT with linked student ===
-    let itemText, itemExtra;
-    if (isParent && linkedStudent) {
-      const studentFirst = linkedStudent.name.split(" ")[0];
-      itemText = `Contact ${firstName} re: ${studentFirst}'s ${cleanSubject || "message"}`;
-      itemExtra = { groupType: "parent-reply", replyTo: fromAddr, senderName: firstName, fullName: fromName };
-    } else {
-      // === GENERIC (1:1 conversation or unknown sender) ===
-      itemText = `Contact ${firstName}${cleanSubject ? ` re: ${cleanSubject}` : ""}`;
-      itemExtra = { groupType: isParent ? "parent-reply" : undefined, replyTo: fromAddr, senderName: firstName, fullName: fromName };
-    }
-
-    const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, messageId, composeSubject: email.subject ? reSubject(email.subject) : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
+    // === KNOWN PARENT (linked student) or GENERIC — one plain task ===
+    const newItem = plainEmailTask(email, { id: uid(), createdAt: new Date().toISOString(), messageId,
+      fromAddr, fromName, firstName, isParent,
+      studentFirst: isParent && linkedStudent ? linkedStudent.name.split(" ")[0] : null,
+      composeSubject: email.subject ? reSubject(email.subject) : "" });
 
     // Multi-select add only: fold into an open item with the same subject
     // (other threads only — never folds a message into its own thread's item)

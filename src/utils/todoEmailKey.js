@@ -87,6 +87,22 @@ export function planEmailDrop(items, email, { groupBySubject = false, inboxEmail
   return { action: "new", messageId };
 }
 
+// The one plain task a dragged inbox row makes (known parent or anyone else;
+// enquiries keep their own builder). A thread with several senders is still
+// one row and one task: the row's sender is its latest incoming message
+// (electron's displayMsg), which is also the message draggedMessageId picks.
+// No subItems, no replyAddrs. studentFirst is set for a parent linked to a
+// student.
+export function plainEmailTask(email, { id, createdAt, messageId, fromAddr, fromName, firstName, isParent, studentFirst, composeSubject }) {
+  const cleanSubject = normSubject(email.subject);
+  const text = studentFirst
+    ? `Contact ${firstName} re: ${studentFirst}'s ${cleanSubject || "message"}`
+    : `Contact ${firstName}${cleanSubject ? ` re: ${cleanSubject}` : ""}`;
+  return { id, text, done: false, tag: "email", emailId: email.id, messageId, composeSubject,
+    meta: { parentName: fromName }, groupType: isParent ? "parent-reply" : undefined,
+    replyTo: fromAddr, senderName: firstName, fullName: fromName, createdAt };
+}
+
 // { messageId } to carry when an item/sub-item is regrouped or split out, so
 // the dedupe key survives; {} for legacy thread-keyed entries.
 export function todoMessageKey(t) {

@@ -7,7 +7,8 @@
 // ============================================================
 
 import {
-  draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey, planEmailDrop,
+  draggedMessage, draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey, planEmailDrop,
+  plainEmailTask,
 } from "../utils/todoEmailKey";
 
 export function runTodoEmailKeyTests(assert) {
@@ -81,4 +82,46 @@ export function runTodoEmailKeyTests(assert) {
 
   assert("todoKey: messageId carried when regrouping", todoMessageKey({ messageId: "m1" }), { messageId: "m1" });
   assert("todoKey: legacy entry carries nothing", todoMessageKey({ emailId: T }), {});
+
+  // A thread with several senders is one row → one plain task (v2.49.4).
+  // The row's from/subject are its latest incoming message (electron).
+  const ms = (id, t, from, extra = {}) => ({ id, messageId: id, from, internalDate: t, isSent: false, ...extra });
+  const row = { id: "thread-3", threadId: "thread-3", subject: "Re: Lesson Invoice Term 4", from: "Jo Lee <jo@x.com>",
+    threadMessages: [ms("a1", 100, "Sam Kay <sam@x.com>"), ms("a2", 200, "Al Wu <al@x.com>"),
+      ms("a3", 250, "Office <office@school.com>", { isSent: true }), ms("a4", 300, "Jo Lee <jo@x.com>")] };
+  assert("todoKey: multi-sender row's dragged message is its latest incoming, the row's sender",
+    [draggedMessageId(row), draggedMessage(row).from === row.from], ["a4", true]);
+  const plan = planEmailDrop([], row);
+  const task = plainEmailTask(row, { id: "n1", createdAt: "2026-10-10T00:00:00.000Z", messageId: plan.messageId,
+    fromAddr: "jo@x.com", fromName: "Jo Lee", firstName: "Jo", isParent: true, studentFirst: null,
+    composeSubject: "Re: Lesson Invoice Term 4" });
+  assert("todoKey: multi-sender row makes one plain task with view target, replyTo and name",
+    task, { id: "n1", text: "Contact Jo re: Lesson Invoice Term 4", done: false, tag: "email", emailId: "thread-3",
+      messageId: "a4", composeSubject: "Re: Lesson Invoice Term 4", meta: { parentName: "Jo Lee" },
+      groupType: "parent-reply", replyTo: "jo@x.com", senderName: "Jo", fullName: "Jo Lee",
+      createdAt: "2026-10-10T00:00:00.000Z" });
+  assert("todoKey: plain task has no subItems or replyAddrs, and its Contact name is in the text",
+    ["subItems" in task, "replyAddrs" in task, task.text.includes(task.senderName)], [false, false, true]);
+  assert("todoKey: linked-parent plain task names the student",
+    plainEmailTask(row, { id: "n2", messageId: "a4", fromAddr: "jo@x.com", fromName: "Jo Lee", firstName: "Jo",
+      isParent: true, studentFirst: "Mia", composeSubject: "" }).text, "Contact Jo re: Mia's Lesson Invoice Term 4");
+  assert("todoKey: unknown sender plain task has no groupType",
+    JSON.parse(JSON.stringify(plainEmailTask(row, { id: "n3", messageId: "a4", fromAddr: "jo@x.com", fromName: "Jo Lee",
+      firstName: "Jo", isParent: false, composeSubject: "" }))).groupType, undefined);
+
+  // Existing grouped tasks pass through load (a plain JSON parse of
+  // mt-todo-items) and a later single drop unchanged.
+  const oldGroup = { id: "G", text: "Contact Sam, Al re: Lesson Invoice Term 4", done: false, tag: "email",
+    emailId: "thread-9", messageId: "z1", composeSubject: "Re: Lesson Invoice Term 4", meta: { parentName: "Sam Kay" },
+    replyAddrs: ["sam@x.com", "al@x.com"],
+    subItems: [{ id: "s1", text: "Reply to Sam", replyTo: "sam@x.com", emailId: "thread-9", messageId: "z1", done: false },
+      { id: "s2", text: "Reply to Al", replyTo: "al@x.com", emailId: "thread-9", messageId: "z2", done: false }],
+    createdAt: "2026-10-01T00:00:00.000Z" };
+  const loaded = JSON.parse(JSON.stringify([oldGroup]));
+  assert("todoKey: existing grouped task loads unchanged", loaded, [oldGroup]);
+  const afterRow = drop(loaded, row);
+  assert("todoKey: a new drop leaves an existing grouped task untouched",
+    [afterRow.length, afterRow.find(t => t.id === "G")], [2, oldGroup]);
+  assert("todoKey: a message inside an existing group is still ignored",
+    planEmailDrop(loaded, { id: "thread-9", threadMessages: [ms("z2", 500, "Al Wu <al@x.com>")] }).action, "ignore");
 }
