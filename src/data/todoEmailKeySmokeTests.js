@@ -1,12 +1,13 @@
 // ============================================================
 // Dashboard to-do: one item per dragged email message
 // (utils/todoEmailKey.js). Called from runSmokeTests with its `assert`.
-// The drop() model mirrors dropEmailToTodo's decisions: skip when the
-// message is covered, fold into a subject match, else add a new item.
+// The drop() model mirrors dropEmailToTodo through planEmailDrop: skip when
+// the message is covered, else add a new item. Only the multi-select add
+// (groupBySubject) still folds into a subject match.
 // ============================================================
 
 import {
-  draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey,
+  draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey, planEmailDrop,
 } from "../utils/todoEmailKey";
 
 export function runTodoEmailKeyTests(assert) {
@@ -18,11 +19,11 @@ export function runTodoEmailKeyTests(assert) {
   const v2 = { ...v1, threadMessages: [msg("m1", 1000), msg("s1", 1500, { isSent: true }), msg("m2", 2000)] };
   const inbox = [v2];
 
-  const drop = (items, email, createdAt = "2026-10-07T00:00:00.000Z") => {
-    if (todoCoversMessage(items, email)) return items;
-    const messageId = draggedMessageId(email);
-    const idx = findSubjectGroupIdx(items, email, inbox);
-    if (idx >= 0) return items.map((t, i) => i === idx ? { ...t, subItems: [...(t.subItems || []), { emailId: email.id, messageId }] } : t);
+  const drop = (items, email, createdAt = "2026-10-07T00:00:00.000Z", opts = {}) => {
+    const plan = planEmailDrop(items, email, { inboxEmails: inbox, ...opts });
+    if (plan.action === "ignore") return items;
+    const { messageId } = plan;
+    if (plan.action === "group") return items.map((t, i) => i === plan.idx ? { ...t, subItems: [...(t.subItems || []), { emailId: email.id, messageId }] } : t);
     return [{ id: "i" + items.length, text: "Contact Pat re: Lesson time", emailId: email.id, messageId, createdAt }, ...items];
   };
 
@@ -47,11 +48,25 @@ export function runTodoEmailKeyTests(assert) {
   assert("todoKey: message covered when it sits in a sub-item",
     todoCoversMessage([{ id: "g", subItems: [{ emailId: T, messageId: "m2" }] }], v2), true);
 
-  // Different threads with the same subject still group
+  // A single dropped email never groups by subject (v2.49.4)
   const other = { id: "thread-2", subject: "Lesson time", threadMessages: [msg("x1", 3000)] };
-  const grouped = drop(after1, other);
-  assert("todoKey: other thread with same subject still groups",
-    [grouped.length, (grouped[0].subItems || []).length], [1, 1]);
+  const separate = drop(after1, other);
+  assert("todoKey: other thread with same subject makes its own task",
+    [separate.length, separate.some(t => t.subItems)], [2, false]);
+  assert("todoKey: single drop plans a new task even when a subject matches",
+    planEmailDrop(after1, other, { inboxEmails: inbox }).action, "new");
+  const typed = [{ id: "M", text: "Ask about lesson time for next term", done: false, createdAt: "2026-10-01T00:00:00.000Z" }];
+  const afterTyped = drop(typed, other);
+  assert("todoKey: typed task containing the subject does not absorb the email",
+    [afterTyped.length, afterTyped.find(t => t.id === "M")], [2, typed[0]]);
+  assert("todoKey: same message dropped twice still makes one task",
+    [drop(drop(after1, other), other).length, planEmailDrop(drop(after1, other), other).action], [2, "ignore"]);
+
+  // Multi-select add keeps its subject grouping (dropMultipleEmailsToTodo
+  // passes groupBySubject for an email that is alone from its sender)
+  const multi = drop(after1, other, undefined, { groupBySubject: true });
+  assert("todoKey: multi-select add still groups another thread with the same subject",
+    [multi.length, (multi[0].subItems || []).length], [1, 1]);
 
   // Legacy thread-keyed items (no messageId)
   const legacy = [{ id: "L", emailId: T, createdAt: new Date(1500).toISOString() }];

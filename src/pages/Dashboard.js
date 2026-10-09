@@ -30,7 +30,7 @@ import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
-import { draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey } from "../utils/todoEmailKey";
+import { draggedMessageId, todoCoversMessage, isSameThreadTodo, planEmailDrop, todoMessageKey } from "../utils/todoEmailKey";
 import { visibleLessons } from "../utils/hiddenCards";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -1664,11 +1664,14 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   }, [parseEnquiryMeta, schools, contacts, teachers]);
 
   // Drop an email onto the To Do list — fully structured output.
-  const dropEmailToTodo = React.useCallback((email, currentItems) => {
+  // A single email always makes its own item; only the multi-select add passes
+  // { groupBySubject: true } to keep folding same-subject emails together.
+  const dropEmailToTodo = React.useCallback((email, currentItems, { groupBySubject = false } = {}) => {
     // Deduplicate on the dragged message, not the thread — a new message in a
     // thread that already has an item gets its own item.
-    if (todoCoversMessage(currentItems, email)) return currentItems;
-    const messageId = draggedMessageId(email);
+    const plan = planEmailDrop(currentItems, email, { groupBySubject, inboxEmails });
+    if (plan.action === "ignore") return currentItems;
+    const { messageId } = plan;
     const threadHasItem = currentItems.some(t => isSameThreadTodo(t, email));
 
     const category = classifyEmailFull(email);
@@ -1800,28 +1803,25 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
 
     const newItem = { id: uid(), text: itemText, done: false, tag: "email", emailId: email.id, messageId, composeSubject: email.subject ? reSubject(email.subject) : "", meta, ...itemExtra, createdAt: new Date().toISOString() };
 
-    // Auto-group by subject if a matching item already exists (other threads
-    // only — never folds a message into its own thread's item)
-    if (cleanSubject) {
-      const matchIdx = findSubjectGroupIdx(currentItems, email, inboxEmails);
-      if (matchIdx >= 0) {
-        const target = currentItems[matchIdx];
-        const newSubItem = { id: newItem.id, text: `Reply to ${firstName}`, fullName: fromName,
-          replyTo: fromAddr, replyEmailId: email.id, senderName: firstName, done: false, emailId: email.id, messageId,
-          composeSubject: email.subject ? reSubject(email.subject) : "", meta, createdAt: newItem.createdAt };
-        const prevSubItems = target.subItems || [{ id: uid(), text: target.senderName ? `Reply to ${target.senderName}` : target.text,
-          fullName: target.fullName, replyTo: target.replyTo, replyEmailId: target.emailId,
-          composeSubject: target.composeSubject ?? (target.emailId ? (target.emailId ? reSubject(inboxEmails.find(e => e.id === target.emailId)?.subject || "") : "") : ""),
-          senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta,
-          ...(target.messageId ? { messageId: target.messageId } : {}), ...(target.createdAt ? { createdAt: target.createdAt } : {}) }];
-        const newSubItems = [...prevSubItems, newSubItem];
-        const allParents = newSubItems.every(s => s.replyTo &&
-          students.some(st => studentMatchesParentEmail(st, s.replyTo)));
-        const newText = allParents
-          ? `Contact parents re: ${cleanSubject}`
-          : `${cleanSubject} — ${newSubItems.length} contacts`;
-        return currentItems.map((t, i) => i === matchIdx ? { ...t, text: newText, subItems: newSubItems } : t);
-      }
+    // Multi-select add only: fold into an open item with the same subject
+    // (other threads only — never folds a message into its own thread's item)
+    if (plan.action === "group") {
+      const target = currentItems[plan.idx];
+      const newSubItem = { id: newItem.id, text: `Reply to ${firstName}`, fullName: fromName,
+        replyTo: fromAddr, replyEmailId: email.id, senderName: firstName, done: false, emailId: email.id, messageId,
+        composeSubject: email.subject ? reSubject(email.subject) : "", meta, createdAt: newItem.createdAt };
+      const prevSubItems = target.subItems || [{ id: uid(), text: target.senderName ? `Reply to ${target.senderName}` : target.text,
+        fullName: target.fullName, replyTo: target.replyTo, replyEmailId: target.emailId,
+        composeSubject: target.composeSubject ?? (target.emailId ? (target.emailId ? reSubject(inboxEmails.find(e => e.id === target.emailId)?.subject || "") : "") : ""),
+        senderName: target.senderName, done: false, emailId: target.emailId, meta: target.meta,
+        ...(target.messageId ? { messageId: target.messageId } : {}), ...(target.createdAt ? { createdAt: target.createdAt } : {}) }];
+      const newSubItems = [...prevSubItems, newSubItem];
+      const allParents = newSubItems.every(s => s.replyTo &&
+        students.some(st => studentMatchesParentEmail(st, s.replyTo)));
+      const newText = allParents
+        ? `Contact parents re: ${cleanSubject}`
+        : `${cleanSubject} — ${newSubItems.length} contacts`;
+      return currentItems.map((t, i) => i === plan.idx ? { ...t, text: newText, subItems: newSubItems } : t);
     }
 
     return [newItem, ...currentItems];
@@ -1840,7 +1840,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
       bySender[addr].push(e);
     });
     Object.values(bySender).forEach(group => {
-      if (group.length === 1) { result = dropEmailToTodo(group[0], result); return; }
+      if (group.length === 1) { result = dropEmailToTodo(group[0], result, { groupBySubject: true }); return; }
       const e0 = group[0];
       const category = classifyEmailFull(e0);
       const fromAddr0 = e0.from?.match(/<(.+)>/)?.[1] || e0.from || "";

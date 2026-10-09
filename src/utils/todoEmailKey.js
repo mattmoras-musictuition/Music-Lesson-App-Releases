@@ -54,7 +54,8 @@ export function isSameThreadTodo(t, email) {
 
 // Index of an open item to fold a new email into by matching subject, or -1.
 // Items from the SAME thread are never targets: each dragged message gets
-// its own item. Different threads sharing a subject still group.
+// its own item. Only multi-select adds still group by subject (see
+// planEmailDrop); a single dropped email never does.
 export function findSubjectGroupIdx(items, email, inboxEmails) {
   const cleanSubject = normSubject(email.subject);
   if (!cleanSubject) return -1;
@@ -67,6 +68,23 @@ export function findSubjectGroupIdx(items, email, inboxEmails) {
     ).toLowerCase().replace(/^contact \S+ re: /i, "").replace(/^contact parents re: /i, "");
     return tSubject === want || (t.text || "").toLowerCase().includes(want);
   });
+}
+
+// What dropping one inbox row onto the list does:
+//   { action: "ignore" }               — an item already stands for the message
+//   { action: "group", idx, messageId } — fold into items[idx] (multi-select only)
+//   { action: "new", messageId }        — its own new item
+// A single dropped email (panel background, "+ To Do") is always "new" or
+// "ignore". groupBySubject is passed only by the multi-select add, which keeps
+// its existing subject grouping.
+export function planEmailDrop(items, email, { groupBySubject = false, inboxEmails } = {}) {
+  if (todoCoversMessage(items, email)) return { action: "ignore" };
+  const messageId = draggedMessageId(email);
+  if (groupBySubject) {
+    const idx = findSubjectGroupIdx(items, email, inboxEmails);
+    if (idx >= 0) return { action: "group", idx, messageId };
+  }
+  return { action: "new", messageId };
 }
 
 // { messageId } to carry when an item/sub-item is regrouped or split out, so
