@@ -15,6 +15,9 @@
 #   9. v3 vs v4 on every pre-v4 school (differences listed);
 #  10. checks.sql + checks_v3.sql + checks_v4.sql against v4 → all PASS;
 #  11. checks_v4.sql against v3 for contrast (m_* expected to FAIL).
+#  12. teacher app v1.20.0 shapes (t_*): checks_v4_teacher.sql against v4
+#      → all PASS; the v1.19.1-only school identical under v3 and v4; re-send
+#      every t_* teacher row and drain again → no change; v3 contrast.
 # The temp cluster is removed on exit.
 #
 # usage: supabase/sql/tests/run.sh       (PGBIN overrides the binaries dir)
@@ -139,10 +142,11 @@ $PSQL -d drain_pre3 -F ' | ' -f $SQL/drain_v3_preview.sql > $TMP/preview3.txt ||
 awk -F' \\| ' '{ printf "     %-20s %-4s %-7s %s\n", $3, $7, $8, $16 }' $TMP/preview3.txt
 
 # ── v4 (DRAFT, not applied) ─────────────────────────────────────────
-# v3 and v4 both get every fixture PLUS the v4 fixtures (m_*, d_*).
+# v3 and v4 both get every fixture PLUS the v4 fixtures (m_*, d_*) and the
+# teacher app v1.20.0 fixtures (t_*).
 for v in v3x v4; do
   $PGBIN/createdb drain_$v || exit 2
-  $PSQL -d drain_$v -f $HERE/schema.sql -f $HERE/fixtures.sql -f $HERE/v3_fixtures.sql -f $HERE/v4_fixtures.sql -f $HERE/snapshot.sql || exit 2
+  $PSQL -d drain_$v -f $HERE/schema.sql -f $HERE/fixtures.sql -f $HERE/v3_fixtures.sql -f $HERE/v4_fixtures.sql -f $HERE/v4_teacher_fixtures.sql -f $HERE/snapshot.sql || exit 2
   if [[ $v == v3x ]]; then f=$SQL/drain_teacher_actuals_v3.sql; else f=$SQL/drain_teacher_actuals_v4.sql; fi
   $PSQL -d drain_$v -f $f || { echo "$v: function did not compile"; exit 2; }
   $PSQL -d drain_$v -c "SELECT drain_teacher_actuals(NULL, true)" >/dev/null || { echo "$v: drain failed"; exit 2; }
@@ -150,8 +154,8 @@ for v in v3x v4; do
 done
 
 echo "== 9. v3 vs v4 on every pre-v4 school (differences listed, each must be a v4 accounting removal)"
-grep -v -e '|m_' -e '|d_' $TMP/state_v3x.txt > $TMP/o_v3.txt
-grep -v -e '|m_' -e '|d_' $TMP/state_v4.txt  > $TMP/o_v4.txt
+grep -v -e '|m_' -e '|d_' -e '|t_' $TMP/state_v3x.txt > $TMP/o_v3.txt
+grep -v -e '|m_' -e '|d_' -e '|t_' $TMP/state_v4.txt  > $TMP/o_v4.txt
 echo "   rows compared: $(wc -l < $TMP/o_v3.txt | tr -d ' ')"
 if diff $TMP/o_v3.txt $TMP/o_v4.txt > $TMP/o_diff.txt; then echo "   IDENTICAL"; else echo "   DIFFERENT rows (school | week):"; grep '^[<>]' $TMP/o_diff.txt | awk -F'|' '{ print "     " $1 " " $2 " " $3 }'; fi
 
@@ -171,5 +175,21 @@ echo "== 11. v4 checks against v3 (contrast: m_* expected to FAIL — the Thu 8 
 $PSQL -d drain_v3x -F '  ' -f $HERE/checks.sql >/dev/null || exit 2
 $PSQL -d drain_v3x -F '  ' -f $HERE/checks_v4.sql | awk -F'  ' '$1 == "FAIL" { printf "   v3 FAIL  %s\n         got: %s\n", $2, $3 }'
 
-echo "== summary: v2 $((v2_total - v2_fail))/$v2_total; v3 $((v3_total - v3_fail))/$v3_total; v1-v2 non-band $([[ $nb_ok == 1 ]] && echo identical || echo DIFFERENT); v2-v3 $([[ $v23_ok == 1 ]] && echo identical || echo DIFFERENT); re-drain $([[ $idem_ok == 1 ]] && echo idempotent || echo CHANGED); Riptide $([[ $rip_ok == 1 ]] && echo PASS || echo FAIL); v4 (draft) $((v4_total - v4_fail))/$v4_total"
-[[ $v2_fail == 0 && $nb_ok == 1 && $rip_ok == 1 && $v3_fail == 0 && $v23_ok == 1 && $idem_ok == 1 && $v4_fail == 0 ]]
+echo "== 12. teacher app v1.20.0 shapes (t_*) against v4"
+$PSQL -d drain_v4 -F '  ' -f $HERE/checks_v4_teacher.sql > $TMP/checks_t.txt || exit 2
+awk -F'  ' '{ printf "   %s  %s\n", $1, $2; if ($1 == "FAIL") printf "         got: %s\n", $3 }' $TMP/checks_t.txt
+t_fail=$(grep -c '^FAIL' $TMP/checks_t.txt)
+t_total=$(wc -l < $TMP/checks_t.txt | tr -d ' ')
+grep '|t_two_same_old|' $TMP/state_v3x.txt > $TMP/t_old_v3.txt
+grep '|t_two_same_old|' $TMP/state_v4.txt  > $TMP/t_old_v4.txt
+if diff $TMP/t_old_v3.txt $TMP/t_old_v4.txt >/dev/null; then echo "   v1.19.1-only school: v3 and v4 IDENTICAL"; t_old_ok=1; else echo "   v1.19.1-only school: v3 and v4 DIFFERENT"; t_old_ok=0; fi
+dump drain_v4 | grep '|t_' > $TMP/t_first.txt
+$PSQL -d drain_v4 -c "INSERT INTO teacher_actuals SELECT * FROM ta_snapshot WHERE school_id LIKE 't\_%'" || exit 2
+$PSQL -d drain_v4 -c "SELECT drain_teacher_actuals(NULL, true)" >/dev/null || { echo "v4 re-drain failed"; exit 2; }
+dump drain_v4 | grep '|t_' > $TMP/t_second.txt
+if diff $TMP/t_first.txt $TMP/t_second.txt; then echo "   t_* re-drain: IDENTICAL"; t_idem_ok=1; else echo "   t_* re-drain: CHANGED"; t_idem_ok=0; fi
+echo "   v3 contrast (no admin-wins skip, no sourceLessonId):"
+$PSQL -d drain_v3x -F '  ' -f $HERE/checks_v4_teacher.sql | awk -F'  ' '$1 == "FAIL" { printf "   v3 FAIL  %s\n         got: %s\n", $2, $3 }'
+
+echo "== summary: v2 $((v2_total - v2_fail))/$v2_total; v3 $((v3_total - v3_fail))/$v3_total; v1-v2 non-band $([[ $nb_ok == 1 ]] && echo identical || echo DIFFERENT); v2-v3 $([[ $v23_ok == 1 ]] && echo identical || echo DIFFERENT); re-drain $([[ $idem_ok == 1 ]] && echo idempotent || echo CHANGED); Riptide $([[ $rip_ok == 1 ]] && echo PASS || echo FAIL); v4 (draft) $((v4_total - v4_fail))/$v4_total; teacher v1.20.0 $((t_total - t_fail))/$t_total, old-only v3=v4 $([[ $t_old_ok == 1 ]] && echo identical || echo DIFFERENT), re-drain $([[ $t_idem_ok == 1 ]] && echo idempotent || echo CHANGED)"
+[[ $v2_fail == 0 && $nb_ok == 1 && $rip_ok == 1 && $v3_fail == 0 && $v23_ok == 1 && $idem_ok == 1 && $v4_fail == 0 && $t_fail == 0 && $t_old_ok == 1 && $t_idem_ok == 1 ]]
