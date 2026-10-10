@@ -36,7 +36,7 @@ const formatReasonForTooltip = (prose) => {
   return m ? m[1] : prose;
 };
 
-export function TallyView({ timetable, schools, students, enrolments, setEnrolments, teachers, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], groups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], groups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
@@ -80,7 +80,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // The helper returns BOTH the canonical tallyRows shape (which 5b's cycle
   // handler and 5c's edit modal will read) AND a transitional entryMap shim
   // synthesized from WTT data so existing render code (CellIcon, tooltips,
-  // stats, makeups filter, holiday-rendering branches) keeps working
+  // stats, holiday-rendering branches) keeps working
   // unmodified through 5a–5c.
   const { tallyRows, entryMap } = useMemo(() => {
     if (!activeTerm) return { tallyRows: [], entryMap: {} };
@@ -110,8 +110,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // the click-cycle write. Until C6 ships, cells render all-blank.
   const { tallyRows: privateLessonRows, entryMap: privateEntryMap } = useMemo(() => {
     if (!activeTerm) return { tallyRows: [], entryMap: {} };
-    return derivePrivateTallyRows({ enrolments, students, termWeeks, weeklyTimetables, teachers });
-  }, [enrolments, students, termWeeks, weeklyTimetables, teachers, activeTerm]);
+    return derivePrivateTallyRows({ enrolments, students, termWeeks, weeklyTimetables });
+  }, [enrolments, students, termWeeks, weeklyTimetables, activeTerm]);
 
   // ── Holiday catchup map: which holiday-week cells have a catchup row ──
   // Value is a minimal entry-shape so the downstream tooltip read
@@ -272,7 +272,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
           id: uid(), enrolmentId,
           studentId: lesson.studentId, studentName: lesson.studentName,
           instrument: lesson.instrument, schoolId: "__private__",
-          teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
           day: "", isGroup: false,
         });
       } else if (next === "missed-co" || next === "missed-nco") {
@@ -280,7 +279,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
           id: uid(), enrolmentId,
           studentId: lesson.studentId, studentName: lesson.studentName,
           instrument: lesson.instrument, schoolId: "__private__",
-          teacherId: lesson.teacherId || "", teacherName: lesson.teacherName || "",
           day: "", isGroup: false,
           status: "missed",
           reason: "", reasonDetail: "", notes: "",
@@ -298,7 +296,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // ── Grouping ────────────────────────────────────────────────
   const groupedRows = useMemo(() => {
     const DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-    if (groupBy === "day_school") {
+    // Day & School is the default, and the fallback for any unrecognised value.
+    if (groupBy !== "day" && groupBy !== "school") {
       const groups = {};
       for (const r of lessonRows) {
         const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
@@ -311,15 +310,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, rows]) => [k.split("|")[1], rows.sort((a, b) => (a.studentName || "").localeCompare(b.studentName || ""))]);
     }
-    if (groupBy === "teacher") {
-      const groups = {};
-      for (const r of lessonRows) {
-        const k = r.teacherName || "Unknown";
-        if (!groups[k]) groups[k] = [];
-        groups[k].push(r);
-      }
-      return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
-    }
     if (groupBy === "day") {
       const groups = {};
       for (const r of lessonRows) {
@@ -329,34 +319,14 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
       }
       return Object.entries(groups).sort(([a], [b]) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b));
     }
-    if (groupBy === "school") {
-      const groups = {};
-      for (const r of lessonRows) {
-        const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
-        if (!groups[schoolName]) groups[schoolName] = [];
-        groups[schoolName].push(r);
-      }
-      return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+    const groups = {};
+    for (const r of lessonRows) {
+      const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
+      if (!groups[schoolName]) groups[schoolName] = [];
+      groups[schoolName].push(r);
     }
-    if (groupBy === "makeups") {
-      const withCounts = lessonRows.map(r => {
-        const makeupCount = Object.values(entryMap).filter(e =>
-          e.lessonKey === r.lessonKey && e.status === "missed" && e.makeupEligible && !e.madeUp
-        ).length;
-        return { ...r, _makeupCount: makeupCount };
-      }).filter(r => r._makeupCount > 0)
-        .sort((a, b) => b._makeupCount - a._makeupCount);
-      if (withCounts.length === 0) return [["No makeups owed", []]];
-      const groups = {};
-      for (const r of withCounts) {
-        const k = `${r._makeupCount} makeup${r._makeupCount !== 1 ? "s" : ""} owed`;
-        if (!groups[k]) groups[k] = [];
-        groups[k].push(r);
-      }
-      return Object.entries(groups);
-    }
-    return [["All Students", lessonRows]];
-  }, [lessonRows, groupBy, schools, entryMap]);
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [lessonRows, groupBy, schools]);
 
   // Flat ordered list of all rendered rows — used for cross-row drag range
   const flatRows = useMemo(() => groupedRows.flatMap(([, rows]) => rows), [groupedRows]);
@@ -444,7 +414,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     });
     const { tallyRows: prevPrivateLessonRows, entryMap: prevPrivateEntryMap } = derivePrivateTallyRows({
       enrolments, students, termWeeks: prevTermWeeks,
-      weeklyTimetables, teachers,
+      weeklyTimetables,
     });
 
     // Prev stats — mirrors the on-screen stats useMemo shape.
@@ -483,7 +453,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
     // user's current grouping selection.
     const DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     let prevGroupedRows;
-    if (groupBy === "day_school") {
+    if (groupBy !== "day" && groupBy !== "school") {
       const acc = {};
       for (const r of prevTallyRows) {
         const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
@@ -495,14 +465,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
       prevGroupedRows = Object.entries(acc)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, rows]) => [k.split("|")[1], rows.sort((a, b) => (a.studentName || "").localeCompare(b.studentName || ""))]);
-    } else if (groupBy === "teacher") {
-      const acc = {};
-      for (const r of prevTallyRows) {
-        const k = r.teacherName || "Unknown";
-        if (!acc[k]) acc[k] = [];
-        acc[k].push(r);
-      }
-      prevGroupedRows = Object.entries(acc).sort(([a], [b]) => a.localeCompare(b));
     } else if (groupBy === "day") {
       const acc = {};
       for (const r of prevTallyRows) {
@@ -511,7 +473,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         acc[k].push(r);
       }
       prevGroupedRows = Object.entries(acc).sort(([a], [b]) => DAY_ORDER.indexOf(a) - DAY_ORDER.indexOf(b));
-    } else if (groupBy === "school") {
+    } else {
       const acc = {};
       for (const r of prevTallyRows) {
         const schoolName = schools.find(s => s.id === r.schoolId)?.name || "Unknown";
@@ -519,27 +481,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         acc[schoolName].push(r);
       }
       prevGroupedRows = Object.entries(acc).sort(([a], [b]) => a.localeCompare(b));
-    } else if (groupBy === "makeups") {
-      const withCounts = prevTallyRows.map(r => {
-        const makeupCount = Object.values(prevEntryMap).filter(e =>
-          e.lessonKey === r.lessonKey && e.status === "missed" && e.makeupEligible && !e.madeUp
-        ).length;
-        return { ...r, _makeupCount: makeupCount };
-      }).filter(r => r._makeupCount > 0)
-        .sort((a, b) => b._makeupCount - a._makeupCount);
-      if (withCounts.length === 0) {
-        prevGroupedRows = [["No makeups owed", []]];
-      } else {
-        const acc = {};
-        for (const r of withCounts) {
-          const k = `${r._makeupCount} makeup${r._makeupCount !== 1 ? "s" : ""} owed`;
-          if (!acc[k]) acc[k] = [];
-          acc[k].push(r);
-        }
-        prevGroupedRows = Object.entries(acc);
-      }
-    } else {
-      prevGroupedRows = [["All Students", prevTallyRows]];
     }
 
     const html = _genTallyHTML({
@@ -605,10 +546,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
           <select value={groupBy} onChange={e => setGroupBy(e.target.value)}
             style={{ height: 34, padding: "0 12px", border: `2px solid ${colors.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", background: colors.cardBg, fontWeight: 600, cursor: "pointer", boxSizing: "border-box", marginTop: -2 }}>
             <option value="day_school">Day &amp; School</option>
-            <option value="teacher">By Teacher</option>
             <option value="day">By Day</option>
             <option value="school">By School</option>
-            <option value="makeups">Makeups Owed</option>
           </select>
           <Btn onClick={handlePreviewPrevTerm} disabled={!prevTermAvailable}
             style={{ opacity: prevTermAvailable ? 1 : 0.4, cursor: prevTermAvailable ? "pointer" : "default" }}
@@ -729,20 +668,11 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                 if (filteredRows.length === 0) return null;
                 return (
                 <React.Fragment key={groupLabel}>
-                  {groupBy !== "none" && groupBy !== "makeups" && (
-                    <tr>
-                      <td colSpan={termWeeks.length + 4} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 700, color: "#fff", background: (() => { const sid = rows[0]?.schoolId; const sc = (groupBy === "day_school" || groupBy === "school") ? schools.find(s => s.id === sid) : null; return sc?.color || pageColor; })(), letterSpacing: "0.05em", textTransform: "uppercase", position: "sticky", top: 36, zIndex: 3, borderBottom: `1px solid ${colors.sidebarHover}` }}>
-                        {groupLabel}
-                      </td>
-                    </tr>
-                  )}
-                  {groupBy === "makeups" && (
-                    <tr>
-                      <td colSpan={termWeeks.length + 4} style={{ padding: "8px 14px 4px", fontSize: 11, fontWeight: 700, color: "#fff", background: colors.accent, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                        {groupLabel}
-                      </td>
-                    </tr>
-                  )}
+                  <tr>
+                    <td colSpan={termWeeks.length + 4} style={{ padding: "6px 14px", fontSize: 11, fontWeight: 700, color: "#fff", background: (() => { const sid = rows[0]?.schoolId; const sc = groupBy !== "day" ? schools.find(s => s.id === sid) : null; return sc?.color || pageColor; })(), letterSpacing: "0.05em", textTransform: "uppercase", position: "sticky", top: 36, zIndex: 3, borderBottom: `1px solid ${colors.sidebarHover}` }}>
+                      {groupLabel}
+                    </td>
+                  </tr>
                   {filteredRows.map((lesson, ri) => {
                     // Resolve live name from students prop so renames immediately reflect in the tally
                     const liveStudent = lesson.isGroup ? null : students.find(s => s.id === lesson.studentId);

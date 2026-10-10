@@ -120,9 +120,10 @@ export function runEnrolmentHistoryCharacterizationTests(assert) {
   //    Drums row's because Piano's all-inactive cells subtract themselves.
   assert("history char b: Drums snapshot", drumsSnapshot(a), DRUMS_SNAPSHOT);
   const drumsRow = a.tallyRows.find(r => r.lessonKey === "bon|Drums");
-  // P3: the teacher now comes from the latest weekly entry, like the day.
-  assert("history b: Drums row takes teacher and day from its latest weekly entry",
-    [drumsRow.teacherId, drumsRow.teacherName, drumsRow.day], ["t_sam", "Sam", "Wednesday"]);
+  // v2.49.10 — the day still comes from the latest weekly entry; the row
+  // carries no teacher label even though the weekly entries do.
+  assert("history b: Drums row takes its day from its latest weekly entry and carries no teacher",
+    ["teacherId" in drumsRow, "teacherName" in drumsRow, drumsRow.day], [false, false, "Wednesday"]);
 
   // c. Archived students: the enrolment-overlap fast exit.
   const arch = { ...bonnie, status: "archived" };
@@ -268,8 +269,10 @@ export function runTallyOverlapGateTests(assert) {
     [cellStates(byKey["bon|Drums"]).slice(0, 10), cellStates(byKey["bon|Piano"]).slice(0, 10)],
     [[...Array(5).fill("completed"), ...Array(5).fill("inactive")],
      [...Array(5).fill("inactive"), ...Array(5).fill("completed")]]);
-  assert("gate: mid-term swap — each row keeps its own teacher",
-    [byKey["bon|Drums"].teacherName, byKey["bon|Piano"].teacherName], ["Sam", "Jess"]);
+  // The Piano row is built from a master card that stores teacherId/teacherName;
+  // neither row carries them.
+  assert("gate: mid-term swap — neither row carries a teacher label",
+    ["teacherName" in byKey["bon|Drums"], "teacherId" in byKey["bon|Piano"], "teacherName" in byKey["bon|Piano"]], [false, false, false]);
 
   // Previous-term export: TallyView re-derives the old term with every
   // school, school weeks then holiday weeks flagged isHoliday — the same
@@ -296,14 +299,10 @@ export function runTallyOverlapGateTests(assert) {
   assert("gate: a duplicate starting after the term yields to the live one",
     dup.tallyRows.map(r => [r.lessonKey, r.enrolmentId]), [["bon|Drums", "e_bon_drm"]]);
 
-  // No weekly entry carries a teacher → still "" (groups under Unknown).
-  const bare = bonnieWtt();
-  for (const k of Object.keys(bare)) {
-    bare[k].lessons = bare[k].lessons.map(l => ({ ...l, teacherId: undefined, teacherName: undefined }));
-    bare[k].missed = bare[k].missed.map(m => ({ ...m, teacherId: undefined, teacherName: undefined }));
-  }
-  assert("gate: no teacher on any weekly entry leaves teacherName empty",
-    deriveT3({ enrolments: [drums], wtt: bare, cards: [] }).tallyRows[0].teacherName, "");
+  // Cells copy no teacher label from the weekly entries they are built from.
+  const cellEntries = Object.values(deriveT3({ enrolments: [drums], cards: [] }).entryMap);
+  assert("gate: tally cells carry no teacher label",
+    [cellEntries.length > 0, cellEntries.some(c => "teacherId" in c || "teacherName" in c)], [true, false]);
 }
 
 // ── Commit 4: restamp guard (stampFirstPlacementStart) ──────────────────

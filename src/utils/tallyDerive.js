@@ -118,8 +118,6 @@ function buildShimEntry({ wttEntry, state, weekKey, weekLabel, weekNum, lessonKe
     studentNames: wttEntry.studentNames || [],
     instrument: wttEntry.instrument || "",
     schoolId: wttEntry.schoolId || "",
-    teacherId: wttEntry.teacherId || "",
-    teacherName: wttEntry.teacherName || "",
     isGroup: !!wttEntry.isGroup,
     groupId: wttEntry.groupId,
     groupName: wttEntry.groupName,
@@ -209,7 +207,7 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       if (enrolStart > termEnd) continue;
     }
 
-    // Find MTT card for scheduling info (day, schoolId, teacherName, groupName, studentNames)
+    // Find MTT card for scheduling info (day, schoolId, groupName, studentNames)
     const mttCard = (timetable?.lessons || []).find(l => l.enrolmentId === e.id);
     const schoolId = mttCard?.schoolId || student.schoolId;
 
@@ -224,14 +222,9 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     // mid-term, newly enrolled before MTT regen, group cards whose
     // enrolmentId lookup misses) rendered under an "UNKNOWN" day header in
     // TallyView's section grouping.
-    //
-    // v2.44.0 — the teacher on that same latest entry is captured too, for the
-    // same reason: an ended enrolment has no master card, and its row used to
-    // fall under "Unknown" in the by-teacher grouping.
     const cells = {};
     let hasWttData = false;
     let latestWttDay = "";
-    let latestWttTeacher = null;
     const pendingShimEntries = [];
     for (const week of termWeeks) {
       const sk = `${week.weekKey}|${schoolId}`;
@@ -354,10 +347,6 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       if (lessonMatch || missedMatch || forwardEntry) hasWttData = true;
       if (lessonMatch?.day) latestWttDay = lessonMatch.day;
       else if (missedMatch?.day) latestWttDay = missedMatch.day;
-      const teacherSource = lessonMatch || missedMatch;
-      if (teacherSource?.teacherName) {
-        latestWttTeacher = { teacherId: teacherSource.teacherId || "", teacherName: teacherSource.teacherName };
-      }
 
       let wttWithKind = null;
       if (forwardEntry) wttWithKind = forwardEntry;
@@ -403,14 +392,13 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
     seen.add(lessonKey);
     for (const [k, v] of pendingShimEntries) entryMap[k] = v;
 
-    // Row shape: spread MTT card if present (carries teacherName, groupName,
-    // studentNames, id), else synthesize a minimal base from enrolment + student.
+    // Row shape: spread MTT card if present (carries groupName, studentNames,
+    // id), else synthesize a minimal base from enrolment + student.
     // Day resolution order: mttCard.day → latestWttDay → "" (Spec 4 cluster 3).
-    // Session 3 / C7 — synthesised shape carries no teacher attribution of
-    // its own. v2.44.0 — teacher falls back to the latest weekly entry's
-    // teacher (the same entry the day comes from); "" only when no entry
-    // carries one, which still groups under "Unknown".
-    const baseLesson = mttCard ? { ...mttCard } : {
+    // v2.49.10 — rows carry no teacher label: the card's stored
+    // teacherId / teacherName are left out of the copy.
+    const { teacherId: _cardTeacherId, teacherName: _cardTeacherName, ...mttCardFields } = mttCard || {};
+    const baseLesson = mttCard ? mttCardFields : {
       id: lessonKey,
       studentId: e.studentId,
       studentName: student.name,
@@ -419,7 +407,6 @@ export function deriveTallyRows({ enrolments, students, termWeeks, weeklyTimetab
       isGroup: e.isGroup || false,
       instrument: e.instrument,
       schoolId,
-      ...(latestWttTeacher || { teacherName: "" }),
       day: latestWttDay || "",
     };
 
@@ -534,9 +521,6 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
 
     seen.add(lessonKey);
 
-    // Session 3 / C7 — private students have no school/lane, so lane-derived
-    // teacher attribution doesn't apply. Per Matt's Option 1: private rows
-    // collapse under the empty teacher group in TallyView's by-teacher view.
     tallyRows.push({
       id: lessonKey,
       lessonKey,
@@ -545,7 +529,6 @@ export function derivePrivateTallyRows({ enrolments, students, termWeeks, weekly
       studentNames: [],
       instrument: e.instrument,
       schoolId: "__private__",
-      teacherName: "",
       isGroup: false,
       groupId: undefined,
       day: latestWttDay || "",
