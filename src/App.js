@@ -1024,7 +1024,7 @@ export default function MusicTimetableApp() {
   const tallyEntriesRef = useRef([]);
   const schoolsRef = useRef([]);
   const [notification, setNotification] = useState(null);
-  // Remove-teacher choice modal (item 11). null | { modalText, apply } where
+  // Remove-teacher choice modal (item 11). null | { modalText, thisWeekLabel, apply } where
   // apply(mode) runs the deferred removal — mode "keep" (end-date the lane, keep
   // this week live) or "clear" (archive, also clear this week). Cancel just nulls
   // this, never calls apply.
@@ -1754,7 +1754,17 @@ export default function MusicTimetableApp() {
     // (e.g. their lesson was deleted) returns mttTeacher = null, never
     // matches any lane → that catchup survives lane removal. Orphan catchup
     // detection is a separate concern.
-    const currentMondayStr = toLocalDateStr(getCurrentWeekMonday());
+    const currentMonday = getCurrentWeekMonday();
+    const currentMondayStr = toLocalDateStr(currentMonday);
+    // v2.49.7 — name the week the dialog's "this week" means, e.g.
+    // "this week (12–16 Oct)" or "this week (28 Sep – 2 Oct)". Wording only.
+    const currentFriday = new Date(currentMonday);
+    currentFriday.setDate(currentMonday.getDate() + 4);
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const weekRange = currentMonday.getMonth() === currentFriday.getMonth()
+      ? `${currentMonday.getDate()}–${currentFriday.getDate()} ${MONTHS[currentFriday.getMonth()]}`
+      : `${currentMonday.getDate()} ${MONTHS[currentMonday.getMonth()]} – ${currentFriday.getDate()} ${MONTHS[currentFriday.getMonth()]}`;
+    const thisWeekLabel = `this week (${weekRange})`;
     const catchupBelongsToLane = (c) => {
       if (c.weekKey < currentMondayStr) return false;
       if (c.day !== lane.day) return false;
@@ -1854,10 +1864,10 @@ export default function MusicTimetableApp() {
         setCatchups(prev => prev.filter(c => !removeIds.has(c.id)));
       }
 
-      try { notify(keepThisWeek ? `Removed ${teacherName} from future ${lane.day}s — this week kept` : `Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
+      try { notify(keepThisWeek ? `Removed ${teacherName} from future ${lane.day}s — ${thisWeekLabel} kept` : `Removed ${teacherName} from ${lane.day}s`); } catch (_) {}
     };
 
-    setRemoveStaffModal({ modalText, apply: applyRemoval });
+    setRemoveStaffModal({ modalText, thisWeekLabel, apply: applyRemoval });
   }, [sessionUserId, teachers, schools, teacherCoverage, timetable, weeklyTimetables, catchups, setCatchups, enrolments, deleteCatchup, logError]);
 
   // Load data on mount — uses test data as fallback when storage is empty
@@ -6996,7 +7006,7 @@ export default function MusicTimetableApp() {
             <div style={{ padding: "16px 22px", fontSize: 13.5, lineHeight: 1.55, color: colors.text }}>
               {removeStaffModal.modalText}
               <div style={{ marginTop: 10, fontSize: 12.5, color: colors.textMuted }}>
-                The master timetable and all future weeks lose this teacher either way — choose what happens to <strong>this week</strong>.
+                The master timetable and all future weeks lose this teacher either way — choose what happens to <strong>{removeStaffModal.thisWeekLabel || "this week"}</strong>.
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center", padding: "12px 22px 18px", flexWrap: "wrap" }}>
