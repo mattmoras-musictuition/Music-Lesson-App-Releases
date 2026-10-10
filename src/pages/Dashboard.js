@@ -30,7 +30,7 @@ import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
-import { draggedMessageId, todoCoversMessage, planEmailDrop, plainEmailTask, todoMessageKey } from "../utils/todoEmailKey";
+import { draggedMessageId, todoCoversMessage, planEmailDrop, plainEmailTask, emailForMessage, todoMessageKey } from "../utils/todoEmailKey";
 import { visibleLessons } from "../utils/hiddenCards";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -1666,12 +1666,17 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
   // Drop an email onto the To Do list — fully structured output.
   // A single email always makes its own item; only the multi-select add passes
   // { groupBySubject: true } to keep folding same-subject emails together.
-  const dropEmailToTodo = React.useCallback((email, currentItems, { groupBySubject = false } = {}) => {
+  // selectedMsgId: the reader's selected message (sender chips) when the row is
+  // the open thread — the task is then for that message, not the latest one.
+  const dropEmailToTodo = React.useCallback((row, currentItems, { groupBySubject = false, selectedMsgId } = {}) => {
     // Deduplicate on the dragged message, not the thread — a new message in a
     // thread that already has an item gets its own item.
-    const plan = planEmailDrop(currentItems, email, { groupBySubject, inboxEmails });
+    const plan = planEmailDrop(currentItems, row, { groupBySubject, inboxEmails, selectedMsgId });
     if (plan.action === "ignore") return currentItems;
     const { messageId } = plan;
+    // Sender, snippet and body come from the chosen message; the row itself
+    // when nothing (or the row's own message) is selected.
+    const email = emailForMessage(row, selectedMsgId);
 
     const category = classifyEmailFull(email);
     const fromAddr = email.from?.match(/<(.+)>/)?.[1] || email.from || "";
@@ -4736,7 +4741,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         )}
                                         {emailFolder !== "sent" && <Btn variant="secondary" onClick={() => triageEmail(email)} disabled={isTriaging} style={{ fontSize: 12 }}>{isTriaging ? "✦ Drafting…" : draft ? "✦ Re-draft" : "✦ Triage"}</Btn>}
                                         {emailFolder !== "sent" && <Btn variant="secondary" onClick={() => {
-                                          saveTodo(dropEmailToTodo(email, todoItemsRef.current));
+                                          saveTodo(dropEmailToTodo(email, todoItemsRef.current, { selectedMsgId: threadMsgSelected[email.id] }));
                                           if (!dashPanels.todo) saveDashPanels({ ...dashPanels, todo: true });
                                         }} style={{ fontSize: 12 }}>+ To Do</Btn>}
                                         {/* Move To — shows current category, opens popup */}
@@ -4921,7 +4926,9 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                         if (!emailDragging) return;
                         const result = Array.isArray(emailDragging)
                           ? dropMultipleEmailsToTodo(emailDragging, todoItemsRef.current)
-                          : dropEmailToTodo(emailDragging, todoItemsRef.current);
+                          : dropEmailToTodo(emailDragging, todoItemsRef.current,
+                              // the open thread's row carries the reader's selected message
+                              { selectedMsgId: inboxSelected === emailDragging.id ? threadMsgSelected[emailDragging.id] : undefined });
                         if (result !== todoItems && todoDropZoneIdx === -1) {
                           // Bottom zone — move newly added item to end
                           const active = result.filter(t => !t.done);

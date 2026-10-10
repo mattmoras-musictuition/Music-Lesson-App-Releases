@@ -8,7 +8,7 @@
 
 import {
   draggedMessage, draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey, planEmailDrop,
-  plainEmailTask,
+  plainEmailTask, emailForMessage,
 } from "../utils/todoEmailKey";
 
 export function runTodoEmailKeyTests(assert) {
@@ -108,6 +108,50 @@ export function runTodoEmailKeyTests(assert) {
   assert("todoKey: unknown sender plain task has no groupType",
     JSON.parse(JSON.stringify(plainEmailTask(row, { id: "n3", messageId: "a4", fromAddr: "jo@x.com", fromName: "Jo Lee",
       firstName: "Jo", isParent: false, composeSubject: "" }))).groupType, undefined);
+
+  // Reader selection picks the message (v2.49.5). The row is still thread-3:
+  // Sam (a1), Al (a2), You (a3, sent), Jo (a4, latest incoming).
+  const fromMsg = (r, sel, id) => {
+    const e = emailForMessage(r, sel);
+    const addr = e.from.match(/<(.+)>/)[1], name = e.from.split("<")[0].trim();
+    return plainEmailTask(e, { id, createdAt: "2026-10-10T00:00:00.000Z", messageId: planEmailDrop([], r, { selectedMsgId: sel }).messageId,
+      fromAddr: addr, fromName: name, firstName: name.split(" ")[0], isParent: false, composeSubject: "Re: Lesson Invoice Term 4" });
+  };
+  const selDrop = (items, r, sel, id) => {
+    const plan = planEmailDrop(items, r, { selectedMsgId: sel });
+    return plan.action === "ignore" ? items : [fromMsg(r, sel, id), ...items];
+  };
+  const samTask = fromMsg(row, "a1", "s1");
+  assert("todoKey: selected message makes a task for that sender, message and view target",
+    [samTask.text, samTask.messageId, samTask.replyTo, samTask.senderName, samTask.emailId],
+    ["Contact Sam re: Lesson Invoice Term 4", "a1", "sam@x.com", "Sam", "thread-3"]);
+  const twoSel = selDrop(selDrop([], row, "a1", "s1"), row, "a2", "s2");
+  assert("todoKey: a second selection in the same thread makes a second task",
+    twoSel.map(t => [t.messageId, t.replyTo]), [["a2", "al@x.com"], ["a1", "sam@x.com"]]);
+  assert("todoKey: same selected message twice makes one task",
+    selDrop(selDrop([], row, "a1", "s1"), row, "a1", "s1b").length, 1);
+  assert("todoKey: a task for one message does not block the latest message of its thread",
+    [planEmailDrop(twoSel, row).action, planEmailDrop(twoSel, row).messageId], ["new", "a4"]);
+  assert("todoKey: selecting You (sent) falls back to the latest incoming message",
+    [draggedMessageId(row, "a3"), emailForMessage(row, "a3") === row, fromMsg(row, "a3", "y").replyTo], ["a4", true, "jo@x.com"]);
+  assert("todoKey: selecting the row's own message leaves the row unchanged",
+    emailForMessage(row, "a4") === row, true);
+  assert("todoKey: no selection is exactly v2.49.4",
+    [emailForMessage(row) === row, emailForMessage(row, undefined) === row, draggedMessageId(row), JSON.stringify(planEmailDrop([], row))],
+    [true, true, "a4", JSON.stringify({ action: "new", messageId: "a4" })]);
+  assert("todoKey: unknown selected id falls back to the latest incoming",
+    draggedMessageId(row, "nope"), "a4");
+  // Single-sender thread with several messages: the selected one wins
+  const solo = { id: "thread-5", subject: "Lesson time", from: "Pat <pat@x.com>",
+    threadMessages: [ms("p1", 10, "Pat <pat@x.com>", { snippet: "first" }), ms("p2", 20, "Pat <pat@x.com>", { snippet: "second" })] };
+  assert("todoKey: single-sender thread uses the selected earlier message",
+    [draggedMessageId(solo, "p1"), emailForMessage(solo, "p1").snippet, draggedMessageId(solo)], ["p1", "first", "p2"]);
+  // Multi-select add passes no selection: unchanged by the reader state
+  assert("todoKey: multi-select plan ignores reader selection (none passed)",
+    planEmailDrop(after1, other, { inboxEmails: inbox, groupBySubject: true }).action, "group");
+  // Message covered inside a group's sub-item is still ignored when selected
+  assert("todoKey: selected message already in a grouped sub-item is ignored",
+    planEmailDrop([{ id: "g", subItems: [{ emailId: "thread-3", messageId: "a2" }] }], row, { selectedMsgId: "a2" }).action, "ignore");
 
   // Existing grouped tasks pass through load (a plain JSON parse of
   // mt-todo-items) and a later single drop unchanged.

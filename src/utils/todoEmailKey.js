@@ -1,7 +1,9 @@
 // ============================================================
 // Dashboard to-do: one item per dragged email MESSAGE
 // An inbox row is a Gmail thread (email.id === threadId). The row shows the
-// thread's latest incoming message, so that is the message a drag means.
+// thread's latest incoming message, so that is the message a drag means —
+// unless the thread is open in the reader with a message selected (sender
+// chips): then "+ To Do" and a drag of that open row mean the selected one.
 // To-do items keep emailId = thread id (open/scroll/reply lookups key on it)
 // and gain messageId = the dragged message, which is the dedupe key.
 // Items created before messageId existed are thread-keyed ("legacy").
@@ -10,11 +12,17 @@
 
 const normSubject = s => (s || "").replace(/^(re:\s*)+/gi, "").trim();
 
-// The message an inbox row stands for: latest non-sent by internalDate,
-// else latest of any; ties go to the later array position. Mirrors the
-// displayMsg pick in electron.js. Falls back to the thread id.
-export function draggedMessage(email) {
+// The message an inbox row stands for: the reader's selected message when
+// selectedMsgId names an incoming (non-sent) message of this thread;
+// otherwise latest non-sent by internalDate, else latest of any; ties go to
+// the later array position. Mirrors the displayMsg pick in electron.js.
+// A selected sent message ("You") falls back to the latest incoming.
+export function draggedMessage(email, selectedMsgId) {
   const msgs = (email && email.threadMessages) || [];
+  if (selectedMsgId) {
+    const sel = msgs.find(m => !m.isSent && (m.id === selectedMsgId || m.messageId === selectedMsgId));
+    if (sel) return sel;
+  }
   const nonSent = msgs.filter(m => !m.isSent);
   const pool = nonSent.length ? nonSent : msgs;
   let best = null;
@@ -22,8 +30,8 @@ export function draggedMessage(email) {
   return best;
 }
 
-export function draggedMessageId(email) {
-  const m = draggedMessage(email);
+export function draggedMessageId(email, selectedMsgId) {
+  const m = draggedMessage(email, selectedMsgId);
   return (m && (m.messageId || m.id)) || (email && email.id) || null;
 }
 
@@ -32,9 +40,9 @@ export function draggedMessageId(email) {
 // the same thread covers every message that already existed when it was
 // created (so re-dragging the message it was made from stays a no-op);
 // with no timestamp to compare it covers the whole thread, as before.
-export function todoCoversMessage(items, email) {
-  const msgId = draggedMessageId(email);
-  const msgTime = draggedMessage(email)?.internalDate || 0;
+export function todoCoversMessage(items, email, selectedMsgId) {
+  const msgId = draggedMessageId(email, selectedMsgId);
+  const msgTime = draggedMessage(email, selectedMsgId)?.internalDate || 0;
   const covers = t => {
     if (!t) return false;
     if (t.messageId) return t.messageId === msgId;
@@ -74,17 +82,31 @@ export function findSubjectGroupIdx(items, email, inboxEmails) {
 //   { action: "ignore" }               — an item already stands for the message
 //   { action: "group", idx, messageId } — fold into items[idx] (multi-select only)
 //   { action: "new", messageId }        — its own new item
+// selectedMsgId (reader selection, open thread only) picks the message; a
+// task for one message never blocks another message of the same thread.
 // A single dropped email (panel background, "+ To Do") is always "new" or
 // "ignore". groupBySubject is passed only by the multi-select add, which keeps
 // its existing subject grouping.
-export function planEmailDrop(items, email, { groupBySubject = false, inboxEmails } = {}) {
-  if (todoCoversMessage(items, email)) return { action: "ignore" };
-  const messageId = draggedMessageId(email);
+export function planEmailDrop(items, email, { groupBySubject = false, inboxEmails, selectedMsgId } = {}) {
+  if (todoCoversMessage(items, email, selectedMsgId)) return { action: "ignore" };
+  const messageId = draggedMessageId(email, selectedMsgId);
   if (groupBySubject) {
     const idx = findSubjectGroupIdx(items, email, inboxEmails);
     if (idx >= 0) return { action: "group", idx, messageId };
   }
   return { action: "new", messageId };
+}
+
+// The row as seen through the message a task is made for: same thread id,
+// subject and recipients, with that message's sender, snippet and body.
+// Returns the row itself when no selection changes the message (nothing
+// selected, the row's own message selected, or "You" selected).
+export function emailForMessage(email, selectedMsgId) {
+  if (!selectedMsgId) return email;
+  const m = draggedMessage(email, selectedMsgId);
+  if (!m || m === draggedMessage(email)) return email;
+  return { ...email, from: m.from, snippet: m.snippet || "", body: m.body || "", bodyHtml: m.bodyHtml || "",
+    internalDate: m.internalDate || email.internalDate };
 }
 
 // The one plain task a dragged inbox row makes (known parent or anyone else;
