@@ -397,11 +397,16 @@ export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, lane
  * (active + laneAppliesForWeek), so the card filter, placement and the day
  * header chips agree. MTT passes weekKey null (forward state: end-dated lanes
  * are gone); WTT passes the viewed week's key. A stored viewed lane that does
- * not apply to that week falls back to the first applicable lane. Temporary
- * lanes stay out of this list, as before.
+ * not apply to that week falls back to the first applicable lane.
+ *
+ * v2.49.11 — WTT callers pass the week's temporary lanes too, so the list is
+ * exactly the chip strip's (getDayLanes with temporaryLanes): a one-week
+ * temporary teacher is a lane of its own, and the chips, cards, per-day Clear
+ * and day-header email/export all pick the same viewed lane. Omitted (MTT,
+ * weekKey null) → permanent lanes only, as before.
  */
-export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null) {
-  const dayLanes = getDayLanes(teacherCoverage, schoolId, lesson.day, [], weekKey);
+export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null, temporaryLanes = []) {
+  const dayLanes = getDayLanes(teacherCoverage, schoolId, lesson.day, temporaryLanes, weekKey);
   if (dayLanes.length < 2) return true;
   const storedLaneId = viewedLanes?.[schoolId]?.[lesson.day];
   const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
@@ -429,7 +434,7 @@ export function lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, wee
  * lessonBelongsToViewedLane.
  */
 export function lessonShownInViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null, temporaryLanes = []) {
-  return lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey)
+  return lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey, temporaryLanes)
     || lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, weekKey, temporaryLanes);
 }
 

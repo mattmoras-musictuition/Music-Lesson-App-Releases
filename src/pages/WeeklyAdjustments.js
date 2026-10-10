@@ -3064,9 +3064,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       // Spec 2 cluster 10 — lane-filter the per-day clear so chip-A trash
       // doesn't nuke chip-B's lessons. Single-lane days behave identically
       // to today (helper returns true for single-lane / zero-lane days).
-      const beforeCount = (weeklyData.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey)).length;
-      const clearedLessons = (weeklyData.lessons || []).filter(l => l.day !== day || !lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey));
-      const clearedMissed = (weeklyData.missed || []).filter(m => m.day !== day || !lessonBelongsToViewedLane(m, viewedLanes, teacherCoverage, selectedSchool, weekKey));
+      const beforeCount = (weeklyData.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes)).length;
+      const clearedLessons = (weeklyData.lessons || []).filter(l => l.day !== day || !lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes));
+      const clearedMissed = (weeklyData.missed || []).filter(m => m.day !== day || !lessonBelongsToViewedLane(m, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes));
       setWeeklyTimetables(prev => ({
         ...prev,
         [storageKey]: { ...(prev[storageKey] || {}), lessons: clearedLessons, missed: clearedMissed }
@@ -3982,7 +3982,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // recipients (parents, class teachers, staff) and no export row.
             const dayLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey).filter(l => {
               if (!activeDays.includes(l.day)) return false;
-              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey);
+              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes);
             });
             // Collect all parent emails. v2.41.0 — band cards contribute the
             // students attending that session (legacy bands: members[]); see
@@ -6122,7 +6122,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                       // filters to days with lessons).
                       if (confirmClearWeek === "all") return "Clear full week?";
                       const day = confirmClearWeek;
-                      const count = (weeklyData?.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey)).length;
+                      const count = (weeklyData?.lessons || []).filter(l => l.day === day && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes)).length;
                       const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
                       if (!laneTeacher) return `Clear ${day}?`;
                       const firstName = laneTeacher.name.split(" ")[0];
@@ -6137,7 +6137,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   // to the original any-lesson check via the helper's
                   // single-lane true short-circuit.
                   const menuDays = (currentSchool?.days || DAYS).filter(d => {
-                    return (weeklyData?.lessons || []).some(l => l.day === d && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey));
+                    return (weeklyData?.lessons || []).some(l => l.day === d && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes));
                   });
                   return (
                     <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>

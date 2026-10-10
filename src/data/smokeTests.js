@@ -43,6 +43,7 @@ import { runLaneHistoryTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests } from "./tallyFiltersSmokeTests";
+import { runTempLaneChipTests } from "./tempLaneChipSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -460,6 +461,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Tally summary boxes, box filter and Summary column (v2.49.10) ──
   runTallyFilterTests(assert);
+
+  // ── Temporary teacher lane switches with its chip (v2.49.11) ──
+  runTempLaneChipTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
