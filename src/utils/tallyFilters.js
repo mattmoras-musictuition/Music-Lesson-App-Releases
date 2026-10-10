@@ -20,8 +20,8 @@
 //   bankingIndex — buildBankingIndex(catchups)
 //   now          — passed through to the catch-up predicates (undefined =
 //                  their own default, the current time)
-//   isPast       — week predicate for Not Yet Marked; defaults to the app
-//                  standard isPastWeek (6pm Friday rollover)
+//   isPast       — week predicate for the Not Yet Marked FILTER; defaults to
+//                  the app standard isPastWeek (6pm Friday rollover)
 // ============================================================
 
 import { isPastWeek } from "./helpers";
@@ -66,8 +66,10 @@ export function rowMatchesPill(row, entryMap, termWeeks, pill, opts = {}) {
 
 // Summary box numbers over the given rows and the term's non-holiday weeks.
 // `missed` = absent + unscheduledMakeups + makeupScheduled + madeUp.
+// Not Yet Marked NUMBER = every blank cell in the whole term (pre-v2.49.10
+// rule). Deliberately different from the Not Yet Marked FILTER
+// (cellMatchesPill), which shows past weeks only.
 export function computeTallyStats(rows, entryMap, termWeeks, opts = {}) {
-  const isPast = opts.isPast || isPastWeek;
   const stats = { completed: 0, missed: 0, absent: 0, unscheduledMakeups: 0, makeupScheduled: 0, madeUp: 0, unmarked: 0 };
   const weeks = (termWeeks || []).filter(w => !w.isHoliday);
   for (const r of rows || []) {
@@ -78,7 +80,7 @@ export function computeTallyStats(rows, entryMap, termWeeks, opts = {}) {
       else if (state === "unscheduled") stats.unscheduledMakeups++;
       else if (state === "scheduled") stats.makeupScheduled++;
       else if (state === "madeUp") stats.madeUp++;
-      else if (state === "blank" && isPast(w.weekKey)) stats.unmarked++;
+      else if (state === "blank") stats.unmarked++;
     }
   }
   stats.missed = stats.absent + stats.unscheduledMakeups + stats.makeupScheduled + stats.madeUp;

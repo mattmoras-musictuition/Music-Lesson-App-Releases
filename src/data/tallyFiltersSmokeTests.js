@@ -149,12 +149,18 @@ export function runTallyFilterTests(assert) {
   // ── Stats ──
   const stats = computeTallyStats(ROWS, ENTRY_MAP, WEEKS, OPTS);
   assert("tallyFilters: stats", stats,
-    { completed: 2, missed: 5, absent: 1, unscheduledMakeups: 1, makeupScheduled: 1, madeUp: 2, unmarked: 1 });
+    { completed: 2, missed: 5, absent: 1, unscheduledMakeups: 1, makeupScheduled: 1, madeUp: 2, unmarked: 4 });
   const old = oldStats(ROWS, ENTRY_MAP, WEEKS, BI, NOW);
   assert("tallyFilters: parity — Completed and the missed boxes match the old maths",
     [stats.completed, stats.missed, stats.absent, stats.unscheduledMakeups, stats.makeupScheduled, stats.madeUp],
     [old.completed, old.missed, old.absent, old.unscheduledMakeups, old.makeupScheduled, old.madeUp]);
-  assert("tallyFilters: Not Yet Marked drops current and future blanks (old 4 → new 1)", [old.unmarked, stats.unmarked], [4, 1]);
+  // v2.49.12 — the Not Yet Marked NUMBER counts the whole term again (past,
+  // current and future blanks), matching the pre-v2.49.10 maths.
+  assert("tallyFilters: parity — Not Yet Marked number matches the old whole-term maths", [old.unmarked, stats.unmarked], [4, 4]);
+  // ...while its FILTER stays past weeks only: the two differ on purpose.
+  const notMarkedCells = ROWS.flatMap(r => WEEKS.filter(w => cellMatchesPill(at(r.lessonKey, w.weekKey), w, TALLY_PILLS.NOT_MARKED, OPTS)));
+  assert("tallyFilters: Not Yet Marked number (whole term) and filter (past weeks) intentionally differ",
+    [stats.unmarked, notMarkedCells.length, matching(TALLY_PILLS.NOT_MARKED)], [4, 1, [R2.lessonKey]]);
 
   // ── School filter combines with the box rules (real deriveTallyRows) ──
   const wk = A;

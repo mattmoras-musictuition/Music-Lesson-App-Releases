@@ -188,8 +188,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────
   // v2.49.10 — one rule per cell state (utils/tallyFilters), shared with the
   // box filter and the Summary column. The four missed boxes partition every
-  // missed cell exactly once; Not Yet Marked counts blank cells in past
-  // weeks only (isPastWeek, 6pm Friday rollover).
+  // missed cell exactly once. The Not Yet Marked number counts every blank
+  // cell in the term; its filter shows past weeks only (isPastWeek).
   const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
   const stats = useMemo(
     () => computeTallyStats(lessonRows, entryMap, termWeeks, { bankingIndex }),
