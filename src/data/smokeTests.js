@@ -38,6 +38,7 @@ import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
+import { runLaneDisplayTests } from "./laneDisplaySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
@@ -442,6 +443,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Clear full week really deletes (v2.49.3) ──
   runWeekDeleteTests(assert);
+
+  // ── Lane display after a day-staff change (v2.49.7) ──
+  runLaneDisplayTests(assert);
 
   // ── Per-day admin edit stamps (v2.49.3) ──
   runDayEditTests(assert);

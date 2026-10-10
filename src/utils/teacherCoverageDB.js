@@ -347,9 +347,16 @@ export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, lane
  * Caller passes schoolId explicitly — most sites use selectedSchool, but the
  * MTT cross-school day-header aggregation (TimetableView) passes l.schoolId
  * per-lesson because MTT spans schools when no school is selected.
+ *
+ * v2.49.7 — week-aware. The lane list is the same one getDayLanes builds
+ * (active + laneAppliesForWeek), so the card filter, placement and the day
+ * header chips agree. MTT passes weekKey null (forward state: end-dated lanes
+ * are gone); WTT passes the viewed week's key. A stored viewed lane that does
+ * not apply to that week falls back to the first applicable lane. Temporary
+ * lanes stay out of this list, as before.
  */
-export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId) {
-  const dayLanes = (teacherCoverage || []).filter(c => c.schoolId === schoolId && c.day === lesson.day && c.status === "active");
+export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null) {
+  const dayLanes = getDayLanes(teacherCoverage, schoolId, lesson.day, [], weekKey);
   if (dayLanes.length < 2) return true;
   const storedLaneId = viewedLanes?.[schoolId]?.[lesson.day];
   const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;

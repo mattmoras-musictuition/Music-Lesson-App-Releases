@@ -800,7 +800,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
   // Cluster 8b: in multi-lane days, restrict to the viewed lane's bucket_id;
   // legacy cards without bucket_id bind to the default first-added lane.
-  filteredLessons = filteredLessons.filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool));
+  filteredLessons = filteredLessons.filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, null));
 
   // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {
@@ -918,7 +918,7 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
             const dayLessons = visibleLessons(timetable?.lessons, allStudents || students).filter(l => {
               if (!activeDays.includes(l.day)) return false;
               if (selectedSchool && l.schoolId !== selectedSchool) return false;
-              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, l.schoolId);
+              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, l.schoolId, null);
             });
             const parentEmailSet = new Set();
             const parentRows = [];
