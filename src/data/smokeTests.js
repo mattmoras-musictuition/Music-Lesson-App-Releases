@@ -43,7 +43,7 @@ import { runLaneHistoryTests, runGroupLaneTests } from "./laneHistorySmokeTests"
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
-import { runTempLaneChipTests, runTempLaneDayPdfTests } from "./tempLaneChipSmokeTests";
+import { runTempLaneChipTests, runTempLaneDayPdfTests, runWaitingListPlaceTests } from "./tempLaneChipSmokeTests";
 import { runDayEmailAttachmentTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -478,6 +478,9 @@ export function runSmokeTests(logErrorFn) {
   // ── Temporary teacher lane switches with its chip (v2.49.11) ──
   runTempLaneChipTests(assert);
   runTempLaneDayPdfTests(assert);
+
+  // ── Waiting List Place → This week honours the selected chip (v2.49.14) ──
+  runWaitingListPlaceTests(assert);
 
   // ── Day-header email attachment follows the emailed teacher or the chip (v2.49.12) ──
   runDayEmailAttachmentTests(assert);

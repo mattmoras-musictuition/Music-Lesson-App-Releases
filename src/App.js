@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, laneAppliesForWeek, getCardTeacherId, getDayLaneTeacher, getAllocatableLanes, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, laneAppliesForWeek, getCardTeacherId, getDayLaneTeacher, getAllocatableLanes, getManualPlaceLane, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
 import { carryBandMisses } from "./data/bandAbsence";
@@ -4835,9 +4835,10 @@ export default function MusicTimetableApp() {
     // WTT branch (target === "weekly") gets Q2=β lane-only stamp, no modal.
     const monday = getCurrentWeekMonday();
     const weekKey = toLocalDateStr(monday);
-    const destLane = target === "master"
-      ? getDayLaneTeacher(teacherCoverage, teachers, school.id, day, null, null, viewedLanes)
-      : getDayLaneTeacher(teacherCoverage, teachers, school.id, day, laneOverrides, weekKey, viewedLanes);
+    // v2.49.14 — "This week" also sees the week's temporary lanes, so the
+    // selected chip (including a one-week teacher) is honoured. Still the
+    // current week; the master branch is unchanged.
+    const destLane = getManualPlaceLane({ target, teacherCoverage, teachers, schoolId: school.id, day, laneOverrides, weekKey, viewedLanes, temporaryLanes });
     if (!destLane || !destLane.lane || !destLane.teacher) {
       notify(`No covering lane for ${school.name} on ${day}.`, "warning");
       return;

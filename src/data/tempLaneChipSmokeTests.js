@@ -6,7 +6,7 @@
 // permanent lane xov9t1ep, Matt on a temporary lane for week 2026-10-12.
 // ============================================================
 
-import { lessonBelongsToViewedLane, lessonShownInViewedLane, getDayLaneTeacher, getDayLanes } from "../utils/teacherCoverageDB";
+import { lessonBelongsToViewedLane, lessonShownInViewedLane, getDayLaneTeacher, getDayLanes, getManualPlaceLane } from "../utils/teacherCoverageDB";
 import { generateExportHtml } from "./exportHelpers";
 import { pickDayAttachment } from "../utils/dayEmailAttachment";
 
@@ -114,4 +114,68 @@ export function runTempLaneDayPdfTests(assert) {
   const noWeek = generateExportHtml(wholeDay, [], schools, teachers, { ...base, weekKey: null }) || "";
   assert("tempLaneDayPdf: no-week call unchanged (first permanent lane's teacher)",
     [noWeek.includes("Rauzah · 5 lessons"), noWeek.includes(">Break<")], [true, false]);
+}
+
+// ── v2.49.14 — Waiting List "Place → This week" honours the selected chip,
+//    including a one-week teacher. Owner's real ids: Moorabbin week 2026-10-12
+//    Tuesday — permanent lane xov9t1ep (teacher 3ogbshd6), temporary lane
+//    udrscl4q (teacher 97m7cb1o). The WHOLE Tuesday (both lanes' cards, the
+//    temporary lane, the other lanes) goes through getManualPlaceLane, the call
+//    handleManualSchedule makes, then the new card is built the way the
+//    handler builds it (bucket_id = destLane.lane.id) and appended to the day. ──
+export function runWaitingListPlaceTests(assert) {
+  const PERM = { id: "xov9t1ep", schoolId: S, day: "Tuesday", teacherId: "3ogbshd6", status: "active", effectiveTo: null, createdAt: "2026-10-10T15:10" };
+  const OLD = { id: "ybayneaf", schoolId: S, day: "Tuesday", teacherId: "97m7cb1o", status: "active", effectiveTo: "2026-10-05", createdAt: "2026-10-10T15:00" };
+  const ARCH = { id: "glkw2if8", schoolId: S, day: "Tuesday", teacherId: "97m7cb1o", status: "archived", effectiveTo: null, createdAt: "2026-01-01" };
+  const tc = [ARCH, OLD, PERM];
+  const temps = [{ id: "udrscl4q", schoolId: S, day: "Tuesday", weekKey: W2, teacherId: "97m7cb1o", createdAt: "2026-10-11T09:00" },
+    { id: "othwk001", schoolId: S, day: "Tuesday", weekKey: W3, teacherId: "97m7cb1o", createdAt: "2026-10-11T09:05" }];
+  const teachers = [{ id: "3ogbshd6", name: "Rauzah Hamzah" }, { id: "97m7cb1o", name: "Matt Moras" }];
+  const day = [card("t1", "udrscl4q", "08:30"), card("t2", "udrscl4q", "09:00"),
+    card("p1", "xov9t1ep", "09:30"), card("p2", "xov9t1ep", "10:00"), card("p3", "xov9t1ep", "10:30"),
+    card("e1", "ybayneaf", "11:00"), card("a1", "glkw2if8", "11:30")];
+  const place = (vl, extra = {}) => {
+    const dest = getManualPlaceLane({ target: "weekly", teacherCoverage: tc, teachers, schoolId: S, day: "Tuesday",
+      laneOverrides: [], weekKey: W2, viewedLanes: vl, temporaryLanes: temps, ...extra });
+    if (!dest || !dest.lane || !dest.teacher) return { dest, lessons: day };
+    const lesson = { id: "new1", studentId: "stu", schoolId: S, day: "Tuesday", start: "12:00", bucket_id: dest.lane.id };
+    return { dest, lessons: [...day, lesson], lesson };
+  };
+
+  const tmp = place(viewing("udrscl4q"));
+  assert("waitingListPlace: temporary chip selected → new card on udrscl4q (Matt)",
+    [tmp.lesson.bucket_id, tmp.dest.teacher.id, tmp.lessons.length], ["udrscl4q", "97m7cb1o", 8]);
+  assert("waitingListPlace: new card shows under the temporary chip, not the permanent one",
+    [lessonShownInViewedLane(tmp.lesson, viewing("udrscl4q"), tc, S, W2, temps), lessonShownInViewedLane(tmp.lesson, viewing("xov9t1ep"), tc, S, W2, temps)], [true, false]);
+  assert("waitingListPlace: existing Tuesday cards untouched", tmp.lessons.slice(0, 7), day);
+
+  const perm = place(viewing("xov9t1ep"));
+  assert("waitingListPlace: permanent chip selected → new card on xov9t1ep (Rauzah)",
+    [perm.lesson.bucket_id, perm.dest.teacher.id], ["xov9t1ep", "3ogbshd6"]);
+
+  // No chip selected: the same lane as the pre-v2.49.14 call (no temporary lanes).
+  const before = getDayLaneTeacher(tc, teachers, S, "Tuesday", [], W2, {});
+  const none = place({});
+  assert("waitingListPlace: no chip selected → same lane as before the change",
+    [none.lesson.bucket_id, before.lane.id], ["xov9t1ep", "xov9t1ep"]);
+  // A remembered chip from another week's temporary lane falls back to the first permanent lane.
+  assert("waitingListPlace: chip for another week's temp lane → first permanent lane",
+    place(viewing("othwk001")).lesson.bucket_id, "xov9t1ep");
+  // Chip pointing at the ended lane falls back too (ended before this week).
+  assert("waitingListPlace: chip on an ended lane → first permanent lane",
+    place(viewing("ybayneaf")).lesson.bucket_id, "xov9t1ep");
+  // Lane override for the week still applies to the permanent lane's teacher.
+  const ovr = place(viewing("xov9t1ep"), { laneOverrides: [{ weekKey: W2, bucketId: "xov9t1ep", overrideTeacherId: "97m7cb1o" }] });
+  assert("waitingListPlace: week override still names the covering teacher",
+    [ovr.lesson.bucket_id, ovr.dest.teacher.id], ["xov9t1ep", "97m7cb1o"]);
+  // Master target is unchanged: never a temporary lane, even with that chip stored.
+  const master = getManualPlaceLane({ target: "master", teacherCoverage: tc, teachers, schoolId: S, day: "Tuesday",
+    laneOverrides: [], weekKey: W2, viewedLanes: viewing("udrscl4q"), temporaryLanes: temps });
+  assert("waitingListPlace: master target ignores temporary lanes (unchanged)", master.lane.id, "xov9t1ep");
+  // Behaviour difference: a day covered ONLY by a one-week teacher used to be
+  // refused ("No covering lane"); it now places with that teacher.
+  const onlyTemp = getManualPlaceLane({ target: "weekly", teacherCoverage: [ARCH, OLD], teachers, schoolId: S, day: "Tuesday",
+    laneOverrides: [], weekKey: W2, viewedLanes: {}, temporaryLanes: temps });
+  assert("waitingListPlace: temp-only day → one-week teacher's lane (was: no covering lane)",
+    [onlyTemp?.lane?.id, getDayLaneTeacher([ARCH, OLD], teachers, S, "Tuesday", [], W2, {})], ["udrscl4q", null]);
 }

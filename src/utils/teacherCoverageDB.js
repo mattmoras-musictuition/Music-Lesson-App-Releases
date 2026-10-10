@@ -396,6 +396,20 @@ export function getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, lane
 }
 
 /**
+ * v2.49.14 — destination lane for the Waiting List "Place" action
+ * (handleManualSchedule). The master is week-less, so it resolves the forward
+ * permanent lanes with the viewed chip (unchanged). "This week" resolves for
+ * the current week with that week's temporary lanes, so the selected chip —
+ * a permanent teacher or a one-week teacher — is the lane the card lands on.
+ * With no chip selected the day's first permanent lane wins, as before.
+ */
+export function getManualPlaceLane({ target, teacherCoverage, teachers, schoolId, day, laneOverrides, weekKey, viewedLanes, temporaryLanes = [] }) {
+  return target === "master"
+    ? getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, null, null, viewedLanes)
+    : getDayLaneTeacher(teacherCoverage, teachers, schoolId, day, laneOverrides, weekKey, viewedLanes, temporaryLanes);
+}
+
+/**
  * Spec 2 cluster 13b — viewed-lane membership predicate.
  * Returns true if the lesson belongs to the day's currently viewed lane (or if
  * the day is single-lane / zero-lane — both pass through to preserve the
