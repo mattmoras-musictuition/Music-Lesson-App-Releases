@@ -19,6 +19,7 @@ import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { generateExportHtml, electronPrintToPdf, buildExportFilename } from "../data/exportHelpers";
+import { pickDayAttachment } from "../utils/dayEmailAttachment";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
@@ -221,7 +222,7 @@ function DaySubPanel({ submenu, panelRef, subX, subMenuW, colors, keepOpen, sche
       {multi && <button onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender }, true); }} className="mt-menu-row" style={{ ...btn(color), "--mt-hov": colors.bg }}>Individually</button>}
       {multi && rows.length > 0 && <div style={{ height: 1, background: colors.borderLight, margin: "3px 8px" }} />}
       {rows.map((r, i) => (
-        <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
+        <button key={i} onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay([r.email], { from: schoolSender, triggerId: "wtt_day_header" }, false, r.teacherName || null); }}
           className="mt-menu-row"
           style={{ ...(r.color ? btn(colors.text) : btn(color || colors.accent)), "--mt-hov": r.color ? r.color + "33" : colors.bg }}>
           {r.color && <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block", marginRight: 6 }} />}
@@ -4021,7 +4022,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
               const contactEm = staffContactEmail(t);
               if (contactEm && !staffEmailSet.has(contactEm)) {
                 staffEmailSet.add(contactEm);
-                staffRows.push({ name: t.name || contactEm, email: contactEm, color: t.color || null });
+                staffRows.push({ name: t.name || contactEm, email: contactEm, color: t.color || null, teacherName: t.name || null });
               }
             });
             const allStaffEmails = [...staffEmailSet];
@@ -4060,7 +4061,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // modal's Attach menu labelled with the filename; the PDF attaches
             // only when the user picks that row. Failure to render is non-fatal:
             // open the compose modal anyway and notify.
-            const composeForDay = async (emails, openOpts, useSequential) => {
+            // v2.49.12 — forTeacherName (Staff → a named teacher) attaches that
+            // teacher's lessons; otherwise the selected chip's, filtered exactly
+            // as the recipient lists above (utils/dayEmailAttachment).
+            const composeForDay = async (emails, openOpts, useSequential, forTeacherName = null) => {
               let offered = null;
               try {
                 const schoolForExport = schools.find(s => s.id === selectedSchool);
@@ -4069,12 +4073,14 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // as the grid + email lists). generateExportHtml filters this
                 // down by schoolId + day internally.
                 const exportSourceLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey);
+                const attach = pickDayAttachment({ lessons: exportSourceLessons, day, schoolId: selectedSchool, weekKey, teacherCoverage, viewedLanes, temporaryLanes, forTeacherName });
                 const html = generateExportHtml(
-                  exportSourceLessons,
+                  attach.lessons,
                   students, schools, teachers,
                   {
                     schoolId: selectedSchool,
                     day,
+                    teacherName: attach.teacherName,
                     title: exportTitle,
                     specialists: specialists || null,
                     teacherCoverage,
@@ -4129,7 +4135,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                     </button>
                   ) : (
                     <button
-                      onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false); }}
+                      onClick={() => { setContextMenu(null); setDayHeaderSubmenu(null); composeForDay(allEmails, { from: schoolSender, triggerId: "wtt_day_header" }, false, rows[0]?.teacherName || null); }}
                       onMouseEnter={() => keepDayHeaderOpen()}
                       onMouseLeave={() => scheduleDayHeaderClose()}
                       className="mt-menu-row"

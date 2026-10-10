@@ -8,6 +8,7 @@
 
 import { lessonBelongsToViewedLane, lessonShownInViewedLane, getDayLaneTeacher, getDayLanes } from "../utils/teacherCoverageDB";
 import { generateExportHtml } from "./exportHelpers";
+import { pickDayAttachment } from "../utils/dayEmailAttachment";
 
 const S = "moorabbin";
 const W2 = "2026-10-12";
@@ -91,22 +92,26 @@ export function runTempLaneChipTests(assert) {
       lessonBelongsToViewedLane(RAUZAH_CARDS[0], viewing("tmpmatt1"), TC, S, W3, TEMP)], ["xov9t1ep", true]);
 }
 
-// ── Day PDF (weekly day-header export): temporary-slot lessons belong to the
-//    temporary teacher — header name and that teacher's configured break. ──
+// ── Day PDF (the weekly day-header email attachment): temporary-slot lessons
+//    belong to the temporary teacher. v2.49.12 — fed the WHOLE day (both
+//    teachers) through pickDayAttachment, as composeForDay does; the v2.49.11
+//    version fed Matt's lessons alone and so never exercised the real call. ──
 export function runTempLaneDayPdfTests(assert) {
-  const lesson = (id, start, end) => ({ id, schoolId: S, day: "Tuesday", start, end, bucket_id: "tmpmatt1", studentName: "Student " + id, instrument: "Piano" });
-  const lessons = [lesson("m1", "08:30", "09:00"), lesson("m2", "09:30", "10:00")];
+  const lesson = (id, start, end, bucket_id) => ({ id, schoolId: S, day: "Tuesday", start, end, bucket_id, studentName: "Student " + id, instrument: "Piano" });
+  const wholeDay = [lesson("m1", "08:30", "09:00", "tmpmatt1"), lesson("m2", "09:30", "10:00", "tmpmatt1"),
+    lesson("r1", "10:00", "10:30", "xov9t1ep"), lesson("r2", "10:30", "11:00", "xov9t1ep"), lesson("r3", "11:00", "11:30", "xov9t1ep")];
   const schools = [{ id: S, name: "Moorabbin Primary", slots: [] }];
   const teachers = [
     { id: "matt", name: "Matt Moras", teacherBreaks: [{ schoolId: S, day: "Tuesday", start: "09:10" }] },
     { id: "rauzah", name: "Rauzah Hamzah", teacherBreaks: [] },
   ];
   const base = { schoolId: S, day: "Tuesday", title: "T", teacherCoverage: TC, enrolments: [], laneOverrides: [] };
-  const weekly = generateExportHtml(lessons, [], schools, teachers, { ...base, weekKey: W2, temporaryLanes: TEMP }) || "";
+  const attach = pickDayAttachment({ lessons: wholeDay, day: "Tuesday", schoolId: S, weekKey: W2, teacherCoverage: TC, viewedLanes: viewing("tmpmatt1"), temporaryLanes: TEMP });
+  const weekly = generateExportHtml(attach.lessons, [], schools, teachers, { ...base, teacherName: attach.teacherName, weekKey: W2, temporaryLanes: TEMP }) || "";
   assert("tempLaneDayPdf: header names the temporary teacher", weekly.includes("Matt · 2 lessons"), true);
   assert("tempLaneDayPdf: the temporary teacher's break is included", weekly.includes(">Break<"), true);
-  // No week (master timetable / no temp lanes): unchanged — day-lane fallback (Rauzah), no Matt break.
-  const noWeek = generateExportHtml(lessons, [], schools, teachers, { ...base, weekKey: null }) || "";
+  // No week (master timetable / no temp lanes): unchanged — every lesson resolves to the first permanent lane (Rauzah), no Matt break.
+  const noWeek = generateExportHtml(wholeDay, [], schools, teachers, { ...base, weekKey: null }) || "";
   assert("tempLaneDayPdf: no-week call unchanged (first permanent lane's teacher)",
-    [noWeek.includes("Rauzah · 2 lessons"), noWeek.includes(">Break<")], [true, false]);
+    [noWeek.includes("Rauzah · 5 lessons"), noWeek.includes(">Break<")], [true, false]);
 }

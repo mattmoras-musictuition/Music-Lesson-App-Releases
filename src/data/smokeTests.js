@@ -44,6 +44,7 @@ import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests } from "./tallyFiltersSmokeTests";
 import { runTempLaneChipTests, runTempLaneDayPdfTests } from "./tempLaneChipSmokeTests";
+import { runDayEmailAttachmentTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -465,6 +466,9 @@ export function runSmokeTests(logErrorFn) {
   // ── Temporary teacher lane switches with its chip (v2.49.11) ──
   runTempLaneChipTests(assert);
   runTempLaneDayPdfTests(assert);
+
+  // ── Day-header email attachment follows the emailed teacher or the chip (v2.49.12) ──
+  runDayEmailAttachmentTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
