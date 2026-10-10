@@ -8,7 +8,7 @@
 
 import {
   draggedMessage, draggedMessageId, todoCoversMessage, isSameThreadTodo, findSubjectGroupIdx, todoMessageKey, planEmailDrop,
-  plainEmailTask, emailForMessage,
+  plainEmailTask, emailForMessage, emailDragGroupsIntoCard,
 } from "../utils/todoEmailKey";
 
 export function runTodoEmailKeyTests(assert) {
@@ -152,6 +152,12 @@ export function runTodoEmailKeyTests(assert) {
   // Message covered inside a group's sub-item is still ignored when selected
   assert("todoKey: selected message already in a grouped sub-item is ignored",
     planEmailDrop([{ id: "g", subItems: [{ emailId: "thread-3", messageId: "a2" }] }], row, { selectedMsgId: "a2" }).action, "ignore");
+
+  // Card drop-target highlight (v2.49.6): only a single email drag groups
+  assert("todoKey: single email drag highlights the card",
+    emailDragGroupsIntoCard(row), true);
+  assert("todoKey: multi-select drag, no drag, or no email does not highlight",
+    [emailDragGroupsIntoCard([row, solo]), emailDragGroupsIntoCard(null), emailDragGroupsIntoCard(undefined)], [false, false, false]);
 
   // Existing grouped tasks pass through load (a plain JSON parse of
   // mt-todo-items) and a later single drop unchanged.

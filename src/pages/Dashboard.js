@@ -30,7 +30,7 @@ import { insertResource as insertResourceRow } from "../utils/resourcesDB";
 import { getCardTeacherId } from "../utils/teacherCoverageDB";
 import { checkConstraints, isConstraintVisibleForLesson } from "../utils/constraints";
 import { buildStudentMTTTeacherIndex, getStudentMTTTeacher } from "../utils/helpers";
-import { draggedMessageId, todoCoversMessage, planEmailDrop, plainEmailTask, emailForMessage, todoMessageKey } from "../utils/todoEmailKey";
+import { draggedMessageId, todoCoversMessage, planEmailDrop, plainEmailTask, emailForMessage, emailDragGroupsIntoCard, todoMessageKey } from "../utils/todoEmailKey";
 import { visibleLessons } from "../utils/hiddenCards";
 import { TEACHER_COLORS } from "../data/parsers";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, Checkbox, AddMemoryInput, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
@@ -1088,6 +1088,9 @@ For other: {"type":"other","summary":""}`,
   const todoEditInputRef = React.useRef(null);
   const todoSubInputRef = React.useRef(null);
   const [todoDropTarget, setTodoDropTarget] = React.useState(false); // email being dragged over todo panel
+  const [todoEmailHoverId, setTodoEmailHoverId] = React.useState(null); // card a single dragged email would group into
+  // Any end of an email drag (drop anywhere, Escape, dropped outside) clears emailDragging → clear the card highlight
+  React.useEffect(() => { if (!emailDragging) setTodoEmailHoverId(null); }, [emailDragging]);
   const [todoExpanded, setTodoExpanded] = React.useState(new Set()); // Set of item IDs that are expanded
 
   const saveTodo = (items) => {
@@ -5082,6 +5085,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                     }}
                                     onDragOver={e => {
                                       e.preventDefault(); e.stopPropagation();
+                                      if (emailDragGroupsIntoCard(emailDragging) && todoEmailHoverId !== item.id) setTodoEmailHoverId(item.id);
                                       if (emailDragging || alertDragging) { e.dataTransfer.dropEffect = "move"; return; }
                                       if (todoDragItemIdRef.current === null) return;
                                       e.dataTransfer.dropEffect = "move";
@@ -5090,9 +5094,12 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         todoDragHoverIdxRef.current = idx;
                                       }
                                     }}
+                                    // Leaving for a child element (text, tags, buttons) keeps the highlight
+                                    onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setTodoEmailHoverId(prev => prev === item.id ? null : prev); }}
                                     onDrop={e => {
                                       e.preventDefault(); e.stopPropagation();
                                       setTodoDropZoneIdx(null);
+                                      setTodoEmailHoverId(null);
                                       // Sub-item dragged out of group onto another item
                                       if (todoSubDragRef.current) { ungroupSub(); return; }
                                       if (emailDragging) {
@@ -5142,6 +5149,10 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                                         : hasSubItems ? `4px solid ${colors.accent}` : `3px solid ${cardBorder}`,
                                       borderBottom: isExpanded ? `1px solid ${colors.accent}22` : undefined,
                                       opacity: todoDragItemIdRef.current === item.id ? 0.3 : 1,
+                                      // Drop-target highlight: a single dragged email will group into this card.
+                                      // Outline (inset) + accent tint — no layout shift.
+                                      ...(todoEmailHoverId === item.id && emailDragGroupsIntoCard(emailDragging)
+                                        ? { outline: `2px solid ${colors.accent}`, outlineOffset: -2, background: `${colors.accent}1F` } : {}),
                                       transition: "opacity 0.1s, background 0.15s, border-left 0.15s",
                                       cursor: "grab" }}>
                                     <input type="checkbox" checked={false}

@@ -125,6 +125,13 @@ export function plainEmailTask(email, { id, createdAt, messageId, fromAddr, from
     replyTo: fromAddr, senderName: firstName, fullName: fromName, createdAt };
 }
 
+// True when dropping the current email drag on a task card would fold it
+// into that card (groupEmail): one email row, not a multi-select array
+// (which makes new tasks) and not an empty drag. Drives the card highlight.
+export function emailDragGroupsIntoCard(emailDragging) {
+  return !!emailDragging && !Array.isArray(emailDragging);
+}
+
 // { messageId } to carry when an item/sub-item is regrouped or split out, so
 // the dedupe key survives; {} for legacy thread-keyed entries.
 export function todoMessageKey(t) {
