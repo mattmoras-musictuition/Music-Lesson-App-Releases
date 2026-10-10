@@ -10,7 +10,7 @@ export const INSTRUMENTS = [
   "Ukulele", "Recorder", "Bass Guitar"
 ];
 
-export const APP_VERSION = "2.49.9";
+export const APP_VERSION = "2.49.10";
 
 // Anthropic model for all AI-assisted features (imports, note parsing, term
 // dates, contacts). Alias (no date suffix) so Anthropic model retirements
