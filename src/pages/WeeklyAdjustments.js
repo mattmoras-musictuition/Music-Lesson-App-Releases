@@ -6396,6 +6396,17 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                           if (frozenId) {
                             const frozenT = teachers.find(t => t.id === frozenId);
                             if (frozenT) headerTeacher = frozenT;
+                          } else {
+                            // v2.49.8 — no stamps: when every non-band lesson on the day
+                            // sits on one lane, the header takes the teacher those cards
+                            // resolve to (own lane, even if archived or ended since).
+                            const dayCards = (weeklyData?.lessons || []).filter(l => l.day === d && !l.isBandSession);
+                            const laneIds = new Set(dayCards.map(l => l.bucket_id || ""));
+                            if (dayCards.length > 0 && laneIds.size === 1 && !laneIds.has("")) {
+                              const cardTid = getLiveTeacherId(dayCards[0], students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
+                              const cardT = cardTid ? teachers.find(t => t.id === cardTid) : null;
+                              if (cardT) headerTeacher = cardT;
+                            }
                           }
                         }
                         const dayLanes = getDayLanes(teacherCoverage, selectedSchool, d, temporaryLanes, weekKey);

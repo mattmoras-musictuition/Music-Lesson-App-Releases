@@ -76,6 +76,49 @@ export async function loadTeacherCoverageFromSupabase() {
   return (data || []).map(fromRow);
 }
 
+// ── Lane history (v2.49.8) ───────────────────────────────────
+// Archived lanes, same shape as the active loader. Kept OUT of teacherCoverage
+// (Manage Staff, Dashboard, findLaneId and the remove handler must only ever
+// see active lanes); consulted solely by getCardTeacherId's own-lane lookup so
+// a lesson still resolves to its own lane's teacher after the lane is archived.
+// Module-level so the ~20 getCardTeacherId callers need no new argument.
+// Empty index = v2.49.7 behaviour (day-lane fallback for archived lanes).
+export async function loadArchivedLanesFromSupabase() {
+  const { data, error } = await supabase
+    .from("teacher_coverage")
+    .select("*")
+    .eq("status", "archived")
+    .order("school_id")
+    .order("day")
+    .order("created_at", { ascending: true })
+    .order("id");
+  if (error) throw error;
+  return (data || []).map(fromRow);
+}
+
+let laneHistoryById = new Map();
+
+// Replace the whole index (app load; tests).
+export function setLaneHistory(lanes) {
+  laneHistoryById = new Map((lanes || []).filter(l => l && l.id).map(l => [l.id, l]));
+}
+
+// Add or update one lane (archived in this session).
+export function recordLaneHistory(lane) {
+  if (lane && lane.id) laneHistoryById.set(lane.id, lane);
+}
+
+// Current index contents (tests save/restore around fixtures).
+export function getLaneHistory() {
+  return [...laneHistoryById.values()];
+}
+
+// A lane row by id: the active list first, then the history index.
+export function findLaneById(teacherCoverage, laneId) {
+  if (!laneId) return null;
+  return (teacherCoverage || []).find(l => l.id === laneId) || laneHistoryById.get(laneId) || null;
+}
+
 /**
  * Lane assignment — one teacher covers one (school, day) on a recurring
  * basis. Empty lanes (no lessons referencing the lane yet) are valid and
@@ -162,8 +205,9 @@ export function laneAppliesForWeek(lane, weekKey) {
  *
  * Phase 2 (day-lane fallback) — Session 3 / C8:
  *   For cards without bucket_id (legacy MTT data pre-dating bucket_id
- *   stamping) OR cards whose bucket_id no longer resolves (lane archived),
- *   fall back to the first active lane at (lesson.schoolId, lesson.day).
+ *   stamping) OR cards whose bucket_id matches no lane row anywhere (active
+ *   list or archived-lane history, v2.49.8), fall back to the first active
+ *   lane at (lesson.schoolId, lesson.day).
  *   Same pattern as the enrichedCatchups mapper (commit c68a11b,
  *   SPEC_3_LANE_TEACHER_DISPLAY_ADDENDUM). Override-aware against the
  *   resolved lane's id when (laneOverrides, weekKey) are supplied.
@@ -210,11 +254,12 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
       const override = laneOverrides.find(o => o.weekKey === weekKey && o.bucketId === lesson.bucket_id);
       if (override?.overrideTeacherId) return override.overrideTeacherId;
     }
-    const lane = teacherCoverage.find(l => l.id === lesson.bucket_id);
-    // Date-check (item 11): an end-dated lane no longer applies to future weeks
-    // or the week-less MTT, so a card still carrying its bucket_id falls through
-    // to the Phase 2 day-lane fallback (or null) instead of resolving to it.
-    if (lane?.teacherId && laneAppliesForWeek(lane, weekKey)) return lane.teacherId;
+    // v2.49.8 — own lane row, whatever its status or end date: the active
+    // list first, then the archived-lane history. A lesson always shows its own
+    // lane's teacher while that row exists (replaces the item 11 date-check,
+    // which sent cards on ended lanes to the day-lane fallback).
+    const lane = findLaneById(teacherCoverage, lesson.bucket_id);
+    if (lane?.teacherId) return lane.teacherId;
     // Temp lane carrying this bucket_id — week-specific, so only when weekKey
     // matches. Searched only after the permanent set misses (same union order
     // as getDayLanes: permanent first, temp as fallback).

@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
 import { carryBandMisses } from "./data/bandAbsence";
@@ -1818,6 +1818,10 @@ export default function MusicTimetableApp() {
       // Local-state lane update — keep: stamp effectiveTo in place so this session
       // resolves the current week live and future/MTT revert (lane stays in the
       // array). Clear: drop the lane entirely. Synchronous, can't fail.
+      // v2.49.8 — a cleared (archived) lane goes into the lane-history index
+      // first, so lessons still on it keep resolving to its teacher without a
+      // restart. An end-dated lane stays in teacherCoverage, so needs nothing.
+      if (!keepThisWeek) recordLaneHistory({ ...lane, status: "archived" });
       setTeacherCoverage(prev => keepThisWeek
         ? prev.map(l => l.id === lane.id ? { ...l, effectiveTo: currentMondayStr } : l)
         : prev.filter(l => l.id !== lane.id));
@@ -1950,6 +1954,16 @@ export default function MusicTimetableApp() {
       } catch (err) {
         logError("Failed to load teacher_coverage from Supabase", err.message);
         tc = await loadData(STORAGE_KEYS.teacherCoverage, []);
+      }
+      // ── Archived lanes → lane-history index (v2.49.8) ──
+      // Lets a lesson on an archived lane still resolve to its own lane's
+      // teacher. Never merged into teacherCoverage. On failure the index stays
+      // empty (v2.49.7 behaviour: day-lane fallback) and startup continues.
+      try {
+        setLaneHistory(await loadArchivedLanesFromSupabase());
+      } catch (err) {
+        setLaneHistory([]);
+        logError("Failed to load archived lanes from Supabase", err?.message);
       }
       // ── Lane overrides: Supabase only (no localStorage cache — week-keyed substitution data) ──
       let lo;
