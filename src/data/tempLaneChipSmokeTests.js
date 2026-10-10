@@ -7,6 +7,7 @@
 // ============================================================
 
 import { lessonBelongsToViewedLane, lessonShownInViewedLane, getDayLaneTeacher, getDayLanes } from "../utils/teacherCoverageDB";
+import { generateExportHtml } from "./exportHelpers";
 
 const S = "moorabbin";
 const W2 = "2026-10-12";
@@ -88,4 +89,24 @@ export function runTempLaneChipTests(assert) {
   assert("tempLaneChip: remembered temp lane absent next week — falls back to the first lane",
     [getDayLaneTeacher(TC, TEACHERS, S, "Tuesday", null, W3, viewing("tmpmatt1"), TEMP)?.lane?.id,
       lessonBelongsToViewedLane(RAUZAH_CARDS[0], viewing("tmpmatt1"), TC, S, W3, TEMP)], ["xov9t1ep", true]);
+}
+
+// ── Day PDF (weekly day-header export): temporary-slot lessons belong to the
+//    temporary teacher — header name and that teacher's configured break. ──
+export function runTempLaneDayPdfTests(assert) {
+  const lesson = (id, start, end) => ({ id, schoolId: S, day: "Tuesday", start, end, bucket_id: "tmpmatt1", studentName: "Student " + id, instrument: "Piano" });
+  const lessons = [lesson("m1", "08:30", "09:00"), lesson("m2", "09:30", "10:00")];
+  const schools = [{ id: S, name: "Moorabbin Primary", slots: [] }];
+  const teachers = [
+    { id: "matt", name: "Matt Moras", teacherBreaks: [{ schoolId: S, day: "Tuesday", start: "09:10" }] },
+    { id: "rauzah", name: "Rauzah Hamzah", teacherBreaks: [] },
+  ];
+  const base = { schoolId: S, day: "Tuesday", title: "T", teacherCoverage: TC, enrolments: [], laneOverrides: [] };
+  const weekly = generateExportHtml(lessons, [], schools, teachers, { ...base, weekKey: W2, temporaryLanes: TEMP }) || "";
+  assert("tempLaneDayPdf: header names the temporary teacher", weekly.includes("Matt · 2 lessons"), true);
+  assert("tempLaneDayPdf: the temporary teacher's break is included", weekly.includes(">Break<"), true);
+  // No week (master timetable / no temp lanes): unchanged — day-lane fallback (Rauzah), no Matt break.
+  const noWeek = generateExportHtml(lessons, [], schools, teachers, { ...base, weekKey: null }) || "";
+  assert("tempLaneDayPdf: no-week call unchanged (first permanent lane's teacher)",
+    [noWeek.includes("Rauzah · 2 lessons"), noWeek.includes(">Break<")], [true, false]);
 }

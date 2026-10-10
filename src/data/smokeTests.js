@@ -43,7 +43,7 @@ import { runLaneHistoryTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests } from "./tallyFiltersSmokeTests";
-import { runTempLaneChipTests } from "./tempLaneChipSmokeTests";
+import { runTempLaneChipTests, runTempLaneDayPdfTests } from "./tempLaneChipSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -464,6 +464,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Temporary teacher lane switches with its chip (v2.49.11) ──
   runTempLaneChipTests(assert);
+  runTempLaneDayPdfTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

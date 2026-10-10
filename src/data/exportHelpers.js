@@ -18,8 +18,10 @@ import { adminSessionMembers } from "./bandForwardAbsence";
 // Reads enrolments/laneOverrides/weekKey from opts (MTT exports pass null/null
 // for the override args; WTT exports pass the live values). Returns "" when
 // the lane misses — matches helpers.js getLiveTeacherName's post-12a contract.
+// v2.49.11 — also forwards opts.temporaryLanes (weekly day-header export), so
+// a one-week temporary teacher's lesson names that teacher.
 function _liveTeacherName(lesson, students, teachers, opts) {
-  return getLiveTeacherName(lesson, students, teachers, opts && opts.enrolments, opts && opts.teacherCoverage, opts && opts.laneOverrides, opts && opts.weekKey) || "";
+  return getLiveTeacherName(lesson, students, teachers, opts && opts.enrolments, opts && opts.teacherCoverage, opts && opts.laneOverrides, opts && opts.weekKey, (opts && opts.temporaryLanes) || []) || "";
 }
 
 // ── Shared visual system ──────────────────────────────────────────────────────
@@ -416,8 +418,10 @@ function buildSingleDayListHtml(lessons, students, day, title, meta, opts) {
   var teachers = opts && opts.teachers;
   var school = opts && opts.school;
   var dayTeacherIds = new Set();
+  // v2.49.11 — week-aware: covers, past-week frozen teachers and the week's
+  // temporary teachers count, as on the weekly grid. No-week callers unchanged.
   for (var dti = 0; dti < lessons.length; dti++) {
-    var dtid = getCardTeacherId(lessons[dti], opts && opts.teacherCoverage);
+    var dtid = getCardTeacherId(lessons[dti], opts && opts.teacherCoverage, opts && opts.laneOverrides, opts && opts.weekKey, (opts && opts.temporaryLanes) || []);
     if (dtid) dayTeacherIds.add(dtid);
   }
   // Two break sources only — no recess/lunch slots (those are slot markers,
