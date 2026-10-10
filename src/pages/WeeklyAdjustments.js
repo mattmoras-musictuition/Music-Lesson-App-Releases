@@ -23,7 +23,7 @@ import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragS
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
 import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
 import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
@@ -1010,9 +1010,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // grid to lessons bound to the day's viewed lane (or, for legacy cards
   // without bucket_id, only show under the default first-added lane).
   // All other logic (generation, tally, etc.) still uses weeklyData.lessons directly.
+  // v2.49.7: a saved lesson on a lane that no longer applies to this week
+  // (archived, or ended before it) always shows, whichever chip is selected.
   const displayLessons = useMemo(() => visibleLessons(weeklyData?.lessons, students)
-    .filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey)),
-  [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool, weekKey]);
+    .filter(l => lessonShownInViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes)),
+  [weeklyData, students, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes]);
 
   // Shared enriched catch-ups for the selected school. ONE source consumed by
   // the period grid (wLessons) AND the day-header export (PDF + Parents/Class

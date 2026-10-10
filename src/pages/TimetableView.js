@@ -7,7 +7,7 @@ import { Printer, Trash2, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, U
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher, lessonBelongsToViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, lessonBelongsToViewedLane, lessonShownInViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -800,7 +800,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
   if (filterTeacher) filteredLessons = filteredLessons.filter(l => getLiveTeacherId(l, allStudents || students, enrolments, teacherCoverage) === filterTeacher);
   // Cluster 8b: in multi-lane days, restrict to the viewed lane's bucket_id;
   // legacy cards without bucket_id bind to the default first-added lane.
-  filteredLessons = filteredLessons.filter(l => lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, null));
+  // v2.49.7: cards on a lane that no longer applies always show.
+  filteredLessons = filteredLessons.filter(l => lessonShownInViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, null));
 
   // Filter archived students from stored unscheduled entries
   const schoolUnscheduled = unscheduled.filter(u => {

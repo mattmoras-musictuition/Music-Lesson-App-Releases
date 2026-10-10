@@ -5,7 +5,7 @@
 // with "Also clear", and new lanes added with no end date.
 // ============================================================
 
-import { lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { lessonBelongsToViewedLane, lessonOnNonApplicableLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
 
 const S = "moorabbin";
 const W1 = "2026-10-05";
@@ -52,4 +52,28 @@ export function runLaneDisplayTests(assert) {
     lessonBelongsToViewedLane(friNew, { [S]: { Friday: "ep9xlw5o" } }, twoNew, S, W3), true);
   assert("laneDisplay: non-applicable viewed lane → other applicable lane hidden",
     lessonBelongsToViewedLane({ ...friNew, bucket_id: "fri3" }, { [S]: { Friday: "ep9xlw5o" } }, twoNew, S, W3), false);
+
+  // (b) Week 1 Tuesday: lessons on the ARCHIVED lane glkw2if8. Two lanes still
+  // apply that week (ybayneaf ends W2, xov9t1ep has no end), so the strict
+  // filter hides them under either chip; the display rule shows them.
+  const tueArchived = { id: "t3", day: "Tuesday", schoolId: S, bucket_id: "glkw2if8", frozenTeacherId: "matt" };
+  for (const viewed of ["ybayneaf", "xov9t1ep", null]) {
+    const vl = viewed ? { [S]: { Tuesday: viewed } } : {};
+    assert(`laneDisplay: archived-lane lesson hidden by strict filter (viewed ${viewed})`, lessonBelongsToViewedLane(tueArchived, vl, tc, S, W1), false);
+    assert(`laneDisplay: archived-lane lesson shown in past week (viewed ${viewed})`, lessonShownInViewedLane(tueArchived, vl, tc, S, W1), true);
+  }
+  assert("laneDisplay: archived lane is non-applicable", lessonOnNonApplicableLane(tueArchived, tc, S, W1), true);
+  // A lane ended before the viewed week is non-applicable too (week 3 Friday).
+  assert("laneDisplay: ended lane non-applicable after its end week", lessonOnNonApplicableLane(friOld, tc, S, W3), true);
+  assert("laneDisplay: ended lane still applicable in its end week", lessonOnNonApplicableLane(friOld, tc, S, W2), false);
+  // Display rule never shows the OTHER applicable lane's cards.
+  assert("laneDisplay: display rule keeps chip filtering for applicable lanes",
+    lessonShownInViewedLane(friOld, { [S]: { Friday: "npm9gxwu" } }, tc, S, W2), false);
+  assert("laneDisplay: legacy card (no bucket_id) is never non-applicable", lessonOnNonApplicableLane(legacy, tc, S, W1), false);
+  // A temporary lane for the week counts as applicable (unchanged behaviour).
+  const temp = [{ id: "tmp1", schoolId: S, day: "Friday", teacherId: "x", weekKey: W2 }];
+  assert("laneDisplay: temp-lane lesson is applicable in its week",
+    lessonOnNonApplicableLane({ ...friNew, bucket_id: "tmp1" }, tc, S, W2, temp), false);
+  // MTT: a master lesson left on an end-dated lane (e.g. restored by Undo) shows.
+  assert("laneDisplay: MTT end-dated-lane lesson shows", lessonShownInViewedLane(friOld, {}, tc, S, null), true);
 }

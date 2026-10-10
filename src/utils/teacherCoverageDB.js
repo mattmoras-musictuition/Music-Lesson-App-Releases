@@ -364,6 +364,30 @@ export function lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, 
   return targetLaneId === dayLanes[0].id;
 }
 
+/**
+ * v2.49.7 — true when a lesson's bucket_id is not one of the lanes that apply
+ * to (schoolId, lesson.day) for weekKey: its lane was archived, ended before
+ * that week, or belongs to another day. No chip can select such a lane, so the
+ * viewed-lane filter would hide the lesson under every chip. Temporary lanes
+ * for the week count as applicable. Legacy cards without bucket_id → false.
+ */
+export function lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, weekKey = null, temporaryLanes = []) {
+  if (!lesson?.bucket_id) return false;
+  return !getDayLanes(teacherCoverage, schoolId, lesson.day, temporaryLanes, weekKey).some(l => l.id === lesson.bucket_id);
+}
+
+/**
+ * v2.49.7 — grid display rule. A lesson is drawn when it belongs to the viewed
+ * lane, or when it sits on a lane that no longer applies (a past record must
+ * not vanish because staffing changed later). Display only: per-day clear,
+ * clear counts and day-header email/export keep the strict
+ * lessonBelongsToViewedLane.
+ */
+export function lessonShownInViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null, temporaryLanes = []) {
+  return lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey)
+    || lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, weekKey, temporaryLanes);
+}
+
 // ── Write helpers (cluster 9 — Add/Remove Staff UI) ─────────
 
 /**
