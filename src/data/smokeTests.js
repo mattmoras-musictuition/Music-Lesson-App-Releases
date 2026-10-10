@@ -42,7 +42,7 @@ import { runLaneDisplayTests } from "./laneDisplaySmokeTests";
 import { runLaneHistoryTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
-import { runTallyFilterTests } from "./tallyFiltersSmokeTests";
+import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
 import { runTempLaneChipTests, runTempLaneDayPdfTests } from "./tempLaneChipSmokeTests";
 import { runDayEmailAttachmentTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
@@ -465,6 +465,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Tally summary boxes, box filter and Summary column (v2.49.10) ──
   runTallyFilterTests(assert);
+
+  // ── Tally parent email body (v2.49.13) ──
+  runTallyParentEmailTests(assert);
 
   // ── Temporary teacher lane switches with its chip (v2.49.11) ──
   runTempLaneChipTests(assert);

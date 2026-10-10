@@ -8,6 +8,9 @@ import { TALLY_PILLS, classifyTallyCell, cellMatchesPill, rowMatchesPill, comput
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell } from "./catchupsDerive";
 import { deriveTallyRows } from "../utils/tallyDerive";
 import { isPastWeek } from "../utils/helpers";
+import { buildTallyParentEmail } from "../utils/tallyParentEmail";
+import { getMissedReasonProse } from "../utils/missedReasonLabels";
+import { preferredFirstName } from "../utils/emailTemplates";
 
 const A = "2026-09-28";  // past
 const B = "2026-10-05";  // past
@@ -197,4 +200,96 @@ export function runTallyFilterTests(assert) {
     rowSummaryCounts(rowEntries(R3), OPTS), { completed: 1, absent: 0, owed: 1, madeUp: 1 });
   assert("tallyFilters: Summary R2 — absent only",
     rowSummaryCounts(rowEntries(R2), OPTS), { completed: 0, absent: 1, owed: 0, madeUp: 0 });
+}
+
+// ── Tally parent email (v2.49.13) ──────────────────────────────────────────
+// One school row's FULL term, holiday week included, exactly as the row
+// renders it (rowEntries in termWeeks order). Catch-up rows have the
+// catchupsDB fromRow shape.
+const PW = {
+  w1: "2026-09-07", w2: "2026-09-14", w3: "2026-09-21", h: "2026-09-28",
+  w4: "2026-10-05", w5: "2026-10-12", w6: "2026-10-19",
+};
+const P_WEEKS = [
+  { weekKey: PW.w1, weekNum: 1, label: "Week 1" },
+  { weekKey: PW.w2, weekNum: 2, label: "Week 2" },
+  { weekKey: PW.w3, weekNum: 3, label: "Week 3" },
+  { weekKey: PW.h, weekNum: 1, label: "Holiday 1", isHoliday: true },
+  { weekKey: PW.w4, weekNum: 4, label: "Week 4" },
+  { weekKey: PW.w5, weekNum: 5, label: "Week 5" },
+  { weekKey: PW.w6, weekNum: 6, label: "Week 6" },
+];
+const P_NOW = new Date("2026-10-14T12:00:00");
+const pCell = (weekKey, status, extra = {}) =>
+  ({ lessonKey: "sp|Piano", enrolmentId: "ep", weekKey, status, makeupEligible: false, madeUp: false, ...extra });
+const catchupRow = (id, resolvesWeekKey, weekKey, day, time) => ({
+  id, schoolId: "X", weekKey, day, time, instrument: "Piano", enrolmentId: "ep",
+  resolvesEnrolmentId: "ep", resolvesWeekKey, resolvesOriginalDay: "Wednesday", resolvesOriginalTime: "09:00",
+  madeUp: false, notes: null, bandLessonId: null, createdAt: "2026-09-15T10:00:00Z", updatedAt: "2026-09-15T10:00:00Z",
+});
+// Worked example: wk2 caught up (catch-up in wk3 has happened), wk4 booked
+// for wk6 (not yet happened), wk5 nothing booked. Holiday week: a lesson.
+const pEntries = (overrides = {}) => {
+  const base = {
+    [PW.w1]: pCell(PW.w1, "completed"),
+    [PW.w2]: pCell(PW.w2, "missed", { makeupEligible: true, reason: "informed_absence" }),
+    [PW.w3]: pCell(PW.w3, "completed"),
+    [PW.h]: pCell(PW.h, "completed"),
+    [PW.w4]: pCell(PW.w4, "missed", { makeupEligible: true, reason: "informed_absence", reasonDetail: "school camp" }),
+    [PW.w5]: pCell(PW.w5, "missed", { makeupEligible: true, reason: "teacher_absent" }),
+    [PW.w6]: null,
+    ...overrides,
+  };
+  return P_WEEKS.map(w => base[w.weekKey] || null);
+};
+const P_CATCHUPS = [
+  catchupRow("cu1", PW.w2, PW.w3, "Monday", "13:10"),
+  catchupRow("cu2", PW.w4, PW.w6, "Monday", "13:10"),
+];
+const P_OPTS = { bankingIndex: buildBankingIndex(P_CATCHUPS), now: P_NOW };
+const P_SOLO = { termWeeks: P_WEEKS, studentName: "Megumi (Meg) van Haven", parentFullName: "Tara Tarlamis", instrument: "Piano", termLabel: "Term 3" };
+const P_GROUP = { termWeeks: P_WEEKS, isGroup: true, groupLabel: "Strings Group", instrument: "Violin", termLabel: "Term 3" };
+
+// The pre-v2.49.13 inline body from TallyView's school-row Mail button,
+// kept verbatim as the parity reference for the extraction.
+function oldTallyParentEmail({ rowEntries, termWeeks, isGroup, groupLabel, studentName, parentFullName, instrument, termLabel }) {
+  const rowCompleted = rowEntries.filter(e => e?.status === "completed").length;
+  const rowMissed = rowEntries.filter(e => e?.status === "missed").length;
+  const missedLines = termWeeks
+    .map((w, wi) => ({ w, entry: rowEntries[wi] }))
+    .filter(({ entry }) => entry?.status === "missed")
+    .map(({ w, entry }) => {
+      const reasonText = getMissedReasonProse(entry.reason, entry.reasonDetail) || "Missed";
+      return `  • ${w.label} — ${reasonText}`;
+    });
+  const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
+  if (isGroup) {
+    const subject = `${groupLabel} — ${instrument} lessons — ${termLabel} summary`;
+    const body = `Hi,\n\nI wanted to reach out with a summary of the ${groupLabel} ${instrument} group lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
+    return { subject, body };
+  }
+  const parentName = preferredFirstName(parentFullName || "") || "there";
+  const subject = `${preferredFirstName(studentName)}'s ${instrument} lessons — ${termLabel} summary`;
+  const body = `Hi ${parentName},\n\nI wanted to reach out with a summary of ${preferredFirstName(studentName)}'s ${instrument} lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
+  return { subject, body };
+}
+
+export function runTallyParentEmailTests(assert) {
+  const rows = [
+    ["solo, worked example", { ...P_SOLO, rowEntries: pEntries() }],
+    ["group, worked example", { ...P_GROUP, rowEntries: pEntries() }],
+    ["solo, nothing missed", { ...P_SOLO, rowEntries: pEntries({ [PW.w2]: pCell(PW.w2, "completed"), [PW.w4]: null, [PW.w5]: null }) }],
+    ["solo, no parent on file", { ...P_SOLO, parentFullName: "", rowEntries: pEntries() }],
+  ];
+  for (const [name, input] of rows) {
+    assert(`tallyEmail: extraction is output-identical (${name})`,
+      buildTallyParentEmail(input, P_OPTS), oldTallyParentEmail(input));
+  }
+  // Today's text for the worked example, pinned (the owed line uses the old
+  // counting until the next commit).
+  assert("tallyEmail: solo body pinned",
+    buildTallyParentEmail({ ...P_SOLO, rowEntries: pEntries() }, P_OPTS).body,
+    "Hi Tara,\n\nI wanted to reach out with a summary of Meg's Piano lessons for Term 3.\n\nLessons attended: 3\nLessons missed: 3\n  • Week 2 — Informed absence\n  • Week 4 — Informed absence (school camp)\n  • Week 5 — Teacher absent\nCatch-ups still owed: 3\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,");
+  assert("tallyEmail: solo subject", buildTallyParentEmail({ ...P_SOLO, rowEntries: pEntries() }, P_OPTS).subject,
+    "Meg's Piano lessons — Term 3 summary");
 }

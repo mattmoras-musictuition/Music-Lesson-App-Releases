@@ -14,6 +14,7 @@ import { TALLY_PILLS, computeTallyStats, rowSummaryCounts, rowMatchesPill } from
 import { bandCatchupTooltip } from "../data/bandAbsence";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
+import { buildTallyParentEmail } from "../utils/tallyParentEmail";
 import { PageTitle, NavButtons, Btn, EmptyState, PAGE_COLORS } from "../components/ui/SharedUI";
 
 // "Megumi (Meg) van Haven" → "Meg van Haven"  |  "Olive Teehan" → "Olive Teehan"
@@ -811,26 +812,17 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                                 onClick={e => {
                                   e.stopPropagation();
                                   const termLabel = activeTerm?.label || "";
-                                  const missedLines = termWeeks
-                                    .map((w, wi) => ({ w, entry: rowEntries[wi] }))
-                                    .filter(({ entry }) => entry?.status === "missed")
-                                    .map(({ w, entry }) => {
-                                      const reasonText = getMissedReasonProse(entry.reason, entry.reasonDetail) || "Missed";
-                                      return `  • ${w.label} — ${reasonText}`;
-                                    });
-                                  const catchupOwed = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
-                                  if (lesson.isGroup) {
-                                    const groupLabel = groupDisplayNameLive(lesson, groups, students) || "Group";
-                                    const subject = `${groupLabel} — ${lesson.instrument} lessons — ${termLabel} summary`;
-                                    const body = `Hi,\n\nI wanted to reach out with a summary of the ${groupLabel} ${lesson.instrument} group lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
-                                    openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
-                                  } else {
-                                    const st = students.find(s => s.id === lesson.studentId);
-                                    const parentName = preferredFirstName(st?.parents?.[0]?.name || "") || "there";
-                                    const subject = `${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons — ${termLabel} summary`;
-                                    const body = `Hi ${parentName},\n\nI wanted to reach out with a summary of ${preferredFirstName(lesson.studentName)}'s ${lesson.instrument} lessons for ${termLabel}.\n\nLessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
-                                    openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
-                                  }
+                                  const st = lesson.isGroup ? null : students.find(s => s.id === lesson.studentId);
+                                  const { subject, body } = buildTallyParentEmail({
+                                    rowEntries, termWeeks,
+                                    isGroup: !!lesson.isGroup,
+                                    groupLabel: lesson.isGroup ? (groupDisplayNameLive(lesson, groups, students) || "Group") : "",
+                                    studentName: lesson.studentName,
+                                    parentFullName: st?.parents?.[0]?.name || "",
+                                    instrument: lesson.instrument,
+                                    termLabel,
+                                  }, { bankingIndex });
+                                  openCompose(emails, { subject, body, from: school?.senderEmail || "", triggerId: "tally_end_of_term", forceTo: true });
                                 }}
                                 style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", borderRadius: 5, color: hasMissed ? colors.accent : colors.textMuted, display: "inline-flex", alignItems: "center", opacity: hasMissed ? 1 : 0.45 }}
                                 onMouseEnter={e => e.currentTarget.style.background = colors.accentLight}
