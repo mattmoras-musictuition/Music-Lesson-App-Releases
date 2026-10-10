@@ -7,7 +7,7 @@ import { Printer, Trash2, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, U
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, lessonShownInViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, getDayLanes, getAllocatableLanes, lessonBelongsToViewedLane, lessonShownInViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1007,7 +1007,8 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 {mkMttEmailRow("Staff", allStaffEmails, staffRows, "staff", colors.textLight)}
                 {/* Allocate-to-lane — arm a day's teacher lane for click-to-place */}
                 {(() => {
-                  const allocLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  // v2.49.14 — forward state only: an end-dated lane is not offered.
+                  const allocLanes = getAllocatableLanes(teacherCoverage, selectedSchool, day);
                   if (allocLanes.length === 0) return null;
                   const arm = (lane) => {
                     const t = teachers.find(tt => tt.id === lane.teacherId);

@@ -38,7 +38,7 @@ import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests, runExportTypeTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
-import { runLaneDisplayTests } from "./laneDisplaySmokeTests";
+import { runLaneDisplayTests, runAllocateMenuTests } from "./laneDisplaySmokeTests";
 import { runLaneHistoryTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
@@ -453,6 +453,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Lane display after a day-staff change (v2.49.7) ──
   runLaneDisplayTests(assert);
+
+  // ── Allocate-to menu offers only lanes that still apply (v2.49.14) ──
+  runAllocateMenuTests(assert);
 
   // ── Lesson resolves to its own lane's teacher (v2.49.8) ──
   runLaneHistoryTests(assert);

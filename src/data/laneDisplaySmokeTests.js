@@ -5,7 +5,7 @@
 // with "Also clear", and new lanes added with no end date.
 // ============================================================
 
-import { getDayLanes, lessonBelongsToViewedLane, lessonOnNonApplicableLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLanes, getAllocatableLanes, lessonBelongsToViewedLane, lessonOnNonApplicableLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
 
 const S = "moorabbin";
 const W1 = "2026-10-05";
@@ -82,4 +82,29 @@ export function runLaneDisplayTests(assert) {
   const staffIds = (day) => getDayLanes(tc, S, day, [], null).map(l => l.id);
   assert("laneDisplay: Manage Staff Tuesday excludes end-dated + archived", staffIds("Tuesday"), ["xov9t1ep"]);
   assert("laneDisplay: Manage Staff Friday excludes end-dated", staffIds("Friday"), ["npm9gxwu"]);
+}
+
+// ── v2.49.14 — master timetable day-header "Allocate to [teacher]" menu offers
+//    only lanes that still apply. Fed ALL of the day's lanes (live,
+//    active-with-end-date, archived) through getAllocatableLanes, the exact
+//    call the menu makes and onAllocatePlace re-checks. ──
+export function runAllocateMenuTests(assert) {
+  const tc = LANE_FIXTURE;
+  const offered = (lanes, day) => getAllocatableLanes(lanes, S, day).map(l => l.id);
+  assert("allocateMenu: Tuesday offers only the live lane (not end-dated, not archived)", offered(tc, "Tuesday"), ["xov9t1ep"]);
+  assert("allocateMenu: Friday offers only the live lane (end-dated lane created first)", offered(tc, "Friday"), ["npm9gxwu"]);
+  // A lane end-dated to a FUTURE week is already on its way out — not offered.
+  const futureEnd = tc.map(l => l.id === "npm9gxwu" ? { ...l, effectiveTo: "2026-12-14" } : l);
+  assert("allocateMenu: lane with a future end date is not offered", offered(futureEnd, "Friday"), []);
+  // A day with two live lanes offers both, in lane order.
+  const twoLive = [...tc, { id: "fri2live", schoolId: S, day: "Friday", teacherId: "x", status: "active", effectiveTo: null, createdAt: "2026-10-11" }];
+  assert("allocateMenu: two live lanes are both offered", offered(twoLive, "Friday"), ["npm9gxwu", "fri2live"]);
+  // Other schools' lanes never leak in.
+  const otherSchool = [...tc, { id: "oth1", schoolId: "other", day: "Friday", teacherId: "x", status: "active", effectiveTo: null }];
+  assert("allocateMenu: other school's lane not offered", offered(otherSchool, "Friday"), ["npm9gxwu"]);
+  // onAllocatePlace guard: an armed lane that has since ended or been archived is refused.
+  const stillApplies = (lanes, laneId, day) => getAllocatableLanes(lanes, S, day).some(l => l.id === laneId);
+  assert("allocateMenu: armed live lane is placed into", stillApplies(tc, "npm9gxwu", "Friday"), true);
+  assert("allocateMenu: armed lane end-dated since arming is refused", stillApplies(tc, "ep9xlw5o", "Friday"), false);
+  assert("allocateMenu: armed lane archived since arming is refused", stillApplies(tc, "glkw2if8", "Tuesday"), false);
 }

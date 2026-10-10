@@ -334,6 +334,16 @@ export function getDayLanes(teacherCoverage, schoolId, day, temporaryLanes = [],
 }
 
 /**
+ * v2.49.14 — lanes the master timetable's day-header "Allocate to [teacher]"
+ * menu may arm: the forward state (active, no end date), the same list Manage
+ * Staff shows on the master. onAllocatePlace re-checks the armed lane against
+ * this list, so a lane end-dated or archived while armed is never placed into.
+ */
+export function getAllocatableLanes(teacherCoverage, schoolId, day) {
+  return getDayLanes(teacherCoverage, schoolId, day, [], null);
+}
+
+/**
  * Spec 2 cluster 7 — day-level lane resolution.
  * Returns the day's primary active lane row alongside the effective teacher
  * for that lane. The lane row carries the default teacher (lane.teacherId);

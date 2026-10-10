@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, getCardTeacherId, getDayLaneTeacher, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, getCardTeacherId, getDayLaneTeacher, getAllocatableLanes, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
 import { carryBandMisses } from "./data/bandAbsence";
@@ -6634,6 +6634,12 @@ export default function MusicTimetableApp() {
             // "Allocate to [teacher]" click-to-place: drop the student into the
             // armed lane's earliest open, policy-allowed class slot.
             if (!armedLane) return;
+            // v2.49.14 — the lane may have been end-dated or archived since it
+            // was armed; never attach a new lesson to a slot that has ended.
+            if (!getAllocatableLanes(teacherCoverage, armedLane.schoolId, armedLane.day).some(l => l.id === armedLane.laneId)) {
+              notify(`${armedLane.teacherName}'s ${armedLane.day} slot has ended — choose "Allocate to" again.`, "warning");
+              return;
+            }
             const student = students.find(s => s.id === studentId);
             if (!student) return;
             const school = schools.find(s => s.id === armedLane.schoolId);
