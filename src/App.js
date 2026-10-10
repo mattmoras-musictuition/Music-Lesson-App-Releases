@@ -17,7 +17,7 @@ import { supabase } from "./supabaseClient";
 import { LoginScreen } from "./pages/LoginScreen";
 import { loadSchoolsFromSupabase, syncSchoolsToSupabase } from "./utils/schoolsDB";
 import { loadTeachersFromSupabase, syncTeachersToSupabase } from "./utils/teachersDB";
-import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, getCardTeacherId, getDayLaneTeacher, getAllocatableLanes, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
+import { loadTeacherCoverageFromSupabase, loadArchivedLanesFromSupabase, setLaneHistory, recordLaneHistory, findLaneId, laneAppliesForWeek, getCardTeacherId, getDayLaneTeacher, getAllocatableLanes, insertTeacherCoverage, archiveTeacherCoverage, setLaneEffectiveTo } from "./utils/teacherCoverageDB";
 import { loadLaneOverridesFromSupabase, upsertLaneOverride, deleteLaneOverride } from "./utils/laneOverridesDB";
 import { loadCatchupsFromSupabase, deleteCatchup, removeCatchupsInBackground } from "./utils/catchupsDB";
 import { carryBandMisses } from "./data/bandAbsence";
@@ -4592,6 +4592,10 @@ export default function MusicTimetableApp() {
     // path: per-day findLaneId + the lane-based fallthrough reason). No
     // school-level availability pre-gate needed.
 
+    // v2.49.14 — the master is week-less, so a lane applies only in its
+    // forward state (no end date); an ended lane is skipped like a missing one.
+    const forwardLane = (lane) => laneAppliesForWeek(lane, null);
+
     const schoolLessons = timetable.lessons.filter(l => l.schoolId === school.id);
     const classSlots = school.slots.filter(s => s.type === "class");
     const beforeAfterTypes = ["before_school", "after_school"];
@@ -4601,7 +4605,8 @@ export default function MusicTimetableApp() {
       const slot = school.slots.find(s => s.start === manualTime);
       if (!slot) return { success: false, reason: "Invalid time slot" };
       // Spec 2 cluster 4c — lane lookup before stamping bucket_id.
-      const bucketId = findLaneId(teacherCoverage, school.id, manualDay, teacher.id);
+      // v2.49.14 — forward state: never attach the group to a lane that has ended.
+      const bucketId = findLaneId(teacherCoverage, school.id, manualDay, teacher.id, forwardLane);
       if (!bucketId) {
         return { success: false, reason: `no covering lane for (${school.name}, ${manualDay}, ${teacher.name})` };
       }
@@ -4645,7 +4650,7 @@ export default function MusicTimetableApp() {
       // source of truth for (school, day) eligibility; the availability
       // time-window bound is dropped (no lane equivalent — class slots and
       // break/booking checks below are sufficient).
-      const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id);
+      const bucketId = findLaneId(teacherCoverage, school.id, day, teacher.id, forwardLane);
       if (!bucketId) continue;
       anyLaneFound = true;
 

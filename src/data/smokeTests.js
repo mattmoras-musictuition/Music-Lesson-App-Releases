@@ -39,7 +39,7 @@ import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
 import { runHiddenCardOutputTests, runExportTypeTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
 import { runLaneDisplayTests, runAllocateMenuTests } from "./laneDisplaySmokeTests";
-import { runLaneHistoryTests } from "./laneHistorySmokeTests";
+import { runLaneHistoryTests, runGroupLaneTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
@@ -459,6 +459,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Lesson resolves to its own lane's teacher (v2.49.8) ──
   runLaneHistoryTests(assert);
+
+  // ── Adding a group to the master skips ended lanes (v2.49.14) ──
+  runGroupLaneTests(assert);
 
   // ── Per-day admin edit stamps (v2.49.3) ──
   runDayEditTests(assert);

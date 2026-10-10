@@ -161,15 +161,22 @@ export function findLaneById(teacherCoverage, laneId) {
  * @param {TeacherCoverage[]} teacherCoverage  All loaded lanes.
  * @param {string} schoolId
  * @param {string} day
+ * v2.49.14 — optional `applies(lane)` narrows the match further. The default
+ * accepts every active lane (unchanged — the weekly generator relies on an
+ * end-dated lane staying usable in its last week). Adding a group to the
+ * master passes `l => laneAppliesForWeek(l, null)` so an ended lane is skipped.
+ *
  * @param {string} teacherId
+ * @param {(lane: TeacherCoverage) => boolean} [applies]
  * @returns {string|null}
  */
-export function findLaneId(teacherCoverage, schoolId, day, teacherId) {
+export function findLaneId(teacherCoverage, schoolId, day, teacherId, applies = () => true) {
   const lane = (teacherCoverage || []).find(
     l => l.schoolId === schoolId &&
          l.day === day &&
          l.teacherId === teacherId &&
-         l.status === "active"
+         l.status === "active" &&
+         applies(l)
   );
   return lane ? lane.id : null;
 }

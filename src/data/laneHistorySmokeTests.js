@@ -9,7 +9,7 @@
 
 import {
   getCardTeacherId, setLaneHistory, recordLaneHistory, getLaneHistory,
-  findLaneById, getDayLanes, findLaneId,
+  findLaneById, getDayLanes, findLaneId, laneAppliesForWeek,
 } from "../utils/teacherCoverageDB";
 import { getLiveTeacherId } from "../utils/helpers";
 import { generateWeeklyTimetable } from "./weeklyTimetableGenerator";
@@ -97,4 +97,43 @@ export function runLaneHistoryTests(assert) {
   } finally {
     setLaneHistory(saved);
   }
+}
+
+// ── v2.49.14 — adding a group to the master skips ended lanes. findLaneId's
+//    default (every active lane) is what the weekly generator relies on; the
+//    group handler passes the forward rule laneAppliesForWeek(lane, null). ──
+export function runGroupLaneTests(assert) {
+  const forward = (l) => laneAppliesForWeek(l, null);
+  // Matt Friday: an end-dated lane created BEFORE the live one (array order = load order).
+  const ended = { id: "fmatold1", schoolId: S, day: "Friday", teacherId: "matt", status: "active", effectiveTo: W2, createdAt: "2026-01-01" };
+  const live = { id: "fmatnew1", schoolId: S, day: "Friday", teacherId: "matt", status: "active", effectiveTo: null, createdAt: "2026-10-11" };
+  const archived = { id: "fmatarc1", schoolId: S, day: "Friday", teacherId: "matt", status: "archived", effectiveTo: null, createdAt: "2025-01-01" };
+  const tc = [archived, ended, live, ...ACTIVE.filter(l => l.teacherId !== "matt")];
+  assert("groupLane: default returns today's answer (first active lane = ended one)", findLaneId(tc, S, "Friday", "matt"), "fmatold1");
+  assert("groupLane: forward mode returns the live lane", findLaneId(tc, S, "Friday", "matt", forward), "fmatnew1");
+  // Only an ended lane: default still finds it; forward treats the day as uncovered.
+  const onlyEnded = [archived, ended];
+  assert("groupLane: default keeps an ended-only day covered", findLaneId(onlyEnded, S, "Friday", "matt"), "fmatold1");
+  assert("groupLane: forward mode — ended-only day has no covering lane", findLaneId(onlyEnded, S, "Friday", "matt", forward), null);
+  // Archived lanes never match in either mode; other teachers never match.
+  assert("groupLane: archived-only day uncovered in both modes",
+    [findLaneId([archived], S, "Friday", "matt"), findLaneId([archived], S, "Friday", "matt", forward)], [null, null]);
+  assert("groupLane: other teacher's live lane not returned", findLaneId(tc, S, "Friday", "rauzah", forward), null);
+  // A live lane with no end date is found the same way by both modes.
+  assert("groupLane: live lane same in both modes",
+    [findLaneId(ACTIVE, S, "Tuesday", "rauzah"), findLaneId(ACTIVE, S, "Tuesday", "rauzah", forward)], ["xov9t1ep", "xov9t1ep"]);
+
+  // Weekly generator (default findLaneId): a lesson on an ended lane in its
+  // FINAL week is still rescheduled onto that lane's teacher, not dropped.
+  const school = { id: S, name: "Moorabbin", days: ["Friday"], slots: [
+    { id: "p1", name: "P1", start: "09:00", end: "09:30", type: "class" },
+    { id: "p2", name: "P2", start: "09:30", end: "10:00", type: "class" }] };
+  const master = { id: "G1", studentId: "seb", studentName: "Seb", schoolId: S, day: "Friday", start: "09:00", end: "09:30", slotId: "p1", bucket_id: "fmatold1", instrument: "Guitar" };
+  const wd = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].map((day, i) => ({ day, date: `2026-10-1${2 + i}` }));
+  const move = [{ action: "move", lessonMatch: (l) => l.id === "G1" }];
+  const gen = generateWeeklyTimetable([master], school, [{ id: "seb", name: "Seb", schoolId: S, className: "3A" }],
+    [{ id: "matt", name: "Matt" }, { id: "rauzah", name: "Rauzah" }], [], [], wd, move, [], onlyEnded, []);
+  assert("groupLane: generator reschedules on an ended lane in its final week (unchanged)",
+    [gen.lessons.map(l => [l.id, l.bucket_id, l.day, l.start, l.adjustReason]), gen.missed.length],
+    [[["G1", "fmatold1", "Friday", "09:00", "Time changed (interruption)"]], 0]);
 }
