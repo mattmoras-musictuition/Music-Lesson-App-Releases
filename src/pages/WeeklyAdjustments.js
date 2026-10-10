@@ -341,7 +341,7 @@ function EmailLevel2Panel({ submenu, panelRef, level3Ref, subX, level3X, colors,
   );
 }
 
-export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, onWeekCleared = () => {}, onStampDays = () => {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
+export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students, setStudents, enrolments, setEnrolments, teachers, setTeachers, teacherCoverage = [], laneOverrides = [], temporaryLanes = [], setTemporaryLanes = () => {}, catchups = [], setCatchups = () => {}, onSetLaneOverride, onClearLaneOverride, viewedLanes = {}, onSwitchLane, specialists, interruptions, groups, bands, weeklyTimetables, setWeeklyTimetables, teacherActuals = {}, onWeekCleared = () => {}, ackedConstraints, setAckedConstraints, ttAckedConstraints = new Set(), tallyEntries, setTallyEntries, masterBreaks, notify, contacts, logError, viewState, setViewState, sharedSchool, setSharedSchool, sharedTimetableScroll, setSharedTimetableScroll, onViewStudent, onViewGroup, onExport, onUndo, onRedo, undoCount, redoCount, onWarningsChange, goBack, goForward, historyCursor, pageHistory, onAddMemory, onSoundPlay }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = sharedSchool || viewState.selectedSchool;
   const weekOffset = viewState.weekOffset;
@@ -424,11 +424,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   // The card is already placed by the time this is set — answering only
   // decides the student's status, never whether the lesson stays.
   const [promotePrompt, setPromotePrompt] = useState(null);
-  // ── Confirmed days (teacher-locked day slips) ─────────────
-  const [confirmedDaysMap, setConfirmedDaysMap] = useState({}); // { dateStr: [{id, teacherId}] }
-  const [resettingDay,  setResettingDay]  = useState(null);  // dateStr being reset
-  const [confirmingDay, setConfirmingDay] = useState(null);  // dateStr being confirmed by admin
-  const [resetConfirm,  setResetConfirm]  = useState(null);  // dateStr awaiting confirmation
   const gridScrollRef = useRef(null);
   const savedGridScroll = useRef({});
   savedGridScroll.current = sharedTimetableScroll?.gridScroll || viewState.gridScroll || {};
@@ -2446,121 +2441,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
   useEffect(() => {
     setEditUnlocked(false);
   }, [weekOffset]);
-
-  // ── Load confirmed day slips for displayed week ───────────
-  useEffect(() => {
-    (async () => {
-      try {
-        const weekStart = weekDates[0].date;
-        const weekEnd   = weekDates[weekDates.length - 1].date;
-        const { data } = await supabase
-          .from("day_slips")
-          .select("id, teacher_id, slip_date")
-          .eq("slip_type", "lesson_day")
-          .eq("is_locked", true)
-          .gte("slip_date", weekStart)
-          .lte("slip_date", weekEnd);
-        if (data) {
-          const map = {};
-          for (const row of data) {
-            if (!map[row.slip_date]) map[row.slip_date] = [];
-            map[row.slip_date].push({ id: row.id, teacherId: row.teacher_id });
-          }
-          setConfirmedDaysMap(map);
-        }
-      } catch (e) {
-        console.warn("WeeklyAdjustments: failed to load day slips:", e);
-      }
-    })();
-  }, [weekKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Realtime: day_slips INSERT + DELETE ───────────────────
-  useEffect(() => {
-    const channel = supabase
-      .channel("admin-wa-day-slips")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "day_slips" }, (payload) => {
-        const row = payload.new;
-        if (row.slip_type !== "lesson_day" || !row.is_locked) return;
-        setConfirmedDaysMap(prev => {
-          const existing = prev[row.slip_date] || [];
-          if (existing.some(s => s.id === row.id)) return prev;
-          return { ...prev, [row.slip_date]: [...existing, { id: row.id, teacherId: row.teacher_id }] };
-        });
-      })
-      .on("postgres_changes", { event: "DELETE", schema: "public", table: "day_slips" }, (payload) => {
-        const row = payload.old;
-        if (!row?.slip_date) return;
-        setConfirmedDaysMap(prev => {
-          const updated = { ...prev };
-          if (updated[row.slip_date]) {
-            updated[row.slip_date] = updated[row.slip_date].filter(s => s.id !== row.id);
-            if (updated[row.slip_date].length === 0) delete updated[row.slip_date];
-          }
-          return updated;
-        });
-      })
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, []);
-
-  // ── Reset a confirmed day (admin) ─────────────────────────
-  async function resetConfirmedDay(dateStr) {
-    setResettingDay(dateStr);
-    try {
-      const slips = confirmedDaysMap[dateStr] || [];
-      const ids = slips.map(s => s.id);
-      if (ids.length > 0) {
-        await supabase.from("day_slips").delete().in("id", ids);
-      }
-      setConfirmedDaysMap(prev => { const next = { ...prev }; delete next[dateStr]; return next; });
-      setResetConfirm(null);
-      if (notify) notify("Day reset — teacher can re-confirm");
-    } catch (e) {
-      console.error("resetConfirmedDay error:", e);
-    } finally {
-      setResettingDay(null);
-    }
-  }
-
-  // ── Confirm a day from admin side (inserts one slip per teacher on that day) ─
-  async function confirmDay(dateStr, dayName) {
-    setConfirmingDay(dateStr);
-    try {
-      const teacherIds = [...new Set(
-        (weeklyData?.lessons || [])
-          .filter(l => l.day === dayName)
-          .map(l => getLiveTeacherId(l, students, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes))
-          .filter(Boolean)
-      )];
-      if (teacherIds.length === 0) {
-        if (notify) notify("No lessons found for this day");
-        return;
-      }
-      const rows = teacherIds.map(tid => ({
-        teacher_id: tid,
-        slip_date: dateStr,
-        slip_type: "lesson_day",
-        is_locked: true,
-        school_id: selectedSchool,
-      }));
-      const { data, error } = await supabase.from("day_slips").insert(rows).select("id, teacher_id, slip_date");
-      if (error) throw error;
-      if (data) {
-        setConfirmedDaysMap(prev => ({
-          ...prev,
-          [dateStr]: [...(prev[dateStr] || []), ...data.map(r => ({ id: r.id, teacherId: r.teacher_id }))]
-        }));
-      }
-      // v2.49.3 — confirming asserts the admin's day: stamp it (no card changes).
-      onStampDays(storageKey, [dayName]);
-      if (notify) notify("Day confirmed");
-    } catch (e) {
-      console.error("confirmDay error:", e);
-      if (notify) notify("Failed to confirm day");
-    } finally {
-      setConfirmingDay(null);
-    }
-  }
 
   useEffect(() => {
     setAdjustmentNotes(weeklyData?.notes || "");
@@ -6372,10 +6252,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                         const blocked = isDayBlocked(d);
                         const daySelected = selectedDays.has(d);
                         const dayDateStr = weekDateMap[d];
-                        const isDayConfirmed = (confirmedDaysMap[dayDateStr] || []).length > 0;
-                        const isResettingThis = resettingDay === dayDateStr;
-                        const isConfirmingThis = confirmingDay === dayDateStr;
-                        const dayHasLessons = (weeklyData?.lessons || []).some(l => l.day === d);
                         const laneTeacher = getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, d, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher;
                         // Frozen header teacher (2.12.0 batch, follow-up to d770d34): on a PAST
                         // week the lesson cards show the locked historical teacher, so the day
@@ -6440,45 +6316,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                               setDayHeaderSubmenu(null);
                               setSwapTeacherSubmenu(null);
                             }}>
-                            {/* Top row: [confirm/reset] [Day Date Month] [Actuals] */}
+                            {/* Top row: [Day Date Month] */}
                             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                              {/* Left: confirm or reset (when applicable) */}
-                              <span style={{ width: 13, height: 13, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
-                                {isDayConfirmed && (
-                                  isResettingThis ? (
-                                    <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(255,255,255,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                                  ) : (
-                                    <button
-                                      onClick={e => { e.stopPropagation(); setResetConfirm(dayDateStr); }}
-                                      title="Reset confirmed day"
-                                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.75 }}
-                                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                      onMouseLeave={e => e.currentTarget.style.opacity = "0.75"}>
-                                      <RotateCcw size={12} color="rgba(34,197,94,0.9)" />
-                                    </button>
-                                  )
-                                )}
-                                {!isDayConfirmed && dayHasLessons && (
-                                  isConfirmingThis ? (
-                                    <div style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "rgba(34,197,94,0.8)", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                                  ) : (
-                                    <button
-                                      onClick={e => { e.stopPropagation(); confirmDay(dayDateStr, d); }}
-                                      title="Confirm day (admin)"
-                                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1, opacity: 0.45 }}
-                                      onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                                      onMouseLeave={e => e.currentTarget.style.opacity = "0.45"}>
-                                      <Check size={12} color="rgba(34,197,94,0.9)" />
-                                    </button>
-                                  )
-                                )}
-                              </span>
-                              {/* Middle: day label "Mon 4 May" */}
+                              {/* Day label "Mon 4 May" */}
                               <span style={{ flex: 1, textAlign: "center" }}>{headerLabel}</span>
                             </div>
-                            {isDayConfirmed && (
-                              <div style={{ fontSize: 9, color: "rgba(34,197,94,0.85)", fontWeight: 500, marginTop: 2 }}>confirmed</div>
-                            )}
                             {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
                             {/* v2.49.3 — read-only warning: a stored teacher copy replaces this day at 6pm */}
                             {teacherCopyByDay[d] && showTeacherCopyNote(dayDateStr, melbourneToday()) && (
@@ -6569,7 +6411,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             const cellLessons = lessonsByCell[`${day}|${time}`] || EMPTY_LESSONS;
                             const blocked = isDayBlocked(day);
                             const isDropTarget = dragOver && dragOver.day === day && dragOver.time === time;
-                            const isDayConfirmed = (confirmedDaysMap[weekDateMap[day]] || []).length > 0;
                             return (
                               <div key={`${day}-${time}`}
                                 onContextMenu={e => {
@@ -6648,9 +6489,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   if (onSoundPlay) onSoundPlay();
                                 }}
                                 style={{
-                                  background: isDayConfirmed
-                                    ? (darkMode ? "rgba(0,0,0,0.25)" : "rgba(0,0,0,0.04)")
-                                    : isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : blocked ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : colors.cardBg,
+                                  background: isDropTarget ? (darkMode ? "rgba(79,142,247,0.15)" : "#EFF6FF") : blocked ? (darkMode ? "rgba(196,84,84,0.18)" : "#FEF2F2") : colors.cardBg,
                                   position: "relative",
                                   padding: 4, minHeight: 56, display: "flex", flexDirection: "column", gap: 3,
                                   outline: "none",
@@ -6876,7 +6715,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       borderTop: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
                                       borderRight: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : "none",
                                       borderBottom: selectedCards.has(l.id) ? `1.5px solid ${colors.sidebarActive}` : l.adjusted && !showRed && !hasAckedWarning ? "3px solid #F59E0B" : "none",
-                                      opacity: draggingId === l.id ? 0.4 : isDayConfirmed ? 0.5 : 1, transition: "opacity 0.15s",
+                                      opacity: draggingId === l.id ? 0.4 : 1, transition: "opacity 0.15s",
                                     }} title={l.isGroup ? l.groupName || l.studentName : l.adjustReason || undefined}>
                                     {showRed && <span onClick={e => { e.stopPropagation(); /* v2.9.9 relational-constraint group acknowledge — clear the whole conflict group */ setAckedConstraints(prev => { const next = new Set(prev); next.add(l.id); for (const pid of getRelationalPartnerIds(l, weeklyData?.lessons, currentSchool)) next.add(pid); return next; }); setExpandedWarnings(prev => { const next = new Set(prev); next.delete(l.id); return next; }); }} onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, cursor: "pointer", lineHeight: 1, color: colors.success, fontWeight: 700, display: "inline-flex", alignItems: "center" }} title="Confirm this time"><Check size={11} /></span>}
                                     {hasAckedWarning && !showRed && <span onMouseEnter={e => { e.stopPropagation(); if (expandedWarnings.has(l.id)) return; const rect = e.currentTarget.parentElement.getBoundingClientRect(); setHoverPopover({ type: "constraints", warnings: cWarnings, rect, color: colors.danger }); }} onMouseLeave={e => { e.stopPropagation(); if (draggingId || expandedWarnings.size > 0) return; const cardEl = e.currentTarget.parentElement; const rect = cardEl.getBoundingClientRect(); const _popColor = getInstColor(liveInst, l.isGroup); const info = buildPopoverInfo(l); setHoverPopover({ type: "student", info, rect, color: _popColor }); }} style={{ position: "absolute", bottom: 2, right: 5, lineHeight: 1, color: colors.danger, fontWeight: 700, opacity: 0.6, display: "inline-flex", alignItems: "center" }}><AlertTriangle size={11} /></span>}
@@ -7272,44 +7111,6 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       {/* Hover popover — rendered unconditionally (position:fixed) */}
       {renderHoverPopover()}
 
-      {/* ── Reset confirmed day modal ── */}
-      {resetConfirm && (
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center" }}
-          onClick={() => setResetConfirm(null)}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{ background: colors.cardBg, borderRadius: 14, padding: 24, width: 340, maxWidth: "90vw", boxShadow: "0 8px 40px rgba(0,0,0,0.25)" }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(217,119,6,0.12)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <RotateCcw size={18} color="#D97706" />
-              </div>
-              <div style={{ fontWeight: 700, fontSize: 16, color: colors.text }}>
-                Reset {new Date(resetConfirm + "T12:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })}?
-              </div>
-            </div>
-            <p style={{ fontSize: 13, color: colors.textMuted, margin: "0 0 20px", lineHeight: 1.5 }}>
-              This will delete the day slip and reopen the day for editing. The teacher will be able to re-confirm once changes are made.
-            </p>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button
-                onClick={() => setResetConfirm(null)}
-                style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${colors.border}`, background: "none", fontSize: 13, cursor: "pointer", color: colors.textMuted, fontFamily: "inherit" }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => resetConfirmedDay(resetConfirm)}
-                style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: "#D97706", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}
-              >
-                <RotateCcw size={13} /> Reset Day
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* ── Promote-to-active prompt ──────────────────────────────
           Shown after a card has ALREADY been placed for a waiting-list or
           trial student. Declining changes nothing: the lesson stays exactly
