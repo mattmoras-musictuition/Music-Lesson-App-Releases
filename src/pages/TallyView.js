@@ -10,7 +10,7 @@ import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
-import { computeTallyStats, rowSummaryCounts } from "../utils/tallyFilters";
+import { TALLY_PILLS, computeTallyStats, rowSummaryCounts, rowMatchesPill } from "../utils/tallyFilters";
 import { bandCatchupTooltip } from "../data/bandAbsence";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
@@ -46,6 +46,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   const [tallyTooltip, setTallyTooltip] = useState(null);
   const [hoveredWeekKey, setHoveredWeekKey] = useState(null);
   const [tallySearch, setTallySearch] = useState("");
+  // v2.49.10 — the summary box filtering the grid (one at a time; null = none).
+  const [activePill, setActivePill] = useState(null);
   const [hoveredNameKey, setHoveredNameKey] = useState(null);
 
   // ── Term calculation ──────────────────────────────────────────
@@ -502,6 +504,30 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
 
   // ── Render ──────────────────────────────────────────────────
   const pageColor = PAGE_COLORS.tally;
+
+  // ── Row filters: search box, then the active summary box ────────
+  const searchQuery = tallySearch.trim().toLowerCase();
+  const rowMatchesSearch = (r) => {
+    const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
+    const name = r.isGroup
+      ? (groupDisplayNameLive(r, groups, students) || "")
+      : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
+    if (name.toLowerCase().includes(searchQuery)) return true;
+    // Session 12 — restore group-name match. groupDisplayNameLive
+    // returns the comma-joined member first names, not the
+    // group's own name, so typing the group name itself
+    // wouldn't match without this branch.
+    if (r.isGroup && r.groupId) {
+      const grp = (groups || []).find(g => g.id === r.groupId);
+      if (grp?.name && grp.name.toLowerCase().includes(searchQuery)) return true;
+    }
+    return false;
+  };
+  const filterSectionRows = (rows) => rows.filter(r =>
+    (!searchQuery || rowMatchesSearch(r)) &&
+    (!activePill || rowMatchesPill(r, entryMap, termWeeks, activePill, { bankingIndex })));
+  const nothingForFilter = !!activePill && groupedRows.every(([, rows]) => filterSectionRows(rows).length === 0);
+  const togglePill = (pill) => setActivePill(prev => (prev === pill ? null : pill));
   const headerBg = colors.sidebarHover;
 
   if (!timetable) {
@@ -549,19 +575,33 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
       {/* Summary cards — single row of six */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 10, marginBottom: 20 }}>
         {[
-          { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○" },
+          { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○", pill: TALLY_PILLS.NOT_MARKED },
           { label: "Completed", value: stats.completed, color: colors.success, bg: `${colors.success}18`, icon: "✓" },
-          { label: "Absent (no makeup)", value: stats.absent, color: colors.danger, bg: colors.redLight, icon: "✕" },
-          { label: "Unscheduled Makeups", value: stats.unscheduledMakeups, color: colors.accent, bg: colors.accentLight, icon: "●" },
-          { label: "Makeup Scheduled", value: stats.makeupScheduled, color: colors.blue600, bg: `${colors.blue600}18`, icon: "◷" },
-          { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺" },
-        ].map(s => (
-          <div key={s.label} style={{ background: s.bg, border: `1px solid ${s.color}22`, borderRadius: 10, padding: "10px 14px", minWidth: 0, display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, flexShrink: 0 }}>{s.value}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.gray700, lineHeight: 1.3 }}>{s.label}</div>
-          </div>
-        ))}
+          { label: "Absent (no makeup)", value: stats.absent, color: colors.danger, bg: colors.redLight, icon: "✕", pill: TALLY_PILLS.ABSENT },
+          { label: "Unscheduled Makeups", value: stats.unscheduledMakeups, color: colors.accent, bg: colors.accentLight, icon: "●", pill: TALLY_PILLS.UNSCHEDULED },
+          { label: "Makeup Scheduled", value: stats.makeupScheduled, color: colors.blue600, bg: `${colors.blue600}18`, icon: "◷", pill: TALLY_PILLS.SCHEDULED },
+          { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺", pill: TALLY_PILLS.MADE_UP },
+        ].map(s => {
+          // v2.49.10 — five boxes filter the grid; Completed stays a plain count.
+          const isOn = !!s.pill && activePill === s.pill;
+          const clickable = s.pill ? {
+            role: "button", tabIndex: 0, "aria-pressed": isOn,
+            title: isOn ? "Click to show all rows" : "Click to show only these rows",
+            onClick: () => togglePill(s.pill),
+            onKeyDown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePill(s.pill); } },
+          } : {};
+          return (
+            <div key={s.label} {...clickable}
+              style={{ background: s.bg, border: `1px solid ${isOn ? s.color : `${s.color}22`}`, boxShadow: isOn ? `0 0 0 2px ${s.color}` : "none", borderRadius: 10, padding: "10px 14px", minWidth: 0, display: "flex", alignItems: "center", gap: 10, cursor: s.pill ? "pointer" : "default" }}>
+              <div style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, flexShrink: 0 }}>{s.value}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: colors.gray700, lineHeight: 1.3 }}>{s.label}</div>
+            </div>
+          );
+        })}
       </div>
+      {activePill === TALLY_PILLS.NOT_MARKED && (
+        <div style={{ fontSize: 12, color: colors.textMuted, margin: "-10px 0 14px" }}>Past weeks with no lesson or absence recorded</div>
+      )}
 
       {/* Search + Legend row */}
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
@@ -593,6 +633,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         <EmptyState icon={<ClipboardCheck size={32} />} title="No weekly timetables generated yet" subtitle={<>Head to the <strong>Weekly Adjustments</strong> tab and generate a week to start tracking lessons.</>} />
       ) : lessonRows.length === 0 ? (
         <EmptyState icon={<ClipboardCheck size={32} />} title="No lessons at this school" subtitle="No lessons are scheduled here in the master timetable." />
+      ) : nothingForFilter ? (
+        <div style={{ fontSize: 13, color: colors.textMuted, padding: "12px 2px" }}>Nothing to show for this filter</div>
       ) : (
         <div style={{ overflowX: "auto", overflowY: "auto", borderRadius: 10, border: `1px solid ${colors.border}`, maxHeight: "calc(100vh - 212px)", position: "relative" }}>
           <table style={{ borderCollapse: "separate", borderSpacing: 0, width: `calc(100% + ${termWeeks.filter(w => w.isHoliday).length * 44}px)`, tableLayout: "fixed" }}>
@@ -631,27 +673,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             </thead>
             <tbody>
               {groupedRows.map(([groupLabel, rows]) => {
-                const filteredRows = tallySearch.trim()
-                  ? (() => {
-                      const q = tallySearch.trim().toLowerCase();
-                      return rows.filter(r => {
-                        const liveStu = r.isGroup ? null : students.find(s => s.id === r.studentId);
-                        const name = r.isGroup
-                          ? (groupDisplayNameLive(r, groups, students) || "")
-                          : buildPreferredDisplayName(liveStu?.name || r.studentName || "");
-                        if (name.toLowerCase().includes(q)) return true;
-                        // Session 12 — restore group-name match. groupDisplayNameLive
-                        // returns the comma-joined member first names, not the
-                        // group's own name, so typing the group name itself
-                        // wouldn't match without this branch.
-                        if (r.isGroup && r.groupId) {
-                          const grp = (groups || []).find(g => g.id === r.groupId);
-                          if (grp?.name && grp.name.toLowerCase().includes(q)) return true;
-                        }
-                        return false;
-                      });
-                    })()
-                  : rows;
+                const filteredRows = filterSectionRows(rows);
                 if (filteredRows.length === 0) return null;
                 return (
                 <React.Fragment key={groupLabel}>
