@@ -42,6 +42,7 @@ import { runLaneDisplayTests } from "./laneDisplaySmokeTests";
 import { runLaneHistoryTests } from "./laneHistorySmokeTests";
 import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
+import { runTallyFilterTests } from "./tallyFiltersSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -456,6 +457,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Stale teacher-copy warning + Actuals pill after 6pm (v2.49.3) ──
   runTeacherCopyTests(assert);
+
+  // ── Tally summary boxes, box filter and Summary column (v2.49.10) ──
+  runTallyFilterTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

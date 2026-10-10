@@ -10,6 +10,7 @@ import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
 import { getTerms, getCurrentTerm, getTermWeeks, getMondayOf } from "../utils/termWeeks";
 import { _genTallyHTML } from "../utils/tallyPdfHtml";
 import { buildBankingIndex, isCaughtUpCell, isScheduledCatchupCell, formatCatchupCompletionLabel } from "../data/catchupsDerive";
+import { computeTallyStats, rowSummaryCounts } from "../utils/tallyFilters";
 import { bandCatchupTooltip } from "../data/bandAbsence";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { preferredFirstName } from "../utils/emailTemplates";
@@ -183,29 +184,15 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
   };
 
   // ── Summary stats (term weeks only — holiday weeks excluded) ─────
+  // v2.49.10 — one rule per cell state (utils/tallyFilters), shared with the
+  // box filter and the Summary column. The four missed boxes partition every
+  // missed cell exactly once; Not Yet Marked counts blank cells in past
+  // weeks only (isPastWeek, 6pm Friday rollover).
   const termWeekKeys = useMemo(() => new Set(termWeeks.filter(w => !w.isHoliday).map(w => w.weekKey)), [termWeeks]);
-  const stats = useMemo(() => {
-    const lessonKeySet = new Set(lessonRows.map(r => r.lessonKey));
-    const visibleEntries = Object.values(entryMap).filter(e => lessonKeySet.has(e.lessonKey) && termWeekKeys.has(e.weekKey));
-    const removed = visibleEntries.filter(e => e.status === "removed").length;
-    const termWeekCount = termWeeks.filter(w => !w.isHoliday).length;
-    const totalCells = lessonRows.length * termWeekCount - removed;
-    const completed = visibleEntries.filter(e => e.status === "completed").length;
-    const missed = visibleEntries.filter(e => e.status === "missed").length;
-    // Spec 3 cluster 8 — a caught-up overlay cell (banking catch-up whose slot
-    // has passed) reads as "Made Up", not a makeup still owed. Same isCaughtUpCell
-    // predicate the grid renderer uses, so tiles and grid never diverge.
-    //
-    // The old single "Makeup Owed" bucket now splits in two, partitioning every
-    // missed/eligible/!madeUp entry into exactly one of three tiles:
-    //   unscheduledMakeups — no banking catch-up booked at all
-    //   makeupScheduled    — a catch-up is booked but its slot hasn't passed yet
-    //   madeUp             — formally made up, OR caught up (slot already passed)
-    const unscheduledMakeups = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && !isCaughtUpCell(e, bankingIndex) && !isScheduledCatchupCell(e, bankingIndex)).length;
-    const makeupScheduled = visibleEntries.filter(e => e.status === "missed" && e.makeupEligible && !e.madeUp && isScheduledCatchupCell(e, bankingIndex)).length;
-    const madeUp = visibleEntries.filter(e => e.madeUp || isCaughtUpCell(e, bankingIndex)).length;
-    return { totalCells, completed, missed, unscheduledMakeups, makeupScheduled, madeUp, unmarked: totalCells - completed - missed };
-  }, [entryMap, lessonRows, termWeeks, termWeekKeys, bankingIndex]);
+  const stats = useMemo(
+    () => computeTallyStats(lessonRows, entryMap, termWeeks, { bankingIndex }),
+    [entryMap, lessonRows, termWeeks, bankingIndex]
+  );
 
   // Private-students panel stats — mirrors the main grid's `stats` shape
   // but scoped to privateLessonRows + privateEntryMap.
@@ -564,7 +551,7 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
         {[
           { label: "Not Yet Marked", value: stats.unmarked, color: colors.gray500, bg: darkMode ? colors.cardBg : "#F9FAFB", icon: "○" },
           { label: "Completed", value: stats.completed, color: colors.success, bg: `${colors.success}18`, icon: "✓" },
-          { label: "Absent (no makeup)", value: stats.missed - stats.unscheduledMakeups - stats.makeupScheduled - stats.madeUp, color: colors.danger, bg: colors.redLight, icon: "✕" },
+          { label: "Absent (no makeup)", value: stats.absent, color: colors.danger, bg: colors.redLight, icon: "✕" },
           { label: "Unscheduled Makeups", value: stats.unscheduledMakeups, color: colors.accent, bg: colors.accentLight, icon: "●" },
           { label: "Makeup Scheduled", value: stats.makeupScheduled, color: colors.blue600, bg: `${colors.blue600}18`, icon: "◷" },
           { label: "Made Up", value: stats.madeUp, color: colors.sidebarActive, bg: "rgba(52,69,101,0.07)", icon: "↺" },
@@ -684,8 +671,8 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                     const rowEntries = termWeeks.map(w => entryMap[`${lesson.lessonKey}|${w.weekKey}`] || null);
                     const rowCompleted = rowEntries.filter(e => e?.status === "completed").length;
                     const rowMissed = rowEntries.filter(e => e?.status === "missed").length;
-                    const rowMakeup = rowEntries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
-                    const rowMadeUp = rowEntries.filter(e => e?.madeUp).length;
+                    // Summary column — same per-cell rule as the boxes (tallyFilters).
+                    const rowSummary = rowSummaryCounts(rowEntries, { bankingIndex });
                     const rowBg = ri % 2 === 0 ? colors.cardBg : (darkMode ? colors.bg : "#F9FAFB");
                     return (
                       <tr key={lesson.lessonKey} style={{ background: rowBg }}>
@@ -776,9 +763,9 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
                         <td style={{ padding: "8px 12px", borderBottom: `1px solid ${colors.border}`, whiteSpace: "nowrap", position: "sticky", right: 60, background: rowBg, zIndex: 1, borderLeft: `1px solid ${colors.border}` }}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", fontSize: 11 }}>
                             <span style={{ color: colors.success, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowCompleted}<Check size={11} /></span>
-                            {(rowMissed - rowMakeup - rowMadeUp) > 0 && <span style={{ color: colors.danger, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMissed - rowMakeup - rowMadeUp}<X size={11} /></span>}
-                            {rowMakeup > 0 && <span style={{ color: colors.accent, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMakeup}<span style={{ width: 8, height: 8, borderRadius: "50%", background: colors.accent, display: "inline-block" }} /></span>}
-                            {rowMadeUp > 0 && <span style={{ color: colors.sidebarActive, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowMadeUp}<RotateCcw size={11} /></span>}
+                            {rowSummary.absent > 0 && <span style={{ color: colors.danger, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowSummary.absent}<X size={11} /></span>}
+                            {rowSummary.owed > 0 && <span style={{ color: colors.accent, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowSummary.owed}<span style={{ width: 8, height: 8, borderRadius: "50%", background: colors.accent, display: "inline-block" }} /></span>}
+                            {rowSummary.madeUp > 0 && <span style={{ color: colors.sidebarActive, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 2 }}>{rowSummary.madeUp}<RotateCcw size={11} /></span>}
                           </div>
                         </td>
                         <td style={{ padding: "8px 10px", borderBottom: `1px solid ${colors.border}`, textAlign: "center", position: "sticky", right: 0, background: rowBg, zIndex: 1 }}>
