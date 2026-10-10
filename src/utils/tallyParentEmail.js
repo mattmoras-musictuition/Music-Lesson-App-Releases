@@ -7,7 +7,8 @@
 //                termWeeks order (entryMap value or null), exactly as the
 //                row renders them; never a pre-filtered subset.
 //   termWeeks  — the term's weeks (holiday weeks included), for labels.
-//   opts       — { bankingIndex, now } for the catch-up overlay.
+//   opts       — { bankingIndex, now } for the catch-up overlay; the same
+//                options the row's Summary column passes rowSummaryCounts.
 //
 // Group rows pass isGroup + groupLabel; solo rows pass studentName and
 // parentFullName (first parent's full name, or "").
@@ -15,6 +16,7 @@
 
 import { getMissedReasonProse } from "./missedReasonLabels";
 import { preferredFirstName } from "./emailTemplates";
+import { rowSummaryCounts } from "./tallyFilters";
 
 export function buildTallyParentEmail({ rowEntries, termWeeks, isGroup = false, groupLabel = "", studentName = "", parentFullName = "", instrument, termLabel = "" }, opts = {}) {
   const entries = rowEntries || [];
@@ -27,7 +29,10 @@ export function buildTallyParentEmail({ rowEntries, termWeeks, isGroup = false, 
       const reasonText = getMissedReasonProse(entry.reason, entry.reasonDetail) || "Missed";
       return `  • ${w.label} — ${reasonText}`;
     });
-  const catchupOwed = entries.filter(e => e?.status === "missed" && e.makeupEligible && !e.madeUp).length;
+  // v2.49.13 — the orange "owed" number the row's Summary column shows
+  // (tallyFilters per-cell rule): a booked catch-up, whether it has happened
+  // or not, is not owed; nor is one marked made up. Zero omits the line.
+  const catchupOwed = rowSummaryCounts(entries, opts).owed;
   const summary = `Lessons attended: ${rowCompleted}\nLessons missed: ${rowMissed}${missedLines.length ? "\n" + missedLines.join("\n") : ""}${catchupOwed > 0 ? `\nCatch-ups still owed: ${catchupOwed}` : ""}\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,`;
   if (isGroup) {
     return {

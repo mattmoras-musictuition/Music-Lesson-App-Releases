@@ -274,22 +274,56 @@ function oldTallyParentEmail({ rowEntries, termWeeks, isGroup, groupLabel, stude
   return { subject, body };
 }
 
+const owedLine = (body) => { const m = body.match(/\nCatch-ups still owed: (\d+)\n/); return m ? Number(m[1]) : 0; };
+
 export function runTallyParentEmailTests(assert) {
+  // With no catch-up booked anywhere the new rule and the old one agree, so
+  // the extraction stays output-identical to the old inline code.
+  const NO_BOOKINGS = { bankingIndex: buildBankingIndex([]), now: P_NOW };
   const rows = [
-    ["solo, worked example", { ...P_SOLO, rowEntries: pEntries() }],
-    ["group, worked example", { ...P_GROUP, rowEntries: pEntries() }],
+    ["solo, worked example cells", { ...P_SOLO, rowEntries: pEntries() }],
+    ["group, worked example cells", { ...P_GROUP, rowEntries: pEntries() }],
     ["solo, nothing missed", { ...P_SOLO, rowEntries: pEntries({ [PW.w2]: pCell(PW.w2, "completed"), [PW.w4]: null, [PW.w5]: null }) }],
     ["solo, no parent on file", { ...P_SOLO, parentFullName: "", rowEntries: pEntries() }],
   ];
   for (const [name, input] of rows) {
-    assert(`tallyEmail: extraction is output-identical (${name})`,
-      buildTallyParentEmail(input, P_OPTS), oldTallyParentEmail(input));
+    assert(`tallyEmail: nothing booked → identical to the old email (${name})`,
+      buildTallyParentEmail(input, NO_BOOKINGS), oldTallyParentEmail(input));
   }
-  // Today's text for the worked example, pinned (the owed line uses the old
-  // counting until the next commit).
-  assert("tallyEmail: solo body pinned",
-    buildTallyParentEmail({ ...P_SOLO, rowEntries: pEntries() }, P_OPTS).body,
-    "Hi Tara,\n\nI wanted to reach out with a summary of Meg's Piano lessons for Term 3.\n\nLessons attended: 3\nLessons missed: 3\n  • Week 2 — Informed absence\n  • Week 4 — Informed absence (school camp)\n  • Week 5 — Teacher absent\nCatch-ups still owed: 3\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,");
   assert("tallyEmail: solo subject", buildTallyParentEmail({ ...P_SOLO, rowEntries: pEntries() }, P_OPTS).subject,
     "Meg's Piano lessons — Term 3 summary");
+
+  // a. Worked example: wk2 caught up, wk4 booked (not yet), wk5 nothing booked.
+  const aEntries = pEntries();
+  const aBody = buildTallyParentEmail({ ...P_SOLO, rowEntries: aEntries }, P_OPTS).body;
+  assert("tallyEmail a: worked example owes 1, the Summary column's orange number",
+    [owedLine(aBody), rowSummaryCounts(aEntries, P_OPTS).owed], [1, 1]);
+  assert("tallyEmail a: old counting said 3", owedLine(oldTallyParentEmail({ ...P_SOLO, rowEntries: aEntries }).body), 3);
+  assert("tallyEmail a: worked example body (only the owed number changes)", aBody,
+    "Hi Tara,\n\nI wanted to reach out with a summary of Meg's Piano lessons for Term 3.\n\nLessons attended: 3\nLessons missed: 3\n  • Week 2 — Informed absence\n  • Week 4 — Informed absence (school camp)\n  • Week 5 — Teacher absent\nCatch-ups still owed: 1\n\nPlease don't hesitate to get in touch if you have any questions.\n\nKind regards,");
+  assert("tallyEmail a: group row owes the same 1",
+    owedLine(buildTallyParentEmail({ ...P_GROUP, rowEntries: aEntries }, P_OPTS).body), 1);
+
+  // b. Nothing booked at all: owed equals the old count.
+  const bBody = buildTallyParentEmail({ ...P_SOLO, rowEntries: aEntries }, NO_BOOKINGS).body;
+  assert("tallyEmail b: nothing booked → owed equals the old count and the Summary column",
+    [owedLine(bBody), rowSummaryCounts(aEntries, NO_BOOKINGS).owed], [3, 3]);
+
+  // c. Everything made up or booked: owed 0 and the line is left out (as before at zero).
+  const cMarked = pEntries({ [PW.w5]: pCell(PW.w5, "missed", { makeupEligible: true, reason: "teacher_absent", madeUp: true }) });
+  const cMarkedBody = buildTallyParentEmail({ ...P_SOLO, rowEntries: cMarked }, P_OPTS).body;
+  assert("tallyEmail c: all made up or booked (wk5 marked made up) → owed 0, no line",
+    [rowSummaryCounts(cMarked, P_OPTS).owed, cMarkedBody.includes("Catch-ups still owed")], [0, false]);
+  const cBookedOpts = { bankingIndex: buildBankingIndex([...P_CATCHUPS, catchupRow("cu3", PW.w5, PW.w6, "Tuesday", "09:00")]), now: P_NOW };
+  const cBookedBody = buildTallyParentEmail({ ...P_SOLO, rowEntries: aEntries }, cBookedOpts).body;
+  assert("tallyEmail c: all made up or booked (wk5 booked, not yet happened) → owed 0, no line",
+    [rowSummaryCounts(aEntries, cBookedOpts).owed, cBookedBody.includes("Catch-ups still owed")], [0, false]);
+  assert("tallyEmail c: the rest of the email is unchanged",
+    cBookedBody.replace("Week 5 — Teacher absent\n", "Week 5 — Teacher absent\nCatch-ups still owed: 1\n"), aBody);
+
+  // d. Holiday-week entry: a miss owed in the holiday week counts in both.
+  const dEntries = pEntries({ [PW.h]: pCell(PW.h, "missed", { makeupEligible: true, reason: "informed_absence" }) });
+  const dBody = buildTallyParentEmail({ ...P_SOLO, rowEntries: dEntries }, P_OPTS).body;
+  assert("tallyEmail d: holiday-week miss → email owed equals the Summary column (2)",
+    [owedLine(dBody), rowSummaryCounts(dEntries, P_OPTS).owed], [2, 2]);
 }
