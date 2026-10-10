@@ -7,7 +7,7 @@ import { Printer, Trash2, Undo2, Redo2, Save, FolderOpen, Coffee, Plus, Clock, U
 import { DAYS, STORAGE_KEYS, HEADER_HEIGHT } from "../constants";
 import { useTheme } from "../context/ThemeContext";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
-import { getDayLaneTeacher, lessonBelongsToViewedLane, lessonShownInViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
+import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, lessonShownInViewedLane, laneAppliesForWeek } from "../utils/teacherCoverageDB";
 import { uid, timeToMin, toTimeLabel, to12h, getInstColor, getInitials, getSchoolAcronym, melbourneNow, toLocalDateStr, getLiveTeacherName, getLiveTeacherId, isLessonUnassigned, openCompose, openGmailSequential, getParentEmails, groupDisplayName, clampMenuPos, getClassTeacher, staffContactEmail } from "../utils/helpers";
 import { loadData, saveData } from "../utils/backup";
 import { preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -1065,7 +1065,10 @@ export function TimetableView({ mainScrollRef, timetable, schools, students, all
                 })()}
                 {/* Spec 2 cluster 9b — Manage Staff (MTT side; Add + Remove combined) */}
                 {(() => {
-                  const dayLanes = teacherCoverage.filter(l => l.schoolId === selectedSchool && l.day === day && l.status === "active");
+                  // v2.49.7 — forward state (weekKey null): a lane end-dated by
+                  // "Keep this week's lessons" is no longer assigned here, so its
+                  // teacher drops to the Add list rather than showing as staff.
+                  const dayLanes = getDayLanes(teacherCoverage, selectedSchool, day, [], null);
                   const assignedTeacherIds = new Set(dayLanes.map(l => l.teacherId));
                   const notAddedTeachers = teachers
                     .filter(t => !assignedTeacherIds.has(t.id))

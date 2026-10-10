@@ -5,7 +5,7 @@
 // with "Also clear", and new lanes added with no end date.
 // ============================================================
 
-import { lessonBelongsToViewedLane, lessonOnNonApplicableLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
+import { getDayLanes, lessonBelongsToViewedLane, lessonOnNonApplicableLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
 
 const S = "moorabbin";
 const W1 = "2026-10-05";
@@ -76,4 +76,10 @@ export function runLaneDisplayTests(assert) {
     lessonOnNonApplicableLane({ ...friNew, bucket_id: "tmp1" }, tc, S, W2, temp), false);
   // MTT: a master lesson left on an end-dated lane (e.g. restored by Undo) shows.
   assert("laneDisplay: MTT end-dated-lane lesson shows", lessonShownInViewedLane(friOld, {}, tc, S, null), true);
+
+  // (c) MTT Manage Staff lists getDayLanes(..., null): end-dated and archived
+  // lanes are not shown as currently assigned.
+  const staffIds = (day) => getDayLanes(tc, S, day, [], null).map(l => l.id);
+  assert("laneDisplay: Manage Staff Tuesday excludes end-dated + archived", staffIds("Tuesday"), ["xov9t1ep"]);
+  assert("laneDisplay: Manage Staff Friday excludes end-dated", staffIds("Friday"), ["npm9gxwu"]);
 }
