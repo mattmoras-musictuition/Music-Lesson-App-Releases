@@ -13,7 +13,7 @@ import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
   exportLessons, exportTeacherSchedules,
-  electronPrintToPdf, buildExportFilename
+  electronPrintToPdf, buildExportFilename, EXPORT_TYPES
 } from "../data/exportHelpers";
 import { visibleLessons } from "../utils/hiddenCards";
 // Session 96: upload exported timetables to the private documents bucket and
@@ -30,9 +30,9 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, initialType, viewedWeekKey = null, currentWeekKey = null, termStartKey = null, termEndKey = null, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, viewedWeekKey = null, currentWeekKey = null, termStartKey = null, termEndKey = null, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
-  const [exportType, setExportType] = React.useState(initialType || "timetable");
+  const [exportType, setExportType] = React.useState(EXPORT_TYPES[0].value);
   // ── Week model (3b) — locked 4 Jun ────────────────────────────────────────
   // "This Week" (tab id "weekly") is ALWAYS the current week — the same week
   // the WTT clock shows — never "latest generated" or "viewed". "Past/Future
@@ -554,8 +554,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
         <div style={{ marginBottom: 20 }}>
           <div style={labelStyle}>What to export</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <TypeCard value="timetable" icon="📅" title="Timetable" desc="Grid view by school, teacher or class" />
-            <TypeCard value="teacher_schedules" icon="👩‍🏫" title="Teacher Schedules" desc="One page per teacher, all schools" />
+            {EXPORT_TYPES.map(t => <TypeCard key={t.value} value={t.value} icon={t.icon} title={t.title} desc={t.desc} />)}
           </div>
         </div>
 

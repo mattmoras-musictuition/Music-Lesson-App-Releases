@@ -3,7 +3,7 @@
 // ============================================================
 
 import React, { useState, useMemo, useCallback } from "react";
-import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, Send, History } from "lucide-react";
+import { ClipboardCheck, Check, X, RotateCcw, Building2, Mail, History } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { toLocalDateStr, melbourneNow, melbourneToday, getSchoolAcronym, getParentEmails, openCompose, groupDisplayNameLive, uid } from "../utils/helpers";
 import { deriveTallyRows, derivePrivateTallyRows } from "../utils/tallyDerive";
@@ -37,7 +37,7 @@ const formatReasonForTooltip = (prose) => {
   return m ? m[1] : prose;
 };
 
-export function TallyView({ timetable, schools, students, enrolments, setEnrolments, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], groups = [], notify, onExport, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
+export function TallyView({ timetable, schools, students, enrolments, setEnrolments, interruptions, weeklyTimetables, setWeeklyTimetables, catchups = [], groups = [], notify, viewState, setViewState, goBack, goForward, historyCursor, pageHistory, onViewStudent }) {
   const { colors, darkMode } = useTheme();
   const selectedSchool = (viewState || {}).selectedSchool ?? "all";
   const setSelectedSchool = (v) => setViewState(prev => ({ ...prev, selectedSchool: typeof v === "function" ? v(prev.selectedSchool ?? "all") : v }));
@@ -567,7 +567,6 @@ export function TallyView({ timetable, schools, students, enrolments, setEnrolme
             title={prevTermAvailable ? "Open previous term tally in a separate window" : "No earlier term available"}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><History size={13} /> Preview previous term</span>
           </Btn>
-          {onExport && <Btn onClick={() => onExport(null, "", "tally")}><span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}><Send size={13} /> Export</span></Btn>}
         </div>}>
         Tally
       </PageTitle>

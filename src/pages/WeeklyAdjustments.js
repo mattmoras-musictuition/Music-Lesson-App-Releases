@@ -5611,7 +5611,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                   const wd = weeklyTimetables[sk];
                   if (wd) { allWeekLessons.push(...wd.lessons); allWeekMissed.push(...(wd.missed || [])); }
                 }
-                onExport({ lessons: allWeekLessons, missed: allWeekMissed }, weekLabel, null, weekKey);
+                onExport({ lessons: allWeekLessons, missed: allWeekMissed }, weekLabel, weekKey);
               }} title={isHolidayWeek ? "Disabled" : "Export"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Send size={13} /></Btn>
             <Btn variant="secondary" onClick={() => !isHolidayWeek && printWeeklyTimetable(visibleWeeklyTimetables(weeklyTimetables, students), schools, students, weekDates, weekLabel)} title={isHolidayWeek ? "Disabled" : "Print week"} disabled={isHolidayWeek} style={{ opacity: isHolidayWeek ? 0.35 : 1 }}><Printer size={13} /></Btn>
             {confirmClearAllWeeks ? (

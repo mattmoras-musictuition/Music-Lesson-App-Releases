@@ -14,6 +14,15 @@ import { DAYS, instruments_colors } from "../constants";
 import { getXLSX } from "../utils/api";
 import { adminSessionMembers } from "./bandForwardAbsence";
 
+// The export types the Export dialog offers, in display order; the first is
+// the type it opens on. v2.49.13 — the Tally page's Export button (which
+// opened a "tally" type deleted in Apr 2026) is gone, so these are the only
+// types any caller can reach.
+export const EXPORT_TYPES = [
+  { value: "timetable", icon: "📅", title: "Timetable", desc: "Grid view by school, teacher or class" },
+  { value: "teacher_schedules", icon: "👩‍🏫", title: "Teacher Schedules", desc: "One page per teacher, all schools" },
+];
+
 // Cluster 12a: opts-cascade resolver for stamped-teacherName-free exports.
 // Reads enrolments/laneOverrides/weekKey from opts (MTT exports pass null/null
 // for the override args; WTT exports pass the live values). Returns "" when

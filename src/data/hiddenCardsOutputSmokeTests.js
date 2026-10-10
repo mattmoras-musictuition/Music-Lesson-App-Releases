@@ -5,7 +5,7 @@
 // ============================================================
 
 import { visibleLessons, visibleWeeklyTimetables, dayParentRows } from "../utils/hiddenCards";
-import { generateExportHtml } from "./exportHelpers";
+import { generateExportHtml, EXPORT_TYPES } from "./exportHelpers";
 
 export function runHiddenCardOutputTests(assert) {
   const studentsWith = ameliaStatus => [
@@ -70,4 +70,16 @@ export function runHiddenCardOutputTests(assert) {
   assert("hiddenOut: saved weekly data (Tally input) is unchanged by the selectors", JSON.stringify(wtt), before);
   assert("hiddenOut: weekly view keeps misses and drops only hidden cards",
     [view["2026-10-05|sch"].lessons.length, view["2026-10-05|sch"].missed.length], [2, 1]);
+}
+
+// v2.49.13 — the Tally page's Export button (type "tally", deleted in Apr
+// 2026) is removed. The Export dialog renders its type cards from
+// EXPORT_TYPES and opens on the first, so these pin what it still offers.
+export function runExportTypeTests(assert) {
+  assert("exportTypes: the dialog offers Timetable and Teacher Schedules only, in that order",
+    EXPORT_TYPES.map(t => t.value), ["timetable", "teacher_schedules"]);
+  assert("exportTypes: the dialog opens on Timetable", EXPORT_TYPES[0].value, "timetable");
+  assert("exportTypes: no tally type", EXPORT_TYPES.some(t => t.value === "tally"), false);
+  assert("exportTypes: card titles unchanged",
+    EXPORT_TYPES.map(t => t.title), ["Timetable", "Teacher Schedules"]);
 }

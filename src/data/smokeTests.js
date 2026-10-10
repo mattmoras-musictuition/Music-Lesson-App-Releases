@@ -36,7 +36,7 @@ import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
 import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
 import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
-import { runHiddenCardOutputTests } from "./hiddenCardsOutputSmokeTests";
+import { runHiddenCardOutputTests, runExportTypeTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
 import { runLaneDisplayTests } from "./laneDisplaySmokeTests";
 import { runLaneHistoryTests } from "./laneHistorySmokeTests";
@@ -444,6 +444,9 @@ export function runSmokeTests(logErrorFn) {
   // ── Hidden archived cards never count against visible ones (v2.49.1) ──
   runHiddenCardTests(assert);
   runHiddenCardOutputTests(assert);
+
+  // ── Export dialog types after the Tally Export button removal (v2.49.13) ──
+  runExportTypeTests(assert);
 
   // ── Clear full week really deletes (v2.49.3) ──
   runWeekDeleteTests(assert);
