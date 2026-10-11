@@ -16,6 +16,8 @@
 // ============================================================
 
 import { loadPdfjs } from "./filePreviewCore";
+import { getAnthropicHeaders } from "./api";
+import { ANTHROPIC_MODEL } from "../constants";
 
 const DAY_NAMES = {
   mon: "Monday", monday: "Monday",
@@ -267,4 +269,90 @@ export async function readPdfGridCards(data, pdfjsLib = null) {
   } finally {
     if (doc) { try { doc.destroy(); } catch (e) {} }
   }
+}
+
+// ============================================================
+// SPECIALIST PDF REQUEST (shared by Import and Update)
+// ============================================================
+
+// The measured-positions block sent after the PDF. One line per card.
+export function formatGridCardsBlock(cards) {
+  const clean = s => String(s || "").replace(/\|/g, "/").replace(/\s+/g, " ").trim();
+  return [
+    "MEASURED CARD POSITIONS — measured by the app from where each card sits on the page's time grid (day = the column the card is in; start and end = the card's top and bottom edges read against the time axis). One line per card:",
+    "page | day | start | end | card text",
+    ...cards.map(c => [c.page, c.day, c.start, c.end, clean(c.text)].join(" | ")),
+  ].join("\n");
+}
+
+// The extraction prompt. `preamble` (Update only) goes first; the user's
+// Instructions box goes last, as before.
+export function buildSpecialistPrompt({ instructions = "", preamble = "" } = {}) {
+  let userGuidance = "";
+  if (instructions.trim()) {
+    userGuidance = `\n\nIMPORTANT — SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\n${instructions.trim()}\n---`;
+  }
+  return `${preamble ? preamble + "\n\n" : ""}This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nRespond ONLY with a JSON array, no other text, no markdown backticks. Example:\n[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]\n\nRules:\n- Extract EVERY entry you can find\n- If times are in 12-hour format, convert to 24-hour\n- Use exact class names from the document\n- Times printed in the document always take priority\n- If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given\n- Output one entry per class on a card: a card listing several classes (e.g. "56P, 56S, 5L, 6A") gives one entry for each class, all with that card's day, start, end and subject\n- Never work out times from the order of the text\n- If a time genuinely cannot be determined, still include the entry with start and end as empty strings (""); never guess\n- Skip cards that have no class/grade on them\n- Include ALL classes and ALL specialist subjects shown\n- Use compact JSON with no extra whitespace to fit everything${userGuidance}`;
+}
+
+// fetch options for anthropicFetch: native PDF, then the measured block (when
+// the PDF is a time grid with cards), then the prompt.
+export function buildSpecialistPdfRequest({ base64, gridCards = null, instructions = "", preamble = "" }) {
+  const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }];
+  if (gridCards && gridCards.length > 0) content.push({ type: "text", text: formatGridCardsBlock(gridCards) });
+  content.push({ type: "text", text: buildSpecialistPrompt({ instructions, preamble }) });
+  return {
+    method: "POST",
+    headers: getAnthropicHeaders(),
+    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 16000, messages: [{ role: "user", content }] }),
+  };
+}
+
+// API reply JSON → { entries, truncated }. Throws the same messages the
+// import screen has always shown. A reply cut off mid-array keeps every
+// complete entry and reports truncated: true.
+export function parseSpecialistReply(data) {
+  if (data && data.error) {
+    throw new Error(`AI error: ${data.error.message || JSON.stringify(data.error)}`);
+  }
+  const textContent = (data && data.content)?.map(c => c.type === "text" ? c.text : "").join("") || "";
+  if (!textContent.trim()) {
+    throw new Error("AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
+  }
+  const cleaned = textContent.replace(/```json|```/g, "").trim();
+  let entries;
+  let truncated = false;
+  try {
+    entries = JSON.parse(cleaned);
+  } catch (parseErr) {
+    // Try to recover truncated JSON — the response may have been cut off mid-array
+    let recovered = cleaned;
+    // Remove any trailing incomplete object
+    const lastCompleteObj = recovered.lastIndexOf("}");
+    if (lastCompleteObj > 0) {
+      recovered = recovered.substring(0, lastCompleteObj + 1);
+      // Close the array if needed
+      if (!recovered.trim().endsWith("]")) {
+        recovered = recovered.trim() + "]";
+      }
+      try {
+        entries = JSON.parse(recovered);
+        truncated = true;
+      } catch (e) {
+        throw new Error("AI response was cut off and couldn't be recovered. Try adding instructions to limit extraction (e.g. 'only extract Prep–Year 2 classes') and import in batches.\n\nRaw response preview: " + cleaned.substring(0, 300));
+      }
+    } else {
+      throw new Error("AI response wasn't valid JSON.\n\nRaw response preview: " + cleaned.substring(0, 300));
+    }
+  }
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new Error("AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
+  }
+  return { entries, truncated };
+}
+
+// One reply entry → the row fields the Review screen edits. Missing or empty
+// times stay "" (a blank time box the owner fills in).
+export function replyEntryFields(e) {
+  return { className: e.class || "", day: e.day || "", start: e.start || "", end: e.end || "", subject: e.subject || "" };
 }

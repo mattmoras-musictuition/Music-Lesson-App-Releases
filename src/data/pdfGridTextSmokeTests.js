@@ -6,7 +6,10 @@
 // 1pt-inset cards, white NFFT/Acc badges, full-width Recess band.
 // ============================================================
 
-import { parseClockLabel, parseDayHeading, collectFilledRects, extractGridCards } from "../utils/pdfGridText";
+import {
+  parseClockLabel, parseDayHeading, collectFilledRects, extractGridCards,
+  formatGridCardsBlock, buildSpecialistPrompt, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields,
+} from "../utils/pdfGridText";
 
 const K = 485 / 330; // pt per minute (9:00 → 2:30 spans 485pt)
 const LABEL_H = 6;
@@ -176,5 +179,62 @@ export function runPdfGridTextTests(assert) {
     { x0: 0, y0: 812, x1: 75, y1: 842 },
     { x0: 10, y0: 10, x1: 20, y1: 20 },
     { x0: 1, y0: 2, x1: 3, y1: 4 },
+  ]);
+}
+
+// Shared Import/Update request and reply handling. No AI call: the request
+// is built and inspected, and replies are hand-written API JSON.
+export function runSpecialistPdfRequestTests(assert) {
+  const cards = [
+    { page: 1, day: "Monday", start: "10:00", end: "11:00", text: "French 6A Carmen Higgins MAIN8 NFFT" },
+    { page: 2, day: "Friday", start: "09:00", end: "11:00", text: "Interschool | Sports  56P, 56S" },
+  ];
+  assert("pdf req: measured block lines", formatGridCardsBlock(cards).split("\n").slice(1), [
+    "page | day | start | end | card text",
+    "1 | Monday | 10:00 | 11:00 | French 6A Carmen Higgins MAIN8 NFFT",
+    "2 | Friday | 09:00 | 11:00 | Interschool / Sports 56P, 56S",
+  ]);
+  assert("pdf req: measured block heading", formatGridCardsBlock(cards).startsWith("MEASURED CARD POSITIONS"), true);
+
+  const prompt = buildSpecialistPrompt();
+  assert("pdf prompt: no estimate rule", /estimate based on typical school day/.test(prompt), false);
+  assert("pdf prompt: printed times win", prompt.includes("- Times printed in the document always take priority"), true);
+  assert("pdf prompt: use measured positions", prompt.includes("If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given"), true);
+  assert("pdf prompt: one entry per class", prompt.includes("Output one entry per class on a card"), true);
+  assert("pdf prompt: never from text order", prompt.includes("- Never work out times from the order of the text"), true);
+  assert("pdf prompt: unknown times stay empty", prompt.includes('still include the entry with start and end as empty strings (""); never guess'), true);
+  assert("pdf prompt: skip classless cards", prompt.includes("- Skip cards that have no class/grade on them"), true);
+  assert("pdf prompt: schema unchanged", prompt.includes('[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]'), true);
+  assert("pdf prompt: no instructions → no block", prompt.includes("SPECIFIC INSTRUCTIONS FROM THE USER"), false);
+  const withInstr = buildSpecialistPrompt({ instructions: "  Only Prep-2  " });
+  assert("pdf prompt: instructions block last", withInstr.endsWith("SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\nOnly Prep-2\n---"), true);
+  assert("pdf prompt: preamble first", buildSpecialistPrompt({ preamble: "UPDATE CONTEXT" }).startsWith("UPDATE CONTEXT\n\nThis PDF contains"), true);
+
+  const withGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: cards }).body);
+  assert("pdf req: grid → PDF, measured block, prompt", withGrid.messages[0].content.map(c => c.type + (c.type === "text" ? ":" + c.text.slice(0, 12) : "")), ["document", "text:MEASURED CAR", "text:This PDF con"]);
+  assert("pdf req: native PDF kept", withGrid.messages[0].content[0].source, { type: "base64", media_type: "application/pdf", data: "QUJD" });
+  assert("pdf req: reply cap 16000", withGrid.max_tokens, 16000);
+  const noGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: null }).body);
+  assert("pdf req: not a grid → PDF and prompt only", noGrid.messages[0].content.map(c => c.type), ["document", "text"]);
+  const emptyGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: [] }).body);
+  assert("pdf req: grid with no cards → no block", emptyGrid.messages[0].content.length, 2);
+
+  const reply = text => ({ content: [{ type: "text", text }] });
+  const ok = parseSpecialistReply(reply('```json\n[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"}]\n```'));
+  assert("pdf reply: fenced JSON", ok, { entries: [{ class: "6A", day: "Monday", start: "10:00", end: "11:00", subject: "French" }], truncated: false });
+  const cut = parseSpecialistReply(reply('[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"},{"class":"5L","day":"Mon'));
+  assert("pdf reply: cut-off reply keeps complete rows", [cut.entries.length, cut.truncated], [1, true]);
+  const throws = d => { try { parseSpecialistReply(d); return null; } catch (e) { return e.message.split("\n")[0]; } };
+  assert("pdf reply: empty", throws(reply("  ")), "AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
+  assert("pdf reply: API error", throws({ error: { message: "overloaded" } }), "AI error: overloaded");
+  assert("pdf reply: not JSON", throws(reply("Sorry, no")), "AI response wasn't valid JSON.");
+  assert("pdf reply: empty array", throws(reply("[]")), "AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
+
+  // Times the AI could not determine come back empty and stay empty —
+  // the Review screen shows a blank time box for the owner to fill in.
+  const blank = parseSpecialistReply(reply('[{"class":"6A","day":"Monday","start":"","end":"","subject":"French"},{"class":"5L","day":"Friday","subject":"PE"}]'));
+  assert("pdf reply: empty times accepted", blank.entries.map(replyEntryFields), [
+    { className: "6A", day: "Monday", start: "", end: "", subject: "French" },
+    { className: "5L", day: "Friday", start: "", end: "", subject: "PE" },
   ]);
 }

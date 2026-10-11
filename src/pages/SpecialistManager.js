@@ -9,6 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
+import { readPdfGridCards, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields } from "../utils/pdfGridText";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
@@ -166,29 +167,14 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       reader.onerror = () => rej(new Error("Failed to read the PDF file from disk."));
       reader.readAsDataURL(file);
     });
-
-    let userGuidance = "";
-    if (importInstructions.trim()) {
-      userGuidance = `\n\nIMPORTANT — SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\n${importInstructions.trim()}\n---`;
-    }
+    // Time-grid PDFs (times shown by position, not printed): measure each
+    // card's day and times so the AI doesn't have to. null for other PDFs.
+    const grid = await readPdfGridCards(await file.arrayBuffer());
 
     let response;
     try {
-      response = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: getAnthropicHeaders(),
-        body: JSON.stringify({
-          model: ANTHROPIC_MODEL,
-          max_tokens: 16000,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Data } },
-              { type: "text", text: `This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nRespond ONLY with a JSON array, no other text, no markdown backticks. Example:\n[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]\n\nRules:\n- Extract EVERY entry you can find\n- If times are in 12-hour format, convert to 24-hour\n- Use exact class names from the document\n- If you can't determine exact times, estimate based on typical school day (9am-3:30pm)\n- Include ALL classes and ALL specialist subjects shown\n- Use compact JSON with no extra whitespace to fit everything${userGuidance}` }
-            ]
-          }]
-        })
-      });
+      response = await anthropicFetch("https://api.anthropic.com/v1/messages",
+        buildSpecialistPdfRequest({ base64: base64Data, gridCards: grid && grid.cards, instructions: importInstructions }));
     } catch (fetchErr) {
       throw new Error("Network error connecting to AI service. Check your internet connection and try again.");
     }
@@ -199,52 +185,11 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       throw new Error(`AI service returned error ${response.status}: ${errBody.substring(0, 200)}`);
     }
 
-    const data = await response.json();
-
-    // Check for API-level errors
-    if (data.error) {
-      throw new Error(`AI error: ${data.error.message || JSON.stringify(data.error)}`);
-    }
-
-    const textContent = data.content?.map(c => c.type === "text" ? c.text : "").join("") || "";
-
-    if (!textContent.trim()) {
-      throw new Error("AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
-    }
-
-    const cleaned = textContent.replace(/```json|```/g, "").trim();
-
-    let entries;
-    try {
-      entries = JSON.parse(cleaned);
-    } catch (parseErr) {
-      // Try to recover truncated JSON — the response may have been cut off mid-array
-      let recovered = cleaned;
-      // Remove any trailing incomplete object
-      const lastCompleteObj = recovered.lastIndexOf("}");
-      if (lastCompleteObj > 0) {
-        recovered = recovered.substring(0, lastCompleteObj + 1);
-        // Close the array if needed
-        if (!recovered.trim().endsWith("]")) {
-          recovered = recovered.trim() + "]";
-        }
-        try {
-          entries = JSON.parse(recovered);
-          notify(`Response was truncated — recovered ${entries.length} entries. Some may be missing from the end.`, "warning");
-        } catch(e) {
-          throw new Error("AI response was cut off and couldn't be recovered. Try adding instructions to limit extraction (e.g. 'only extract Prep–Year 2 classes') and import in batches.\n\nRaw response preview: " + cleaned.substring(0, 300));
-        }
-      } else {
-        throw new Error("AI response wasn't valid JSON.\n\nRaw response preview: " + cleaned.substring(0, 300));
-      }
-    }
-
-    if (!Array.isArray(entries) || entries.length === 0) {
-      throw new Error("AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
-    }
+    const { entries, truncated } = parseSpecialistReply(await response.json());
+    if (truncated) notify(`Response was truncated — recovered ${entries.length} entries. Some may be missing from the end.`, "warning");
 
     setPreview({
-      entries: entries.map(e => ({ id: uid(), schoolId: importSchoolId, className: e.class || "", day: e.day || "", start: e.start || "", end: e.end || "", subject: normalizeSubject(e.subject || ""), notes: "" })),
+      entries: entries.map(e => { const f = replyEntryFields(e); return { id: uid(), schoolId: importSchoolId, ...f, subject: normalizeSubject(f.subject), notes: "" }; }),
       schoolId: importSchoolId,
       filename: file.name
     });
