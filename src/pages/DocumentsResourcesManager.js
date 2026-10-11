@@ -11,6 +11,8 @@ import { useTheme } from "../context/ThemeContext";
 import { uid as makeId } from "../utils/helpers";
 import { PageTitle, NavButtons, Btn, PAGE_COLORS } from "../components/ui/SharedUI";
 import { LinkBrowser } from "../components/LinkBrowser";
+import { TeacherInvoicesPane } from "../components/TeacherInvoicesPane";
+import { refreshSentInvoices, subscribeSentInvoices, consumeInvoicesFolderRequest } from "../utils/teacherInvoicesDB";
 // Session 96: storage helpers — resources-public + documents-private buckets.
 // uploadToBucket handles the upload and returns a storagePath (+ publicUrl
 // for public bucket). signedUrlFor generates a fresh short-lived URL for
@@ -184,6 +186,18 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
   const [dActiveCustomId, setDActiveCustomId] = useState(null);
   const [dSavingView,     setDSavingView]     = useState(false);
   const [dNewViewName,    setDNewViewName]    = useState("");
+
+  // Teacher invoices — the fixed "Invoices" folder ({ dim: "invoices" }).
+  // Reads teacher_invoices only; never the documents table or folder
+  // overrides. Opening this page refreshes the shared copy, which also
+  // refreshes the Dashboard's "new invoices" chip. The Dashboard chip asks
+  // for this folder to open on arrival.
+  const [invoiceCount, setInvoiceCount] = useState(null);
+  useEffect(() => {
+    if (consumeInvoicesFolderRequest()) { setSection("documents"); setDSelectedFolder({ dim: "invoices", value: null }); }
+    refreshSentInvoices().catch(e => console.error("Invoices load failed", e));
+    return subscribeSentInvoices(rows => setInvoiceCount(rows.length));
+  }, []);
 
   useEffect(() => {
     setREditId(null); setREditForm(null);
@@ -684,7 +698,8 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
 
   // ── Documents custom saved views (own snapshot shape) ────────
   const dCurrentSnapshot = useMemo(() => ({ folder: dSelectedFolder, teacher: dfTeacher, search: dSearch.trim() }), [dSelectedFolder, dfTeacher, dSearch]);
-  const dViewIsCustomizable = dSelectedFolder.dim !== "all" || anyDocFilter || !!dSearch.trim();
+  // The fixed Invoices folder can never be saved as a custom view.
+  const dViewIsCustomizable = dSelectedFolder.dim !== "invoices" && (dSelectedFolder.dim !== "all" || anyDocFilter || !!dSearch.trim());
   const applyDocCustom = (c) => {
     const f = c.filters || {};
     setDSelectedFolder(f.folder || { dim: "all", value: null });
@@ -1134,6 +1149,10 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                 <FolderRow icon={FileText} label="All documents" count={documents.length}
                   selected={!dActiveCustomId && dSelectedFolder.dim === "all"}
                   onClick={() => setDSelectedFolder({ dim: "all", value: null })} colors={colors} />
+                {/* Fixed folder — not a custom view; no rename, hide or delete. */}
+                <FolderRow icon={Folder} label="Invoices" count={invoiceCount ?? undefined}
+                  selected={!dActiveCustomId && dSelectedFolder.dim === "invoices"}
+                  onClick={() => { setDActiveCustomId(null); setDSelectedFolder({ dim: "invoices", value: null }); }} colors={colors} />
 
                 {/* Custom saved views — "Save current view" plus any saved folders. */}
                 <SidebarGroupLabel colors={colors}>Custom</SidebarGroupLabel>
@@ -1219,6 +1238,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                 )}
               </div>
 
+              {dSelectedFolder.dim === "invoices" ? <TeacherInvoicesPane teachers={teachers} colors={colors} /> : <>
               {/* ── MIDDLE: compact document list ── */}
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0, borderRight: `1px solid ${colors.borderLight}` }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", padding: 10, borderBottom: `1px solid ${colors.borderLight}` }}>
@@ -1330,6 +1350,7 @@ export function DocumentsResourcesManager({ resources, setResources, documents, 
                   );
                 })()}
               </div>
+              </>}
             </div>
           )}
 
