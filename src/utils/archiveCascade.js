@@ -215,3 +215,31 @@ export function archiveStudentCascade(p) {
   return { groups: groupsOut, lessons, unscheduled, weeklyTimetables,
     deletedGroupIds, typedNamesKept: plan.typedNamesKept, inTerm: plan.inTerm };
 }
+
+// One master card brought in line with its group record — the per-card rule
+// of App's group sync effect, moved here verbatim so the archive cascade's
+// output can be checked against it: a card the cascade has already fixed
+// must come back as the same object (the effect must never re-add the child
+// or touch the re-pointed enrolmentId).
+export function syncCardToGroup(l, groups, students) {
+  if (!l.groupId) return l;
+  const group = groups.find(g => g.id === l.groupId);
+  if (!group) return l;
+  const changes = {};
+  // Cluster 12a: teacher-sync arm removed. Stamped teacherId/teacherName no longer
+  // read post-cluster-12a; lane resolves at render time. Group name + student list
+  // syncs below stay — those fields are still read at render.
+  // Sync group name
+  if (group.name && l.groupName !== group.name) {
+    changes.groupName = group.name; changes.studentName = group.name;
+  }
+  // Sync student list
+  const groupStudentIds = group.studentIds || [];
+  if (JSON.stringify(l.studentIds || []) !== JSON.stringify(groupStudentIds)) {
+    changes.studentIds = [...groupStudentIds];
+    changes.studentNames = groupStudentIds.map(sid => students.find(s => s.id === sid)?.name || "?");
+    if (groupStudentIds.length > 0 && l.studentId !== groupStudentIds[0]) changes.studentId = groupStudentIds[0];
+  }
+  if (Object.keys(changes).length === 0) return l;
+  return { ...l, ...changes };
+}

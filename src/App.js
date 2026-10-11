@@ -57,7 +57,7 @@ import { getWttWeekKeysWithActivity, getWeekTallySummary } from "./utils/tallyDe
 import { getOfferableMisses, parseInvoiceDrafts } from "./utils/catchupScope";
 import { stampFirstPlacementStart } from "./utils/enrolmentPlacement";
 import { checkOrphan as checkOrphanLesson } from "./utils/orphanCheck";
-import { purgeWeeklyAfterArchive } from "./utils/archiveCascade";
+import { archiveStudentCascade, syncCardToGroup } from "./utils/archiveCascade";
 import { visibleLessons } from "./utils/hiddenCards";
 import { computeTermWeekNum, computeTermKey } from "./utils/tallyHelpers";
 import { migrateData, loadData, saveData, saveStudents, loadSchools, loadStudents, loadSpecialists, triggerAutoBackup } from "./utils/backup";
@@ -2821,6 +2821,31 @@ export default function MusicTimetableApp() {
     notify("Claude action undone", "success");
   };
 
+  // ── Archive cascade — the one path both archive entry points use ─────
+  // Students page (onArchiveStudent) and the assistant's archive_student.
+  // Takes the child off every group they are in (record, master card, future
+  // weekly cards and misses) instead of matching group cards on their first
+  // member; see utils/archiveCascade. Each setter runs the helper against its
+  // own latest value; the plan inputs (groups, students, enrolments) are the
+  // pre-archive ones, which is what the plan needs. Past weeks and the
+  // current week are untouched. Group records persist through the normal
+  // groups sync (a deleted group is dropped from the list, as Delete group does).
+  const applyArchiveCascade = (studentId) => {
+    const ctx = {
+      studentId,
+      archiveDate: melbourneToday(),
+      termBreaks: interruptions.filter(i => i.type === "term_break"),
+      groups, students, enrolments,
+    };
+    setGroups(prev => archiveStudentCascade({ ...ctx, groupsToUpdate: prev }).groups);
+    if (timetable) setTimetable(prev => {
+      if (!prev) return prev;
+      const r = archiveStudentCascade({ ...ctx, lessons: prev.lessons || [], unscheduled: prev.unscheduled || [] });
+      return { ...prev, lessons: r.lessons, unscheduled: r.unscheduled };
+    });
+    setWeeklyTimetables(prev => archiveStudentCascade({ ...ctx, weeklyTimetables: prev }).weeklyTimetables);
+  };
+
   // ── Claude system prompt builder ─────────────────────────────
   // ── Claude Actions — execute a tool call from the Claude panel ──────────
   // Returns a result string that gets sent back to Claude as a tool_result.
@@ -3512,13 +3537,9 @@ export default function MusicTimetableApp() {
         setEnrolments(prev => prev.map(e =>
           e.studentId === studentId && !e.endDate ? { ...e, endDate: todayISO } : e
         ));
-        // Match the StudentsManager-prop onArchiveStudent card cleanup
-        // (App.js:6200). The AI tool path was missing this pre-Spec-1; without
-        // it, archived students kept visible MTT/WTT cards.
-        // v2.44.0 — same bounded weekly cleanup as the Students page archive.
-        if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== studentId), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== studentId) }));
-        const archiveDate = melbourneToday();
-        setWeeklyTimetables(prev => purgeWeeklyAfterArchive(prev, studentId, archiveDate));
+        // Same card + group cleanup as the Students page archive — one shared
+        // path (applyArchiveCascade): master, future weeks and group records.
+        applyArchiveCascade(studentId);
         notify(`Archived student: ${studentName}`, "success");
         return `Done — ${studentName} has been archived. They are hidden from all active views but can be restored from the Students page.`;
       }
@@ -4551,27 +4572,11 @@ export default function MusicTimetableApp() {
       if (!prev) return prev;
       let needUpdate = false;
       const updatedLessons = prev.lessons.map(l => {
-        if (!l.groupId) return l;
-        const group = groups.find(g => g.id === l.groupId);
-        if (!group) return l;
-        const changes = {};
-        // Cluster 12a: teacher-sync arm removed. Stamped teacherId/teacherName no longer
-        // read post-cluster-12a; lane resolves at render time. Group name + student list
-        // syncs below stay — those fields are still read at render.
-        // Sync group name
-        if (group.name && l.groupName !== group.name) {
-          changes.groupName = group.name; changes.studentName = group.name;
-        }
-        // Sync student list
-        const groupStudentIds = group.studentIds || [];
-        if (JSON.stringify(l.studentIds || []) !== JSON.stringify(groupStudentIds)) {
-          changes.studentIds = [...groupStudentIds];
-          changes.studentNames = groupStudentIds.map(sid => students.find(s => s.id === sid)?.name || "?");
-          if (groupStudentIds.length > 0 && l.studentId !== groupStudentIds[0]) changes.studentId = groupStudentIds[0];
-        }
-        if (Object.keys(changes).length === 0) return l;
-        needUpdate = true;
-        return { ...l, ...changes };
+        // Per-card rule lives in utils/archiveCascade (syncCardToGroup) so the
+        // archive cascade's output is tested against it.
+        const next = syncCardToGroup(l, groups, students);
+        if (next !== l) needUpdate = true;
+        return next;
       });
       if (!needUpdate) return prev;
       return { ...prev, lessons: updatedLessons };
@@ -6311,13 +6316,11 @@ export default function MusicTimetableApp() {
           {page === "specialists" && <SpecialistManager specialists={specialists} setSpecialists={setSpecialists} schools={schools} notify={notify} resetKey={resetKey} viewState={specialistsViewState} setViewState={setSpecialistsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "calendar" && <CalendarManager interruptions={interruptions} setInterruptions={setInterruptions} schools={schools} specialists={specialists} notify={notify} resetKey={resetKey} viewState={interruptionsViewState} setViewState={setInterruptionsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />}
           {page === "students" && <StudentsManager students={students} setStudents={setStudents} enrolments={enrolments} setEnrolments={setEnrolments} schools={schools} teachers={teachers} specialists={specialists} timetable={timetable} teacherCoverage={teacherCoverage} notify={notify} focusStudentId={focusStudentId} onClearFocus={() => setFocusStudentId(null)} returnPage={focusReturnPage} onReturn={() => { if (focusReturnPage) { setPage(focusReturnPage); setFocusReturnPage(null); } }} resetKey={resetKey} viewState={studentsViewState} setViewState={setStudentsViewState} newStudentPrefill={newStudentPrefill} onClearNewStudentPrefill={() => setNewStudentPrefill(null)} addParentPrefill={addParentPrefill} onClearAddParentPrefill={() => setAddParentPrefill(null)} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} focusGroupId={focusGroupId} groupsCount={groups.length} onAddGroup={() => setTriggerNewGroup(n => n + 1)} initialTabRequest={studentsTabRequest} onClearTabRequest={() => setStudentsTabRequest(null)} waitingListSlot={<PendingManager embedded students={students} setStudents={setStudents} schools={schools} timetable={timetable} interruptions={interruptions} weeklyTimetables={weeklyTimetables} setWeeklyTimetables={setWeeklyTimetables} enrolments={enrolments} teacherCoverage={teacherCoverage} teachers={teachers} laneOverrides={laneOverrides} viewedLanes={viewedLanes} temporaryLanes={temporaryLanes} onSchedulePending={handleSchedulePending} onViewStudent={(studentId) => { setFocusStudentId(studentId); }} onManualSchedule={handleManualSchedule} notify={notify} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} />} groupsView={<GroupsManager groups={groups} setGroups={setGroups} students={activeStudents} enrolments={enrolments} schools={schools} teachers={teachers} timetable={timetable} onRevertGroup={handleRevertGroup} onAddGroupToMaster={handleAddGroupToMaster} notify={notify} focusGroupId={focusGroupId} onClearFocusGroup={() => setFocusGroupId(null)} onReturn={() => { if (focusGroupReturnPage) { setPage(focusGroupReturnPage); setFocusGroupReturnPage(null); } }} onViewStudent={(studentId) => { setFocusStudentId(studentId); setFocusReturnPage(null); }} viewState={groupsViewState} setViewState={setGroupsViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} hideTitle={true} triggerNew={triggerNewGroup} />} onArchiveStudent={(id) => {
-              // Timetable cleanup only — student status is set by StudentsManager directly
-              if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));
-              // v2.44.0 — weekly cleanup is bounded like onEndEnrolment: only
-              // weeks starting after today are cleared (lessons and misses);
-              // past and current weeks keep their Tally history.
-              const archiveDate = melbourneToday();
-              setWeeklyTimetables(prev => purgeWeeklyAfterArchive(prev, id, archiveDate));
+              // Timetable + group cleanup only — student status is set by
+              // StudentsManager directly. Shared with archive_student; weeks
+              // starting after today only, so past and current weeks keep
+              // their Tally history.
+              applyArchiveCascade(id);
             }} onDeleteStudent={(id) => {
               // Same timetable cleanup as archive — student record is fully removed
               if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));

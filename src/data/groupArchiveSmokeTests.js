@@ -12,7 +12,7 @@
 // week-activity guards never move.
 // ============================================================
 
-import { archiveStudentCascade, purgeWeeklyAfterArchive, isDateInTerm } from "../utils/archiveCascade";
+import { archiveStudentCascade, purgeWeeklyAfterArchive, isDateInTerm, syncCardToGroup } from "../utils/archiveCascade";
 import { generateWeeklyTimetable } from "./weeklyTimetableGenerator";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { instrumentsFromEnrolments } from "../utils/enrolmentsDB";
@@ -303,4 +303,32 @@ export function runGroupArchiveEdgeTests(assert) {
     archiveStudentCascade({ studentId: "amy", archiveDate: IN_TERM, termBreaks: TERM_BREAKS, groups: GGROUPS,
       students: GSTUDENTS, enrolments: GENROL, unscheduled: [{ student: { id: "amy" } }, { student: { id: "bob" } }] })
       .unscheduled.map(u => u.student.id), ["bob"]);
+}
+
+// ── The group sync effect (App) after an archive ─────────────────────────
+// App re-syncs every master group card to its group record whenever groups
+// change. Run its per-card rule over the cascade's output: every card must
+// come back as the same object, so the effect never re-adds the child, never
+// relabels, and never touches the re-pointed enrolmentId.
+export function runGroupArchiveSyncTests(assert) {
+  const cases = [["ann", IN_TERM], ["ben", IN_TERM], ["cat", IN_TERM], ["ivy", IN_TERM], ["libby", IN_TERM],
+    ["dan", IN_TERM], ["zoe", IN_TERM], ["ivy", BETWEEN], ["libby", BETWEEN]];
+  for (const [sid, date] of cases) {
+    const { r } = runArchive(sid, date, [FUT]);
+    const synced = r.lessons.map(l => syncCardToGroup(l, r.groups, studentsAfter(sid)));
+    assert(`group archive sync: archive ${sid} (${date}) — sync effect leaves every master card as it is`,
+      synced.every((l, i) => l === r.lessons[i]), true);
+  }
+  // A later edit to another group still leaves the shrunken group's card alone.
+  const { r } = runArchive("libby", IN_TERM, [FUT]);
+  const later = r.groups.map(g => (g.id === "G3" ? { ...g, notes: "edited" } : g));
+  const m = cardOf(r.lessons, "G2");
+  const after = syncCardToGroup(m, later, studentsAfter("libby"));
+  assert("group archive sync: a later groups change keeps the child off and the enrolment re-point",
+    [after === m, after.studentIds, after.enrolmentId], [true, ["ivy"], "e_ivy_g2"]);
+  // The rule itself (unchanged): a card still listing the child is re-synced
+  // from the record — which is why the record must lose the child too.
+  const stale = { ...m, studentIds: ["ivy", "libby"], studentNames: ["Ivy O'Donnell", "Libby Gilby"] };
+  assert("group archive sync: rule still re-syncs a stale card from the group record",
+    syncCardToGroup(stale, r.groups, GSTUDENTS).studentIds, ["ivy"]);
 }

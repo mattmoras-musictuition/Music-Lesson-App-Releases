@@ -17,7 +17,7 @@ import {
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
-import { runGroupArchiveCharacterizationTests, runGroupArchiveThreeMemberTests, runGroupArchiveTwoMemberTests, runGroupArchiveEdgeTests } from "./groupArchiveSmokeTests";
+import { runGroupArchiveCharacterizationTests, runGroupArchiveThreeMemberTests, runGroupArchiveTwoMemberTests, runGroupArchiveEdgeTests, runGroupArchiveSyncTests } from "./groupArchiveSmokeTests";
 import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImportWiringTests, runImportMissedLineTests } from "./mttImportSmokeTests";
 import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTests, runParentEmailStudentTests } from "./bandSessionViewSmokeTests";
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
@@ -505,6 +505,7 @@ export function runSmokeTests(logErrorFn) {
   runGroupArchiveThreeMemberTests(assert);
   runGroupArchiveTwoMemberTests(assert);
   runGroupArchiveEdgeTests(assert);
+  runGroupArchiveSyncTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
