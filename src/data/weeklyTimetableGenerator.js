@@ -8,7 +8,7 @@ import { timeToMin, groupDisplayName, isPastWeek } from "../utils/helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getMissedReasonProse } from "../utils/missedReasonLabels";
 import { DAYS, instruments_colors } from "../constants";
-import { getCardTeacherId, findLaneId } from "../utils/teacherCoverageDB";
+import { getCardTeacherId, findLaneId, stampFrozenTeacher } from "../utils/teacherCoverageDB";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 
 // ── classMatchesInterruption ──────────────────────────────────────────────────
@@ -401,13 +401,8 @@ export function generateWeeklyTimetable(masterLessons, school, students, teacher
   // teacher. Inert for current/future weeks (the resolver only prefers the stamp
   // when the week is past) → no behavioural change until the week is finished.
   // Band sessions and entries with no resolvable teacher are left unstamped.
-  const stampFrozen = (entry) => {
-    if (entry.isBandSession) return entry;
-    const tid = getCardTeacherId(entry, teacherCoverage);
-    return tid ? { ...entry, frozenTeacherId: tid } : entry;
-  };
-
-  return { lessons: placed.map(stampFrozen), missed: missed.map(stampFrozen) };
+  // v2.49.16 — shared with Import from MTT: stampFrozenTeacher (teacherCoverageDB).
+  return { lessons: stampFrozenTeacher(placed, teacherCoverage), missed: stampFrozenTeacher(missed, teacherCoverage) };
 }
 
 // ── Print functions ───────────────────────────────────────────────────────────

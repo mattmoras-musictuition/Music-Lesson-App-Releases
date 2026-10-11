@@ -45,6 +45,7 @@ import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
 import { runTempLaneChipTests, runTempLaneDayPdfTests, runWaitingListPlaceTests } from "./tempLaneChipSmokeTests";
 import { runExportScopeCharacterizationTests, runExportTempLaneTests } from "./exportScopeSmokeTests";
+import { runFrozenStampGeneratorTests } from "./frozenStampSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -492,6 +493,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Day-header emails include leftover-lane lessons under one chip (v2.49.15) ──
   runDayEmailLeftoverTests(assert);
+
+  // ── Frozen-teacher stamp shared by Generate and Import from MTT (v2.49.16) ──
+  runFrozenStampGeneratorTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

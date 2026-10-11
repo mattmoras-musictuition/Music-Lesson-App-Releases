@@ -293,6 +293,23 @@ export function getCardTeacherId(lesson, teacherCoverage, laneOverrides = null, 
 }
 
 /**
+ * Frozen-teacher stamp (moved from weeklyTimetableGenerator's stampFrozen in
+ * v2.49.16 so Import from MTT stamps exactly as Generate does). Every NON-band
+ * entry gets frozenTeacherId = the teacher resolved live right now —
+ * getCardTeacherId(entry, teacherCoverage), no week, no overrides, no
+ * temporary lanes, matching Generate. Once the week is past, the read resolver
+ * prefers this stamp, so a later staffing change can't re-break it. Band
+ * sessions and entries with no resolvable teacher are returned unchanged.
+ */
+export function stampFrozenTeacher(entries, teacherCoverage) {
+  return (entries || []).map(entry => {
+    if (entry.isBandSession) return entry;
+    const tid = getCardTeacherId(entry, teacherCoverage);
+    return tid ? { ...entry, frozenTeacherId: tid } : entry;
+  });
+}
+
+/**
  * Temporary-lanes session 2 — shared day-lane enumerator.
  *
  * Returns every lane on (schoolId, day) for the given week: the
