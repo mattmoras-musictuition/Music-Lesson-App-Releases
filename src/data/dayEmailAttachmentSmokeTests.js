@@ -7,7 +7,10 @@
 // for week 2026-10-12 (2 lessons).
 // ============================================================
 
-import { pickDayAttachment } from "../utils/dayEmailAttachment";
+import { pickDayAttachment, dayHeaderEmailLessons } from "../utils/dayEmailAttachment";
+import { lessonBelongsToViewedLane } from "../utils/teacherCoverageDB";
+import { dayParentRows } from "../utils/hiddenCards";
+import { getLiveTeacherId } from "../utils/helpers";
 import { generateExportHtml } from "./exportHelpers";
 import { setLaneHistory, getLaneHistory } from "../utils/teacherCoverageDB";
 
@@ -90,9 +93,11 @@ export function runDayEmailAttachmentTests(assert) {
     const withRetired = [...WHOLE_DAY, lesson("old1", "glkw2if8", 15 * 60)];
     assert("dayEmail: retired-slot lesson included for Staff → its teacher",
       attachmentHtml({ lessons: withRetired, viewed: viewing("xov9t1ep"), forTeacherName: "Matt Moras" }).includes("Matt · 3 lessons"), true);
-    assert("dayEmail: retired-slot lesson excluded from the selected-chip attachment (either chip)",
+    // v2.49.15 (owner decision) — no longer excluded under every chip: it goes
+    // under its own teacher's chip (Matt's), and only there.
+    assert("dayEmail: retired-slot lesson in the selected-chip attachment under its teacher's chip only",
       ["tmpmatt1", "xov9t1ep"].map(c => pickDayAttachment({ lessons: withRetired, day: "Tuesday", schoolId: S, weekKey: W2, teacherCoverage: TC, viewedLanes: viewing(c), temporaryLanes: TEMP }).lessons.some(l => l.id === "old1")),
-      [false, false]);
+      [true, false]);
   } finally {
     setLaneHistory(savedHistory);
   }
@@ -103,4 +108,71 @@ export function runDayEmailAttachmentTests(assert) {
     schoolId: S, day: "Tuesday", title: "T", teacherCoverage: TC, enrolments: [], laneOverrides: [], weekKey: W3, temporaryLanes: TEMP, weekLabel: "Week 2" }) || "";
   assert("dayEmail: single-teacher day — attachment identical to before",
     attachmentHtml({ lessons: singleDay, viewed: viewing("tmpmatt1"), weekKey: W3 }) === oldSingle && oldSingle.includes("Rauzah · 9 lessons"), true);
+}
+
+// ── v2.49.15 — day-header emails include leftover-lane lessons under exactly
+//    one chip. The WHOLE Tuesday (Matt's temporary-lane cards, Rauzah's nine,
+//    a card on Matt's archived slot — Matt HAS a chip — and a card on Kate's
+//    archived slot — Kate has NO chip) goes through dayHeaderEmailLessons (the
+//    recipient lists' filter), pickDayAttachment (the selected-chip
+//    attachment), dayParentRows and the Staff list's getLiveTeacherId. ──
+export function runDayEmailLeftoverTests(assert) {
+  const KATE_ARCH = { id: "katearc1", schoolId: S, day: "Tuesday", teacherId: "kate", status: "archived", effectiveTo: null, createdAt: "2025-01-01" };
+  const teachers = [...TEACHERS, { id: "kate", name: "Kate Lin", teacherBreaks: [] }];
+  const LEFT_MATT = lesson("lm1", "glkw2if8", 15 * 60);
+  const LEFT_KATE = lesson("lk1", "katearc1", 15 * 60 + 30);
+  const DAY = [...MATT, ...RAUZAH, LEFT_MATT, LEFT_KATE, lesson("w1", "wedlane", 9 * 60, "Wednesday")];
+  const students = DAY.map(l => ({ id: "s_" + l.id, name: l.studentName, parents: [{ name: "P " + l.id, email: l.id + "@p.com" }] }));
+  const withStudents = DAY.map(l => ({ ...l, studentId: "s_" + l.id }));
+  const CHIPS = ["xov9t1ep", "tmpmatt1"];
+  const base = { schoolId: S, weekKey: W2, teacherCoverage: TC, temporaryLanes: TEMP, laneOverrides: [] };
+  const lists = (lessons, chip, extra = {}) => dayHeaderEmailLessons({ lessons, days: ["Tuesday"], viewedLanes: viewing(chip), ...base, ...extra });
+  const attachIds = (lessons, chip, extra = {}) => pickDayAttachment({ lessons, day: "Tuesday", viewedLanes: viewing(chip), ...base, ...extra }).lessons.map(l => l.id);
+  const savedHistory = getLaneHistory();
+  setLaneHistory([ARCHIVED, KATE_ARCH]);
+  try {
+    // a. Each leftover card under exactly one chip.
+    const under = (id) => CHIPS.filter(c => lists(withStudents, c).some(l => l.id === id));
+    assert("dayEmailLeftover: a. Matt's archived-slot card only under Matt's chip", under("lm1"), ["tmpmatt1"]);
+    assert("dayEmailLeftover: a. Kate's card (no chip) only under the FIRST chip", under("lk1"), ["xov9t1ep"]);
+    assert("dayEmailLeftover: a. remembered chip absent falls back to the first chip — Kate's card still once",
+      [lists(withStudents, null).some(l => l.id === "lk1"), lists(withStudents, null).some(l => l.id === "lm1")], [true, false]);
+    // b. Recipient lists and the attachment agree, for every chip.
+    for (const chip of CHIPS) {
+      const listIds = lists(withStudents, chip).map(l => l.id);
+      assert(`dayEmailLeftover: b. lists and attachment agree (chip ${chip})`, attachIds(withStudents, chip), listIds);
+    }
+    const parents = (chip) => dayParentRows(lists(withStudents, chip), students, l => [l.studentId]).map(r => r.email);
+    assert("dayEmailLeftover: b. Parents list under Matt's chip", parents("tmpmatt1"), ["m1@p.com", "m2@p.com", "lm1@p.com"]);
+    assert("dayEmailLeftover: b. Parents list under Rauzah's chip", parents("xov9t1ep"), [...RAUZAH.map(l => l.id + "@p.com"), "lk1@p.com"]);
+    const staff = (chip) => [...new Set(lists(withStudents, chip).map(l => getLiveTeacherId(l, students, [], TC, [], W2, TEMP)))];
+    assert("dayEmailLeftover: b. Staff list names each leftover card's own teacher",
+      [staff("tmpmatt1"), staff("xov9t1ep")], [["matt"], ["rauzah", "kate"]]);
+    // Staff → named teacher attachment: same card, same teacher.
+    const toTeacher = (name) => generateExportHtml(pickDayAttachment({ lessons: DAY, day: "Tuesday", viewedLanes: viewing("xov9t1ep"), ...base, forTeacherName: name }).lessons,
+      [], SCHOOLS, teachers, { schoolId: S, day: "Tuesday", teacherName: name, title: "T", teacherCoverage: TC, enrolments: [], laneOverrides: [], weekKey: W2, temporaryLanes: TEMP }) || "";
+    assert("dayEmailLeftover: b. Staff → Matt includes Matt's leftover card; Staff → Kate includes Kate's",
+      [toTeacher("Matt Moras").includes("Student lm1"), toTeacher("Matt Moras").includes("Student lk1"), toTeacher("Kate Lin").includes("Student lk1")], [true, false, true]);
+    // c. Cards on applicable lanes: identical to the strict filter.
+    for (const chip of CHIPS) {
+      const strict = withStudents.filter(l => l.day === "Tuesday" && lessonBelongsToViewedLane(l, viewing(chip), TC, S, W2, TEMP)).map(l => l.id);
+      assert(`dayEmailLeftover: c. applicable-lane cards unchanged (chip ${chip})`,
+        lists(withStudents, chip).filter(l => l.id !== "lm1" && l.id !== "lk1").map(l => l.id), strict);
+    }
+    // d. Single-lane day (no temporary lane that week): every Tuesday card, as before.
+    const single = lists(withStudents, "tmpmatt1", { weekKey: W3 }).map(l => l.id);
+    assert("dayEmailLeftover: d. single-lane day — identical to before (every Tuesday card)", single,
+      withStudents.filter(l => l.day === "Tuesday" && lessonBelongsToViewedLane(l, viewing("tmpmatt1"), TC, S, W3, TEMP)).map(l => l.id));
+    assert("dayEmailLeftover: d. single-lane day includes the leftover cards (strict already did)", ["lm1", "lk1"].every(id => single.includes(id)), true);
+    // e. Clear's set (strict) is unchanged and never includes a leftover card.
+    const clearSet = (chip) => withStudents.filter(l => l.day === "Tuesday" && lessonBelongsToViewedLane(l, viewing(chip), TC, S, W2, TEMP)).map(l => l.id);
+    assert("dayEmailLeftover: e. Clear under Matt's chip = Matt's 2 cards only", clearSet("tmpmatt1"), ["m1", "m2"]);
+    assert("dayEmailLeftover: e. Clear under Rauzah's chip = Rauzah's 9 cards only", clearSet("xov9t1ep"), RAUZAH.map(l => l.id));
+    // Counts the owner will see: 9 + Kate's leftover under Rauzah, 2 + Matt's leftover under Matt.
+    assert("dayEmailLeftover: chip counts (email) with the two leftover cards", [lists(withStudents, "xov9t1ep").length, lists(withStudents, "tmpmatt1").length], [10, 3]);
+    assert("dayEmailLeftover: chip counts (email) without leftover cards are 9 and 2",
+      [lists(withStudents.filter(l => l.id !== "lm1" && l.id !== "lk1"), "xov9t1ep").length, lists(withStudents.filter(l => l.id !== "lm1" && l.id !== "lk1"), "tmpmatt1").length], [9, 2]);
+  } finally {
+    setLaneHistory(savedHistory);
+  }
 }

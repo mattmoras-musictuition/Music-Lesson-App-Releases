@@ -469,6 +469,29 @@ export function lessonShownInViewedLane(lesson, viewedLanes, teacherCoverage, sc
     || lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, weekKey, temporaryLanes);
 }
 
+/**
+ * v2.49.15 — weekly day-header EMAIL rule (Parents / Class Teachers / Staff
+ * recipient lists and the selected-chip attachment). Same as the strict
+ * lessonBelongsToViewedLane, plus: on a 2+ lane day, a lesson left on a lane
+ * that is not one of the day's applicable lanes (archived, ended, another
+ * week's temporary lane) — which the strict filter drops under every chip —
+ * goes under exactly one chip: the first chip whose teacher is the teacher
+ * the card resolves to (getCardTeacherId for the week, the name the card
+ * shows), else the first chip. Email only: Clear and its counts keep the
+ * strict predicate, so a leftover card never becomes clearable.
+ */
+export function lessonInViewedLaneForEmail(lesson, viewedLanes, teacherCoverage, schoolId, weekKey = null, temporaryLanes = [], laneOverrides = null) {
+  if (lessonBelongsToViewedLane(lesson, viewedLanes, teacherCoverage, schoolId, weekKey, temporaryLanes)) return true;
+  if (!lessonOnNonApplicableLane(lesson, teacherCoverage, schoolId, weekKey, temporaryLanes)) return false;
+  // Strict returned false, so the day has 2+ applicable lanes.
+  const dayLanes = getDayLanes(teacherCoverage, schoolId, lesson.day, temporaryLanes, weekKey);
+  const storedLaneId = viewedLanes?.[schoolId]?.[lesson.day];
+  const targetLaneId = (storedLaneId && dayLanes.some(c => c.id === storedLaneId)) ? storedLaneId : dayLanes[0].id;
+  const teacherId = getCardTeacherId(lesson, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
+  const ownerLane = dayLanes.find(l => teacherId && l.teacherId === teacherId) || dayLanes[0];
+  return ownerLane.id === targetLaneId;
+}
+
 // ── Write helpers (cluster 9 — Add/Remove Staff UI) ─────────
 
 /**

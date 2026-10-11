@@ -19,7 +19,7 @@ import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
 import { generateWeeklyTimetable, buildWeeklyAIPrompt, printWeeklyTimetable, classMatchesInterruption } from "../data/weeklyTimetableGenerator";
 import { generateExportHtml, electronPrintToPdf, buildExportFilename } from "../data/exportHelpers";
-import { pickDayAttachment } from "../utils/dayEmailAttachment";
+import { pickDayAttachment, dayHeaderEmailLessons } from "../utils/dayEmailAttachment";
 import { Card, PageTitle, NavButtons, Btn, Tag, EmptyState, FrozenCard, useDragScroll, PAGE_COLORS } from "../components/ui/SharedUI";
 import { ConflictBanner } from "../components/ConflictBanner";
 import { supabase } from "../supabaseClient";
@@ -3981,9 +3981,12 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
             // Parents / Class Teachers email lists.
             // v2.49.2 — visible lessons only: a hidden archived card adds no
             // recipients (parents, class teachers, staff) and no export row.
-            const dayLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey).filter(l => {
-              if (!activeDays.includes(l.day)) return false;
-              return lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, selectedSchool, weekKey, temporaryLanes);
+            // v2.49.15 — email rule (utils/dayEmailAttachment): a lesson left on
+            // a lane that no longer applies goes under its own teacher's chip,
+            // else the first chip. Clear keeps the strict filter.
+            const dayLessons = dayHeaderEmailLessons({
+              lessons: mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey),
+              days: activeDays, schoolId: selectedSchool, weekKey, teacherCoverage, viewedLanes, temporaryLanes, laneOverrides,
             });
             // Collect all parent emails. v2.41.0 — band cards contribute the
             // students attending that session (legacy bands: members[]); see
@@ -4073,7 +4076,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                 // as the grid + email lists). generateExportHtml filters this
                 // down by schoolId + day internally.
                 const exportSourceLessons = mergeCatchupsIntoLessons(visibleLessons(weeklyData?.lessons, students), enrichedCatchups, weekKey);
-                const attach = pickDayAttachment({ lessons: exportSourceLessons, day, schoolId: selectedSchool, weekKey, teacherCoverage, viewedLanes, temporaryLanes, forTeacherName });
+                const attach = pickDayAttachment({ lessons: exportSourceLessons, day, schoolId: selectedSchool, weekKey, teacherCoverage, viewedLanes, temporaryLanes, laneOverrides, forTeacherName });
                 const html = generateExportHtml(
                   attach.lessons,
                   students, schools, teachers,

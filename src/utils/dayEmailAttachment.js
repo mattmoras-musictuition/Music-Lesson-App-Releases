@@ -9,18 +9,27 @@
 //   and X's lessons on a retired or ended slot are included.
 //
 //   Selected chip (everything else): the day's lessons filtered exactly as
-//   the recipient lists are (lessonBelongsToViewedLane with weekKey and the
-//   week's temporary lanes). No teacherName, so the header names the chip's
-//   teacher. On a single-lane day every lesson passes, as before.
+//   the recipient lists are (lessonInViewedLaneForEmail with weekKey, the
+//   week's temporary lanes and lane overrides — v2.49.15: a lesson left on a
+//   lane that no longer applies goes under its own teacher's chip, else the
+//   first chip). No teacherName, so the header names the chip's teacher. On a
+//   single-lane day every lesson passes, as before.
 // ============================================================
 
-import { lessonBelongsToViewedLane } from "./teacherCoverageDB";
+import { lessonInViewedLaneForEmail } from "./teacherCoverageDB";
 
-export function pickDayAttachment({ lessons, day, schoolId, weekKey, teacherCoverage, viewedLanes, temporaryLanes = [], forTeacherName = null }) {
+// v2.49.15 — the lessons behind the weekly day-header email menu for the
+// selected chip(s): the Parents / Class Teachers / Staff recipient lists read
+// this for every active day, and the selected-chip attachment for its day.
+export function dayHeaderEmailLessons({ lessons, days, schoolId, weekKey, teacherCoverage, viewedLanes, temporaryLanes = [], laneOverrides = null }) {
+  return (lessons || []).filter(l => days.includes(l.day)
+    && lessonInViewedLaneForEmail(l, viewedLanes, teacherCoverage, schoolId, weekKey, temporaryLanes, laneOverrides));
+}
+
+export function pickDayAttachment({ lessons, day, schoolId, weekKey, teacherCoverage, viewedLanes, temporaryLanes = [], laneOverrides = null, forTeacherName = null }) {
   if (forTeacherName) return { lessons: lessons || [], teacherName: forTeacherName };
   return {
-    lessons: (lessons || []).filter(l => l.day === day
-      && lessonBelongsToViewedLane(l, viewedLanes, teacherCoverage, schoolId, weekKey, temporaryLanes)),
+    lessons: dayHeaderEmailLessons({ lessons, days: [day], schoolId, weekKey, teacherCoverage, viewedLanes, temporaryLanes, laneOverrides }),
     teacherName: null,
   };
 }

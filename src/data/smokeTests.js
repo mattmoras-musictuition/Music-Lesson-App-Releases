@@ -45,7 +45,7 @@ import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
 import { runTempLaneChipTests, runTempLaneDayPdfTests, runWaitingListPlaceTests } from "./tempLaneChipSmokeTests";
 import { runExportScopeCharacterizationTests, runExportTempLaneTests } from "./exportScopeSmokeTests";
-import { runDayEmailAttachmentTests } from "./dayEmailAttachmentSmokeTests";
+import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -489,6 +489,9 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Day-header email attachment follows the emailed teacher or the chip (v2.49.12) ──
   runDayEmailAttachmentTests(assert);
+
+  // ── Day-header emails include leftover-lane lessons under one chip (v2.49.15) ──
+  runDayEmailLeftoverTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
