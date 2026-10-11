@@ -15,6 +15,8 @@ import { archiveStudentCascade } from "../utils/archiveCascade";
 import { generateWeeklyTimetable } from "./weeklyTimetableGenerator";
 import { buildMttImportForWeekSchool } from "../utils/mttImport";
 import { lweekDates } from "./bandLedgerSmokeTests";
+import { syncEnrolmentsFromInstruments, groupLessonsUnchangedNote } from "../utils/enrolmentSync";
+import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 
 // Term 1 2099 runs to Fri 3 Apr; the break is 4–19 Apr; Term 2 starts Mon 20 Apr.
 export const RM_TERM_BREAKS = [{ id: "tb1", type: "term_break", date: "2099-04-04", endDate: "2099-04-19" }];
@@ -366,4 +368,64 @@ export function runDeleteStudentTests(assert) {
       ALL.some(k => [...r.wtt[k + "|S"].lessons, ...r.wtt[k + "|S"].missed].some(l => !l.isGroup && !l.isBandSession && l.studentId === sid))
         || r.lessons.some(l => !l.isGroup && l.studentId === sid), false);
   }
+}
+
+// ── Assistant edit_student never ends a group enrolment ────────────────────
+// Ben holds a private Piano enrolment and his G3 group Recorder enrolment,
+// which the G3 card is linked to here. The assistant sends a new instrument
+// list, as the tool does: { name } objects (App maps the input to that shape).
+export function runAssistantGroupEnrolmentTests(assert) {
+  const enrolments = [...RM_ENROL, enrol("e_ben_pno", "ben", "Piano")];
+  const call = (names) => {
+    const newInstruments = names.map(name => ({ name }));
+    let n = 0;
+    const out = syncEnrolmentsFromInstruments({ studentId: "ben", newInstruments, enrolments, todayDate: RM_TODAY, generateId: () => "new" + (++n) });
+    return { out, note: groupLessonsUnchangedNote({ studentId: "ben", newInstruments, enrolments }) };
+  };
+
+  // The list drops both Piano and Recorder and adds Guitar.
+  const { out, note } = call(["Guitar"]);
+  assert("assistant: an instrument list change ends only the individual enrolment",
+    out.find(e => e.id === "e_ben_pno").endDate, RM_TODAY);
+  assert("assistant: the group enrolment is the same object, not ended",
+    [out.find(e => e.id === "e_ben_g3") === enrolments.find(e => e.id === "e_ben_g3"), out.find(e => e.id === "e_ben_g3").endDate],
+    [true, undefined]);
+  assert("assistant: every other enrolment is the same object",
+    enrolments.filter(e => e.id !== "e_ben_pno").every(e => out.includes(e)), true);
+  assert("assistant: the new instrument is added as an individual enrolment",
+    out.filter(e => e.id === "new1").map(e => [e.instrument, e.isGroup, e.startDate]), [["Guitar", false, RM_TODAY]]);
+  assert("assistant: the tool result carries the plain-English note",
+    note, " Group lessons were not changed (still enrolled in group Recorder) — to change a child's group lessons, use Students › Groups, or Archive if they are leaving.");
+
+  // Cards: the enrolment change touches no card, and Generate and Import for a
+  // future week still treat the group card (linked to Ben's group enrolment)
+  // as active, with every member.
+  const card = { ...RM_MASTER.find(l => l.id === "M_G3"), enrolmentId: "e_ben_g3" };
+  const lessons = [...RM_MASTER.map(l => (l.id === "M_G3" ? card : l)), scard("M_ben_pno", "ben", "Piano", "e_ben_pno", "S", "Friday", "10:00")];
+  assert("assistant: the group card is still active in a future week",
+    isCardInactiveForWeek(card, makeEnrolmentResolver(out), FUT2), false);
+  const gen = generateWeeklyTimetable(lessons, SCHOOL_S, RM_STUDENTS, TEACHERS, [], [], lweekDates(FUT2), [], [], [], out);
+  const gc = groupCard(gen.lessons, "G3");
+  assert("assistant: Generate for a future week keeps the group card with every member",
+    gc ? gc.studentIds : null, ["ann", "ben", "cat"]);
+  const imp = buildMttImportForWeekSchool({ mtt: { lessons }, schoolId: "S", weekDates: lweekDates(FUT2), existingEntry: null,
+    enrolments: out, dropBands: true, catchups: [] });
+  const ic = groupCard(imp.entry.lessons, "G3");
+  assert("assistant: Import for a future week keeps the group card with every member",
+    ic ? ic.studentIds : null, ["ann", "ben", "cat"]);
+  assert("assistant: Ben's ended private Piano card is not copied into the future week, as before",
+    (gen.lessons || []).some(l => l.studentId === "ben" && l.instrument === "Piano"), false);
+  const genBefore = generateWeeklyTimetable(lessons, SCHOOL_S, RM_STUDENTS, TEACHERS, [], [], lweekDates(FUT2), [], [], [], enrolments);
+  assert("assistant: (control) with Piano still active, Generate does copy it",
+    (genBefore.lessons || []).some(l => l.studentId === "ben" && l.instrument === "Piano"), true);
+
+  // No note when the list keeps the group instrument, or when there is no group enrolment.
+  assert("assistant: no note when the list keeps the group instrument", call(["Recorder", "Guitar"]).note, "");
+  assert("assistant: keeping the group instrument ends only Piano",
+    call(["Recorder"]).out.filter(e => e.endDate).map(e => e.id), ["e_ben_pno"]);
+  assert("assistant: no note for a child with no group enrolment",
+    groupLessonsUnchangedNote({ studentId: "bob", newInstruments: [{ name: "Guitar" }], enrolments }), "");
+  assert("assistant: an individual enrolment alone behaves as before (ended today)",
+    syncEnrolmentsFromInstruments({ studentId: "bob", newInstruments: [], enrolments, todayDate: RM_TODAY })
+      .find(e => e.id === "e_bob_drm").endDate, RM_TODAY);
 }

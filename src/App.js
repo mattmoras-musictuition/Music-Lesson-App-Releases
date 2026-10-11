@@ -25,7 +25,7 @@ import { bandNameForCatchup } from "./data/bandSessionView";
 import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
-import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
+import { syncEnrolmentsFromInstruments, groupLessonsUnchangedNote } from "./utils/enrolmentSync";
 import { deleteStudentCascade, endEnrolmentMaster, endEnrolmentWeekly } from "./utils/studentRemovalCascade";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
@@ -3544,8 +3544,13 @@ export default function MusicTimetableApp() {
           if (k === "schoolId") { const sn = schools.find(s => s.id === v)?.name || v; return `school → ${sn}`; }
           return `${k} → ${v}`;
         }).join(", ");
+        // Group enrolments are never ended by an instrument list (enrolmentSync);
+        // say so when the list left one out.
+        const groupNote = instruments !== undefined
+          ? groupLessonsUnchangedNote({ studentId, newInstruments: patch.instruments, enrolments })
+          : "";
         notify(`Updated student: ${studentName}`, "success");
-        return `Done — updated ${studentName}: ${changes}.`;
+        return `Done — updated ${studentName}: ${changes}.${groupNote}`;
       }
 
       // ── archive_student ───────────────────────────────────────────────────

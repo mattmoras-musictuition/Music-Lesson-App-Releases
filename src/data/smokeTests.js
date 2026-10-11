@@ -38,7 +38,7 @@ import { runTodoEmailKeyTests } from "./todoEmailKeySmokeTests";
 import { runCardInterruptionTests } from "./cardInterruptionSmokeTests";
 import { runMissedTrayLabelTests } from "./missedTrayLabelSmokeTests";
 import { runHiddenCardTests } from "./hiddenCardsSmokeTests";
-import { runStudentRemovalCharacterizationTests, runDeleteStudentTests } from "./studentRemovalSmokeTests";
+import { runStudentRemovalCharacterizationTests, runDeleteStudentTests, runAssistantGroupEnrolmentTests } from "./studentRemovalSmokeTests";
 import { runHiddenCardOutputTests, runExportTypeTests } from "./hiddenCardsOutputSmokeTests";
 import { runWeekDeleteTests } from "./weekDeletesSmokeTests";
 import { runLaneDisplayTests, runAllocateMenuTests } from "./laneDisplaySmokeTests";
@@ -514,6 +514,7 @@ export function runSmokeTests(logErrorFn) {
   runGroupArchiveSyncTests(assert);
   runStudentRemovalCharacterizationTests(assert);
   runDeleteStudentTests(assert);
+  runAssistantGroupEnrolmentTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

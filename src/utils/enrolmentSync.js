@@ -17,6 +17,11 @@
 // Removed instruments get a silent endDate stamp (refinement D —
 // endDate is permanent; drop-and-resume creates a new row, not a
 // resurrected one).
+//
+// Group enrolments are never ended here, whatever the instrument list
+// says: ending one member's group enrolment made Generate and Import drop
+// the whole group card for every member. Group lessons change through
+// Groups or Archive; groupLessonsUnchangedNote lets the assistant say so.
 // ============================================================
 
 import { uid } from "./helpers";
@@ -42,7 +47,7 @@ export function syncEnrolmentsFromInstruments({
   const toAdd = newNames.filter(n => !activeNameSet.has(n));
   const toEndIds = new Set(
     activeForStudent
-      .filter(e => !newNameSet.has(e.instrument))
+      .filter(e => !e.isGroup && !newNameSet.has(e.instrument))
       .map(e => e.id)
   );
 
@@ -65,4 +70,18 @@ export function syncEnrolmentsFromInstruments({
   }));
 
   return [...ended, ...additions];
+}
+
+// The sentence the assistant's edit_student result ends with when the new
+// instrument list left out one of the student's active group enrolments —
+// the ones syncEnrolmentsFromInstruments deliberately did not end. Empty
+// string otherwise.
+export function groupLessonsUnchangedNote({ studentId, newInstruments, enrolments }) {
+  const newNameSet = new Set((newInstruments || []).map(i => (typeof i === "string" ? i : i.name)));
+  const kept = (enrolments || []).filter(e =>
+    e.studentId === studentId && !e.endDate && e.isGroup && !newNameSet.has(e.instrument)
+  );
+  if (kept.length === 0) return "";
+  return ` Group lessons were not changed (still enrolled in group ${kept.map(e => e.instrument).join(", ")}) — `
+    + "to change a child's group lessons, use Students › Groups, or Archive if they are leaving.";
 }
