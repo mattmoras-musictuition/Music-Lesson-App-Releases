@@ -13,7 +13,7 @@ import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
 import { visibleLessons, visibleWeeklyTimetables, dayParentRows } from "../utils/hiddenCards";
-import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip } from "../utils/teacherCopy";
+import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines } from "../utils/teacherCopy";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -6491,15 +6491,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   return cellGhosts.map((g, gi) => {
                                     const color = getInstColor(g.instrument, g.isGroup);
                                     const isGroup = !!g.isGroup;
-                                    let displayName;
-                                    let classSuffix = "";
-                                    if (isGroup) {
-                                      displayName = groupDisplayName(g);
-                                    } else {
-                                      const ghostSt = students.find(s => s.id === g.studentId);
-                                      displayName = getPrefDisplayName(ghostSt?.name || g.studentName || "");
-                                      if (ghostSt?.className) classSuffix = ` · ${ghostSt.className}`;
-                                    }
+                                    const ghostSt = isGroup ? null : students.find(s => s.id === g.studentId);
                                     // Lane-derived teacher name (matches regular-card render at
                                     // line ~4827). The stamped g.teacherName in teacher_actuals JSONB
                                     // can be stale when the day's lane has shifted (e.g. fill-in
@@ -6507,6 +6499,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     // the actuals card consistent with the admin view.
                                     const _gtn = getLiveTeacherName(g, students, teachers, enrolments, teacherCoverage, laneOverrides, weekKey, temporaryLanes);
                                     const teacherFirst = _gtn ? _gtn.split(" ")[0] : "";
+                                    const { line1, line2 } = ghostCardLines(g, { student: ghostSt, prefName: getPrefDisplayName, teacherFirst });
                                     return (
                                       <div
                                         key={`ghost-${g.id || gi}`}
@@ -6530,10 +6523,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                         }}>
                                         <div style={{ fontWeight: 600, color: colors.text }}>
                                           {isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3 }} />}
-                                          {displayName}{classSuffix}
+                                          {line1}
                                         </div>
                                         <div style={{ color: colors.textLight, fontSize: 12 }}>
-                                          {g.instrument || ""}{teacherFirst ? ` · ${teacherFirst}` : ""}
+                                          {line2}
                                         </div>
                                       </div>
                                     );

@@ -10,6 +10,8 @@
 // today from 18:00 Melbourne.
 // ============================================================
 
+import { groupDisplayName } from "./helpers";
+
 // { "<Day>": [teacherId, ...] } for teachers whose stored copy for this
 // week and school holds any lesson or missed entry on that day. Missed
 // entries count: the drain replaces those too.
@@ -44,4 +46,19 @@ export function actualsPillHidden(dayDateStr, todayStr, melbourneHour) {
 export function teacherCopyTooltip(teacherIds, teachers) {
   const names = (teacherIds || []).map(id => (teachers || []).find(t => t.id === id)?.name || "Unknown teacher");
   return `Teacher copy stored by ${names.join(", ")}. At 6pm the drain replaces ${names.length === 1 ? "this teacher's" : "these teachers'"} cards on this day with the stored copy, including any changes made here since it was imported.`;
+}
+
+// Text of a teacher-copy ghost card on the WTT. student = the live student
+// record for a solo ghost (or null); prefName = the screen's preferred-name
+// formatter; teacherFirst = lane-derived teacher first name.
+export function ghostCardLines(g, { student, prefName, teacherFirst }) {
+  let line1;
+  if (g.isGroup) {
+    line1 = groupDisplayName(g);
+  } else {
+    line1 = prefName(student?.name || g.studentName || "");
+    if (student?.className) line1 += ` · ${student.className}`;
+  }
+  const line2 = `${g.instrument || ""}${teacherFirst ? ` · ${teacherFirst}` : ""}`;
+  return { line1, line2 };
 }
