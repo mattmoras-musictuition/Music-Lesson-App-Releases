@@ -135,7 +135,8 @@ function TeacherInvoiceSection({ teacherId, colors, notify }) {
         supabase.from("day_slips").select("*").eq("teacher_id", teacherId).is("invoice_id", null).order("slip_date"),
         supabase.from("interruptions").select("*"),
       ]);
-      setInvoices(invRes.data || []);
+      // Drafts aren't submitted (submitted_at is their creation time) — sent only.
+      setInvoices((invRes.data || []).filter(inv => inv.status !== "draft"));
       setCurrentSlips(slipRes.data || []);
       // Map raw rows to the app-standard shape so endDate (DB: end_date) is
       // populated — _getTermWeekNum reads tb.endDate. Without this the snake_case

@@ -37,6 +37,8 @@ import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, C
 import { ErrorLogPanel, DashboardBackupBar } from "../components/ErrorLogPanel";
 import { ExportDialog } from "../components/ExportDialog";
 import { supabase } from "../supabaseClient";
+import { refreshSentInvoices, subscribeSentInvoices, markInvoicesSeen, requestInvoicesFolder } from "../utils/teacherInvoicesDB";
+import { invoicePeriodLabel } from "../data/teacherInvoices";
 
 // Strip leading Re:/RE:/Fwd:/FW: before prepending a prefix — prevents "Re: Re: ..."
 const reSubject  = s => `Re: ${(s || "").replace(/^(re|fwd?)\s*:\s*/i, "").trim()}`;
@@ -850,6 +852,19 @@ export function Dashboard({ schools, students, enrolments, catchups = [], teache
     }
     loadStaffDocs();
   }, []);
+
+  // Teacher invoices delivered in-app. Seen state is admin_seen_at in the
+  // database (not localStorage). Loaded on mount; the Documents page refreshes
+  // the same shared copy each time it opens — no background poll.
+  const [teacherInvoices, setTeacherInvoices] = React.useState([]);
+  React.useEffect(() => {
+    refreshSentInvoices().catch(err => console.error("Dashboard: failed to load teacher invoices", err));
+    return subscribeSentInvoices(setTeacherInvoices);
+  }, []);
+  const dismissInvoiceAlerts = (ids) => {
+    markInvoicesSeen(ids).catch(err => { if (notify) notify("Couldn't dismiss invoices: " + err.message, "danger"); });
+  };
+  const openInvoicesFolder = () => { requestInvoicesFolder(); onNavigate("resources"); };
 
   // ── Classroom teacher email alert tracking ─────────────────
   // Cache of { emailId: { type, summary } } — persisted to localStorage
@@ -2071,7 +2086,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
     todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
     interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
     seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
-    teacherEmailAlerts, seenTeacherEmailAlertIds,
+    teacherEmailAlerts, seenTeacherEmailAlertIds, teacherInvoices,
   });
   const alertChips = buildAlertChips(alertData, {
     isAlertDismissed, unassignedCount, unschedCount, uninvoicedRows: uninvoicedAlert.rows, unattributedBands,
@@ -2914,7 +2929,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           responseRequiredRed, responseRequiredYellow, responseRequiredBlue, pendingOnly, trialOnly,
           upcomingInterruptions, missedThisWeek, missedPriorSorted, catchupTotal,
           upcomingAbsences, upcomingReminderAlerts,
-          newTeacherNotes, newStaffDocs, newTeacherEmailAlerts,
+          newTeacherNotes, newStaffDocs, newTeacherEmailAlerts, newTeacherInvoices,
         } = alertData;
         // The Alerts-button badge: the number of visible chips (same as the sidebar).
         const totalAlertsWithTeacherNotes = alertChipCount;
@@ -2933,6 +2948,7 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
           if (plan.seen.teacherNotes) dismissAllTeacherNoteAlerts(plan.seen.teacherNotes);
           if (plan.seen.staffDocs) dismissAllStaffDocAlerts(plan.seen.staffDocs);
           if (plan.seen.teacherEmailAlerts) dismissAllTeacherEmailAlerts(plan.seen.teacherEmailAlerts);
+          if (plan.seen.teacherInvoices) dismissInvoiceAlerts(plan.seen.teacherInvoices);
         };
 
         const CATEGORY_FILTERS = [
@@ -3842,6 +3858,38 @@ Write ONLY the reply body. No subject line, no sign-off placeholder, no explanat
                               {single ? `🏫 ${newTeacherEmailAlerts[0].summary}` : `🏫 ${newTeacherEmailAlerts.length} classroom updates`}
                             </span>
                             <span onClick={e => { e.stopPropagation(); dismissAllTeacherEmailAlerts(newTeacherEmailAlerts.map(a => a.emailId)); }} title="Dismiss all" style={{ marginLeft: 2, color: colors.danger, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
+                          </div>
+                        );
+                      })()}
+                      {/* ── New teacher invoices (DB-backed seen state) → Documents > Invoices ── */}
+                      {chipOn("teacher-invoices") && (() => {
+                        const invColor = "#0369A1"; // blue-700, as staff docs
+                        const ids = newTeacherInvoices.map(inv => inv.id);
+                        const chipItems = newTeacherInvoices.map(inv => ({
+                          label: `${teachers.find(t => t.id === inv.teacher_id)?.name || "Unknown teacher"} — ${invoicePeriodLabel(inv.period_start, inv.period_end)}`,
+                          chipColor: invColor,
+                          onSelect: openInvoicesFolder,
+                          dismissKey: inv.id,
+                        }));
+                        return (
+                          <div
+                            onClick={openInvoicesFolder}
+                            onMouseEnter={e => {
+                              clearTimeout(alertDropdownTimer.current);
+                              const r = e.currentTarget.getBoundingClientRect();
+                              openAlertDropdown({
+                                rect: r,
+                                title: "NEW INVOICES",
+                                borderColor: invColor,
+                                items: chipItems,
+                                onDismissAll: () => dismissInvoiceAlerts(ids),
+                                onDismissItem: (key) => dismissInvoiceAlerts([key]),
+                              });
+                            }}
+                            onMouseLeave={() => { alertDropdownTimer.current = setTimeout(() => setAlertDropdown(null), 200); }}
+                            style={{ padding: "3px 10px", background: darkMode ? "rgba(3,105,161,0.15)" : "#E0F2FE", border: `1px solid ${invColor}40`, borderRadius: 20, fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", userSelect: "none" }}>
+                            <span style={{ color: invColor, fontWeight: 700 }}>🧾 {ids.length} new invoice{ids.length !== 1 ? "s" : ""}</span>
+                            <span onClick={e => { e.stopPropagation(); dismissInvoiceAlerts(ids); }} title="Dismiss all" style={{ marginLeft: 2, color: invColor, opacity: 0.5, cursor: "pointer", display: "inline-flex", alignItems: "center", lineHeight: 1 }}><X size={10} /></span>
                           </div>
                         );
                       })()}
