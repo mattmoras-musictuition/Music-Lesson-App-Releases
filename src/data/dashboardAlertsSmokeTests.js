@@ -42,7 +42,9 @@ export function ownerCase(overrides = {}) {
     interruptions: [], weeklyTimetables: {}, sortedReminders: [],
     offerableTodayEntries: [{ studentId: "c1", studentName: "C", instrument: "Guitar" }],
     seenTeacherNoteIds: new Set(), staffUploadedDocs: [], seenStaffDocIds: new Set(),
+    // Legacy inputs (pre-v2.41.1); the in-app invoices chip reads teacherInvoices.
     submittedInvoices: [{ id: "inv1" }, { id: "inv2" }], seenInvoiceIds: new Set(),
+    teacherInvoices: [],
     teacherEmailAlerts: {}, seenTeacherEmailAlertIds: new Set(),
     unassignedCount: 0, unschedCount: 0, unattributedBands: [],
     uninvoicedRows: [{ studentId: "u1" }],

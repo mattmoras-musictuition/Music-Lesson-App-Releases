@@ -23,6 +23,7 @@ import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTe
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
 import { runWeeklyPresenceTests } from "./weeklyPresenceSmokeTests";
 import { runDashboardAlertTests } from "./dashboardAlertsSmokeTests";
+import { runTeacherInvoiceTests, runTeacherInvoiceChipTests } from "./teacherInvoicesSmokeTests";
 import { runBandsSyncCharacterizationTests } from "./bandsSyncSmokeTests";
 import { runBandLedgerCharacterizationTests, runBandLedgerDisplacementTests, runBandLedgerSaveSweepTests, runBandLedgerRestoreTests } from "./bandLedgerSmokeTests";
 import { runBandAttendanceCharacterizationTests, runBandAttendanceStampTests, runBandAttendanceSuggestionTests, runBandAttendanceDashboardTests, runBandAttendanceMissEditTests } from "./bandAttendanceSmokeTests";
@@ -370,6 +371,10 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Dashboard alerts (v2.41.1) ──
   runDashboardAlertTests(assert);
+
+  // ── Teacher invoices delivered in-app: Invoices folder rows + Dashboard chip ──
+  runTeacherInvoiceTests(assert);
+  runTeacherInvoiceChipTests(assert);
 
   // ── Bands sync (v2.41.2) ──
   runBandsSyncCharacterizationTests(assert);

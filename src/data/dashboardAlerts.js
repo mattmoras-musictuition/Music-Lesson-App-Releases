@@ -18,6 +18,7 @@ import { getMissedEntries, getInformedAbsencesForWeek } from "../utils/tallyDeri
 import { computeTermWeekNum } from "../utils/tallyHelpers";
 import { toLocalDateStr } from "../utils/helpers";
 import { unattributedAlertDismissKey } from "./bandSessionView";
+import { unseenInvoices } from "./teacherInvoices";
 
 /**
  * Every data set the alerts banner renders chips from.
@@ -27,7 +28,9 @@ import { unattributedAlertDismissKey } from "./bandSessionView";
  *   inboxEmails, emailNoReplyOverrides (Set), emailSummaries, sentLoaded,
  *   sentEmails, interruptions, weeklyTimetables, offerableTodayEntries,
  *   sortedReminders, seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
- *   teacherEmailAlerts, seenTeacherEmailAlertIds.
+ *   teacherEmailAlerts, seenTeacherEmailAlertIds, teacherInvoices (sent
+ *   teacher_invoices rows from teacherInvoicesDB; seen state is the row's
+ *   admin_seen_at, so there is no local seen set).
  */
 export function deriveAlertData(i) {
   const {
@@ -35,7 +38,7 @@ export function deriveAlertData(i) {
     todayStr, monday, inboxEmails, emailNoReplyOverrides, emailSummaries, sentLoaded, sentEmails,
     interruptions, weeklyTimetables, offerableTodayEntries, sortedReminders,
     seenTeacherNoteIds, staffUploadedDocs, seenStaffDocIds,
-    teacherEmailAlerts, seenTeacherEmailAlertIds,
+    teacherEmailAlerts, seenTeacherEmailAlertIds, teacherInvoices,
   } = i;
   // Alerts data
   const unassignedStudents = students.filter(s => s.status === "active" && studentHasUnplacedEnrolment(s));
@@ -151,6 +154,8 @@ export function deriveAlertData(i) {
   const newTeacherEmailAlerts = Object.values(teacherEmailAlerts)
     .filter(a => a.type !== "other" && a.summary && !seenTeacherEmailAlertIds.has(a.emailId));
   const hasTeacherEmailAlerts = newTeacherEmailAlerts.length > 0;
+  // Teacher invoices delivered in-app, not yet opened or dismissed (DB-backed)
+  const newTeacherInvoices = unseenInvoices(teacherInvoices);
 
   return {
     unassignedStudents, unassignedGroupStudents, unassignedGroupCount, unschedEntries, incompleteStudents,
@@ -158,7 +163,7 @@ export function deriveAlertData(i) {
     upcomingInterruptions, currentWeekKey, nextWeekKey, missedThisWeek, missedPriorSorted, catchupTotal,
     catchupTooltipLines, upcomingAbsences, upcomingReminderAlerts,
     newTeacherNotes, hasNewTeacherNotes, newStaffDocs, hasNewStaffDocs,
-    newTeacherEmailAlerts, hasTeacherEmailAlerts,
+    newTeacherEmailAlerts, hasTeacherEmailAlerts, newTeacherInvoices,
   };
 }
 
@@ -204,7 +209,8 @@ const intrKeys = (intrs) => intrs.map(i => `alert-interruption-${i.id}`);
  *   dismissKeys  alertDismissals keys the chip's X / Dismiss-all write;
  *   seen         { set, ids } for "new X" chips, which are hidden by marking
  *                ids seen instead (set ∈ teacherNotes | staffDocs |
- *                teacherEmailAlerts).
+ *                teacherEmailAlerts | teacherInvoices — the last is written
+ *                to teacher_invoices.admin_seen_at, not a local set).
  * Interruptions contribute one entry per chip actually rendered.
  *
  * @param {Object} d    deriveAlertData output.
@@ -255,6 +261,8 @@ export function buildAlertChips(d, ctx) {
     seenChip("teacher-notes", "teacherNotes", d.newTeacherNotes.map(n => n.id)),
     seenChip("staff-docs", "staffDocs", d.newStaffDocs.map(doc => doc.id)),
     seenChip("teacher-email-alerts", "teacherEmailAlerts", d.newTeacherEmailAlerts.map(a => a.emailId)),
+    // Last, where the v2.41.1-removed "invoices received" chip sat.
+    seenChip("teacher-invoices", "teacherInvoices", (d.newTeacherInvoices || []).map(inv => inv.id)),
   );
   return chips;
 }
