@@ -300,31 +300,32 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       let parsedEntries = [];
       const toBase64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f); });
       const existingDesc = existingEntries.map(e => e.className + " " + e.day + " " + e.start + "-" + e.end + " " + e.subject).join("; ");
-      const updatePrompt = "This is an UPDATED specialist class timetable for " + (school ? school.name : "a school") + ". The existing timetable has these entries: " + existingDesc + ". This update likely has only a few changes from the existing timetable. Focus on identifying what is NEW, what has been REMOVED, and what has CHANGED (different time/day/subject for the same class). Extract ALL entries from this document as before." + (updateInstructions ? " Additional instructions: " + updateInstructions : "") + " For each entry return: class, day, start (HH:MM 24h), end (HH:MM 24h), subject. Respond ONLY with a JSON array, no other text, no markdown backticks.";
+      const updateContext = "This is an UPDATED specialist class timetable for " + (school ? school.name : "a school") + ". The existing timetable has these entries: " + existingDesc + ". This update likely has only a few changes from the existing timetable. Focus on identifying what is NEW, what has been REMOVED, and what has CHANGED (different time/day/subject for the same class). Extract ALL entries from this document as before.";
+      const updatePrompt = updateContext + (updateInstructions ? " Additional instructions: " + updateInstructions : "") + " For each entry return: class, day, start (HH:MM 24h), end (HH:MM 24h), subject. Respond ONLY with a JSON array, no other text, no markdown backticks.";
+      let request;
       if (isPdf) {
+        // Same request as Import (measured grid block, prompt, 16,000 cap),
+        // with the existing entries as context first.
         const base64 = await toBase64(file);
-        const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 4000,
-            messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: updatePrompt }] }] })
-        });
-        const data = await resp.json();
-        const text = (data.content || []).map(c => c.type === "text" ? c.text : "").join("");
-        parsedEntries = JSON.parse(text.replace(/```json|```/g, "").trim());
+        const grid = await readPdfGridCards(await file.arrayBuffer());
+        request = buildSpecialistPdfRequest({ base64, gridCards: grid && grid.cards, instructions: updateInstructions, preamble: updateContext });
       } else {
         const SheetJS = window.XLSX;
         const ab = await file.arrayBuffer();
         const wb = SheetJS.read(ab); const ws = wb.Sheets[wb.SheetNames[0]];
         const rawData = SheetJS.utils.sheet_to_json(ws);
-        const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 4000,
-            messages: [{ role: "user", content: updatePrompt + " Data: " + JSON.stringify(rawData) }] })
-        });
-        const data = await resp.json();
-        const text = (data.content || []).map(c => c.type === "text" ? c.text : "").join("");
-        parsedEntries = JSON.parse(text.replace(/```json|```/g, "").trim());
+        request = { method: "POST", headers: getAnthropicHeaders(),
+          body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 16000,
+            messages: [{ role: "user", content: updatePrompt + " Data: " + JSON.stringify(rawData) }] }) };
       }
+      const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", request);
+      if (!resp.ok) {
+        let errBody = ""; try { errBody = await resp.text(); } catch(e) {}
+        throw new Error(`AI service returned error ${resp.status}: ${errBody.substring(0, 200)}`);
+      }
+      const { entries, truncated } = parseSpecialistReply(await resp.json());
+      if (truncated) notify(`Response was truncated — recovered ${entries.length} entries. Some may be missing from the end.`, "warning");
+      parsedEntries = entries;
       if (!Array.isArray(parsedEntries)) throw new Error("Expected JSON array");
       const newEntries = parsedEntries.map(e => ({
         id: uid(), schoolId, className: (e.class || "").trim(),
@@ -364,7 +365,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       setDiffPreview({ schoolId, schoolName: school?.name || "", added: addedFinal, removed: removedFinal, changed });
       setUpdateSchoolId(null);
     } catch(err) {
-      setImportError("Could not parse update file: " + err.message);
+      setImportError({ message: "Could not parse update file: " + err.message, filename: file.name, details: String(err) });
     }
     setParsing(false);
   };
@@ -665,7 +666,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
           </Card>
         ) : (
           <Card>
-            {importError && <div style={{ marginBottom: 12, padding: "10px 14px", background: colors.redLight, border: "1px solid #FCA5A5", borderRadius: 8, fontSize: 13, color: colors.danger }}>{importError}</div>}
+            {importError && <div style={{ marginBottom: 12, padding: "10px 14px", background: colors.redLight, border: "1px solid #FCA5A5", borderRadius: 8, fontSize: 13, color: colors.danger }}>{typeof importError === "string" ? importError : importError.message}</div>}
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: colors.textLight, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Optional instructions</label>
               <textarea value={updateInstructions} onChange={e => setUpdateInstructions(e.target.value)}

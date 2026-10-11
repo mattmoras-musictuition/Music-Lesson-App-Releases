@@ -52,7 +52,7 @@ import { runFrozenStampGeneratorTests } from "./frozenStampSmokeTests";
 import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
-import { runPdfGridTextTests, runSpecialistPdfRequestTests } from "./pdfGridTextSmokeTests";
+import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -520,6 +520,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Specialist PDF import: card times measured from a time grid (v2.49.20) ──
   runPdfGridTextTests(assert);
   runSpecialistPdfRequestTests(assert);
+  runSpecialistUpdateRequestTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

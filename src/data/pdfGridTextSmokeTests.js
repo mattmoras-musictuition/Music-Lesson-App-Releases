@@ -10,6 +10,7 @@ import {
   parseClockLabel, parseDayHeading, collectFilledRects, extractGridCards,
   formatGridCardsBlock, buildSpecialistPrompt, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields,
 } from "../utils/pdfGridText";
+import { getAnthropicHeaders } from "../utils/api";
 
 const K = 485 / 330; // pt per minute (9:00 → 2:30 spans 485pt)
 const LABEL_H = 6;
@@ -237,4 +238,24 @@ export function runSpecialistPdfRequestTests(assert) {
     { className: "6A", day: "Monday", start: "", end: "", subject: "French" },
     { className: "5L", day: "Friday", start: "", end: "", subject: "PE" },
   ]);
+}
+
+// Update path (v2.49.20): it now builds its PDF request with the shared
+// builder, so it carries the API-key headers (it used to send Content-Type
+// only), the 16,000 cap, the measured block and the Import prompt, with
+// the existing entries first. Headers are compared with getAnthropicHeaders()
+// rather than set here, so the running app's key is never touched.
+export function runSpecialistUpdateRequestTests(assert) {
+  const cards = [{ page: 1, day: "Friday", start: "11:30", end: "12:00", text: "Recorder 1I Mia Pisano MAIN10 Acc" }];
+  const req = buildSpecialistPdfRequest({ base64: "QUJD", gridCards: cards, instructions: "Week A only", preamble: "This is an UPDATED specialist class timetable for EBPS." });
+  assert("update req: POST", req.method, "POST");
+  assert("update req: API-key headers", req.headers, getAnthropicHeaders());
+  assert("update req: JSON content type", req.headers["Content-Type"], "application/json");
+  const body = JSON.parse(req.body);
+  assert("update req: 16,000 cap", body.max_tokens, 16000);
+  assert("update req: measured block sent", body.messages[0].content[1].text.split("\n")[2], "1 | Friday | 11:30 | 12:00 | Recorder 1I Mia Pisano MAIN10 Acc");
+  const prompt = body.messages[0].content[2].text;
+  assert("update req: existing-entries context first", prompt.startsWith("This is an UPDATED specialist class timetable for EBPS.\n\nThis PDF contains"), true);
+  assert("update req: same rules as Import", prompt.includes("- Never work out times from the order of the text"), true);
+  assert("update req: instructions block", prompt.endsWith("---\nWeek A only\n---"), true);
 }
