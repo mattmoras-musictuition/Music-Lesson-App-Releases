@@ -8,7 +8,7 @@
 import React from "react";
 import { DAYS } from "../constants";
 import { useTheme } from "../context/ThemeContext";
-import { getParentEmails, openCompose, openGmailSequential, getLiveTeacherName, getSchoolAcronym, staffContactEmail } from "../utils/helpers";
+import { getParentEmails, openCompose, openGmailSequential, getSchoolAcronym, staffContactEmail } from "../utils/helpers";
 import { anthropicFetch } from "../utils/api";
 import {
   generateExportHtml, generateTeacherSchedulesHtml,
@@ -16,6 +16,7 @@ import {
   electronPrintToPdf, buildExportFilename, EXPORT_TYPES
 } from "../data/exportHelpers";
 import { visibleLessons } from "../utils/hiddenCards";
+import { exportWeekContext, buildExportScope } from "../utils/exportScope";
 // Session 96: upload exported timetables to the private documents bucket and
 // register them as Documents so Matt can pick them up later when emailing.
 // Shared with the concert program export since Concerts cluster 5.
@@ -103,29 +104,20 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
 
   // Cluster 12a: WTT exports pass real laneOverrides + weekKey for override-aware
   // resolution; MTT exports pass null/null (lane-only).
-  const exportWeekKey = selectedWeek ? selectedWeek.weekKey : null;
-  const exportLaneOverrides = selectedWeek ? laneOverrides : null;
   // Cluster 6b: a week export passes that week's missed[] so band rows list
   // only students in the session. Master exports pass nothing (unchanged).
-  const exportMissed = selectedWeek ? selectedWeek.missed : undefined;
-  const resolveLessonTeacherName = (l) => getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, exportLaneOverrides, exportWeekKey) || "";
+  // v2.49.15 — week context + teacher scope come from utils/exportScope.js.
+  const weekContext = exportWeekContext(selectedWeek, laneOverrides);
+  const exportWeekKey = weekContext.weekKey;
+  const exportLaneOverrides = weekContext.laneOverrides;
+  const exportMissed = weekContext.missed;
 
   const schoolIds = [...new Set(sourceLessons.map(l => l.schoolId))];
   const filteredSchools = schools.filter(s => schoolIds.includes(s.id));
-  const scopedLessons = schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons;
-  // Cluster 12a: lane-resolved name list rather than stamped lesson.teacherName.
-  const teacherNames = [...new Set(scopedLessons.map(resolveLessonTeacherName).filter(n => n))].sort();
-  const classNames = [...new Set(students.filter(s => scopedLessons.some(l => l.studentId === s.id) && s.className).map(s => s.className))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-  const previewLessons = scopedLessons.filter(l => {
-    if (teacherName && resolveLessonTeacherName(l) !== teacherName) return false;
-    if (className) { const sids = new Set(students.filter(s => s.className === className).map(s => s.id)); if (!sids.has(l.studentId)) return false; }
-    if (day.size > 0 && !day.has(l.day)) return false;
-    return true;
+  const { teacherNames, classNames, previewLessons, scheduleTeachers, scheduleTeachersFiltered } = buildExportScope({
+    sourceLessons, students, teachers, enrolments, teacherCoverage, weekContext,
+    schoolId, teacherName, className, day,
   });
-
-  const scheduleTeachers = [...new Set((schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons).map(resolveLessonTeacherName).filter(n => n))].sort();
-  const scheduleTeachersFiltered = teacherName ? scheduleTeachers.filter(t => t === teacherName) : scheduleTeachers;
 
   const getPreviewLabel = () => {
     if (exportType === "teacher_schedules") return `${scheduleTeachersFiltered.length} teacher schedule${scheduleTeachersFiltered.length !== 1 ? "s" : ""}`;
