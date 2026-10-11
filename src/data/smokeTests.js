@@ -17,6 +17,7 @@ import {
 import { isHiddenBehindBandCard, mergeCatchupsIntoLessons } from "./catchupsDerive";
 import { runLegacyBandTallyTests, runMemberStateTallyTests } from "./tallyBandSmokeTests";
 import { runCatchupScopeTests } from "./catchupScopeSmokeTests";
+import { runGroupArchiveCharacterizationTests, runGroupArchiveThreeMemberTests, runGroupArchiveTwoMemberTests, runGroupArchiveEdgeTests } from "./groupArchiveSmokeTests";
 import { runMttImportCharacterizationTests, runCleanImportPlanTests, runCleanImportWiringTests, runImportMissedLineTests } from "./mttImportSmokeTests";
 import { runBandSessionViewTests, runBandCardStatusTests, runUnattributedAlertTests, runParentEmailStudentTests } from "./bandSessionViewSmokeTests";
 import { runBandDisplayCharacterizationTests, runBandDisplaySessionTests } from "./bandDisplaySmokeTests";
@@ -498,6 +499,12 @@ export function runSmokeTests(logErrorFn) {
   // ── Frozen-teacher stamp shared by Generate and Import from MTT (v2.49.16) ──
   runFrozenStampGeneratorTests(assert);
   runImportFrozenStampTests(assert);
+
+  // ── Archiving a group member keeps the group for the others ──
+  runGroupArchiveCharacterizationTests(assert);
+  runGroupArchiveThreeMemberTests(assert);
+  runGroupArchiveTwoMemberTests(assert);
+  runGroupArchiveEdgeTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
