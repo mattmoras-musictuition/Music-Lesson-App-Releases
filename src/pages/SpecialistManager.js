@@ -10,12 +10,13 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCu
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
+import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry } from "../utils/specialistImport";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 // Shown when the grid reader failed (not when the PDF simply isn't a grid).
 const GRID_FAILED_MESSAGE = "Card positions could not be measured from this timetable, so the times below may be unreliable — check them before importing.";
 
-export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
+export function SpecialistManager({ specialists, setSpecialists, schools, students = [], notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
   const { colors } = useTheme();
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(null);
@@ -179,13 +180,13 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     if (truncated) notify(`The AI ran out of room before finishing — kept ${rows.length} complete entries. Some may be missing from the end.`, "warning");
     if (measured && (measured.unknown || measured.duplicate)) notify(`Ignored ${measured.unknown + measured.duplicate} card reference(s) in the AI reply that didn't match a measured card.`, "warning");
 
-    setPreview({
+    setPreview(withClassMapping({
       entries: rows.map(f => ({ id: uid(), schoolId: importSchoolId, ...f, subject: normalizeSubject(f.subject), notes: "" })),
       schoolId: importSchoolId,
       filename: file.name,
       measured,
       gridError
-    });
+    }));
   };
   const handleSpreadsheetImport = async (file) => {
     const rawData = await new Promise((resolve) => {
@@ -241,11 +242,11 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       try {
         const entries = JSON.parse(cleaned);
         if (Array.isArray(entries) && entries.length > 0) {
-          setPreview({
+          setPreview(withClassMapping({
             entries: entries.map(e => ({ id: uid(), schoolId: importSchoolId, className: e.class || "", day: e.day || "", start: e.start || "", end: e.end || "", subject: normalizeSubject(e.subject || ""), notes: "" })),
             schoolId: importSchoolId,
             filename: file.name
-          });
+          }));
           return;
         }
       } catch(e) { /* fall through to direct mapping */ }
@@ -265,13 +266,21 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     }
 
     if (imported.length === 0) { notify("No valid entries found. Try adding instructions to help interpret the data.", "warning"); return; }
-    setPreview({ entries: imported, schoolId: importSchoolId, filename: file.name });
+    setPreview(withClassMapping({ entries: imported, schoolId: importSchoolId, filename: file.name }));
   };
 
   // ---- PREVIEW HELPERS ----
+  // Map imported class codes onto the school's active students' class names
+  // (specialist checks match class names exactly). Review shows the result.
+  const withClassMapping = (p) => {
+    const known = knownClassNames(students, p.schoolId);
+    const m = mapImportedClasses(p.entries, known);
+    return { ...p, entries: m.rows, mapping: m.mapping, unmatched: m.unmatched, knownClasses: known };
+  };
+
   const confirmImport = () => {
     if (!preview) return;
-    const valid = preview.entries.filter(e => e.schoolId && e.className && e.day && e.subject);
+    const valid = preview.entries.filter(e => e.schoolId && e.className && e.day && e.subject).map(toSpecialistEntry);
     if (valid.length === 0) { notify("No valid entries. Make sure a school is selected.", "warning"); return; }
     setSpecialists(prev => [...prev, ...valid]);
     notify(`Imported ${valid.length} specialist entries from ${preview.filename}`);
@@ -320,11 +329,13 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
         parsedEntries = entries;
       }
       if (!Array.isArray(parsedEntries)) throw new Error("Expected JSON array");
-      const newEntries = parsedEntries.map(e => ({
+      const extractedEntries = parsedEntries.map(e => ({
         id: uid(), schoolId, className: (e.class || "").trim(),
         day: (e.day || "").trim(), start: (e.start || "").trim(),
         end: (e.end || "").trim(), subject: normalizeSubject((e.subject || "").trim()), notes: ""
       })).filter(e => e.className && e.day && e.subject);
+      // Same class-name mapping as Import, before comparing with existing entries.
+      const newEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
 
       // Build diff: compare new vs existing
       const key = e => e.className + "|" + e.day + "|" + e.start + "|" + e.end + "|" + e.subject;
@@ -389,11 +400,13 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       if (!arrMatch) throw new Error("No JSON array found in response");
       const parsedEntries = JSON.parse(arrMatch[0]);
       if (!Array.isArray(parsedEntries)) throw new Error("Expected JSON array");
-      const newEntries = parsedEntries.map(e => ({
+      const extractedEntries = parsedEntries.map(e => ({
         id: uid(), schoolId, className: (e.class || "").trim(),
         day: (e.day || "").trim(), start: (e.start || "").trim(),
         end: (e.end || "").trim(), subject: normalizeSubject((e.subject || "").trim()), notes: ""
       })).filter(e => e.className && e.day && e.subject);
+      // Same class-name mapping as Import, before comparing with existing entries.
+      const newEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
       const eKey = e => e.className + "|" + e.day + "|" + e.start + "|" + e.end + "|" + e.subject;
       const existKeys = new Set(existingEntries.map(eKey));
       const newKeys = new Set(newEntries.map(eKey));
@@ -456,7 +469,8 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
   };
 
   const updateAllPreviewSchool = (schoolId) => {
-    setPreview(prev => ({ ...prev, schoolId, entries: prev.entries.map(e => ({ ...e, schoolId })) }));
+    // Re-map every row's imported class code against the new school's names.
+    setPreview(prev => withClassMapping({ ...prev, schoolId, entries: prev.entries.map(e => ({ ...e, schoolId })) }));
   };
 
   // ---- MANUAL ENTRY ----
@@ -832,6 +846,23 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
           {!preview.schoolId && <div style={{ fontSize: 12, color: colors.danger, marginTop: 8 }}>⚠ Please select a school before importing</div>}
         </Card>
 
+        {((preview.mapping || []).length > 0 || (preview.unmatched || []).length > 0) && (
+          <Card style={{ marginBottom: 16, fontSize: 13 }}>
+            {(preview.mapping || []).length > 0 && (
+              <div style={{ marginBottom: (preview.unmatched || []).length > 0 ? 8 : 0 }}>
+                <span style={{ fontWeight: 600, color: colors.textLight }}>Class names matched to this school's students: </span>
+                {preview.mapping.map(m => <span key={m.from} style={{ display: "inline-block", marginRight: 12, whiteSpace: "nowrap" }}>{m.from} → {m.to}</span>)}
+              </div>
+            )}
+            {(preview.unmatched || []).length > 0 && (
+              <div style={{ color: "#B45309" }}>
+                <span style={{ fontWeight: 600 }}>No matching student class: </span>{preview.unmatched.join(", ")}
+                <span style={{ color: colors.textMuted }}> — outlined in amber below; pick a class or type one. They can still be imported.</span>
+              </div>
+            )}
+          </Card>
+        )}
+
         <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
           <div style={{ maxHeight: 500, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -846,8 +877,23 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
                 {preview.entries.map((entry, i) => (
                   <tr key={entry.id} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                     <td style={{ padding: "6px 12px" }}>
-                      <input value={entry.className} onChange={e => updatePreviewEntry(i, "className", e.target.value)}
-                        style={{ width: "100%", padding: "4px 8px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
+                      {(() => {
+                        const unmatched = isUnmatchedClass(entry.className, preview.knownClasses);
+                        return (
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <input value={entry.className} onChange={e => updatePreviewEntry(i, "className", e.target.value)}
+                              title={unmatched ? "No active student at this school has this class name" : undefined}
+                              style={{ width: "100%", minWidth: 60, padding: "4px 8px", border: unmatched ? "2px solid #F59E0B" : `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
+                            {unmatched && (
+                              <select value="" onChange={e => { if (e.target.value) updatePreviewEntry(i, "className", e.target.value); }}
+                                style={{ padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 12, fontFamily: "inherit", maxWidth: 110 }}>
+                                <option value="">Pick…</option>
+                                {preview.knownClasses.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: "6px 12px" }}>
                       <select value={entry.day} onChange={e => updatePreviewEntry(i, "day", e.target.value)}
