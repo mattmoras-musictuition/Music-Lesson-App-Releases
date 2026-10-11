@@ -9,8 +9,11 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
-import { readPdfGridCards, buildSpecialistPdfRequest, parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
+import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
+
+// Shown when the grid reader failed (not when the PDF simply isn't a grid).
+const GRID_FAILED_MESSAGE = "Card positions could not be measured from this timetable, so the times below may be unreliable — check them before importing.";
 
 export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
   const { colors } = useTheme();
@@ -169,9 +172,10 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     });
     // Time-grid PDFs: the app measures each card's day and times and the AI
     // only names the classes and subject. Other PDFs go to the AI whole.
-    const { rows, truncated, measured } = await extractSpecialistRows({
+    const { rows, truncated, measured, gridError } = await extractSpecialistRows({
       pdfBytes: await file.arrayBuffer(), base64: base64Data, instructions: importInstructions,
     });
+    if (gridError) notify(GRID_FAILED_MESSAGE, "warning");
     if (truncated) notify(`The AI ran out of room before finishing — kept ${rows.length} complete entries. Some may be missing from the end.`, "warning");
     if (measured && (measured.unknown || measured.duplicate)) notify(`Ignored ${measured.unknown + measured.duplicate} card reference(s) in the AI reply that didn't match a measured card.`, "warning");
 
@@ -179,7 +183,8 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       entries: rows.map(f => ({ id: uid(), schoolId: importSchoolId, ...f, subject: normalizeSubject(f.subject), notes: "" })),
       schoolId: importSchoolId,
       filename: file.name,
-      measured
+      measured,
+      gridError
     });
   };
   const handleSpreadsheetImport = async (file) => {
@@ -290,30 +295,30 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       const existingDesc = existingEntries.map(e => e.className + " " + e.day + " " + e.start + "-" + e.end + " " + e.subject).join("; ");
       const updateContext = "This is an UPDATED specialist class timetable for " + (school ? school.name : "a school") + ". The existing timetable has these entries: " + existingDesc + ". This update likely has only a few changes from the existing timetable. Focus on identifying what is NEW, what has been REMOVED, and what has CHANGED (different time/day/subject for the same class). Extract ALL entries from this document as before.";
       const updatePrompt = updateContext + (updateInstructions ? " Additional instructions: " + updateInstructions : "") + " For each entry return: class, day, start (HH:MM 24h), end (HH:MM 24h), subject. Respond ONLY with a JSON array, no other text, no markdown backticks.";
-      let request;
       if (isPdf) {
-        // Same request as Import (measured grid block, prompt, 16,000 cap),
-        // with the existing entries as context first.
+        // Same extraction as Import (measured grid or native PDF), with the
+        // existing entries as context first on the native path.
         const base64 = await toBase64(file);
-        const grid = await readPdfGridCards(await file.arrayBuffer());
-        request = buildSpecialistPdfRequest({ base64, gridCards: grid && grid.cards, instructions: updateInstructions, preamble: updateContext });
+        const result = await extractSpecialistRows({ pdfBytes: await file.arrayBuffer(), base64, instructions: updateInstructions, preamble: updateContext });
+        if (result.gridError) notify(GRID_FAILED_MESSAGE, "warning");
+        if (result.truncated) notify(`The AI ran out of room before finishing — kept ${result.rows.length} complete entries. Some may be missing from the end.`, "warning");
+        parsedEntries = result.rows.map(r => ({ class: r.className, day: r.day, start: r.start, end: r.end, subject: r.subject }));
       } else {
         const SheetJS = window.XLSX;
         const ab = await file.arrayBuffer();
         const wb = SheetJS.read(ab); const ws = wb.Sheets[wb.SheetNames[0]];
         const rawData = SheetJS.utils.sheet_to_json(ws);
-        request = { method: "POST", headers: getAnthropicHeaders(),
+        const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: getAnthropicHeaders(),
           body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 16000,
-            messages: [{ role: "user", content: updatePrompt + " Data: " + JSON.stringify(rawData) }] }) };
+            messages: [{ role: "user", content: updatePrompt + " Data: " + JSON.stringify(rawData) }] }) });
+        if (!resp.ok) {
+          let errBody = ""; try { errBody = await resp.text(); } catch(e) {}
+          throw new Error(`AI service returned error ${resp.status}: ${errBody.substring(0, 200)}`);
+        }
+        const { entries, truncated } = parseSpecialistReply(await resp.json());
+        if (truncated) notify(`The AI ran out of room before finishing — kept ${entries.length} complete entries. Some may be missing from the end.`, "warning");
+        parsedEntries = entries;
       }
-      const resp = await anthropicFetch("https://api.anthropic.com/v1/messages", request);
-      if (!resp.ok) {
-        let errBody = ""; try { errBody = await resp.text(); } catch(e) {}
-        throw new Error(`AI service returned error ${resp.status}: ${errBody.substring(0, 200)}`);
-      }
-      const { entries, truncated } = parseSpecialistReply(await resp.json());
-      if (truncated) notify(`Response was truncated — recovered ${entries.length} entries. Some may be missing from the end.`, "warning");
-      parsedEntries = entries;
       if (!Array.isArray(parsedEntries)) throw new Error("Expected JSON array");
       const newEntries = parsedEntries.map(e => ({
         id: uid(), schoolId, className: (e.class || "").trim(),
@@ -812,6 +817,8 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
     return (
       <div>
         <PageTitle subtitle={`Extracted ${preview.entries.length} entries from ${preview.filename} — review and edit before importing`}>Review Import</PageTitle>
+        {preview.measured && <div style={{ marginTop: -8, marginBottom: 12, fontSize: 13, color: colors.textMuted }}>Times measured from the timetable grid ({preview.measured.cards} cards placed, {preview.measured.entries} entries)</div>}
+        {preview.gridError && <div style={{ marginTop: -8, marginBottom: 12, fontSize: 13, color: colors.danger }}>{GRID_FAILED_MESSAGE}</div>}
 
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>

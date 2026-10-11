@@ -10,7 +10,7 @@ import {
   parseClockLabel, parseDayHeading, collectFilledRects, extractGridCards,
   buildSpecialistPrompt, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields,
   formatCardList, buildGridPrompt, buildSpecialistGridRequest, parseStructuredReply, joinGridReply, extractSpecialistRows,
-  ENTRY_SCHEMA, CARD_SCHEMA, OUT_OF_ROOM_MESSAGE,
+  ENTRY_SCHEMA, CARD_SCHEMA, OUT_OF_ROOM_MESSAGE, readPdfGridCards,
 } from "../utils/pdfGridText";
 import { getAnthropicHeaders } from "../utils/api";
 
@@ -311,4 +311,42 @@ export function runSpecialistUpdateRequestTests(assert) {
   const prompt = body.messages[0].content[1].text;
   assert("update req: existing-entries context first", prompt.startsWith("This is an UPDATED specialist class timetable for EBPS.\n\nThis PDF contains"), true);
   assert("update req: instructions block", prompt.endsWith("---\nWeek A only\n---"), true);
+}
+
+// Non-grid PDFs and grid-read failures (v2.49.21). The native prompt has no
+// measured-block rules; "no grid" is silent, a failed read is reported.
+export function runSpecialistNonGridTests(assert, assertAsync) {
+  const p = buildSpecialistPrompt();
+  assert("native prompt: no block rules", /MEASURED|card positions|order of the text/i.test(p), false);
+  assert("native prompt: printed times first", p.includes("- Times printed in the document take priority"), true);
+  assert("native prompt: read layout when not printed", p.includes("- Where times are not printed, read them from the document's layout as best you can"), true);
+  assert("native prompt: unknown times empty", p.includes('- If a time cannot be determined, still include the entry with start and end as empty strings ("")'), true);
+  assert("native prompt: never explain", p.includes("- Never write explanation; return only the data"), true);
+  assert("native prompt: entries wrapper example", p.includes('{"entries":[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]}'), true);
+
+  // A stand-in pdf.js: one page whose text/drawing come from `page`.
+  const fakePdfjs = (page, { failOpen = false } = {}) => ({
+    OPS: { save: 10, restore: 11, transform: 12, constructPath: 91, paintFormXObjectBegin: 74, paintFormXObjectEnd: 75, fill: 22, eoFill: 23, fillStroke: 24, eoFillStroke: 25, closeFillStroke: 26, closeEOFillStroke: 27 },
+    getDocument: () => ({ promise: failOpen ? Promise.reject(new Error("e is not async iterable")) : Promise.resolve({
+      numPages: 1,
+      getPage: async () => page,
+      destroy: () => {},
+    }) }),
+  });
+  const textOnly = { getTextContent: async () => ({ items: [{ str: "Art 3A Monday 9:00-9:50", transform: [8, 0, 0, 8, 50, 700], width: 90, height: 8 }] }), getOperatorList: async () => ({ fnArray: [], argsArray: [] }) };
+  assertAsync("grid read: not a grid → null (silent)", readPdfGridCards(new Uint8Array(4), fakePdfjs(textOnly)), null);
+  assertAsync("grid read: failure → { error }", readPdfGridCards(new Uint8Array(4), fakePdfjs(textOnly, { failOpen: true })), { error: "e is not async iterable" });
+  const throwingText = { getTextContent: async () => { throw new TypeError("e is not async iterable"); }, getOperatorList: async () => ({ fnArray: [], argsArray: [] }) };
+  assertAsync("grid read: getTextContent throwing → { error }", readPdfGridCards(new Uint8Array(4), fakePdfjs(throwingText)), { error: "e is not async iterable" });
+
+  const sent = [];
+  const fetchFn = async (url, req) => { sent.push(JSON.parse(req.body)); return { ok: true, status: 200, json: async () => ({ stop_reason: "end_turn", content: [{ type: "text", text: '{"entries":[{"class":"3A","day":"Monday","start":"","end":"","subject":"Art"}]}' }] }), text: async () => "" }; };
+  assertAsync("flow: failed grid read → native PDF path with gridError", extractSpecialistRows({
+    pdfBytes: new Uint8Array(4), base64: "QUJD", fetchFn, readGrid: async () => ({ error: "e is not async iterable" }),
+  }).then(r => [r.gridError, r.measured, r.rows, sent[0].messages[0].content.map(c => c.type)]), [
+    "e is not async iterable", null, [{ className: "3A", day: "Monday", start: "", end: "", subject: "Art" }], ["document", "text"],
+  ]);
+  assertAsync("flow: no grid → no gridError", extractSpecialistRows({
+    pdfBytes: new Uint8Array(4), base64: "QUJD", fetchFn, readGrid: async () => null,
+  }).then(r => r.gridError), null);
 }

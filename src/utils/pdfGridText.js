@@ -237,9 +237,11 @@ export function extractGridCards(texts, rects, { page = 1 } = {}) {
   return { cards, unplaced };
 }
 
-// Read every page of a PDF (ArrayBuffer / Uint8Array). Returns null when no
-// page is a time grid or anything goes wrong — the import then runs exactly as
-// before. `pdfjsLib` is injectable for scripts; the app uses the shared loader.
+// Read every page of a PDF (ArrayBuffer / Uint8Array). Returns
+// { cards, unplaced } for a time grid, null when no page is a time grid
+// (normal, silent), or { error } when reading failed — the import then goes
+// the native-PDF way and warns that times may be unreliable. `pdfjsLib` is
+// injectable for scripts and tests; the app uses the shared loader.
 export async function readPdfGridCards(data, pdfjsLib = null) {
   let doc = null;
   try {
@@ -265,7 +267,7 @@ export async function readPdfGridCards(data, pdfjsLib = null) {
     return anyGrid ? { cards, unplaced } : null;
   } catch (e) {
     console.warn("PDF grid read failed:", e);
-    return null;
+    return { error: String((e && e.message) || e) };
   } finally {
     if (doc) { try { doc.destroy(); } catch (e) {} }
   }
@@ -305,10 +307,10 @@ export const CARD_SCHEMA = strictObject({
 
 const jsonFormat = schema => ({ format: { type: "json_schema", schema } });
 
-// The extraction prompt for a PDF sent as a document. `preamble` (Update
-// only) goes first; the user's Instructions box goes last, as before.
+// The extraction prompt for a PDF sent as a document (no measured grid).
+// `preamble` (Update only) goes first; the user's Instructions box goes last.
 export function buildSpecialistPrompt({ instructions = "", preamble = "" } = {}) {
-  return `${preamble ? preamble + "\n\n" : ""}This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nRespond ONLY with a JSON array, no other text, no markdown backticks. Example:\n[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]\n\nRules:\n- Extract EVERY entry you can find\n- If times are in 12-hour format, convert to 24-hour\n- Use exact class names from the document\n- Times printed in the document always take priority\n- If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given\n- Output one entry per class on a card: a card listing several classes (e.g. "56P, 56S, 5L, 6A") gives one entry for each class, all with that card's day, start, end and subject\n- Never work out times from the order of the text\n- If a time genuinely cannot be determined, still include the entry with start and end as empty strings (""); never guess\n- Skip cards that have no class/grade on them\n- Include ALL classes and ALL specialist subjects shown\n- Use compact JSON with no extra whitespace to fit everything${instructionsBlock(instructions)}`;
+  return `${preamble ? preamble + "\n\n" : ""}This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nReturn them as {"entries":[...]}, e.g. {"entries":[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]}\n\nRules:\n- Extract EVERY entry you can find\n- Use exact class names from the document; a session listing several classes gives one entry per class\n- Times printed in the document take priority; convert 12-hour times to 24-hour\n- Where times are not printed, read them from the document's layout as best you can\n- If a time cannot be determined, still include the entry with start and end as empty strings ("")\n- Include ALL classes and ALL specialist subjects shown\n- Never write explanation; return only the data${instructionsBlock(instructions)}`;
 }
 
 // fetch options for a PDF sent as a document, reply as { entries: [...] }.
@@ -469,11 +471,14 @@ async function postAI(fetchFn, request) {
 }
 
 // The whole PDF extraction, shared by Import and Update. Returns
-// { rows: [{ className, day, start, end, subject }], truncated, measured }
+// { rows: [{ className, day, start, end, subject }], truncated, measured, gridError }
 // where measured = { cards, entries, unknown, duplicate } on the grid path,
-// else null. fetchFn / readGrid are injectable for tests.
+// else null, and gridError is the grid reader's error message when it
+// failed (the PDF then went the native way). fetchFn / readGrid are
+// injectable for tests.
 export async function extractSpecialistRows({ pdfBytes, base64, instructions = "", preamble = "", fetchFn = anthropicFetch, readGrid = readPdfGridCards }) {
   const grid = await readGrid(pdfBytes);
+  const gridError = (grid && grid.error) || null;
   if (grid && Array.isArray(grid.cards) && grid.cards.length > 0) {
     const data = await postAI(fetchFn, buildSpecialistGridRequest({ cards: grid.cards, instructions }));
     const { items, truncated } = parseStructuredReply(data, "cards");
@@ -481,9 +486,9 @@ export async function extractSpecialistRows({ pdfBytes, base64, instructions = "
     if (join.rows.length === 0) {
       throw new Error("AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
     }
-    return { rows: join.rows, truncated, measured: { cards: grid.cards.length, entries: join.rows.length, unknown: join.unknown, duplicate: join.duplicate } };
+    return { rows: join.rows, truncated, measured: { cards: grid.cards.length, entries: join.rows.length, unknown: join.unknown, duplicate: join.duplicate }, gridError: null };
   }
   const data = await postAI(fetchFn, buildSpecialistPdfRequest({ base64, instructions, preamble }));
   const { items, truncated } = parseStructuredReply(data, "entries");
-  return { rows: items.map(replyEntryFields), truncated, measured: null };
+  return { rows: items.map(replyEntryFields), truncated, measured: null, gridError };
 }

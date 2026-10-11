@@ -53,7 +53,7 @@ import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 import { runPolyfillTests } from "./polyfillsSmokeTests";
-import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests } from "./pdfGridTextSmokeTests";
+import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests, runSpecialistNonGridTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -527,6 +527,7 @@ export function runSmokeTests(logErrorFn) {
   runPdfGridTextTests(assert);
   runSpecialistPdfRequestTests(assert, assertAsync);
   runSpecialistUpdateRequestTests(assert);
+  runSpecialistNonGridTests(assert, assertAsync);
 
   // ── ReadableStream async iteration polyfill (v2.49.21) ──
   runPolyfillTests(assert, assertAsync);
