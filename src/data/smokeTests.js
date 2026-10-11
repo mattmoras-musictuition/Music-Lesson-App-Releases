@@ -525,7 +525,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Specialist PDF import: card times measured from a time grid (v2.49.20) ──
   runPdfGridTextTests(assert);
-  runSpecialistPdfRequestTests(assert);
+  runSpecialistPdfRequestTests(assert, assertAsync);
   runSpecialistUpdateRequestTests(assert);
 
   // ── ReadableStream async iteration polyfill (v2.49.21) ──

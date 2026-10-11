@@ -9,7 +9,7 @@ import { useTheme } from "../context/ThemeContext";
 import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCurrentWeekMonday, getTermWeekLabel } from "../utils/helpers";
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
-import { readPdfGridCards, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields } from "../utils/pdfGridText";
+import { readPdfGridCards, buildSpecialistPdfRequest, parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 export function SpecialistManager({ specialists, setSpecialists, schools, notify, resetKey, viewState, setViewState, goBack, goForward, historyCursor, pageHistory }) {
@@ -167,31 +167,19 @@ export function SpecialistManager({ specialists, setSpecialists, schools, notify
       reader.onerror = () => rej(new Error("Failed to read the PDF file from disk."));
       reader.readAsDataURL(file);
     });
-    // Time-grid PDFs (times shown by position, not printed): measure each
-    // card's day and times so the AI doesn't have to. null for other PDFs.
-    const grid = await readPdfGridCards(await file.arrayBuffer());
-
-    let response;
-    try {
-      response = await anthropicFetch("https://api.anthropic.com/v1/messages",
-        buildSpecialistPdfRequest({ base64: base64Data, gridCards: grid && grid.cards, instructions: importInstructions }));
-    } catch (fetchErr) {
-      throw new Error("Network error connecting to AI service. Check your internet connection and try again.");
-    }
-
-    if (!response.ok) {
-      let errBody = "";
-      try { errBody = await response.text(); } catch(e) {}
-      throw new Error(`AI service returned error ${response.status}: ${errBody.substring(0, 200)}`);
-    }
-
-    const { entries, truncated } = parseSpecialistReply(await response.json());
-    if (truncated) notify(`Response was truncated — recovered ${entries.length} entries. Some may be missing from the end.`, "warning");
+    // Time-grid PDFs: the app measures each card's day and times and the AI
+    // only names the classes and subject. Other PDFs go to the AI whole.
+    const { rows, truncated, measured } = await extractSpecialistRows({
+      pdfBytes: await file.arrayBuffer(), base64: base64Data, instructions: importInstructions,
+    });
+    if (truncated) notify(`The AI ran out of room before finishing — kept ${rows.length} complete entries. Some may be missing from the end.`, "warning");
+    if (measured && (measured.unknown || measured.duplicate)) notify(`Ignored ${measured.unknown + measured.duplicate} card reference(s) in the AI reply that didn't match a measured card.`, "warning");
 
     setPreview({
-      entries: entries.map(e => { const f = replyEntryFields(e); return { id: uid(), schoolId: importSchoolId, ...f, subject: normalizeSubject(f.subject), notes: "" }; }),
+      entries: rows.map(f => ({ id: uid(), schoolId: importSchoolId, ...f, subject: normalizeSubject(f.subject), notes: "" })),
       schoolId: importSchoolId,
-      filename: file.name
+      filename: file.name,
+      measured
     });
   };
   const handleSpreadsheetImport = async (file) => {

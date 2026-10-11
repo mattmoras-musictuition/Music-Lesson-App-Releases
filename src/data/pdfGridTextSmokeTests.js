@@ -8,7 +8,9 @@
 
 import {
   parseClockLabel, parseDayHeading, collectFilledRects, extractGridCards,
-  formatGridCardsBlock, buildSpecialistPrompt, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields,
+  buildSpecialistPrompt, buildSpecialistPdfRequest, parseSpecialistReply, replyEntryFields,
+  formatCardList, buildGridPrompt, buildSpecialistGridRequest, parseStructuredReply, joinGridReply, extractSpecialistRows,
+  ENTRY_SCHEMA, CARD_SCHEMA, OUT_OF_ROOM_MESSAGE,
 } from "../utils/pdfGridText";
 import { getAnthropicHeaders } from "../utils/api";
 
@@ -183,79 +185,130 @@ export function runPdfGridTextTests(assert) {
   ]);
 }
 
-// Shared Import/Update request and reply handling. No AI call: the request
-// is built and inspected, and replies are hand-written API JSON.
-export function runSpecialistPdfRequestTests(assert) {
-  const cards = [
-    { page: 1, day: "Monday", start: "10:00", end: "11:00", text: "French 6A Carmen Higgins MAIN8 NFFT" },
-    { page: 2, day: "Friday", start: "09:00", end: "11:00", text: "Interschool | Sports  56P, 56S" },
-  ];
-  assert("pdf req: measured block lines", formatGridCardsBlock(cards).split("\n").slice(1), [
-    "page | day | start | end | card text",
-    "1 | Monday | 10:00 | 11:00 | French 6A Carmen Higgins MAIN8 NFFT",
-    "2 | Friday | 09:00 | 11:00 | Interschool / Sports 56P, 56S",
-  ]);
-  assert("pdf req: measured block heading", formatGridCardsBlock(cards).startsWith("MEASURED CARD POSITIONS"), true);
+// Shared Import/Update request and reply handling. No AI call: requests
+// are built and inspected, replies are hand-written API JSON, and the whole
+// flow runs against a fake fetch.
+const reply = (text, stop_reason = "end_turn") => ({ content: [{ type: "text", text }], stop_reason });
+const throws = fn => { try { fn(); return null; } catch (e) { return e.message.split("\n")[0]; } };
 
-  const prompt = buildSpecialistPrompt();
-  assert("pdf prompt: no estimate rule", /estimate based on typical school day/.test(prompt), false);
-  assert("pdf prompt: printed times win", prompt.includes("- Times printed in the document always take priority"), true);
-  assert("pdf prompt: use measured positions", prompt.includes("If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given"), true);
-  assert("pdf prompt: one entry per class", prompt.includes("Output one entry per class on a card"), true);
-  assert("pdf prompt: never from text order", prompt.includes("- Never work out times from the order of the text"), true);
-  assert("pdf prompt: unknown times stay empty", prompt.includes('still include the entry with start and end as empty strings (""); never guess'), true);
-  assert("pdf prompt: skip classless cards", prompt.includes("- Skip cards that have no class/grade on them"), true);
-  assert("pdf prompt: schema unchanged", prompt.includes('[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]'), true);
-  assert("pdf prompt: no instructions → no block", prompt.includes("SPECIFIC INSTRUCTIONS FROM THE USER"), false);
-  const withInstr = buildSpecialistPrompt({ instructions: "  Only Prep-2  " });
-  assert("pdf prompt: instructions block last", withInstr.endsWith("SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\nOnly Prep-2\n---"), true);
+const MEASURED = [
+  { page: 1, day: "Monday", start: "10:00", end: "11:00", text: "French 6A Carmen Higgins MAIN8 NFFT" },
+  { page: 1, day: "Monday", start: "12:30", end: "13:00", text: "Specialist …" },
+  { page: 1, day: "Friday", start: "09:00", end: "11:00", text: "Interschool | Sports  56P, 56S, 5L, 6A John Seeary OFFSITE Acc" },
+];
+
+export function runSpecialistPdfRequestTests(assert, assertAsync) {
+  // ── Grid path request: numbered cards, no times, no PDF ──
+  assert("grid req: card list", formatCardList(MEASURED).split("\n"), [
+    "1 | French 6A Carmen Higgins MAIN8 NFFT",
+    "2 | Specialist …",
+    "3 | Interschool / Sports 56P, 56S, 5L, 6A John Seeary OFFSITE Acc",
+  ]);
+  const gridPrompt = buildGridPrompt({ cards: MEASURED });
+  assert("grid prompt: no times sent", /\d{1,2}:\d{2}/.test(gridPrompt), false);
+  assert("grid prompt: skip classless cards", gridPrompt.includes("Leave out cards with no class/grade on them"), true);
+  assert("grid prompt: skip what instructions say", gridPrompt.includes("Leave out cards the user's instructions say to skip"), true);
+  assert("grid prompt: no explanation", gridPrompt.includes("Never write explanation"), true);
+  assert("grid prompt: instructions block last", buildGridPrompt({ cards: MEASURED, instructions: " Ignore Ready Room " }).endsWith("---\nIgnore Ready Room\n---"), true);
+  const gridReq = buildSpecialistGridRequest({ cards: MEASURED });
+  const gridBody = JSON.parse(gridReq.body);
+  assert("grid req: API-key headers", gridReq.headers, getAnthropicHeaders());
+  assert("grid req: no PDF sent", gridBody.messages[0].content.map(c => c.type), ["text"]);
+  assert("grid req: structured reply", gridBody.output_config, { format: { type: "json_schema", schema: CARD_SCHEMA } });
+  assert("grid req: 16,000 cap", gridBody.max_tokens, 16000);
+  assert("grid schema: card / classes / subject", CARD_SCHEMA.properties.cards.items.required, ["card", "classes", "subject"]);
+
+  // ── Native path request: PDF + prompt, structured reply ──
+  const pdfBody = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD" }).body);
+  assert("pdf req: PDF then prompt", pdfBody.messages[0].content.map(c => c.type), ["document", "text"]);
+  assert("pdf req: native PDF kept", pdfBody.messages[0].content[0].source, { type: "base64", media_type: "application/pdf", data: "QUJD" });
+  assert("pdf req: structured reply", pdfBody.output_config, { format: { type: "json_schema", schema: ENTRY_SCHEMA } });
+  assert("pdf schema: row fields", ENTRY_SCHEMA.properties.entries.items.required, ["class", "day", "start", "end", "subject"]);
+  assert("pdf prompt: no estimate rule", /estimate based on typical school day/.test(buildSpecialistPrompt()), false);
+  assert("pdf prompt: instructions block last", buildSpecialistPrompt({ instructions: "  Only Prep-2  " }).endsWith("---\nOnly Prep-2\n---"), true);
   assert("pdf prompt: preamble first", buildSpecialistPrompt({ preamble: "UPDATE CONTEXT" }).startsWith("UPDATE CONTEXT\n\nThis PDF contains"), true);
 
-  const withGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: cards }).body);
-  assert("pdf req: grid → PDF, measured block, prompt", withGrid.messages[0].content.map(c => c.type + (c.type === "text" ? ":" + c.text.slice(0, 12) : "")), ["document", "text:MEASURED CAR", "text:This PDF con"]);
-  assert("pdf req: native PDF kept", withGrid.messages[0].content[0].source, { type: "base64", media_type: "application/pdf", data: "QUJD" });
-  assert("pdf req: reply cap 16000", withGrid.max_tokens, 16000);
-  const noGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: null }).body);
-  assert("pdf req: not a grid → PDF and prompt only", noGrid.messages[0].content.map(c => c.type), ["document", "text"]);
-  const emptyGrid = JSON.parse(buildSpecialistPdfRequest({ base64: "QUJD", gridCards: [] }).body);
-  assert("pdf req: grid with no cards → no block", emptyGrid.messages[0].content.length, 2);
+  // ── Join: the app's times always win ──
+  const join = joinGridReply(MEASURED, [
+    { card: 3, classes: ["56P", "56S", "5L", "6A"], subject: "PE" },
+    { card: 1, classes: ["6A"], subject: "French" },
+    { card: 9, classes: ["1I"], subject: "Art" },
+    { card: 1, classes: ["6B"], subject: "Music" },
+  ]);
+  assert("join: rows (multi-class card → one row each, same times)", join.rows, [
+    { className: "56P", day: "Friday", start: "09:00", end: "11:00", subject: "PE" },
+    { className: "56S", day: "Friday", start: "09:00", end: "11:00", subject: "PE" },
+    { className: "5L", day: "Friday", start: "09:00", end: "11:00", subject: "PE" },
+    { className: "6A", day: "Friday", start: "09:00", end: "11:00", subject: "PE" },
+    { className: "6A", day: "Monday", start: "10:00", end: "11:00", subject: "French" },
+  ]);
+  assert("join: skipped card gives no rows", join.rows.some(r => r.start === "12:30"), false);
+  assert("join: unknown and duplicate counted", [join.unknown, join.duplicate, join.cardsUsed], [1, 1, 2]);
+  assert("join: times always the measured ones", joinGridReply(MEASURED, [{ card: 1, classes: ["6A"], subject: "French", start: "09:00", day: "Tuesday" }]).rows[0], { className: "6A", day: "Monday", start: "10:00", end: "11:00", subject: "French" });
+  assert("join: comma-joined classes split", joinGridReply(MEASURED, [{ card: 3, classes: ["56P, 56S"], subject: "PE" }]).rows.map(r => r.className), ["56P", "56S"]);
+  assert("join: bad card numbers ignored", joinGridReply(MEASURED, [{ card: 0, classes: ["x"] }, { card: "2.5", classes: ["y"] }, { classes: ["z"] }]), { rows: [], cardsUsed: 0, unknown: 3, duplicate: 0 });
 
-  const reply = text => ({ content: [{ type: "text", text }] });
-  const ok = parseSpecialistReply(reply('```json\n[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"}]\n```'));
-  assert("pdf reply: fenced JSON", ok, { entries: [{ class: "6A", day: "Monday", start: "10:00", end: "11:00", subject: "French" }], truncated: false });
-  const cut = parseSpecialistReply(reply('[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"},{"class":"5L","day":"Mon'));
-  assert("pdf reply: cut-off reply keeps complete rows", [cut.entries.length, cut.truncated], [1, true]);
-  const throws = d => { try { parseSpecialistReply(d); return null; } catch (e) { return e.message.split("\n")[0]; } };
-  assert("pdf reply: empty", throws(reply("  ")), "AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
-  assert("pdf reply: API error", throws({ error: { message: "overloaded" } }), "AI error: overloaded");
-  assert("pdf reply: not JSON", throws(reply("Sorry, no")), "AI response wasn't valid JSON.");
-  assert("pdf reply: empty array", throws(reply("[]")), "AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
+  // ── Reply parsing ──
+  assert("reply: structured object", parseStructuredReply(reply('{"cards":[{"card":1,"classes":["6A"],"subject":"French"}]}'), "cards"), { items: [{ card: 1, classes: ["6A"], subject: "French" }], truncated: false });
+  assert("reply: bare array still accepted", parseSpecialistReply(reply('```json\n[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"}]\n```')).entries.length, 1);
+  assert("reply: first array pulled out of prose", parseStructuredReply(reply('Here you go: [{"card":2,"classes":["5L"],"subject":"PE"}] hope that helps [1]'), "cards").items, [{ card: 2, classes: ["5L"], subject: "PE" }]);
+  const outOfRoom = parseStructuredReply(reply('{"cards":[{"card":1,"classes":["6A"],"subject":"French"},{"card":2,"classes":["5', "max_tokens"), "cards");
+  assert("reply: out of room keeps complete items", [outOfRoom.items.length, outOfRoom.truncated], [1, true]);
+  assert("reply: out of room with nothing complete → plain message", throws(() => parseStructuredReply(reply("Looking at the timetable carefully, I need to", "max_tokens"))), OUT_OF_ROOM_MESSAGE);
+  assert("reply: out-of-room message is plain", /couldn't be recovered/.test(OUT_OF_ROOM_MESSAGE), false);
+  assert("reply: cut off without stop reason still salvaged", parseSpecialistReply(reply('[{"class":"6A","day":"Monday","start":"10:00","end":"11:00","subject":"French"},{"class":"5L","day":"Mon')).truncated, true);
+  assert("reply: empty", throws(() => parseSpecialistReply(reply("  "))), "AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
+  assert("reply: API error", throws(() => parseSpecialistReply({ error: { message: "overloaded" } })), "AI error: overloaded");
+  assert("reply: refusal", throws(() => parseSpecialistReply(reply("", "refusal"))), "The AI declined to read this document. Try again, or use a spreadsheet instead.");
+  assert("reply: prose, not out of room", throws(() => parseSpecialistReply(reply("Sorry, no"))), "AI response wasn't valid JSON.");
+  assert("reply: empty list", throws(() => parseSpecialistReply(reply('{"entries":[]}'))), "AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
 
   // Times the AI could not determine come back empty and stay empty —
   // the Review screen shows a blank time box for the owner to fill in.
-  const blank = parseSpecialistReply(reply('[{"class":"6A","day":"Monday","start":"","end":"","subject":"French"},{"class":"5L","day":"Friday","subject":"PE"}]'));
-  assert("pdf reply: empty times accepted", blank.entries.map(replyEntryFields), [
+  const blank = parseSpecialistReply(reply('{"entries":[{"class":"6A","day":"Monday","start":"","end":"","subject":"French"},{"class":"5L","day":"Friday","subject":"PE"}]}'));
+  assert("reply: empty times accepted", blank.entries.map(replyEntryFields), [
     { className: "6A", day: "Monday", start: "", end: "", subject: "French" },
     { className: "5L", day: "Friday", start: "", end: "", subject: "PE" },
   ]);
+
+  // ── Whole flow against a fake fetch ──
+  const fakeFetch = (data, sent) => async (url, req) => { sent.push(JSON.parse(req.body)); return { ok: true, status: 200, json: async () => data, text: async () => "" }; };
+  const sentGrid = [];
+  assertAsync("flow: grid → rows with measured times, no PDF sent", extractSpecialistRows({
+    pdfBytes: new Uint8Array(1), base64: "QUJD",
+    readGrid: async () => ({ cards: MEASURED, unplaced: [] }),
+    fetchFn: fakeFetch(reply('{"cards":[{"card":1,"classes":["6A"],"subject":"French"},{"card":3,"classes":["56P","56S","5L","6A"],"subject":"PE"}]}'), sentGrid),
+  }).then(r => [r.rows.length, r.rows[0], r.measured, sentGrid[0].messages[0].content.map(c => c.type)]), [
+    5, { className: "6A", day: "Monday", start: "10:00", end: "11:00", subject: "French" },
+    { cards: 3, entries: 5, unknown: 0, duplicate: 0 }, ["text"],
+  ]);
+  const sentPdf = [];
+  assertAsync("flow: not a grid → PDF path, measured null", extractSpecialistRows({
+    pdfBytes: new Uint8Array(1), base64: "QUJD",
+    readGrid: async () => null,
+    fetchFn: fakeFetch(reply('{"entries":[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]}'), sentPdf),
+  }).then(r => [r.rows, r.measured, sentPdf[0].messages[0].content.map(c => c.type)]), [
+    [{ className: "3A", day: "Monday", start: "09:00", end: "09:50", subject: "Art" }], null, ["document", "text"],
+  ]);
+  assertAsync("flow: HTTP error reported", extractSpecialistRows({
+    pdfBytes: new Uint8Array(1), base64: "QUJD", readGrid: async () => null,
+    fetchFn: async () => ({ ok: false, status: 529, text: async () => "overloaded" }),
+  }).then(() => "no error", e => e.message), "AI service returned error 529: overloaded");
 }
 
-// Update path (v2.49.20): it now builds its PDF request with the shared
-// builder, so it carries the API-key headers (it used to send Content-Type
-// only), the 16,000 cap, the measured block and the Import prompt, with
-// the existing entries first. Headers are compared with getAnthropicHeaders()
-// rather than set here, so the running app's key is never touched.
+// Update path: builds its PDF request with the shared builder, so it carries
+// the API-key headers, the 16,000 cap, the Import prompt and a structured
+// reply, with the existing entries first. Headers are compared with
+// getAnthropicHeaders() rather than set here, so the app's key is untouched.
 export function runSpecialistUpdateRequestTests(assert) {
-  const cards = [{ page: 1, day: "Friday", start: "11:30", end: "12:00", text: "Recorder 1I Mia Pisano MAIN10 Acc" }];
-  const req = buildSpecialistPdfRequest({ base64: "QUJD", gridCards: cards, instructions: "Week A only", preamble: "This is an UPDATED specialist class timetable for EBPS." });
+  const req = buildSpecialistPdfRequest({ base64: "QUJD", instructions: "Week A only", preamble: "This is an UPDATED specialist class timetable for EBPS." });
   assert("update req: POST", req.method, "POST");
   assert("update req: API-key headers", req.headers, getAnthropicHeaders());
   assert("update req: JSON content type", req.headers["Content-Type"], "application/json");
   const body = JSON.parse(req.body);
   assert("update req: 16,000 cap", body.max_tokens, 16000);
-  assert("update req: measured block sent", body.messages[0].content[1].text.split("\n")[2], "1 | Friday | 11:30 | 12:00 | Recorder 1I Mia Pisano MAIN10 Acc");
-  const prompt = body.messages[0].content[2].text;
+  assert("update req: structured reply", body.output_config.format.type, "json_schema");
+  const prompt = body.messages[0].content[1].text;
   assert("update req: existing-entries context first", prompt.startsWith("This is an UPDATED specialist class timetable for EBPS.\n\nThis PDF contains"), true);
-  assert("update req: same rules as Import", prompt.includes("- Never work out times from the order of the text"), true);
   assert("update req: instructions block", prompt.endsWith("---\nWeek A only\n---"), true);
 }

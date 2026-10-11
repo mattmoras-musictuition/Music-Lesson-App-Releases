@@ -16,7 +16,7 @@
 // ============================================================
 
 import { loadPdfjs } from "./filePreviewCore";
-import { getAnthropicHeaders } from "./api";
+import { anthropicFetch, getAnthropicHeaders } from "./api";
 import { ANTHROPIC_MODEL } from "../constants";
 
 const DAY_NAMES = {
@@ -273,86 +273,217 @@ export async function readPdfGridCards(data, pdfjsLib = null) {
 
 // ============================================================
 // SPECIALIST PDF REQUEST (shared by Import and Update)
+// Two paths:
+//  - Grid: the app has measured every card, so the PDF is not sent. The AI
+//    gets a numbered card list (no times) and names each card's class(es)
+//    and subject; joinGridReply puts the app's day/start/end back on.
+//  - Native: any other PDF goes as a document, as before.
+// Both replies are constrained to a JSON schema (output_config.format).
 // ============================================================
 
-// The measured-positions block sent after the PDF. One line per card.
-export function formatGridCardsBlock(cards) {
-  const clean = s => String(s || "").replace(/\|/g, "/").replace(/\s+/g, " ").trim();
-  return [
-    "MEASURED CARD POSITIONS — measured by the app from where each card sits on the page's time grid (day = the column the card is in; start and end = the card's top and bottom edges read against the time axis). One line per card:",
-    "page | day | start | end | card text",
-    ...cards.map(c => [c.page, c.day, c.start, c.end, clean(c.text)].join(" | ")),
-  ].join("\n");
+const AI_URL = "https://api.anthropic.com/v1/messages";
+const MAX_TOKENS = 16000;
+
+function instructionsBlock(instructions) {
+  if (!instructions || !instructions.trim()) return "";
+  return `\n\nIMPORTANT — SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\n${instructions.trim()}\n---`;
 }
 
-// The extraction prompt. `preamble` (Update only) goes first; the user's
-// Instructions box goes last, as before.
+const strictObject = (properties) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
+
+export const ENTRY_SCHEMA = strictObject({
+  entries: { type: "array", items: strictObject({
+    class: { type: "string" }, day: { type: "string" }, start: { type: "string" }, end: { type: "string" }, subject: { type: "string" },
+  }) },
+});
+
+export const CARD_SCHEMA = strictObject({
+  cards: { type: "array", items: strictObject({
+    card: { type: "integer" }, classes: { type: "array", items: { type: "string" } }, subject: { type: "string" },
+  }) },
+});
+
+const jsonFormat = schema => ({ format: { type: "json_schema", schema } });
+
+// The extraction prompt for a PDF sent as a document. `preamble` (Update
+// only) goes first; the user's Instructions box goes last, as before.
 export function buildSpecialistPrompt({ instructions = "", preamble = "" } = {}) {
-  let userGuidance = "";
-  if (instructions.trim()) {
-    userGuidance = `\n\nIMPORTANT — SPECIFIC INSTRUCTIONS FROM THE USER about this document. Follow these carefully, they override general assumptions:\n---\n${instructions.trim()}\n---`;
-  }
-  return `${preamble ? preamble + "\n\n" : ""}This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nRespond ONLY with a JSON array, no other text, no markdown backticks. Example:\n[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]\n\nRules:\n- Extract EVERY entry you can find\n- If times are in 12-hour format, convert to 24-hour\n- Use exact class names from the document\n- Times printed in the document always take priority\n- If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given\n- Output one entry per class on a card: a card listing several classes (e.g. "56P, 56S, 5L, 6A") gives one entry for each class, all with that card's day, start, end and subject\n- Never work out times from the order of the text\n- If a time genuinely cannot be determined, still include the entry with start and end as empty strings (""); never guess\n- Skip cards that have no class/grade on them\n- Include ALL classes and ALL specialist subjects shown\n- Use compact JSON with no extra whitespace to fit everything${userGuidance}`;
+  return `${preamble ? preamble + "\n\n" : ""}This PDF contains a specialist class timetable for a primary/elementary school.\nExtract ALL specialist class entries from this document.\n\nFor each entry I need:\n- class: The class/grade name (e.g. "Prep A", "1B", "3/4C", "Year 5")\n- day: The day of the week (Monday, Tuesday, Wednesday, Thursday, or Friday)\n- start: Start time in HH:MM 24-hour format (e.g. "09:00", "14:30")\n- end: End time in HH:MM 24-hour format\n- subject: The specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM")\n\nRespond ONLY with a JSON array, no other text, no markdown backticks. Example:\n[{"class":"3A","day":"Monday","start":"09:00","end":"09:50","subject":"Art"}]\n\nRules:\n- Extract EVERY entry you can find\n- If times are in 12-hour format, convert to 24-hour\n- Use exact class names from the document\n- Times printed in the document always take priority\n- If a MEASURED CARD POSITIONS block is supplied and times are not printed on the cards, use its day, start and end for each card exactly as given\n- Output one entry per class on a card: a card listing several classes (e.g. "56P, 56S, 5L, 6A") gives one entry for each class, all with that card's day, start, end and subject\n- Never work out times from the order of the text\n- If a time genuinely cannot be determined, still include the entry with start and end as empty strings (""); never guess\n- Skip cards that have no class/grade on them\n- Include ALL classes and ALL specialist subjects shown\n- Use compact JSON with no extra whitespace to fit everything${instructionsBlock(instructions)}`;
 }
 
-// fetch options for anthropicFetch: native PDF, then the measured block (when
-// the PDF is a time grid with cards), then the prompt.
-export function buildSpecialistPdfRequest({ base64, gridCards = null, instructions = "", preamble = "" }) {
-  const content = [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }];
-  if (gridCards && gridCards.length > 0) content.push({ type: "text", text: formatGridCardsBlock(gridCards) });
-  content.push({ type: "text", text: buildSpecialistPrompt({ instructions, preamble }) });
+// fetch options for a PDF sent as a document, reply as { entries: [...] }.
+export function buildSpecialistPdfRequest({ base64, instructions = "", preamble = "" }) {
+  const content = [
+    { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
+    { type: "text", text: buildSpecialistPrompt({ instructions, preamble }) },
+  ];
   return {
     method: "POST",
     headers: getAnthropicHeaders(),
-    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 16000, messages: [{ role: "user", content }] }),
+    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: MAX_TOKENS, output_config: jsonFormat(ENTRY_SCHEMA), messages: [{ role: "user", content }] }),
   };
 }
 
-// API reply JSON → { entries, truncated }. Throws the same messages the
-// import screen has always shown. A reply cut off mid-array keeps every
-// complete entry and reports truncated: true.
-export function parseSpecialistReply(data) {
+// The numbered card list: card number | card text. No times, no PDF.
+export function formatCardList(cards) {
+  const clean = s => String(s || "").replace(/\|/g, "/").replace(/\s+/g, " ").trim();
+  return cards.map((c, i) => `${i + 1} | ${clean(c.text)}`).join("\n");
+}
+
+export function buildGridPrompt({ cards, instructions = "" }) {
+  return `Below are the session cards from a primary/elementary school's specialist timetable, one per line as "card number | card text". The app has already worked out each card's day and times, so you only identify what each card is.\n\nFor each card that is a specialist class, return:\n- card: the card number exactly as given\n- classes: the class/grade code(s) on the card, exactly as written (e.g. ["6A"]; a card listing several classes such as "56P, 56S, 5L, 6A" gives ["56P","56S","5L","6A"])\n- subject: the specialist subject (e.g. "Art", "PE/Sport", "LOTE", "Music", "Science", "Library", "Digital Tech", "Drama", "Dance", "STEM", or the card's own subject name)\n\nRules:\n- Leave out cards with no class/grade on them (meetings, planning, duties, rooms only)\n- Leave out cards the user's instructions say to skip\n- Do not invent cards or card numbers\n- Never write explanation; return only the data\n\nCards:\n${formatCardList(cards)}${instructionsBlock(instructions)}`;
+}
+
+// fetch options for a measured grid, reply as { cards: [...] }.
+export function buildSpecialistGridRequest({ cards, instructions = "" }) {
+  return {
+    method: "POST",
+    headers: getAnthropicHeaders(),
+    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: MAX_TOKENS, output_config: jsonFormat(CARD_SCHEMA),
+      messages: [{ role: "user", content: [{ type: "text", text: buildGridPrompt({ cards, instructions }) }] }] }),
+  };
+}
+
+// First complete JSON array in `text` (string-aware bracket matching), or null.
+function firstJsonArray(text) {
+  for (let start = text.indexOf("["); start >= 0; start = text.indexOf("[", start + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === "[") depth++;
+      else if (ch === "]" && --depth === 0) {
+        try { const v = JSON.parse(text.slice(start, i + 1)); if (Array.isArray(v)) return v; } catch (e) {}
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+// Every complete item of a list that was cut off part-way. Items are flat
+// objects (an item's only nested value is a string array), so the last "}"
+// always closes a whole item.
+function salvageItems(text) {
+  const start = text.indexOf("[");
+  const last = text.lastIndexOf("}");
+  if (start < 0 || last < start) return null;
+  try { const v = JSON.parse(text.slice(start, last + 1) + "]"); return Array.isArray(v) ? v : null; } catch (e) { return null; }
+}
+
+export const OUT_OF_ROOM_MESSAGE = "The AI ran out of room before it finished the list, so nothing could be kept. Try again, or add instructions to import fewer classes at a time (e.g. 'only Prep–Year 2').";
+
+// API reply JSON → { items, truncated }. `key` is the list's name in the
+// schema ("entries" or "cards"); a bare array, or the first array inside
+// prose, is accepted too. A reply that ran out of room keeps every
+// complete item and reports truncated: true.
+export function parseStructuredReply(data, key = "entries") {
   if (data && data.error) {
     throw new Error(`AI error: ${data.error.message || JSON.stringify(data.error)}`);
+  }
+  if (data && data.stop_reason === "refusal") {
+    throw new Error("The AI declined to read this document. Try again, or use a spreadsheet instead.");
   }
   const textContent = (data && data.content)?.map(c => c.type === "text" ? c.text : "").join("") || "";
   if (!textContent.trim()) {
     throw new Error("AI returned an empty response. The PDF may be image-based or unreadable. Try a clearer PDF or use a spreadsheet instead.");
   }
   const cleaned = textContent.replace(/```json|```/g, "").trim();
-  let entries;
+  const outOfRoom = !!(data && data.stop_reason === "max_tokens");
+  let items = null;
   let truncated = false;
   try {
-    entries = JSON.parse(cleaned);
-  } catch (parseErr) {
-    // Try to recover truncated JSON — the response may have been cut off mid-array
-    let recovered = cleaned;
-    // Remove any trailing incomplete object
-    const lastCompleteObj = recovered.lastIndexOf("}");
-    if (lastCompleteObj > 0) {
-      recovered = recovered.substring(0, lastCompleteObj + 1);
-      // Close the array if needed
-      if (!recovered.trim().endsWith("]")) {
-        recovered = recovered.trim() + "]";
-      }
-      try {
-        entries = JSON.parse(recovered);
-        truncated = true;
-      } catch (e) {
-        throw new Error("AI response was cut off and couldn't be recovered. Try adding instructions to limit extraction (e.g. 'only extract Prep–Year 2 classes') and import in batches.\n\nRaw response preview: " + cleaned.substring(0, 300));
-      }
-    } else {
-      throw new Error("AI response wasn't valid JSON.\n\nRaw response preview: " + cleaned.substring(0, 300));
-    }
+    const v = JSON.parse(cleaned);
+    if (Array.isArray(v)) items = v;
+    else if (v && Array.isArray(v[key])) items = v[key];
+  } catch (e) { /* fall through */ }
+  if (!items) items = firstJsonArray(cleaned);
+  if (!items) {
+    items = salvageItems(cleaned);
+    if (items) truncated = true;
   }
-  if (!Array.isArray(entries) || entries.length === 0) {
+  if (!items) {
+    if (outOfRoom) throw new Error(OUT_OF_ROOM_MESSAGE);
+    throw new Error("AI response wasn't valid JSON.\n\nRaw response preview: " + cleaned.substring(0, 300));
+  }
+  if (outOfRoom) truncated = true;
+  if (!Array.isArray(items) || items.length === 0) {
     throw new Error("AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
   }
-  return { entries, truncated };
+  return { items, truncated };
+}
+
+// Back-compat name for the native path: { entries, truncated }.
+export function parseSpecialistReply(data) {
+  const { items, truncated } = parseStructuredReply(data, "entries");
+  return { entries: items, truncated };
 }
 
 // One reply entry → the row fields the Review screen edits. Missing or empty
 // times stay "" (a blank time box the owner fills in).
 export function replyEntryFields(e) {
   return { className: e.class || "", day: e.day || "", start: e.start || "", end: e.end || "", subject: e.subject || "" };
+}
+
+// Grid reply → Review rows. One row per class; day/start/end always come
+// from the app's measured card, never from the reply. Card numbers are
+// 1-based positions in `cards`; unknown or repeated numbers are ignored.
+export function joinGridReply(cards, replyCards) {
+  const rows = [];
+  const seen = new Set();
+  let unknown = 0, duplicate = 0;
+  for (const r of replyCards || []) {
+    const n = Number(r && r.card);
+    if (!Number.isInteger(n) || n < 1 || n > cards.length) { unknown++; continue; }
+    if (seen.has(n)) { duplicate++; continue; }
+    seen.add(n);
+    const c = cards[n - 1];
+    const classes = [];
+    for (const raw of Array.isArray(r.classes) ? r.classes : [r.classes]) {
+      for (const part of String(raw || "").split(",")) {
+        const code = part.trim();
+        if (code && !classes.includes(code)) classes.push(code);
+      }
+    }
+    for (const className of classes) {
+      rows.push({ className, day: c.day, start: c.start, end: c.end, subject: String(r.subject || "").trim() });
+    }
+  }
+  return { rows, cardsUsed: seen.size, unknown, duplicate };
+}
+
+async function postAI(fetchFn, request) {
+  let response;
+  try {
+    response = await fetchFn(AI_URL, request);
+  } catch (fetchErr) {
+    throw new Error("Network error connecting to AI service. Check your internet connection and try again.");
+  }
+  if (!response.ok) {
+    let errBody = "";
+    try { errBody = await response.text(); } catch (e) {}
+    throw new Error(`AI service returned error ${response.status}: ${errBody.substring(0, 200)}`);
+  }
+  return response.json();
+}
+
+// The whole PDF extraction, shared by Import and Update. Returns
+// { rows: [{ className, day, start, end, subject }], truncated, measured }
+// where measured = { cards, entries, unknown, duplicate } on the grid path,
+// else null. fetchFn / readGrid are injectable for tests.
+export async function extractSpecialistRows({ pdfBytes, base64, instructions = "", preamble = "", fetchFn = anthropicFetch, readGrid = readPdfGridCards }) {
+  const grid = await readGrid(pdfBytes);
+  if (grid && Array.isArray(grid.cards) && grid.cards.length > 0) {
+    const data = await postAI(fetchFn, buildSpecialistGridRequest({ cards: grid.cards, instructions }));
+    const { items, truncated } = parseStructuredReply(data, "cards");
+    const join = joinGridReply(grid.cards, items);
+    if (join.rows.length === 0) {
+      throw new Error("AI could not find any specialist entries in this document. Try adding more specific instructions about what to look for.");
+    }
+    return { rows: join.rows, truncated, measured: { cards: grid.cards.length, entries: join.rows.length, unknown: join.unknown, duplicate: join.duplicate } };
+  }
+  const data = await postAI(fetchFn, buildSpecialistPdfRequest({ base64, instructions, preamble }));
+  const { items, truncated } = parseStructuredReply(data, "entries");
+  return { rows: items.map(replyEntryFields), truncated, measured: null };
 }
