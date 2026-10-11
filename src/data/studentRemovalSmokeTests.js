@@ -10,7 +10,11 @@
 // sit in 2099 so the week-activity guards never move.
 // ============================================================
 
-import { deleteStudentMaster, deleteStudentWeekly, endEnrolmentMaster, endEnrolmentWeekly } from "../utils/studentRemovalCascade";
+import { deleteStudentCascade, endEnrolmentMaster, endEnrolmentWeekly } from "../utils/studentRemovalCascade";
+import { archiveStudentCascade } from "../utils/archiveCascade";
+import { generateWeeklyTimetable } from "./weeklyTimetableGenerator";
+import { buildMttImportForWeekSchool } from "../utils/mttImport";
+import { lweekDates } from "./bandLedgerSmokeTests";
 
 // Term 1 2099 runs to Fri 3 Apr; the break is 4–19 Apr; Term 2 starts Mon 20 Apr.
 export const RM_TERM_BREAKS = [{ id: "tb1", type: "term_break", date: "2099-04-04", endDate: "2099-04-19" }];
@@ -147,14 +151,9 @@ const inlineEndWeekly = (prev, enrolmentId, endDate) => {
 
 const ids = (list) => (list || []).map(x => x.id);
 
-// ── Characterization: the clean-ups moved out of App.js, unchanged ───────
+// ── Characterization: End enrolment moved out of App.js unchanged; the old
+// Delete pinned from its verbatim copy (replaced by deleteStudentCascade) ──
 export function runStudentRemovalCharacterizationTests(assert) {
-  for (const sid of ["amy", "ann", "ben", "libby", "zoe", "olga", "bob", "nobody"]) {
-    assert(`removal char: delete ${sid} — master output identical to the inline code`,
-      deleteStudentMaster(rmMaster(), sid), inlineDeleteMaster(rmMaster(), sid));
-    assert(`removal char: delete ${sid} — weekly output identical to the inline code`,
-      deleteStudentWeekly(rmWeekMap(), sid), inlineDeleteWeekly(rmWeekMap(), sid));
-  }
   for (const [eid, end] of [["e_amy_gtr", RM_TODAY], ["e_ann_g3", RM_TODAY], ["e_libby_g2", RM_TODAY], ["e_ben_g3", CUR],
     ["e_amy_gtr", undefined], ["e_bob_drm", FUT], ["missing", RM_TODAY]]) {
     assert(`removal char: end ${eid} (${end || "no date"}) — master output identical to the inline code`,
@@ -163,9 +162,9 @@ export function runStudentRemovalCharacterizationTests(assert) {
       endEnrolmentWeekly(rmWeekMap(), eid, end), inlineEndWeekly(rmWeekMap(), eid, end));
   }
 
-  // What today's Delete does, pinned.
-  const dm = deleteStudentMaster(rmMaster(), "ann");
-  const dw = deleteStudentWeekly(rmWeekMap(), "ann");
+  // What the old Delete did (the inline code at 1c1a0f1), pinned.
+  const dm = inlineDeleteMaster(rmMaster(), "ann");
+  const dw = inlineDeleteWeekly(rmWeekMap(), "ann");
   assert("removal char: OLD delete — first-listed member takes the group's master card with them",
     ids(dm.lessons).includes("M_G3"), false);
   assert("removal char: OLD delete — first-listed member takes the group's PAST week card with them",
@@ -175,10 +174,10 @@ export function runStudentRemovalCharacterizationTests(assert) {
   assert("removal char: OLD delete — the catch-up card goes from the past week",
     ids(dw[PAST + "|S"].lessons).includes("C_ann_" + PAST), false);
   const src = rmWeekMap();
-  const srcOut = deleteStudentWeekly(src, "ann");
+  const srcOut = inlineDeleteWeekly(src, "ann");
   assert("removal char: OLD delete — the band is the same object",
     srcOut[PAST + "|S"].lessons.find(l => l.isBandSession) === src[PAST + "|S"].lessons.find(l => l.isBandSession), true);
-  const bw = deleteStudentWeekly(rmWeekMap(), "ben");
+  const bw = inlineDeleteWeekly(rmWeekMap(), "ben");
   assert("removal char: OLD delete — a non-first member leaves the group card in place, still listing them",
     bw[PAST + "|S"].lessons.find(l => l.groupId === "G3").studentIds, ["ann", "ben", "cat"]);
 
@@ -195,4 +194,176 @@ export function runStudentRemovalCharacterizationTests(assert) {
   const eg = endEnrolmentWeekly(rmWeekMap(), "e_ann_g3", RM_TODAY);
   assert("removal char: end — the group card linked to that enrolment goes from future weeks, for every member",
     ids(eg[FUT + "|S"].lessons).some(id => id.startsWith("M_G3")), false);
+}
+
+// ── Delete permanently (deleteStudentCascade) ─────────────────────────────
+const SCHOOL_S = { id: "S", name: "School S" };
+const TEACHERS = [{ id: "t1", name: "Teacher One" }];
+const ARCHIVED_ON = "2099-03-04";   // Wednesday of the PAST week
+
+// The inputs App passes: plan lists before the delete, today's date.
+const ctxFor = (sid, groups) => ({ studentId: sid, archiveDate: RM_TODAY, termBreaks: RM_TERM_BREAKS,
+  groups, students: RM_STUDENTS, enrolments: RM_ENROL });
+
+// The state a child archived on the v2.49.17 path leaves (archived midweek in
+// the PAST week), or the untouched fixture for a child archived on the old path.
+function stateFor(sid, archivedNewPath) {
+  const master = rmMaster(), wtt = rmWeekMap();
+  if (!archivedNewPath) return { groups: RM_GROUPS, lessons: master.lessons, unscheduled: master.unscheduled, wtt };
+  const r = archiveStudentCascade({ studentId: sid, archiveDate: ARCHIVED_ON, termBreaks: RM_TERM_BREAKS,
+    groups: RM_GROUPS, students: RM_STUDENTS, enrolments: RM_ENROL,
+    lessons: master.lessons, unscheduled: master.unscheduled, weeklyTimetables: wtt });
+  return { groups: r.groups, lessons: r.lessons, unscheduled: r.unscheduled, wtt: r.weeklyTimetables };
+}
+
+// Delete as App runs it: one call per collection, each on that setter's value.
+function runDelete(sid, archivedNewPath) {
+  const st = stateFor(sid, archivedNewPath);
+  const ctx = ctxFor(sid, st.groups);
+  const g = deleteStudentCascade({ ...ctx, groupsToUpdate: st.groups });
+  const m = deleteStudentCascade({ ...ctx, lessons: st.lessons, unscheduled: st.unscheduled });
+  const w = deleteStudentCascade({ ...ctx, weeklyTimetables: st.wtt });
+  return { before: st, groups: g.groups, lessons: m.lessons, unscheduled: m.unscheduled, wtt: w.weeklyTimetables };
+}
+
+const studentsWithout = (sid) => RM_STUDENTS.filter(s => s.id !== sid);
+const enrolWithout = (sid) => RM_ENROL.filter(e => e.studentId !== sid);
+const groupCard = (lessons, gid) => (lessons || []).find(l => l.groupId === gid && !l.isBandSession);
+const bandOf = (entry) => (entry.lessons || []).find(l => l.isBandSession);
+const generateFor = (lessons, sid, wk) => generateWeeklyTimetable(lessons, SCHOOL_S, studentsWithout(sid), TEACHERS,
+  [], [], lweekDates(wk), [], [], [], enrolWithout(sid));
+const importFor = (lessons, sid, wk) => buildMttImportForWeekSchool({ mtt: { lessons }, schoolId: "S",
+  weekDates: lweekDates(wk), existingEntry: null, enrolments: enrolWithout(sid), dropBands: true, catchups: [] });
+const mentionsAnywhere = (list, sid) => (list || []).some(l => l.studentId === sid);
+
+export function runDeleteStudentTests(assert) {
+  const ALL = [PAST, CUR, FUT, FUT2];
+
+  // Solo child (Amy), archived on the new path.
+  {
+    const r = runDelete("amy", true);
+    assert("delete solo: master card and unscheduled entry gone",
+      [ids(r.lessons).includes("M_amy"), ids(r.unscheduled)], [false, ["U_ben"]]);
+    assert("delete solo: no lesson for the child in any week, past included",
+      ALL.map(k => mentionsAnywhere(r.wtt[k + "|S"].lessons, "amy")), [false, false, false, false]);
+    assert("delete solo: no missed entry for the child in any week, past included",
+      ALL.map(k => mentionsAnywhere(r.wtt[k + "|S"].missed, "amy")), [false, false, false, false]);
+    assert("delete solo: every group card is the same object in every week",
+      ALL.every(k => ["G3", "G2", "G1", "G5"].every(gid => groupCard(r.wtt[k + "|S"].lessons, gid) === groupCard(r.before.wtt[k + "|S"].lessons, gid))), true);
+    assert("delete solo: the other school's rows are the same objects",
+      ALL.every(k => r.wtt[k + "|T"] === r.before.wtt[k + "|T"]), true);
+    assert("delete solo: the empty slot in the map stays empty", r.wtt["2099-03-30|T"], null);
+    assert("delete solo: group records are the same objects", r.groups.every((g, i) => g === r.before.groups[i]), true);
+  }
+
+  // First-listed member (Ann), archived on the new path.
+  {
+    const r = runDelete("ann", true);
+    const pastBefore = groupCard(r.before.wtt[PAST + "|S"].lessons, "G3");
+    const pastAfter = groupCard(r.wtt[PAST + "|S"].lessons, "G3");
+    assert("delete first-listed: the group's PAST week card is kept", !!pastAfter, true);
+    assert("delete first-listed: PAST card changed only in studentId, re-pointed to the next member",
+      pastAfter, { ...pastBefore, studentId: "ben" });
+    assert("delete first-listed: PAST card still names the child as history",
+      [pastAfter.studentIds, pastAfter.studentNames], [["ann", "ben", "cat"], ["Ann Arden", "Ben Bray", "Cat Cole"]]);
+    const missBefore = r.before.wtt[PAST + "|S"].missed.find(m => m.groupId === "G3");
+    assert("delete first-listed: PAST group missed entry kept, only studentId re-pointed",
+      r.wtt[PAST + "|S"].missed.find(m => m.groupId === "G3"), { ...missBefore, studentId: "ben" });
+    assert("delete first-listed: the child's private lesson, catch-up and missed entries are gone from PAST",
+      [ids(r.wtt[PAST + "|S"].lessons).includes("M_ann_" + PAST), ids(r.wtt[PAST + "|S"].lessons).includes("C_ann_" + PAST),
+        ids(r.wtt[PAST + "|S"].missed).includes("X_ann_" + PAST)], [false, false, false]);
+    assert("delete first-listed: every week still has the group card",
+      ALL.map(k => !!groupCard(r.wtt[k + "|S"].lessons, "G3")), [true, true, true, true]);
+    assert("delete first-listed: no card in any week has the child as its studentId",
+      ALL.some(k => mentionsAnywhere(r.wtt[k + "|S"].lessons, "ann") || mentionsAnywhere(r.wtt[k + "|S"].missed, "ann")), false);
+    const m = groupCard(r.lessons, "G3");
+    assert("delete first-listed: master group card lists the others, on their enrolment",
+      [m.studentId, m.studentIds, m.enrolmentId], ["ben", ["ben", "cat"], "e_ben_g3"]);
+    assert("delete first-listed: group record lists the others", r.groups.find(g => g.id === "G3").studentIds, ["ben", "cat"]);
+    const gc = groupCard(generateFor(r.lessons, "ann", FUT2).lessons, "G3");
+    assert("delete first-listed: Generate for a future week puts the group card in with the others",
+      gc ? [gc.studentIds, gc.studentId] : null, [["ben", "cat"], "ben"]);
+    const ic = groupCard(importFor(r.lessons, "ann", FUT2).entry.lessons, "G3");
+    assert("delete first-listed: Import for a future week puts the group card in with the others",
+      ic ? [ic.studentIds, ic.studentId] : null, [["ben", "cat"], "ben"]);
+  }
+
+  // Non-first member (Ben), archived on the new path.
+  {
+    const r = runDelete("ben", true);
+    assert("delete non-first: the PAST group card is the same object, still listing the child",
+      [groupCard(r.wtt[PAST + "|S"].lessons, "G3") === groupCard(r.before.wtt[PAST + "|S"].lessons, "G3"),
+        groupCard(r.wtt[PAST + "|S"].lessons, "G3").studentIds], [true, ["ann", "ben", "cat"]]);
+    assert("delete non-first: master group card and record list the others",
+      [groupCard(r.lessons, "G3").studentIds, r.groups.find(g => g.id === "G3").studentIds], [["ann", "cat"], ["ann", "cat"]]);
+    assert("delete non-first: unscheduled entry gone", ids(r.unscheduled), ["U_amy"]);
+  }
+
+  // The member whose enrolment the group card is linked to (Libby, second in
+  // G2, whose group sits in a band), archived on the new path.
+  {
+    const r = runDelete("libby", true);
+    assert("delete enrolment-linked: PAST group card is the same object (its studentId is Ivy)",
+      groupCard(r.wtt[PAST + "|S"].lessons, "G2") === groupCard(r.before.wtt[PAST + "|S"].lessons, "G2"), true);
+    const m = groupCard(r.lessons, "G2");
+    assert("delete enrolment-linked: master card is a group of one on Ivy's enrolment",
+      [m.isGroup, m.studentIds, m.enrolmentId], [true, ["ivy"], "e_ivy_g2"]);
+    const gc = groupCard(generateFor(r.lessons, "libby", FUT2).lessons, "G2");
+    assert("delete enrolment-linked: Generate for a future week puts the group card in with Ivy",
+      gc ? gc.studentIds : null, ["ivy"]);
+    const ic = groupCard(importFor(r.lessons, "libby", FUT2).entry.lessons, "G2");
+    assert("delete enrolment-linked: Import for a future week puts the group card in with Ivy",
+      ic ? ic.studentIds : null, ["ivy"]);
+  }
+
+  // A child archived on the OLD path (Olga), still listed in G5 and on every card.
+  {
+    const r = runDelete("olga", false);
+    assert("delete old-path: group record no longer lists the child", r.groups.find(g => g.id === "G5").studentIds, ["pat"]);
+    assert("delete old-path: master and future cards list the remaining member",
+      [groupCard(r.lessons, "G5").studentIds, ...[FUT, FUT2].map(k => groupCard(r.wtt[k + "|S"].lessons, "G5").studentIds)],
+      [["pat"], ["pat"], ["pat"]]);
+    for (const k of [PAST, CUR]) {
+      const before = groupCard(r.before.wtt[k + "|S"].lessons, "G5");
+      assert(`delete old-path: ${k === PAST ? "past" : "current"} week card changed only in studentId`,
+        groupCard(r.wtt[k + "|S"].lessons, "G5"), { ...before, studentId: "pat" });
+    }
+    const gc = groupCard(generateFor(r.lessons, "olga", FUT2).lessons, "G5");
+    assert("delete old-path: Generate for a future week puts the group card in with the remaining member",
+      gc ? gc.studentIds : null, ["pat"]);
+    const ic = groupCard(importFor(r.lessons, "olga", FUT2).entry.lessons, "G5");
+    assert("delete old-path: Import for a future week puts the group card in with the remaining member",
+      ic ? ic.studentIds : null, ["pat"]);
+    // First-listed child on the old path: past and current cards re-pointed only.
+    const a = runDelete("ann", false);
+    assert("delete old-path first-listed: past and current group cards re-pointed, still naming the child",
+      [PAST, CUR].map(k => { const c = groupCard(a.wtt[k + "|S"].lessons, "G3"); return [c.studentId, c.studentIds]; }),
+      [["ben", ["ann", "ben", "cat"]], ["ben", ["ann", "ben", "cat"]]]);
+    // A group record still listing the child that the plan does not know about.
+    const stale = deleteStudentCascade({ ...ctxFor("olga", RM_GROUPS.map(g => g.id === "G5" ? { ...g, studentIds: ["pat"] } : g)),
+      groupsToUpdate: RM_GROUPS });
+    assert("delete old-path: the child's id comes off a group record the archive plan missed",
+      stale.groups.find(g => g.id === "G5").studentIds, ["pat"]);
+  }
+
+  // Group of one (Zoe in G1): no other member to re-point to.
+  {
+    const r = runDelete("zoe", false);
+    assert("delete group of one: group record deleted", r.groups.some(g => g.id === "G1"), false);
+    assert("delete group of one: the card goes from the master and every week, past included",
+      [!!groupCard(r.lessons, "G1"), ...ALL.map(k => !!groupCard(r.wtt[k + "|S"].lessons, "G1"))], [false, false, false, false, false]);
+  }
+
+  // Bands and other children untouched by every delete.
+  for (const [sid, newPath] of [["amy", true], ["ann", true], ["ben", true], ["libby", true], ["olga", false], ["zoe", false]]) {
+    const r = runDelete(sid, newPath);
+    assert(`delete ${sid}: the band session (and its ledger) is the same object in every week`,
+      ALL.every(k => bandOf(r.wtt[k + "|S"]) === bandOf(r.before.wtt[k + "|S"])), true);
+    assert(`delete ${sid}: other children's solo missed entries are the same objects`,
+      ALL.every(k => r.wtt[k + "|S"].missed.filter(m => !m.isGroup && m.studentId !== sid)
+        .every(m => r.before.wtt[k + "|S"].missed.includes(m))), true);
+    assert(`delete ${sid}: no solo card or solo missed entry for the child remains anywhere`,
+      ALL.some(k => [...r.wtt[k + "|S"].lessons, ...r.wtt[k + "|S"].missed].some(l => !l.isGroup && !l.isBandSession && l.studentId === sid))
+        || r.lessons.some(l => !l.isGroup && l.studentId === sid), false);
+  }
 }

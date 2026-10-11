@@ -26,7 +26,7 @@ import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
-import { deleteStudentMaster, deleteStudentWeekly, endEnrolmentMaster, endEnrolmentWeekly } from "./utils/studentRemovalCascade";
+import { deleteStudentCascade, endEnrolmentMaster, endEnrolmentWeekly } from "./utils/studentRemovalCascade";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
@@ -2845,6 +2845,27 @@ export default function MusicTimetableApp() {
       return { ...prev, lessons: r.lessons, unscheduled: r.unscheduled };
     });
     setWeeklyTimetables(prev => archiveStudentCascade({ ...ctx, weeklyTimetables: prev }).weeklyTimetables);
+  };
+
+  // ── Delete cascade — Delete permanently on the Students page ──────────
+  // The archive cascade first, then: group cards are never removed for the
+  // child (a first-listed child's cards are re-pointed to the next member, in
+  // every week), and the child's solo cards and missed entries go from every
+  // week. See utils/studentRemovalCascade. Same per-setter pattern as above.
+  const applyDeleteCascade = (studentId) => {
+    const ctx = {
+      studentId,
+      archiveDate: melbourneToday(),
+      termBreaks: interruptions.filter(i => i.type === "term_break"),
+      groups, students, enrolments,
+    };
+    setGroups(prev => deleteStudentCascade({ ...ctx, groupsToUpdate: prev }).groups);
+    if (timetable) setTimetable(prev => {
+      if (!prev) return prev;
+      const r = deleteStudentCascade({ ...ctx, lessons: prev.lessons || [], unscheduled: prev.unscheduled || [] });
+      return { ...prev, lessons: r.lessons, unscheduled: r.unscheduled };
+    });
+    setWeeklyTimetables(prev => deleteStudentCascade({ ...ctx, weeklyTimetables: prev }).weeklyTimetables);
   };
 
   // ── Claude system prompt builder ─────────────────────────────
@@ -6323,9 +6344,9 @@ export default function MusicTimetableApp() {
               // their Tally history.
               applyArchiveCascade(id);
             }} onDeleteStudent={(id) => {
-              // Same timetable cleanup as archive — student record is fully removed
-              if (timetable) setTimetable(prev => deleteStudentMaster(prev, id));
-              setWeeklyTimetables(prev => deleteStudentWeekly(prev, id));
+              // Student record and enrolments are removed by StudentsManager;
+              // cards and group records here (applyDeleteCascade).
+              applyDeleteCascade(id);
             }} onEndEnrolment={(enrolmentId, endDate) => {
               // Clear MTT + WTT cards stamped with this enrolmentId: master
               // outright, weekly only for weeks starting after the end date.
