@@ -50,7 +50,10 @@ export function mapImportedClasses(rows, known) {
       if (m.status === "mapped") mapping.push({ from: imported, to: m.name });
       if (m.status === "unmatched" || m.status === "ambiguous") unmatched.push(imported);
     }
-    return { ...r, importedClass: imported, className: m.name };
+    // autoClass = what the mapping chose; committedClass = the class as last
+    // committed; classHandled = set by hand or filled from a hand edit;
+    // classHandEdited = the owner typed or picked this row's class.
+    return { ...r, importedClass: imported, className: m.name, autoClass: m.name, committedClass: m.name, classHandled: false, classHandEdited: false };
   });
   return { rows: out, mapping, unmatched };
 }
@@ -121,4 +124,63 @@ export function hasTimes(row) {
 
 export function countRowsNeedingTimes(rows) {
   return (rows || []).filter(r => !hasTimes(r)).length;
+}
+
+// ── Review hand edits (v2.49.23) ──
+
+// A row is outlined amber only while its class matches no student AND the
+// owner hasn't set it by hand.
+export function needsClassAttention(row, known) {
+  return !!row && !row.classHandled && isUnmatchedClass(row.className, known);
+}
+
+// Imported codes that still have rows needing attention (the "No matching
+// student class" line), each once, in row order.
+export function unhandledUnmatchedCodes(rows, known) {
+  const out = [];
+  for (const r of rows || []) {
+    if (!needsClassAttention(r, known)) continue;
+    const code = r.importedClass != null ? r.importedClass : r.className;
+    if (!out.includes(code)) out.push(code);
+  }
+  return out;
+}
+
+// The owner committed a class on row `idx` (blur, Enter or the dropdown);
+// keystrokes have already put the typed text in row.className. The row is
+// then set by hand (classHandEdited) and never amber again. If it came from
+// an unmatched imported code, every other row of that code still showing the
+// row's previous value — untouched rows, or rows filled by an earlier edit —
+// gets the same value; rows the owner typed into themselves are left alone.
+// Returns { rows, changedOthers, from, to }.
+export function applyClassEdit(rows, idx, value, known) {
+  const row = rows[idx];
+  const none = { rows, changedOthers: 0, from: null, to: null };
+  if (!row) return none;
+  const next = String(value == null ? row.className : value).trim();
+  const auto = row.autoClass != null ? row.autoClass : row.className;
+  const prev = row.committedClass != null ? row.committedClass : auto;
+  if (next === prev && (row.classHandled || next === auto)) {
+    return row.className === next ? none : { ...none, rows: rows.map((r, i) => (i === idx ? { ...r, className: next } : r)) };
+  }
+  const code = row.importedClass != null ? row.importedClass : auto;
+  const spread = isUnmatchedClass(auto, known);
+  let changedOthers = 0;
+  const out = rows.map((r, i) => {
+    if (i === idx) return { ...r, className: next, committedClass: next, classHandled: true, classHandEdited: true };
+    if (spread && !r.classHandEdited && r.importedClass === code && r.className === prev) {
+      changedOthers++;
+      return { ...r, className: next, committedClass: next, classHandled: true };
+    }
+    return r;
+  });
+  return { rows: out, changedOthers, from: prev, to: next };
+}
+
+// Why Import is greyed out, as short lines shown beside the button.
+export function importDisabledReasons({ existingCount = 0, mode = null, needTimes = 0 } = {}) {
+  const reasons = [];
+  if (existingCount > 0 && !mode) reasons.push("Choose Replace or Add above");
+  if (needTimes > 0) reasons.push(`${needTimes} row${needTimes === 1 ? " needs" : "s need"} times`);
+  return reasons;
 }

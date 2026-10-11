@@ -53,7 +53,7 @@ import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 import { runPolyfillTests } from "./polyfillsSmokeTests";
-import { runClassMappingTests, runReplaceSwapTests, runInstructionsMapTests, runBlankTimeTests } from "./specialistImportSmokeTests";
+import { runClassMappingTests, runReplaceSwapTests, runInstructionsMapTests, runBlankTimeTests, runReviewEditTests } from "./specialistImportSmokeTests";
 import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests, runSpecialistNonGridTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -538,6 +538,7 @@ export function runSmokeTests(logErrorFn) {
   runReplaceSwapTests(assert);
   runInstructionsMapTests(assert);
   runBlankTimeTests(assert);
+  runReviewEditTests(assert);
 
   if (pending.length > 0) Promise.all(pending).then(() => reportSmokeResults(results, logErrorFn));
   else reportSmokeResults(results, logErrorFn);

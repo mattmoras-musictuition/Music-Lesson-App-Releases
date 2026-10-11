@@ -3,7 +3,8 @@
 // Called from runSmokeTests with its `assert`.
 // ============================================================
 
-import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes } from "../utils/specialistImport";
+import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes,
+  needsClassAttention, unhandledUnmatchedCodes, applyClassEdit, importDisabledReasons } from "../utils/specialistImport";
 
 const stu = (className, schoolId = "ebps", status = "active") => ({ id: className + schoolId + status, schoolId, className, status });
 
@@ -103,4 +104,58 @@ export function runBlankTimeTests(assert) {
   assert("times: count rows needing times", countRowsNeedingTimes([{ start: "09:00", end: "10:00" }, { start: "", end: "" }, { start: "11:00" }, { end: "12:00" }]), 3);
   assert("times: none needing", countRowsNeedingTimes([{ start: "09:00", end: "10:00" }]), 0);
   assert("times: empty list", countRowsNeedingTimes([]), 0);
+}
+
+// Review hand edits (v2.49.23): amber clears once the owner sets a class,
+// the value fills the other rows of the same unmatched code, the summary
+// shrinks, and a greyed-out Import says why.
+export function runReviewEditTests(assert) {
+  const known = ["3/4D", "5/6P", "5L"];
+  // Students lack the "3/4D" style here so 34D stays unmatched.
+  const known2 = ["5/6P", "5L"];
+  const base = mapImportedClasses([
+    { id: "1", className: "34D" }, { id: "2", className: "34D" }, { id: "3", className: "PES" },
+    { id: "4", className: "34D" }, { id: "5", className: "5L" }, { id: "6", className: "PES" },
+  ], known2).rows;
+  assert("edit: starts amber on unmatched rows", base.map(r => needsClassAttention(r, known2)), [true, true, true, true, false, true]);
+  assert("edit: summary lists unmatched codes", unhandledUnmatchedCodes(base, known2), ["34D", "PES"]);
+
+  // Owner types "3/4D" into row 0 (keystrokes) then presses Enter.
+  const typed = base.map((r, i) => (i === 0 ? { ...r, className: "3/4D" } : r));
+  const e1 = applyClassEdit(typed, 0, undefined, known2);
+  assert("edit: same-code rows filled", e1.rows.map(r => r.className), ["3/4D", "3/4D", "PES", "3/4D", "5L", "PES"]);
+  assert("edit: count and toast values", [e1.changedOthers, e1.from, e1.to], [2, "34D", "3/4D"]);
+  assert("edit: amber cleared even though 3/4D matches no student", e1.rows.map(r => needsClassAttention(r, known2)), [false, false, true, false, false, true]);
+  assert("edit: other codes untouched", [e1.rows[2], e1.rows[5]], [base[2], base[5]]);
+  assert("edit: summary shrinks", unhandledUnmatchedCodes(e1.rows, known2), ["PES"]);
+
+  // Owner hand-types row 3 to "3/4X", then corrects row 0 to "3/4E":
+  // rows filled from row 0 follow; row 3 (typed by hand) is not overwritten.
+  const t2 = e1.rows.map((r, i) => (i === 3 ? { ...r, className: "3/4X" } : r));
+  const e2 = applyClassEdit(t2, 3, undefined, known2);
+  // Row 3 was filled from row 0: editing it moves the other filled row (1)
+  // with it, but not row 0, which the owner typed.
+  assert("edit: filled rows follow a later edit", [e2.changedOthers, e2.rows.map(r => r.className)], [1, ["3/4D", "3/4X", "PES", "3/4X", "5L", "PES"]]);
+  const e3 = applyClassEdit(e2.rows, 0, "3/4E", known2);
+  assert("edit: hand-edited rows not overwritten", [e3.changedOthers, e3.rows.map(r => r.className)], [0, ["3/4E", "3/4X", "PES", "3/4X", "5L", "PES"]]);
+
+  // Dropdown pick on a PES row fills the other PES row; summary empties.
+  const e4 = applyClassEdit(e3.rows, 2, "P/1M", known2);
+  assert("edit: dropdown pick fills same code", [e4.changedOthers, e4.rows[5].className], [1, "P/1M"]);
+  assert("edit: summary empties", unhandledUnmatchedCodes(e4.rows, known2), []);
+
+  // No change on blur: nothing happens, row stays amber.
+  const same = applyClassEdit(base, 0, undefined, known2);
+  assert("edit: blur without change is a no-op", [same.rows === base, needsClassAttention(same.rows[0], known2)], [true, true]);
+  // Editing a matched row never fills other rows.
+  const mapped = mapImportedClasses([{ id: "a", className: "34D" }, { id: "b", className: "34D" }], known).rows;
+  const e5 = applyClassEdit(mapped.map((r, i) => (i === 0 ? { ...r, className: "3/4E" } : r)), 0, undefined, known);
+  assert("edit: matched rows don't spread", [e5.changedOthers, e5.rows.map(r => r.className)], [0, ["3/4E", "3/4D"]]);
+  assert("edit: no school names → never amber", needsClassAttention({ className: "34D" }, []), false);
+
+  assert("disabled: needs a choice", importDisabledReasons({ existingCount: 166, mode: null, needTimes: 0 }), ["Choose Replace or Add above"]);
+  assert("disabled: needs times (1)", importDisabledReasons({ existingCount: 0, needTimes: 1 }), ["1 row needs times"]);
+  assert("disabled: both", importDisabledReasons({ existingCount: 166, mode: null, needTimes: 3 }), ["Choose Replace or Add above", "3 rows need times"]);
+  assert("disabled: choice made, times fine", importDisabledReasons({ existingCount: 166, mode: "replace", needTimes: 0 }), []);
+  assert("disabled: new school, times fine", importDisabledReasons({ existingCount: 0, mode: null, needTimes: 0 }), []);
 }

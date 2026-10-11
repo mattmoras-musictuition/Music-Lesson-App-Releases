@@ -10,7 +10,7 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCu
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
-import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes } from "../utils/specialistImport";
+import { knownClassNames, mapImportedClasses, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes, needsClassAttention, unhandledUnmatchedCodes, applyClassEdit, importDisabledReasons } from "../utils/specialistImport";
 import { loadSpecialistsFromSupabase, saveReplacedSpecialistsBackup, loadSpecialistImportInstructions, saveSpecialistImportInstructions } from "../utils/specialistsDB";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
@@ -522,6 +522,16 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
     setUpdateInstructions("");
   };
 
+  // A class edit is committed on blur, Enter or a dropdown pick (never per
+  // keystroke); the same value then fills the other rows of that unmatched code.
+  const commitPreviewClass = (idx, value) => {
+    if (!preview) return;
+    const r = applyClassEdit(preview.entries, idx, value, preview.knownClasses);
+    if (r.rows === preview.entries) return;
+    setPreview(prev => ({ ...prev, entries: r.rows }));
+    if (r.changedOthers > 0) notify(`Changed ${r.changedOthers + 1} rows from ${r.from} to ${r.to}`);
+  };
+
     const updatePreviewEntry = (idx, key, val) => {
     setPreview(prev => { const entries = [...prev.entries]; entries[idx] = { ...entries[idx], [key]: val }; return { ...prev, entries }; });
   };
@@ -930,22 +940,26 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
           );
         })()}
 
-        {((preview.mapping || []).length > 0 || (preview.unmatched || []).length > 0) && (
+        {(() => {
+          const stillUnmatched = unhandledUnmatchedCodes(preview.entries, preview.knownClasses);
+          if ((preview.mapping || []).length === 0 && stillUnmatched.length === 0) return null;
+          return (
           <Card style={{ marginBottom: 16, fontSize: 13 }}>
             {(preview.mapping || []).length > 0 && (
-              <div style={{ marginBottom: (preview.unmatched || []).length > 0 ? 8 : 0 }}>
+              <div style={{ marginBottom: stillUnmatched.length > 0 ? 8 : 0 }}>
                 <span style={{ fontWeight: 600, color: colors.textLight }}>Class names matched to this school's students: </span>
                 {preview.mapping.map(m => <span key={m.from} style={{ display: "inline-block", marginRight: 12, whiteSpace: "nowrap" }}>{m.from} → {m.to}</span>)}
               </div>
             )}
-            {(preview.unmatched || []).length > 0 && (
+            {stillUnmatched.length > 0 && (
               <div style={{ color: "#B45309" }}>
-                <span style={{ fontWeight: 600 }}>No matching student class: </span>{preview.unmatched.join(", ")}
-                <span style={{ color: colors.textMuted }}> — outlined in amber below; pick a class or type one. They can still be imported.</span>
+                <span style={{ fontWeight: 600 }}>No matching student class: </span>{stillUnmatched.join(", ")}
+                <span style={{ color: colors.textMuted }}> — outlined in amber below; pick a class or type one (it fills every row with the same code). They can still be imported.</span>
               </div>
             )}
           </Card>
-        )}
+          );
+        })()}
 
         <Card style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
           <div style={{ maxHeight: 500, overflowY: "auto" }}>
@@ -962,14 +976,15 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
                   <tr key={entry.id} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                     <td style={{ padding: "6px 12px" }}>
                       {(() => {
-                        const unmatched = isUnmatchedClass(entry.className, preview.knownClasses);
+                        const unmatched = needsClassAttention(entry, preview.knownClasses);
                         return (
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                             <input value={entry.className} onChange={e => updatePreviewEntry(i, "className", e.target.value)}
+                              onBlur={() => commitPreviewClass(i)} onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
                               title={unmatched ? "No active student at this school has this class name" : undefined}
                               style={{ width: "100%", minWidth: 60, padding: "4px 8px", border: unmatched ? "2px solid #F59E0B" : `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
                             {unmatched && (
-                              <select value="" onChange={e => { if (e.target.value) updatePreviewEntry(i, "className", e.target.value); }}
+                              <select value="" onChange={e => { if (e.target.value) commitPreviewClass(i, e.target.value); }}
                                 style={{ padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 12, fontFamily: "inherit", maxWidth: 110 }}>
                                 <option value="">Pick…</option>
                                 {preview.knownClasses.map(c => <option key={c} value={c}>{c}</option>)}
@@ -1012,11 +1027,12 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
             const existingCount = preview.schoolId ? specialists.filter(s => s.schoolId === preview.schoolId).length : 0;
             const needsChoice = existingCount > 0 && !preview.mode;
             const needTimes = countRowsNeedingTimes(preview.entries);
+            const reasons = importDisabledReasons({ existingCount, mode: preview.mode, needTimes });
             const label = existingCount > 0 && preview.mode === "replace" ? `✓ Replace ${existingCount} with ${preview.entries.length} Entries` : `✓ Import ${preview.entries.length} Entries`;
             return (
               <>
                 <Btn onClick={confirmImport} disabled={!preview.schoolId || needsChoice || needTimes > 0 || replacing}>{replacing ? "Replacing…" : label}</Btn>
-                {needTimes > 0 && <span style={{ fontSize: 13, color: colors.danger, alignSelf: "center" }}>{needTimes} row{needTimes === 1 ? " needs" : "s need"} times</span>}
+                {reasons.length > 0 && <span style={{ fontSize: 13, color: colors.danger, alignSelf: "center" }}>{reasons.join(" · ")}</span>}
               </>
             );
           })()}
