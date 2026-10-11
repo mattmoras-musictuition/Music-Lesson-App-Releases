@@ -26,6 +26,7 @@ import { loadTemporaryLanesFromSupabase } from "./utils/temporaryLanesDB";
 import { loadStudentsFromSupabase, syncStudentsToSupabase } from "./utils/studentsDB";
 import { loadEnrolmentsFromSupabase, syncEnrolmentsToSupabase, enrolmentIdFor, stampEnrolmentIds, instrumentsFromEnrolments } from "./utils/enrolmentsDB";
 import { syncEnrolmentsFromInstruments } from "./utils/enrolmentSync";
+import { deleteStudentMaster, deleteStudentWeekly, endEnrolmentMaster, endEnrolmentWeekly } from "./utils/studentRemovalCascade";
 import { runSpec1Commit5Transform } from "./utils/migrations/spec1c5";
 import { loadContactsFromSupabase, syncContactsToSupabase } from "./utils/contactsDB";
 import { loadGroupsFromSupabase, syncGroupsToSupabase } from "./utils/groupsDB";
@@ -6323,67 +6324,14 @@ export default function MusicTimetableApp() {
               applyArchiveCascade(id);
             }} onDeleteStudent={(id) => {
               // Same timetable cleanup as archive — student record is fully removed
-              if (timetable) setTimetable(prev => ({ ...prev, lessons: (prev.lessons || []).filter(l => l.studentId !== id), unscheduled: (prev.unscheduled || []).filter(u => u.student?.id !== id) }));
-              setWeeklyTimetables(prev => {
-                const next = { ...prev };
-                for (const key of Object.keys(next)) {
-                  const entry = next[key];
-                  if (!entry) continue;
-                  next[key] = { ...entry, lessons: (entry.lessons || []).filter(l => l.studentId !== id) };
-                }
-                return next;
-              });
+              if (timetable) setTimetable(prev => deleteStudentMaster(prev, id));
+              setWeeklyTimetables(prev => deleteStudentWeekly(prev, id));
             }} onEndEnrolment={(enrolmentId, endDate) => {
-              // Clear MTT + WTT cards stamped with this enrolmentId. Per Spec §17,
-              // post-migration cards carry enrolmentId; the five WTT creation sites
-              // deferred to Commit 4 may still produce enrolmentId:undefined cards,
-              // which this filter won't clear — expected until Commit 4 stamps them.
-              //
-              // The MASTER timetable is forward-looking by nature — it is the
-              // template, not a record of what was taught — so ending an enrolment
-              // still clears its master card outright.
-              if (timetable) {
-                setTimetable(prev => ({
-                  ...prev,
-                  lessons: (prev.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
-                  unscheduled: (prev.unscheduled || []).filter(u => u.enrolmentId !== enrolmentId),
-                }));
-              }
-              // v2.34.0 — the WEEKLY purge is now bounded. It used to strip
-              // matching lessons and missed entries from EVERY week, including
-              // weeks already taught and already invoiced, destroying tally marks
-              // as a side effect of ending an enrolment. Only weeks that start
-              // strictly after the end date are cleared.
-              //
-              // The boundary week — the week CONTAINING the end date — is KEPT in
-              // full. This code operates at week granularity (entries carry a day
-              // NAME, not a date, so a part-week purge is not expressible here),
-              // and keeping it is both the safe direction and the one that agrees
-              // with the tally: deriveTallyCell dashes a week only when
-              // `week.weekKey > enrolment.endDate`, so the boundary week still
-              // renders as active there. Clearing it would leave an active-looking
-              // week blank for lessons that were genuinely taught.
-              //
-              // Same comparison, same week-key idiom already used at App.js:2441 —
-              // the storage key's leading segment IS the Monday, and both sides are
-              // YYYY-MM-DD, so a plain string compare is the date compare.
-              setWeeklyTimetables(prev => {
-                const next = { ...prev };
-                for (const key of Object.keys(next)) {
-                  const entry = next[key];
-                  if (!entry) continue;
-                  const weekKey = key.split("|")[0]; // monday of that week
-                  // No end date supplied → fall back to the old clear-everything
-                  // behaviour rather than silently skipping the cascade.
-                  if (endDate && !(weekKey > endDate)) continue;
-                  next[key] = {
-                    ...entry,
-                    lessons: (entry.lessons || []).filter(l => l.enrolmentId !== enrolmentId),
-                    missed:  (entry.missed  || []).filter(m => m.enrolmentId !== enrolmentId),
-                  };
-                }
-                return next;
-              });
+              // Clear MTT + WTT cards stamped with this enrolmentId: master
+              // outright, weekly only for weeks starting after the end date.
+              // See utils/studentRemovalCascade.
+              if (timetable) setTimetable(prev => endEnrolmentMaster(prev, enrolmentId));
+              setWeeklyTimetables(prev => endEnrolmentWeekly(prev, enrolmentId, endDate));
             }} />}
           {page === "studentnotes" && <StudentNotesView students={students} groups={groups} schools={schools} teachers={teachers} enrolments={enrolments} timetable={timetable} teacherCoverage={teacherCoverage} interruptions={interruptions} />}
           {page === "teachers" && <TeachersManager teachers={teachers} setTeachers={setTeachers} schools={schools} notify={notify} resetKey={resetKey} viewState={teachersViewState} setViewState={setTeachersViewState} goBack={goBack} goForward={goForward} historyCursor={historyCursor} pageHistory={pageHistory} onAddMemory={onAddMemory} />}
