@@ -10,7 +10,7 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCu
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
-import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions } from "../utils/specialistImport";
+import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes } from "../utils/specialistImport";
 import { loadSpecialistsFromSupabase, saveReplacedSpecialistsBackup, loadSpecialistImportInstructions, saveSpecialistImportInstructions } from "../utils/specialistsDB";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
@@ -309,6 +309,8 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
 
   const confirmImport = async () => {
     if (!preview || replacing) return;
+    const needTimes = countRowsNeedingTimes(preview.entries);
+    if (needTimes > 0) { notify(`${needTimes} row${needTimes === 1 ? " needs" : "s need"} a start and end time — fill them in or remove the row${needTimes === 1 ? "" : "s"}.`, "warning"); return; }
     const valid = preview.entries.filter(e => e.schoolId && e.className && e.day && e.subject).map(toSpecialistEntry);
     if (valid.length === 0) { notify("No valid entries. Make sure a school is selected.", "warning"); return; }
     const existingCount = specialists.filter(s => s.schoolId === preview.schoolId).length;
@@ -389,7 +391,10 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
         end: (e.end || "").trim(), subject: normalizeSubject((e.subject || "").trim()), notes: ""
       })).filter(e => e.className && e.day && e.subject);
       // Same class-name mapping as Import, before comparing with existing entries.
-      const newEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
+      const mappedEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
+      // Entries need a start and an end; rows without them are left out.
+      const newEntries = mappedEntries.filter(hasTimes);
+      if (newEntries.length < mappedEntries.length) notify(`Skipped ${mappedEntries.length - newEntries.length} row(s) with no start or end time.`, "warning");
 
       // Build diff: compare new vs existing
       const key = e => e.className + "|" + e.day + "|" + e.start + "|" + e.end + "|" + e.subject;
@@ -460,7 +465,10 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
         end: (e.end || "").trim(), subject: normalizeSubject((e.subject || "").trim()), notes: ""
       })).filter(e => e.className && e.day && e.subject);
       // Same class-name mapping as Import, before comparing with existing entries.
-      const newEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
+      const mappedEntries = mapImportedClasses(extractedEntries, knownClassNames(students, schoolId)).rows.map(toSpecialistEntry);
+      // Entries need a start and an end; rows without them are left out.
+      const newEntries = mappedEntries.filter(hasTimes);
+      if (newEntries.length < mappedEntries.length) notify(`Skipped ${mappedEntries.length - newEntries.length} row(s) with no start or end time.`, "warning");
       const eKey = e => e.className + "|" + e.day + "|" + e.start + "|" + e.end + "|" + e.subject;
       const existKeys = new Set(existingEntries.map(eKey));
       const newKeys = new Set(newEntries.map(eKey));
@@ -979,11 +987,11 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
                     </td>
                     <td style={{ padding: "6px 12px" }}>
                       <input type="time" value={entry.start} onChange={e => updatePreviewEntry(i, "start", e.target.value)}
-                        style={{ padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
+                        style={{ padding: "4px 6px", border: String(entry.start || "").trim() ? `1px solid ${colors.inputBorder}` : `2px solid ${colors.danger}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
                     </td>
                     <td style={{ padding: "6px 12px" }}>
                       <input type="time" value={entry.end} onChange={e => updatePreviewEntry(i, "end", e.target.value)}
-                        style={{ padding: "4px 6px", border: `1px solid ${colors.inputBorder}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
+                        style={{ padding: "4px 6px", border: String(entry.end || "").trim() ? `1px solid ${colors.inputBorder}` : `2px solid ${colors.danger}`, borderRadius: 4, fontSize: 13, fontFamily: "inherit" }} />
                     </td>
                     <td style={{ padding: "6px 12px" }}>
                       <input value={entry.subject} onChange={e => updatePreviewEntry(i, "subject", e.target.value)}
@@ -1003,8 +1011,14 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
           {(() => {
             const existingCount = preview.schoolId ? specialists.filter(s => s.schoolId === preview.schoolId).length : 0;
             const needsChoice = existingCount > 0 && !preview.mode;
+            const needTimes = countRowsNeedingTimes(preview.entries);
             const label = existingCount > 0 && preview.mode === "replace" ? `✓ Replace ${existingCount} with ${preview.entries.length} Entries` : `✓ Import ${preview.entries.length} Entries`;
-            return <Btn onClick={confirmImport} disabled={!preview.schoolId || needsChoice || replacing}>{replacing ? "Replacing…" : label}</Btn>;
+            return (
+              <>
+                <Btn onClick={confirmImport} disabled={!preview.schoolId || needsChoice || needTimes > 0 || replacing}>{replacing ? "Replacing…" : label}</Btn>
+                {needTimes > 0 && <span style={{ fontSize: 13, color: colors.danger, alignSelf: "center" }}>{needTimes} row{needTimes === 1 ? " needs" : "s need"} times</span>}
+              </>
+            );
           })()}
           <Btn variant="secondary" onClick={() => setPreview(null)}>Cancel</Btn>
         </div>

@@ -3,7 +3,7 @@
 // Called from runSmokeTests with its `assert`.
 // ============================================================
 
-import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions } from "../utils/specialistImport";
+import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions, hasTimes, countRowsNeedingTimes } from "../utils/specialistImport";
 
 const stu = (className, schoolId = "ebps", status = "active") => ({ id: className + schoolId + status, schoolId, className, status });
 
@@ -91,4 +91,16 @@ export function runInstructionsMapTests(assert) {
   assert("instructions: edit replaces", mergeInstructions(set, "ebps", "New text"), { other: "Prep only", ebps: "New text" });
   assert("instructions: emptied clears", mergeInstructions(set, "ebps", "   "), { other: "Prep only" });
   assert("instructions: no school → unchanged", mergeInstructions(set, "", "x"), set);
+}
+
+// Import needs a start and an end on every row (v2.49.22).
+export function runBlankTimeTests(assert) {
+  assert("times: both present", hasTimes({ start: "09:00", end: "10:00" }), true);
+  assert("times: empty start", hasTimes({ start: "", end: "10:00" }), false);
+  assert("times: blank end", hasTimes({ start: "09:00", end: "  " }), false);
+  assert("times: missing fields", hasTimes({}), false);
+  assert("times: no row", hasTimes(null), false);
+  assert("times: count rows needing times", countRowsNeedingTimes([{ start: "09:00", end: "10:00" }, { start: "", end: "" }, { start: "11:00" }, { end: "12:00" }]), 3);
+  assert("times: none needing", countRowsNeedingTimes([{ start: "09:00", end: "10:00" }]), 0);
+  assert("times: empty list", countRowsNeedingTimes([]), 0);
 }

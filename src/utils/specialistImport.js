@@ -113,3 +113,12 @@ export function mergeInstructions(map, schoolId, text) {
   else delete next[schoolId];
   return next;
 }
+
+// Every saved entry needs a start and an end time.
+export function hasTimes(row) {
+  return !!(row && String(row.start || "").trim() && String(row.end || "").trim());
+}
+
+export function countRowsNeedingTimes(rows) {
+  return (rows || []).filter(r => !hasTimes(r)).length;
+}
