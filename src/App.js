@@ -4487,6 +4487,8 @@ export default function MusicTimetableApp() {
       catchups,
       // Slice 2 — lessons brought forward into a band in another week are used up.
       forwardIndex: buildForwardIndex(weeklyTimetables),
+      // v2.49.16 — stamp each imported card's teacher, as Generate does.
+      teacherCoverage,
     });
     if (!result) {
       notify("No master timetable to import from", "warning");

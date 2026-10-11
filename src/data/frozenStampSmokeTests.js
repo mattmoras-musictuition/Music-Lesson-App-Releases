@@ -68,3 +68,33 @@ export function runFrozenStampGeneratorTests(assert) {
   assert("frozenStamp: no teacher coverage → nothing stamped", stampFrozenTeacher(FS_MASTER, null).some(l => l.frozenTeacherId && l.id !== "fri2"), false);
   assert("frozenStamp: empty input", [stampFrozenTeacher(null, FS_TC), stampFrozenTeacher([], FS_TC)], [[], []]);
 }
+
+// ── Import from MTT (v2.49.16 commit 2) ──────────────────────────────────
+// A WHOLE school-week master (FS_MASTER without the band — bands live only in
+// weekly rows) plus the week's existing weekly cards: a band card (Friday), a
+// card on the archived lane (in history), a card with no bucket_id, a
+// weekly-only card on a temporary lane, and an already-stamped card.
+export const IMP_MASTER = { lessons: FS_MASTER.filter(l => !l.isBandSession) };
+const wk = (id, day, start, bucket_id, extra = {}) => ({ ...m(id, day, start, bucket_id, extra), weekDate: null, adjusted: false });
+export const impExisting = () => ({
+  lessons: [
+    wk("w_mon_stamped", "Monday", "09:30", "monlane1", { frozenTeacherId: "oldteacher" }),
+    wk("w_tue_arch", "Tuesday", "09:30", "glkw2if8"),
+    wk("w_tue_nobucket", "Tuesday", "10:00", null),
+    wk("w_tue_temp", "Tuesday", "09:00", "udrscl4q"),       // weekly-only, temporary lane
+    wk("w_thu_stamped", "Thursday", "09:00", null, { frozenTeacherId: "oldteacher" }),
+    { ...wk("w_fri_band", "Friday", "10:00", "npm9gxwu"), isBandSession: true, bandId: "B1", bandName: "Band", members: [] },
+  ],
+  missed: [{ id: "x_miss", day: "Wednesday", schoolId: S, reason: "Sick" }],
+  notes: "n",
+  generatedAt: "2099-03-01T00:00:00.000Z",
+});
+// Fixture ids survive; everything an import mints becomes "NEW". generatedAt dropped.
+const FIXTURE_IDS = new Set([...FS_MASTER.map(l => l.id), ...impExisting().lessons.map(l => l.id), "x_miss"]);
+export const normImport = (res, strip = true) => JSON.parse(JSON.stringify(res, (k, v) => {
+  if (k === "generatedAt") return undefined;
+  if (strip && k === "frozenTeacherId") return undefined;
+  if (k === "id" && typeof v === "string" && !FIXTURE_IDS.has(v)) return "NEW";
+  return v;
+}));
+export const IMP_WEEK = "2099-03-09";

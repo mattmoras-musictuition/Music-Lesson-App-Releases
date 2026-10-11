@@ -11,7 +11,9 @@
 // Weeks: 2020 (past) and 2099 (future), as in the other band suites.
 // ============================================================
 
-import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
+import { buildMttImportForWeekSchool, buildMttImportAllSchools, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
+import { getCardTeacherId } from "../utils/teacherCoverageDB";
+import { FS_TC, IMP_MASTER, IMP_WEEK, impExisting, normImport, fsWeekDates, fsDigest, withHistory } from "./frozenStampSmokeTests";
 import { carryBandMisses, planCleanImport } from "./bandAbsence";
 import { mergeCatchupsIntoLessons, buildBankingIndex } from "./catchupsDerive";
 import { removeCatchupsInBackground } from "../utils/catchupsDB";
@@ -246,4 +248,81 @@ export function runImportMissedLineTests(assert) {
   assert("missed line: omitted when nothing is cleared",
     [importMissedLine(0, "week"), importMissedLine(0, "all"), importClearedMissedCount(null), importClearedMissedCount({ lessons: [], missed: [] }, { day: "Monday" })],
     [null, null, 0, 0]);
+}
+
+// ── v2.49.16 — Import from MTT stamps the teacher at the time ─────────────
+// A WHOLE Moorabbin school-week master plus the week's existing weekly cards
+// (fixtures in frozenStampSmokeTests.js) through buildMttImportForWeekSchool
+// — what the Weekly page Import (day/week) and the Dashboard Import call — and
+// buildMttImportAllSchools — what Weekly "Import all schools" calls.
+// "Before" fingerprints were taken from the v2.49.15 builder and from the
+// Import-all loop moved verbatim out of WeeklyAdjustments, with every
+// frozenTeacherId stripped and minted ids/timestamps normalised.
+export function runImportFrozenStampTests(assert) {
+  const S = "moorabbin";
+  const wd = fsWeekDates(IMP_WEEK);
+  const existingIds = new Set(impExisting().lessons.map(l => l.id));
+  const imp = (targetDay, extra = {}) => withHistory(() => buildMttImportForWeekSchool({ mtt: IMP_MASTER, schoolId: S, weekDates: wd,
+    existingEntry: impExisting(), targetDay, enrolments: [], dropBands: true, catchups: [], forwardIndex: null, teacherCoverage: FS_TC, ...extra }));
+  const created = (lessons) => lessons.filter(l => !existingIds.has(l.id));
+  const expected = (l) => withHistory(() => getCardTeacherId(l, FS_TC));   // Generate's call: no week
+  const BEFORE = { week: "1990:168459690", Tuesday: "1915:3971088174", Friday: "2146:2168235631", all: "2357:2016872388" };
+
+  for (const [label, day] of [["week", null], ["Tuesday", "Tuesday"], ["Friday", "Friday"]]) {
+    const res = imp(day);
+    const made = created(res.entry.lessons);
+    // a. every non-band imported card carries Generate's stamp
+    assert(`importStamp: a. ${label} import — each new card's stamp = getCardTeacherId (Generate's call)`,
+      made.filter(l => !l.isBandSession).map(l => [l.studentId, l.frozenTeacherId || null]),
+      made.filter(l => !l.isBandSession).map(l => [l.studentId, expected(l)]));
+    // b. band cards unstamped
+    assert(`importStamp: b. ${label} import — band cards unstamped`,
+      res.entry.lessons.filter(l => l.isBandSession).some(l => "frozenTeacherId" in l), false);
+    // c. stamps stripped → identical to the pre-change import
+    assert(`importStamp: c. ${label} import — output identical to before apart from the stamp`, fsDigest(normImport(res)), BEFORE[label]);
+  }
+  const week = imp(null);
+  assert("importStamp: a. week import — stamps by card (archived-lane, no-bucket, no-lane day)",
+    created(week.entry.lessons).map(l => [l.studentId, l.frozenTeacherId || null]),
+    [["s_mon1", "matt"], ["s_tue1", "rauzah"], ["s_tue2", "matt"], ["s_tue3", "rauzah"], ["s_fri1", "matt"], ["s_fri2", "matt"], ["s_wed1", null]]);
+  assert("importStamp: c. week import still drops the weekly-only temporary-lane card and the band",
+    ["w_tue_temp", "w_fri_band"].map(id => week.entry.lessons.some(l => l.id === id)), [false, false]);
+  const tue = imp("Tuesday");
+  assert("importStamp: c. Tuesday import still drops the weekly-only temporary-lane card",
+    tue.entry.lessons.some(l => l.id === "w_tue_temp"), false);
+  // d. kept cards keep their own stamp (or lack of one) — never overwritten
+  const kept = (res) => res.entry.lessons.filter(l => existingIds.has(l.id)).map(l => [l.id, l.frozenTeacherId || null]);
+  assert("importStamp: d. Tuesday import — kept cards untouched (stamped keep theirs, band unstamped)", kept(tue),
+    [["w_mon_stamped", "oldteacher"], ["w_thu_stamped", "oldteacher"], ["w_fri_band", null]]);
+  assert("importStamp: d. Friday import — kept cards untouched (unstamped stay unstamped)", kept(imp("Friday")),
+    [["w_mon_stamped", "oldteacher"], ["w_tue_arch", null], ["w_tue_nobucket", null], ["w_tue_temp", null], ["w_thu_stamped", "oldteacher"]]);
+  // e. Import all schools: same rules, originId preserved
+  const allMtt = { lessons: [...IMP_MASTER.lessons, { ...IMP_MASTER.lessons[0], id: "sol1", schoolId: "solway", bucket_id: "solmon01" }] };
+  const all = withHistory(() => buildMttImportAllSchools({ mtt: allMtt, schools: [{ id: S }, { id: "solway" }], weekDates: wd,
+    weeklyTimetables: { [IMP_WEEK + "|" + S]: impExisting() }, enrolments: [], catchups: [], forwardIndex: null, teacherCoverage: FS_TC }));
+  const allMoor = all.allUpdates[IMP_WEEK + "|" + S].lessons;
+  assert("importStamp: e. Import all — each new card's stamp = getCardTeacherId",
+    allMoor.map(l => [l.originId, l.frozenTeacherId || null]), allMoor.map(l => [l.originId, expected(l)]));
+  assert("importStamp: e. Import all — originId preserved", allMoor.map(l => l.originId), IMP_MASTER.lessons.map(l => l.id));
+  assert("importStamp: e. Import all — no lane at the other school → unstamped",
+    all.allUpdates[IMP_WEEK + "|solway"].lessons.map(l => [l.originId, l.frozenTeacherId || null]), [["sol1", null]]);
+  assert("importStamp: e. Import all — output identical to before apart from the stamp", fsDigest(normImport(all)), BEFORE.all);
+  // f. Day import vs week import: both stamped, same stamp per lesson
+  const stampOf = (res, sid) => created(res.entry.lessons).find(l => l.studentId === sid)?.frozenTeacherId;
+  assert("importStamp: f. day and week imports stamp the Tuesday lessons alike",
+    ["s_tue1", "s_tue2", "s_tue3"].map(sid => [stampOf(week, sid), stampOf(tue, sid)]), [["rauzah", "rauzah"], ["matt", "matt"], ["rauzah", "rauzah"]]);
+  // No teacherCoverage passed (older callers) → nothing stamped.
+  assert("importStamp: no teacherCoverage → nothing stamped",
+    created(imp(null, { teacherCoverage: undefined }).entry.lessons).some(l => l.frozenTeacherId && l.studentId !== "s_fri2"), false);
+  // g. Imported week viewed as a PAST week after the day's lanes change
+  const PAST = "2020-03-09";
+  const pastImp = withHistory(() => buildMttImportForWeekSchool({ mtt: IMP_MASTER, schoolId: S, weekDates: fsWeekDates(PAST),
+    existingEntry: null, enrolments: [], dropBands: true, catchups: [], forwardIndex: null, teacherCoverage: FS_TC }));
+  const laterTc = [...FS_TC.map(l => l.id === "xov9t1ep" ? { ...l, status: "archived" } : l),
+    { id: "newtue01", schoolId: S, day: "Tuesday", teacherId: "kate", status: "active", effectiveTo: null, createdAt: "2020-06-01" }];
+  const tueCards = pastImp.entry.lessons.filter(l => l.day === "Tuesday");
+  assert("importStamp: g. past week after a lane change shows the stamped teacher",
+    tueCards.map(l => getCardTeacherId(l, laterTc, [], PAST, [])), ["rauzah", "matt", "rauzah"]);
+  assert("importStamp: g. (without the stamp the no-bucket card would follow the new lane)",
+    tueCards.map(l => { const { frozenTeacherId, ...rest } = l; return getCardTeacherId(rest, laterTc, [], PAST, []); })[2], "kate");
 }

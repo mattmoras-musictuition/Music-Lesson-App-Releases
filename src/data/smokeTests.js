@@ -46,6 +46,7 @@ import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmo
 import { runTempLaneChipTests, runTempLaneDayPdfTests, runWaitingListPlaceTests } from "./tempLaneChipSmokeTests";
 import { runExportScopeCharacterizationTests, runExportTempLaneTests } from "./exportScopeSmokeTests";
 import { runFrozenStampGeneratorTests } from "./frozenStampSmokeTests";
+import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -496,6 +497,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Frozen-teacher stamp shared by Generate and Import from MTT (v2.49.16) ──
   runFrozenStampGeneratorTests(assert);
+  runImportFrozenStampTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);

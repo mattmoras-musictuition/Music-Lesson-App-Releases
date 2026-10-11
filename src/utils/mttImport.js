@@ -23,10 +23,11 @@
 
 import { uid, isPastWeek } from "./helpers";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "./enrolmentActivity";
-import { planCleanImport } from "../data/bandAbsence";
+import { planCleanImport, carryBandMisses } from "../data/bandAbsence";
 import { withoutMarkedCards, withoutBandAbsentCards } from "../data/bandRegularAbsence";
 import { withoutLedgeredDuplicates, displaceRegularIntoBands, restoreCardsReporting } from "../data/bandMemberStates";
 import { withoutForwardConsumed } from "../data/bandForwardIndex";
+import { stampFrozenTeacher } from "./teacherCoverageDB";
 
 export function buildMttImportForWeekSchool({
   mtt,
@@ -38,6 +39,7 @@ export function buildMttImportForWeekSchool({
   dropBands = false,
   catchups = [],
   forwardIndex = null,
+  teacherCoverage = null,
 }) {
   if (!mtt || !Array.isArray(mtt.lessons)) return null;
 
@@ -77,12 +79,15 @@ export function buildMttImportForWeekSchool({
   // buildForwardIndex over ALL schools' weekly rows; null → no filter.
   const mttLessons = withoutForwardConsumed(activeLessons, weekKey, forwardIndex);
   const skippedForwardCount = activeLessons.length - mttLessons.length;
-  const importedLessons = mttLessons.map(l => ({
+  // v2.49.16 — each card the import creates carries the teacher at the time
+  // (frozenTeacherId), stamped exactly as Generate stamps. Only these new cards:
+  // kept weekly cards and restored band cards are passed through untouched.
+  const importedLessons = stampFrozenTeacher(mttLessons.map(l => ({
     ...l,
     id: uid(),
     weekDate: weekDateMap[l.day],
     adjusted: false,
-  }));
+  })), teacherCoverage);
 
   if (dropBands) {
     const plan = planCleanImport(existingEntry, catchups, { day: targetDay, weekKey, schoolId });
@@ -158,6 +163,52 @@ export function buildMttImportForWeekSchool({
     skippedInactiveCount,
     skippedForwardCount,
   };
+}
+
+// ── Import all schools (moved out of WeeklyAdjustments in v2.49.16) ──────
+// The per-school loop of the Weekly page's "Import all schools", unchanged:
+// it has its own shape (originId on every card, no band sessions kept, its
+// own inactive-enrolment guard and past-week test) so it does NOT go through
+// buildMttImportForWeekSchool. Pure: returns the row updates, the removed
+// bands' linked catch-up rows to delete and the skipped-inactive count; the
+// caller applies them.
+export function buildMttImportAllSchools({ mtt, schools, weekDates, weeklyTimetables, enrolments, catchups, forwardIndex, teacherCoverage = null }) {
+  const weekDateMap = {};
+  for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
+  // Same inactive-enrolment guard weekly generation and the single-school
+  // import already apply, via the same shared helper. This path has its own
+  // week key, so it does its own past-week test rather than importing one:
+  // "Import all schools" is reachable on a PAST week through the per-week
+  // Edit unlock, and a past week must import exactly as it does today.
+  // Fails open on an empty enrolments list, a band session, or a card whose
+  // enrolment cannot be resolved.
+  const weekKeyAll = weekDates[0].date;
+  const guardAllActive = !!weekKeyAll && !isPastWeek(weekKeyAll) && (enrolments || []).length > 0;
+  const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
+  let skippedAllCount = 0;
+  // v2.40.1 clean import — one batched timetable update for every school,
+  // then ONE background delete of every removed band's linked catch-ups
+  // (this path always dropped band cards but left those rows orphaned).
+  const allUpdates = {};
+  const allRowsToDelete = [];
+  for (const school of schools) {
+    const sk = weekDates[0].date + "|" + school.id;
+    allRowsToDelete.push(...planCleanImport(weeklyTimetables[sk] || null, catchups, { weekKey: weekKeyAll, schoolId: school.id }).rowsToDelete);
+    const candidateLessons = mtt.lessons.filter(l => l.schoolId === school.id);
+    const activeLessons = guardAllActive
+      ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
+      : candidateLessons;
+    skippedAllCount += candidateLessons.length - activeLessons.length;
+    // Slice 2 — lessons brought forward into a band in another week are used up.
+    const mttLessons = withoutForwardConsumed(activeLessons, weekKeyAll, forwardIndex);
+    // v2.49.16 — stamped exactly as Generate stamps (see stampFrozenTeacher).
+    const importedLessons = stampFrozenTeacher(mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false })), teacherCoverage);
+    // This path keeps no band sessions, so band absences cannot survive it;
+    // carryBandMisses drops them with their band.
+    const importedMissed = carryBandMisses([], (weeklyTimetables[sk] || {}).missed, importedLessons);
+    allUpdates[sk] = { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() };
+  }
+  return { allUpdates, allRowsToDelete, skippedAllCount };
 }
 
 // ── Import confirmation: missed-lesson count line (v2.40.1) ──────────────

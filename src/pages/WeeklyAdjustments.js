@@ -27,7 +27,7 @@ import { enrolmentIdFor, instrumentsFromEnrolments } from "../utils/enrolmentsDB
 import { getDayLaneTeacher, getDayLanes, lessonBelongsToViewedLane, lessonShownInViewedLane } from "../utils/teacherCoverageDB";
 import { insertTemporaryLane, deleteTemporaryLane } from "../utils/temporaryLanesDB";
 import { checkConstraints, getRelationalPartnerIds, isConstraintVisibleForLesson, UNASSIGNED_TEACHER_WARNING } from "../utils/constraints";
-import { buildMttImportForWeekSchool, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
+import { buildMttImportForWeekSchool, buildMttImportAllSchools, importClearedMissedCount, importMissedLine } from "../utils/mttImport";
 import { makeEnrolmentResolver, isCardInactiveForWeek } from "../utils/enrolmentActivity";
 import { getCatchupsForWeek, getCatchupsForGridCell, mergeCatchupsIntoLessons, isHiddenBehindBandCard, formatCatchupCompletionLabel } from "../data/catchupsDerive";
 import { hasMemberStates, buildMemberStates, displaceRegularIntoBands, sweepRegularIntoLedger, studentRows, applyStudentAttribution,
@@ -35,8 +35,7 @@ import { hasMemberStates, buildMemberStates, displaceRegularIntoBands, sweepRegu
   planAttributionSave, CONSUMPTION, applyRegularDisplacement, attributionWindowRows, applyGroupAttribution, isGroupEntry, restoreLedgerCards, canEnterStaging, applyAttributionLedger, restoreDropNotice, restoreCardsReporting, restoreCardName } from "../data/bandMemberStates";
 import { BandAttributionModal } from "../components/BandAttributionModal";
 import { orderByGroup, groupLessonNoun } from "../utils/bandsSync";
-import { withoutBandMisses, carryBandMisses, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss,
-  planCleanImport } from "../data/bandAbsence";
+import { withoutBandMisses, carryBandMisses, planMarkAbsent, applyCatchupAbsence, planUndoAbsence, bandEntryForMiss } from "../data/bandAbsence";
 import { regularAbsenceSubjects, regularNoCardNote, withoutBandAbsentCards, weekRows, planRegularAbsence, planRegularAbsenceUndo, regularSubjectKeyForMiss, adminRemoveBandSession,
   adminBandRemovalAbsences, originRestoresFor, restoreOriginCards } from "../data/bandRegularAbsence";
 import { adminAbsenceMenu, absenceItemLabel, applyForwardAbsence, planForwardUndo, findForwardSubject,
@@ -47,7 +46,7 @@ import { insertCatchup, updateCatchup, deleteCatchup, removeCatchupsInBackground
 import { isLessonPresentThisWeek } from "../utils/weeklyPresence";
 import { openForwardWeeks, forwardTermWeeks, forwardLessonContext, forwardWeekLabel, NO_FORWARD_WEEK_TEXT, generateMasterLessons, planForwardSave,
   releaseForwardWeeks, releasedByBands, bandsGone } from "../data/bandForward";
-import { buildForwardIndex, withoutForwardConsumed } from "../data/bandForwardIndex";
+import { buildForwardIndex } from "../data/bandForwardIndex";
 import { forwardWeekProblems, forwardStaleNote } from "../data/bandForwardStale";
 
 // Stable empty array returned for grid cells that have no lessons. Module-level
@@ -2787,6 +2786,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       catchups,
       // Slice 2 — lessons brought forward into a band in another week are used up.
       forwardIndex: fwdIndex,
+      // v2.49.16 — stamp each imported card's teacher, as Generate does.
+      teacherCoverage,
     });
     if (!result) { notify("No master timetable to import from", "warning"); return; }
     const importedEntry = {
@@ -2821,40 +2822,10 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
 
   const importAllSchoolsFromMTT = () => {
     if (!timetable) { notify("No master timetable to import from", "warning"); return; }
-    const weekDateMap = {};
-    for (const wd of weekDates) weekDateMap[wd.day] = wd.date;
-    // Same inactive-enrolment guard weekly generation and the single-school
-    // import already apply, via the same shared helper. This path has its own
-    // week key, so it does its own past-week test rather than importing one:
-    // "Import all schools" is reachable on a PAST week through the per-week
-    // Edit unlock, and a past week must import exactly as it does today.
-    // Fails open on an empty enrolments list, a band session, or a card whose
-    // enrolment cannot be resolved.
-    const weekKeyAll = weekDates[0].date;
-    const guardAllActive = !!weekKeyAll && !isWeekKeyPast(weekKeyAll) && (enrolments || []).length > 0;
-    const resolverAll = guardAllActive ? makeEnrolmentResolver(enrolments) : null;
-    let skippedAllCount = 0;
-    // v2.40.1 clean import — one batched timetable update for every school,
-    // then ONE background delete of every removed band's linked catch-ups
-    // (this path always dropped band cards but left those rows orphaned).
-    const allUpdates = {};
-    const allRowsToDelete = [];
-    for (const school of schools) {
-      const sk = weekDates[0].date + "|" + school.id;
-      allRowsToDelete.push(...planCleanImport(weeklyTimetables[sk] || null, catchups, { weekKey: weekKeyAll, schoolId: school.id }).rowsToDelete);
-      const candidateLessons = timetable.lessons.filter(l => l.schoolId === school.id);
-      const activeLessons = guardAllActive
-        ? candidateLessons.filter(l => !isCardInactiveForWeek(l, resolverAll, weekKeyAll))
-        : candidateLessons;
-      skippedAllCount += candidateLessons.length - activeLessons.length;
-      // Slice 2 — lessons brought forward into a band in another week are used up.
-      const mttLessons = withoutForwardConsumed(activeLessons, weekKeyAll, fwdIndex);
-      const importedLessons = mttLessons.map(l => ({ ...l, id: uid(), originId: l.id, weekDate: weekDateMap[l.day], adjusted: false }));
-      // This path keeps no band sessions, so band absences cannot survive it;
-      // carryBandMisses drops them with their band.
-      const importedMissed = carryBandMisses([], (weeklyTimetables[sk] || {}).missed, importedLessons);
-      allUpdates[sk] = { lessons: importedLessons, missed: importedMissed, generatedAt: new Date().toISOString() };
-    }
+    // v2.49.16 — the per-school loop is buildMttImportAllSchools (utils/mttImport).
+    const { allUpdates, allRowsToDelete, skippedAllCount } = buildMttImportAllSchools({
+      mtt: timetable, schools, weekDates, weeklyTimetables, enrolments, catchups, forwardIndex: fwdIndex, teacherCoverage,
+    });
     // Slice 2 (D5) — every band this import removed gives its brought-forward weeks back.
     const goneAll = Object.keys(allUpdates).flatMap(sk => bandsGone((weeklyTimetables[sk] || {}).lessons, allUpdates[sk].lessons));
     const fwdAllPreview = releaseForwardRows(weeklyTimetables, releasedByBands(goneAll));
