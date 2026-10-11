@@ -52,6 +52,7 @@ import { runFrozenStampGeneratorTests } from "./frozenStampSmokeTests";
 import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
+import { runPolyfillTests } from "./polyfillsSmokeTests";
 import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -59,6 +60,11 @@ export function runSmokeTests(logErrorFn) {
   const assert = (label, actual, expected) => {
     const pass = JSON.stringify(actual) === JSON.stringify(expected);
     results.push({ label, pass, actual, expected });
+  };
+  // Async checks: the summary waits for them (it is only ever logged).
+  const pending = [];
+  const assertAsync = (label, promise, expected) => {
+    pending.push(Promise.resolve(promise).then(actual => assert(label, actual, expected), err => assert(label, "threw: " + (err && err.message), expected)));
   };
 
   // timeToMin roundtrip
@@ -522,6 +528,14 @@ export function runSmokeTests(logErrorFn) {
   runSpecialistPdfRequestTests(assert);
   runSpecialistUpdateRequestTests(assert);
 
+  // ── ReadableStream async iteration polyfill (v2.49.21) ──
+  runPolyfillTests(assert, assertAsync);
+
+  if (pending.length > 0) Promise.all(pending).then(() => reportSmokeResults(results, logErrorFn));
+  else reportSmokeResults(results, logErrorFn);
+}
+
+function reportSmokeResults(results, logErrorFn) {
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
   if (failed.length > 0) {

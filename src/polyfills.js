@@ -3,6 +3,9 @@
 // targets newer engines and calls several of these internally:
 //   - URL.parse        (Chromium 126)
 //   - Promise.try      (Chromium 128)
+//   - ReadableStream async iteration (Chromium 124) — page.getTextContent()
+//     does `for await` over a stream; without it it throws
+//     "e is not async iterable" (v2.49.20 specialist grid import).
 // (URL.canParse — Chromium 120 — is already present at 122 but is
 // polyfilled too, harmlessly, for older baselines.)
 // Promise.withResolvers, Array.fromAsync, Object/Map.groupBy, Iterator
@@ -42,3 +45,28 @@ if (typeof Promise.try !== "function") {
     });
   };
 }
+
+// ReadableStream async iteration: `for await (const chunk of stream)`.
+// Reads to the end, then releases the lock; an early exit (break/throw)
+// cancels the stream, as the native version does. Exported so the smoke
+// tests can install it on a stand-in class.
+export function polyfillReadableStreamAsyncIterator(RS) {
+  if (typeof RS !== "function" || typeof RS.prototype[Symbol.asyncIterator] === "function") return false;
+  RS.prototype[Symbol.asyncIterator] = async function* () {
+    const reader = this.getReader();
+    let done = false;
+    try {
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) { done = true; return; }
+        yield step.value;
+      }
+    } finally {
+      if (!done) { try { await reader.cancel(); } catch (e) {} }
+      reader.releaseLock();
+    }
+  };
+  return true;
+}
+
+polyfillReadableStreamAsyncIterator(typeof ReadableStream !== "undefined" ? ReadableStream : undefined);
