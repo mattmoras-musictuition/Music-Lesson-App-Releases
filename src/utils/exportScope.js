@@ -8,14 +8,17 @@ import { getLiveTeacherName } from "./helpers";
 
 /**
  * Week context for teacher resolution. A week source passes the live lane
- * overrides, its weekKey and its missed[] (band rows); the master source
- * passes null/null/undefined (lane-only, unchanged).
+ * overrides, its weekKey, its missed[] (band rows) and — v2.49.15 — that
+ * week's temporary (one-week teacher) lanes, as the day-header attachment
+ * does. The master source passes null/null/undefined and no temporary lanes
+ * (lane-only, unchanged).
  */
-export function exportWeekContext(selectedWeek, laneOverrides) {
+export function exportWeekContext(selectedWeek, laneOverrides, temporaryLanes = []) {
   return {
     weekKey: selectedWeek ? selectedWeek.weekKey : null,
     laneOverrides: selectedWeek ? laneOverrides : null,
     missed: selectedWeek ? selectedWeek.missed : undefined,
+    temporaryLanes: selectedWeek ? (temporaryLanes || []).filter(t => t.weekKey === selectedWeek.weekKey) : [],
   };
 }
 
@@ -25,7 +28,7 @@ export function exportWeekContext(selectedWeek, laneOverrides) {
  */
 export function buildExportScope({ sourceLessons, students, teachers, enrolments, teacherCoverage, weekContext, schoolId, teacherName, className, day }) {
   const ctx = weekContext || {};
-  const resolveLessonTeacherName = (l) => getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, ctx.laneOverrides, ctx.weekKey) || "";
+  const resolveLessonTeacherName = (l) => getLiveTeacherName(l, students, teachers, enrolments, teacherCoverage, ctx.laneOverrides, ctx.weekKey, ctx.temporaryLanes || []) || "";
   const scopedLessons = schoolId ? sourceLessons.filter(l => l.schoolId === schoolId) : sourceLessons;
   // Cluster 12a: lane-resolved name list rather than stamped lesson.teacherName.
   const teacherNames = [...new Set(scopedLessons.map(resolveLessonTeacherName).filter(n => n))].sort();

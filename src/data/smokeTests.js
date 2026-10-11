@@ -44,7 +44,7 @@ import { runDayEditTests } from "./dayEditsSmokeTests";
 import { runTeacherCopyTests } from "./teacherCopySmokeTests";
 import { runTallyFilterTests, runTallyParentEmailTests } from "./tallyFiltersSmokeTests";
 import { runTempLaneChipTests, runTempLaneDayPdfTests, runWaitingListPlaceTests } from "./tempLaneChipSmokeTests";
-import { runExportScopeCharacterizationTests } from "./exportScopeSmokeTests";
+import { runExportScopeCharacterizationTests, runExportTempLaneTests } from "./exportScopeSmokeTests";
 import { runDayEmailAttachmentTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 
@@ -485,6 +485,7 @@ export function runSmokeTests(logErrorFn) {
 
   // ── Export dialog teacher scope (v2.49.15) ──
   runExportScopeCharacterizationTests(assert);
+  runExportTempLaneTests(assert);
 
   // ── Day-header email attachment follows the emailed teacher or the chip (v2.49.12) ──
   runDayEmailAttachmentTests(assert);

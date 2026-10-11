@@ -676,7 +676,8 @@ export function generateExportHtml(lessons, students, schools, teachers, opts) {
   // schedule — Monday-Wednesday-only teacher gets a 3-day grid rather
   // than a 5-day grid with blanks on Thu/Fri.
   // Cluster 12a: gridOpts extended with enrolments / laneOverrides / weekKey for buildGridRows leaf-resolver.
-  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
+  // v2.49.15 — and temporaryLanes, so a one-week teacher's lessons name that teacher.
+  var gridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed, temporaryLanes: (opts && opts.temporaryLanes) || [] };
   var showSeparate = !schoolId && !teacherName && !className;
   var body = buildHeaderBand(title, null, meta);
   if (showSeparate) {
@@ -876,7 +877,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
   var filename = filenameBase + (day ? "-" + day : "");
   var showSeparate = !schoolId && !teacherName && !className;
   // Cluster 12a: gridOpts extended for lane-resolved teacher resolution.
-  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
+  var gridOpts = { allDays: !day, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed, temporaryLanes: (opts && opts.temporaryLanes) || [] };
 
   if (format === "csv") {
     const Papa = window.Papa;
@@ -945,7 +946,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
       XLSX.utils.book_append_sheet(wb, gridToSheet(gRows2), "Timetable");
     }
     // Cluster 12a: prepareLessonRows now takes opts so Teacher resolves lane-aware.
-    var listRows = prepareLessonRows(filtered, students, { teachers: teachers, enrolments: opts && opts.enrolments, teacherCoverage: opts && opts.teacherCoverage, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed });
+    var listRows = prepareLessonRows(filtered, students, { teachers: teachers, enrolments: opts && opts.enrolments, teacherCoverage: opts && opts.teacherCoverage, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed, temporaryLanes: (opts && opts.temporaryLanes) || [] });
     var listWs = XLSX.utils.json_to_sheet(listRows);
     var listCols = Object.keys(listRows[0] || {});
     listWs["!cols"] = listCols.map(function(k) { return { wch: Math.max(k.length, Math.max.apply(null, listRows.map(function(r) { return String(r[k] || "").length; }))) + 2 }; });
@@ -967,7 +968,7 @@ export async function exportLessons(lessons, students, schools, teachers, opts) 
     } else {
       var body = buildHeaderBand(pdfTitle, null, pdfMeta);
       // Cluster 12a: pdfGridOpts extended for lane-resolved teacher resolution.
-      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed };
+      var pdfGridOpts = { allDays: !day && !teacherName, specialists: opts.specialists || null, teacherCoverage: opts && opts.teacherCoverage, enrolments: opts && opts.enrolments, laneOverrides: opts && opts.laneOverrides, weekKey: opts && opts.weekKey, missed: opts && opts.missed, temporaryLanes: (opts && opts.temporaryLanes) || [] };
       if (showSeparate) {
         var groups3 = groupLessonsBySchool(filtered, schools);
         for (var g3 = 0; g3 < groups3.length; g3++) {

@@ -31,7 +31,7 @@ export const ExportIcon = (
   </svg>
 );
 
-export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], contacts, specialists, availableWeeks, viewedWeekKey = null, currentWeekKey = null, termStartKey = null, termEndKey = null, onClose, notify, documents, setDocuments }) {
+export function ExportDialog({ lessons, students, schools, teachers, teacherCoverage = [], enrolments = [], laneOverrides = [], temporaryLanes = [], contacts, specialists, availableWeeks, viewedWeekKey = null, currentWeekKey = null, termStartKey = null, termEndKey = null, onClose, notify, documents, setDocuments }) {
   const { colors, darkMode } = useTheme();
   const [exportType, setExportType] = React.useState(EXPORT_TYPES[0].value);
   // ── Week model (3b) — locked 4 Jun ────────────────────────────────────────
@@ -107,10 +107,13 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   // Cluster 6b: a week export passes that week's missed[] so band rows list
   // only students in the session. Master exports pass nothing (unchanged).
   // v2.49.15 — week context + teacher scope come from utils/exportScope.js.
-  const weekContext = exportWeekContext(selectedWeek, laneOverrides);
+  // v2.49.15 — a week source also carries that week's temporary lanes, so a
+  // one-week teacher's lessons resolve to them in every output; master: none.
+  const weekContext = React.useMemo(() => exportWeekContext(selectedWeek, laneOverrides, temporaryLanes), [selectedWeek, laneOverrides, temporaryLanes]);
   const exportWeekKey = weekContext.weekKey;
   const exportLaneOverrides = weekContext.laneOverrides;
   const exportMissed = weekContext.missed;
+  const exportTemporaryLanes = weekContext.temporaryLanes;
 
   const schoolIds = [...new Set(sourceLessons.map(l => l.schoolId))];
   const filteredSchools = schools.filter(s => schoolIds.includes(s.id));
@@ -225,7 +228,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
   const getExportHtml = React.useCallback((singleDay) => {
     const dayFilter = singleDay || (day.size === 1 ? [...day][0] : null);
     if (exportType === "teacher_schedules") {
-      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed });
+      return generateTeacherSchedulesHtml(sourceLessons, students, schools, teachers, { schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed, temporaryLanes: exportTemporaryLanes });
     }
     const parts = [];
     if (schoolId) parts.push(filteredSchools.find(s => s.id === schoolId)?.name || "School");
@@ -244,8 +247,9 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
       laneOverrides: exportLaneOverrides,
       weekKey: exportWeekKey,
       missed: exportMissed,
+      temporaryLanes: exportTemporaryLanes,
     });
-  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, exportMissed, teacherCoverage]);
+  }, [exportType, sourceLessons, students, schools, teachers, schoolId, teacherName, className, day, sourceLabel, filteredSchools, specialists, enrolments, exportLaneOverrides, exportWeekKey, exportMissed, exportTemporaryLanes, teacherCoverage]);
 
   // Session 96: upload a base64 PDF to the private documents bucket and
   // register it as a Document so it appears in the Documents tab and becomes
@@ -327,6 +331,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                 laneOverrides: exportLaneOverrides,
                 weekKey: exportWeekKey,
                 missed: exportMissed,
+                temporaryLanes: exportTemporaryLanes,
               });
             }
           } else if (exportType === "teacher_schedules") {
@@ -342,7 +347,7 @@ export function ExportDialog({ lessons, students, schools, teachers, teacherCove
                 }
               }
             } else {
-              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed });
+              await exportTeacherSchedules(sourceLessons, students, schools, teachers, { format: fmt, schoolId: schoolId || null, teacherName: teacherName || null, sourceLabel, filenameBase, teacherCoverage, enrolments, laneOverrides: exportLaneOverrides, weekKey: exportWeekKey, missed: exportMissed, temporaryLanes: exportTemporaryLanes });
             }
           }
         }

@@ -6286,6 +6286,7 @@ export default function MusicTimetableApp() {
             teacherCoverage={teacherCoverage}
             enrolments={enrolments}
             laneOverrides={laneOverrides}
+            temporaryLanes={temporaryLanes}
             contacts={contacts}
             specialists={specialists}
             availableWeeks={showExportDialog.availableWeeks}

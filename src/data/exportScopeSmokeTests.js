@@ -10,7 +10,7 @@
 
 import { exportWeekContext, buildExportScope } from "../utils/exportScope";
 import { visibleLessons } from "../utils/hiddenCards";
-import { generateExportHtml, generateTeacherSchedulesHtml, prepareLessonRows } from "./exportHelpers";
+import { generateExportHtml, generateTeacherSchedulesHtml, prepareLessonRows, buildGridRows } from "./exportHelpers";
 
 const MB = "moorabbin";
 const SW = "solway";
@@ -122,3 +122,62 @@ export function runExportScopeCharacterizationTests(assert) {
 
 // Fingerprints captured from v2.49.14 output (before the one-week-teacher fix).
 export const EXP_PIN = { masterTimetable: "21614:4059262462", masterSchedules: "32235:1536097366", noTempTimetable: "19193:2601258823", noTempSchedules: "32235:512634276" };
+
+// v2.49.15 commit 2 — a week source resolves with that week's temporary lanes.
+// The WHOLE week (every school) goes through the same steps as the dialog:
+// visibleLessons → exportWeekContext(week, laneOverrides, temporaryLanes) →
+// buildExportScope, and the generators get the context spread into their opts
+// exactly as ExportDialog passes it.
+export function runExportTempLaneTests(assert) {
+  const genOpts = (sc, extra = {}) => ({ teacherCoverage: EXP_TC, enrolments: [], ...sc.weekContext, ...extra });
+  const wk = expScope({ temporaryLanes: EXP_TEMP });
+  assert("exportTemp: week context carries only that week's temporary lanes",
+    wk.weekContext.temporaryLanes.map(t => t.id), ["udrscl4q"]);
+  // a. Teacher list
+  assert("exportTemp: a. Matt's 09:00/09:30 Tuesday lessons resolve to Matt",
+    MATT_TUE.map(wk.resolveLessonTeacherName), ["Matt Moras", "Matt Moras"]);
+  const tue = expScope({ temporaryLanes: EXP_TEMP, schoolId: MB, day: new Set(["Tuesday"]) });
+  assert("exportTemp: a. Moorabbin Tuesday teachers are Matt and Rauzah",
+    [...new Set(tue.previewLessons.map(tue.resolveLessonTeacherName))].sort(), ["Matt Moras", "Rauzah Hamzah"]);
+  assert("exportTemp: a. whole-week teacher list (all schools)", wk.teacherNames, ["Kate Lin", "Matt Moras", "Rauzah Hamzah"]);
+  // b. Teacher filter
+  assert("exportTemp: b. Rauzah filter excludes 09:00/09:30",
+    ids(expScope({ temporaryLanes: EXP_TEMP, schoolId: MB, teacherName: "Rauzah Hamzah" }).previewLessons), ids(RAUZAH_TUE));
+  assert("exportTemp: b. Matt filter has 09:00/09:30 plus his Friday",
+    ids(expScope({ temporaryLanes: EXP_TEMP, schoolId: MB, teacherName: "Matt Moras" }).previewLessons), ["m1", "m2", "f1", "f2"]);
+  assert("exportTemp: b. Matt timetable HTML (teacher filter) lists 09:00/09:30 and Friday",
+    ["Student M1", "Student M2", "Student F1", "Student F2", "Student R1"].map(n => (generateExportHtml(wk.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS,
+      genOpts(wk, { schoolId: MB, teacherName: "Matt Moras", title: "T" })) || "").includes(n)), [true, true, true, true, false]);
+  // c. Teacher Schedules
+  const sched = generateTeacherSchedulesHtml(wk.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS, genOpts(wk, { schoolId: MB, sourceLabel: "Week 2" }));
+  assert("exportTemp: c. Teacher Schedules puts 09:00/09:30 on Matt's page, not Rauzah's", schedulePages(sched),
+    [["Matt Moras", ["Student F1", "Student F2", "Student M1", "Student M2"]], ["Rauzah Hamzah", RAUZAH_TUE.map(l => l.studentName).sort()]]);
+  // d. CSV/XLSX rows. exportLessons is async and downloads a file, so it cannot
+  // run here; these are its two row builders fed the opts it now builds.
+  const rowOpts = { teachers: EXP_TEACHERS, enrolments: [], teacherCoverage: EXP_TC, laneOverrides: wk.weekContext.laneOverrides,
+    weekKey: wk.weekContext.weekKey, missed: wk.weekContext.missed, temporaryLanes: wk.weekContext.temporaryLanes };
+  assert("exportTemp: d. XLSX list rows name Matt for 09:00/09:30",
+    prepareLessonRows(MATT_TUE, EXP_STUDENTS, rowOpts).map(r => r.Teacher), ["Matt Moras", "Matt Moras"]);
+  const grid = buildGridRows(wk.sourceLessons.filter(l => l.schoolId === MB), EXP_STUDENTS, EXP_SCHOOLS[0], EXP_TEACHERS,
+    { allDays: true, specialists: null, ...rowOpts });
+  const cellTi = (time) => grid.find(r => r.time === time).cells.Tuesday.map(c => c.ti);
+  assert("exportTemp: d. CSV/XLSX grid cells name Matt at 9:00/9:30 and Rauzah at 10:30",
+    [cellTi("9:00"), cellTi("9:30"), cellTi("10:30")], [["Matt"], ["Matt"], ["Rauzah"]]);
+  // e. Master source ignores temporary lanes: output identical to before.
+  const ms = expScope({ week: null, temporaryLanes: EXP_TEMP });
+  assert("exportTemp: e. master context has no temporary lanes", ms.weekContext.temporaryLanes, []);
+  assert("exportTemp: e. master timetable HTML unchanged",
+    digest(generateExportHtml(ms.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS, genOpts(ms, { title: "Master Timetable — All" }))), EXP_PIN.masterTimetable);
+  assert("exportTemp: e. master Teacher Schedules HTML unchanged",
+    digest(generateTeacherSchedulesHtml(ms.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS, genOpts(ms, { sourceLabel: "Master" }))), EXP_PIN.masterSchedules);
+  // f. Hidden archived card (on the temporary lane) stays out.
+  assert("exportTemp: f. hidden card not in Matt's preview or schedule",
+    [ids(expScope({ temporaryLanes: EXP_TEMP, teacherName: "Matt Moras" }).previewLessons).includes("h1"), sched.includes("Student H1")], [false, false]);
+  // g. A week with no temporary lanes: output identical to before.
+  const nt = expScope({ week: EXP_WEEK_NOTEMP, temporaryLanes: EXP_TEMP.filter(t => t.weekKey !== W2) });
+  assert("exportTemp: g. no-temp week context is empty", nt.weekContext.temporaryLanes, []);
+  assert("exportTemp: g. no-temp week timetable HTML unchanged",
+    digest(generateExportHtml(nt.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS, genOpts(nt, { schoolId: MB, title: "Week 2 Timetable — Moorabbin" }))), EXP_PIN.noTempTimetable);
+  assert("exportTemp: g. no-temp week Teacher Schedules HTML unchanged",
+    digest(generateTeacherSchedulesHtml(nt.sourceLessons, EXP_STUDENTS, EXP_SCHOOLS, EXP_TEACHERS, genOpts(nt, { sourceLabel: "Week 2" }))), EXP_PIN.noTempSchedules);
+}
