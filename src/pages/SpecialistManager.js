@@ -10,7 +10,8 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCu
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
-import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry } from "../utils/specialistImport";
+import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY } from "../utils/specialistImport";
+import { loadSpecialistsFromSupabase, saveReplacedSpecialistsBackup } from "../utils/specialistsDB";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 // Shown when the grid reader failed (not when the PDF simply isn't a grid).
@@ -34,6 +35,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
   const [parsing, setParsing] = useState(false);
   const [preview, setPreview] = useState(null);
   const [importError, setImportError] = useState(null);
+  const [replacing, setReplacing] = useState(false);
   const [updateSchoolId, setUpdateSchoolId] = useState(null); // schoolId being updated
   const [schoolBannerOpen, setSchoolBannerOpen] = useState({}); // schoolId -> bool
   const [calendarStripOpen, setCalendarStripOpen] = useState(false); // hidden by default
@@ -278,10 +280,33 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
     return { ...p, entries: m.rows, mapping: m.mapping, unmatched: m.unmatched, knownClasses: known };
   };
 
-  const confirmImport = () => {
-    if (!preview) return;
+  const confirmImport = async () => {
+    if (!preview || replacing) return;
     const valid = preview.entries.filter(e => e.schoolId && e.className && e.day && e.subject).map(toSpecialistEntry);
     if (valid.length === 0) { notify("No valid entries. Make sure a school is selected.", "warning"); return; }
+    const existingCount = specialists.filter(s => s.schoolId === preview.schoolId).length;
+    if (existingCount > 0 && !preview.mode) { notify("Choose Replace all or Add alongside first.", "warning"); return; }
+    if (existingCount > 0 && preview.mode === "replace") {
+      // Replace: re-read the list from the database first (another computer
+      // may have changed it), back up this school's rows, then swap them in
+      // ONE list change so one save follows.
+      const school = schools.find(s => s.id === preview.schoolId);
+      setReplacing(true);
+      try {
+        const fresh = await loadSpecialistsFromSupabase();
+        if (!fresh) throw new Error("couldn't read the current specialist classes from the database. Nothing was changed.");
+        if (fresh.length === 0 && specialists.length > 0) throw new Error("the database returned no specialist classes, which doesn't match this computer. Nothing was changed.");
+        const swap = swapSchoolEntries(fresh, preview.schoolId, valid, uid);
+        await saveReplacedSpecialistsBackup(REPLACED_BACKUP_KEY, buildReplacedBackup({ schoolId: preview.schoolId, schoolName: school?.name, rows: swap.removed, replacedAt: new Date().toISOString() }));
+        setSpecialists(swap.list);
+        notify(`Replaced ${school?.name || "this school"}'s specialist classes: removed ${swap.removed.length}, added ${swap.added.length}. Restart the app on any other computer before editing specialist classes there.`);
+        setPreview(null);
+      } catch (err) {
+        notify("Replace not done: " + err.message, "danger");
+      }
+      setReplacing(false);
+      return;
+    }
     setSpecialists(prev => [...prev, ...valid]);
     notify(`Imported ${valid.length} specialist entries from ${preview.filename}`);
     setPreview(null);
@@ -470,7 +495,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
 
   const updateAllPreviewSchool = (schoolId) => {
     // Re-map every row's imported class code against the new school's names.
-    setPreview(prev => withClassMapping({ ...prev, schoolId, entries: prev.entries.map(e => ({ ...e, schoolId })) }));
+    setPreview(prev => withClassMapping({ ...prev, schoolId, mode: null, entries: prev.entries.map(e => ({ ...e, schoolId })) }));
   };
 
   // ---- MANUAL ENTRY ----
@@ -574,6 +599,8 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
 
   const clearSchoolEntries = (schoolId) => {
     const count = specialists.filter(s => s.schoolId === schoolId).length;
+    const name = schools.find(s => s.id === schoolId)?.name || "this school";
+    if (!window.confirm(`Delete all ${count} specialist entr${count === 1 ? "y" : "ies"} for ${name}? This can't be undone.`)) return;
     setSpecialists(prev => prev.filter(s => s.schoolId !== schoolId));
     notify(`Cleared ${count} entries`);
   };
@@ -846,6 +873,26 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
           {!preview.schoolId && <div style={{ fontSize: 12, color: colors.danger, marginTop: 8 }}>⚠ Please select a school before importing</div>}
         </Card>
 
+        {(() => {
+          const existingCount = preview.schoolId ? specialists.filter(s => s.schoolId === preview.schoolId).length : 0;
+          if (existingCount === 0) return null;
+          const schoolName = schools.find(s => s.id === preview.schoolId)?.name || "This school";
+          const choice = (mode, label) => (
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginRight: 18, cursor: "pointer", fontWeight: preview.mode === mode ? 600 : 400 }}>
+              <input type="radio" name="spec-import-mode" checked={preview.mode === mode} onChange={() => setPreview(prev => ({ ...prev, mode }))} />{label}
+            </label>
+          );
+          return (
+            <Card style={{ marginBottom: 16, background: colors.amberLight }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 8 }}>{schoolName} already has {existingCount} specialist entr{existingCount === 1 ? "y" : "ies"}.</div>
+              <div style={{ fontSize: 13 }}>
+                {choice("replace", `Replace all ${existingCount}`)}
+                {choice("add", "Add alongside")}
+              </div>
+            </Card>
+          );
+        })()}
+
         {((preview.mapping || []).length > 0 || (preview.unmatched || []).length > 0) && (
           <Card style={{ marginBottom: 16, fontSize: 13 }}>
             {(preview.mapping || []).length > 0 && (
@@ -924,7 +971,12 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
         </Card>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <Btn onClick={confirmImport} disabled={!preview.schoolId}>✓ Import {preview.entries.length} Entries</Btn>
+          {(() => {
+            const existingCount = preview.schoolId ? specialists.filter(s => s.schoolId === preview.schoolId).length : 0;
+            const needsChoice = existingCount > 0 && !preview.mode;
+            const label = existingCount > 0 && preview.mode === "replace" ? `✓ Replace ${existingCount} with ${preview.entries.length} Entries` : `✓ Import ${preview.entries.length} Entries`;
+            return <Btn onClick={confirmImport} disabled={!preview.schoolId || needsChoice || replacing}>{replacing ? "Replacing…" : label}</Btn>;
+          })()}
           <Btn variant="secondary" onClick={() => setPreview(null)}>Cancel</Btn>
         </div>
       </div>

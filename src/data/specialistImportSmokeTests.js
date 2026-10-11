@@ -3,7 +3,7 @@
 // Called from runSmokeTests with its `assert`.
 // ============================================================
 
-import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry } from "../utils/specialistImport";
+import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY } from "../utils/specialistImport";
 
 const stu = (className, schoolId = "ebps", status = "active") => ({ id: className + schoolId + status, schoolId, className, status });
 
@@ -45,4 +45,36 @@ export function runClassMappingTests(assert) {
   assert("unmatched outline: no known names", isUnmatchedClass("PES", []), false);
   assert("saved entry drops Review fields", toSpecialistEntry({ id: "a", schoolId: "s", className: "3/4D", importedClass: "34D", day: "Monday", start: "09:00", end: "10:00", subject: "Art" }),
     { id: "a", schoolId: "s", className: "3/4D", day: "Monday", start: "09:00", end: "10:00", subject: "Art", notes: "" });
+}
+
+// "Replace all" for one school (v2.49.22).
+export function runReplaceSwapTests(assert) {
+  const fresh = [
+    { id: "o1", schoolId: "other", className: "3A", day: "Monday", start: "09:00", end: "10:00", subject: "Art", notes: "" },
+    { id: "e1", schoolId: "ebps", className: "3/4D", day: "Monday", start: "09:00", end: "09:50", subject: "Art", notes: "" },
+    { id: "e2", schoolId: "ebps", className: "34D", day: "Monday", start: "11:30", end: "12:30", subject: "Kitchen", notes: "" },
+    { id: "t1", schoolId: "third", className: "5B", day: "Friday", start: "13:00", end: "14:00", subject: "PE", notes: "" },
+  ];
+  const reviewed = [
+    { id: "n1", schoolId: "ebps", className: "3/4D", day: "Monday", start: "11:30", end: "12:30", subject: "Kitchen", notes: "" },
+    { id: "o1", schoolId: "ebps", className: "3/4M", day: "Monday", start: "14:30", end: "15:30", subject: "LOTE", notes: "" },
+    { id: "n1", schoolId: "ebps", className: "3/4R", day: "Monday", start: "14:30", end: "15:30", subject: "Kitchen", notes: "" },
+  ];
+  let n = 0;
+  const makeId = () => "gen" + (++n);
+  const swap = swapSchoolEntries(fresh, "ebps", reviewed, makeId);
+  assert("replace: other schools untouched", swap.list.filter(s => s.schoolId !== "ebps"), [fresh[0], fresh[3]]);
+  assert("replace: this school's old rows all gone", swap.list.some(s => s.id === "e1" || s.id === "e2"), false);
+  assert("replace: removed = this school's old rows", swap.removed.map(s => s.id), ["e1", "e2"]);
+  assert("replace: reviewed rows added", swap.list.filter(s => s.schoolId === "ebps").map(s => s.className), ["3/4D", "3/4M", "3/4R"]);
+  const ids = swap.list.map(s => s.id);
+  assert("replace: ids unique across the list", new Set(ids).size, ids.length);
+  assert("replace: clashing ids regenerated", swap.added.map(s => s.id), ["n1", "gen1", "gen2"]);
+  const throws = fn => { try { fn(); return null; } catch (e) { return e.message; } };
+  assert("replace: empty reviewed set refused", throws(() => swapSchoolEntries(fresh, "ebps", [], makeId)), "There are no reviewed entries to replace them with.");
+  assert("replace: no school refused", throws(() => swapSchoolEntries(fresh, "", reviewed, makeId)), "No school chosen.");
+  assert("replace: school with no old rows just adds", swapSchoolEntries(fresh, "new", [reviewed[0]], makeId).removed, []);
+  assert("replace backup: key", REPLACED_BACKUP_KEY, "specialists_last_replaced");
+  assert("replace backup: value", buildReplacedBackup({ schoolId: "ebps", schoolName: "East Bentleigh PS", rows: swap.removed, replacedAt: "2026-10-12T00:00:00.000Z" }),
+    { schoolId: "ebps", schoolName: "East Bentleigh PS", replacedAt: "2026-10-12T00:00:00.000Z", count: 2, rows: swap.removed });
 }

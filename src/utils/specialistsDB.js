@@ -91,3 +91,14 @@ export async function syncSpecialistsToSupabase(specialists, userId) {
     }
   }
 }
+
+// ---- REPLACE BACKUP ----
+// Stores the rows a "Replace all" removed in app_settings (one key,
+// overwritten each time) so they can be restored. Throws on failure so the
+// caller can refuse to replace.
+export async function saveReplacedSpecialistsBackup(key, value) {
+  const { error } = await supabase
+    .from("app_settings")
+    .upsert({ key, value }, { onConflict: "key" });
+  if (error) throw new Error(error.message || "Could not save the backup.");
+}

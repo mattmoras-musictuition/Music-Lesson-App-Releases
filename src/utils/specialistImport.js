@@ -65,3 +65,30 @@ export function isUnmatchedClass(className, known) {
 export function toSpecialistEntry(r) {
   return { id: r.id, schoolId: r.schoolId, className: r.className, day: r.day, start: r.start, end: r.end, subject: r.subject, notes: r.notes || "" };
 }
+
+// Replace one school's specialist entries. `fresh` is the list just re-read
+// from the database; other schools' rows are kept exactly, this school's
+// rows are all removed, and the reviewed rows are added with ids unique
+// across the whole list. Refuses an empty reviewed set.
+// Returns { list, removed, added }.
+export function swapSchoolEntries(fresh, schoolId, reviewed, makeId) {
+  if (!schoolId) throw new Error("No school chosen.");
+  if (!reviewed || reviewed.length === 0) throw new Error("There are no reviewed entries to replace them with.");
+  const others = (fresh || []).filter(s => s.schoolId !== schoolId);
+  const removed = (fresh || []).filter(s => s.schoolId === schoolId);
+  const used = new Set(others.map(s => s.id));
+  const added = reviewed.map(r => {
+    let id = r.id;
+    while (!id || used.has(id)) id = makeId();
+    used.add(id);
+    return { ...r, id, schoolId };
+  });
+  return { list: [...others, ...added], removed, added };
+}
+
+// The app_settings value holding the rows a Replace removed (one backup,
+// overwritten by the next Replace).
+export const REPLACED_BACKUP_KEY = "specialists_last_replaced";
+export function buildReplacedBackup({ schoolId, schoolName, rows, replacedAt }) {
+  return { schoolId, schoolName: schoolName || "", replacedAt, count: rows.length, rows };
+}
