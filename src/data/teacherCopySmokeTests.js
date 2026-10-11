@@ -66,5 +66,6 @@ export function runGhostCardLineTests(assert) {
   assert("ghostCard: solo with no live student uses copied name", lines({ ...solo, studentId: "gone" }, "Rauzah"), { line1: "Jonathan Smith", line2: "Guitar · Rauzah" });
   assert("ghostCard: solo with no teacher has no dot", lines(solo, ""), { line1: "Johnny Smith · 3B", line2: "Guitar" });
   assert("ghostCard: group shows first names / instrument · teacher", lines(group, "Rauzah"), { line1: "Ivy, Libby", line2: "Ukulele · Rauzah" });
-  assert("ghostCard: band (current)", lines(band, "Rauzah"), { line1: "", line2: " · Rauzah" });
+  assert("ghostCard: band shows its name only, no teacher", lines(band, "Rauzah"), { line1: "Riptide", line2: "" });
+  assert("ghostCard: band with no name shows TBC", lines({ ...band, bandName: undefined }, "Rauzah"), { line1: "TBC", line2: "" });
 }

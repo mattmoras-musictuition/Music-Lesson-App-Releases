@@ -6525,9 +6525,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                           {isGroup && <Users size={11} style={{ display: "inline-flex", verticalAlign: "middle", marginRight: 3 }} />}
                                           {line1}
                                         </div>
-                                        <div style={{ color: colors.textLight, fontSize: 12 }}>
-                                          {line2}
-                                        </div>
+                                        {line2 && (
+                                          <div style={{ color: colors.textLight, fontSize: 12 }}>
+                                            {line2}
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   });

@@ -50,8 +50,10 @@ export function teacherCopyTooltip(teacherIds, teachers) {
 
 // Text of a teacher-copy ghost card on the WTT. student = the live student
 // record for a solo ghost (or null); prefName = the screen's preferred-name
-// formatter; teacherFirst = lane-derived teacher first name.
+// formatter; teacherFirst = lane-derived teacher first name. A band ghost
+// shows only its name (as the admin band card does); line2 "" = no line.
 export function ghostCardLines(g, { student, prefName, teacherFirst }) {
+  if (g.isBandSession) return { line1: g.bandName || "TBC", line2: "" };
   let line1;
   if (g.isGroup) {
     line1 = groupDisplayName(g);
