@@ -52,6 +52,7 @@ import { runFrozenStampGeneratorTests } from "./frozenStampSmokeTests";
 import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
+import { runPdfGridTextTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
   const results = [];
@@ -515,6 +516,9 @@ export function runSmokeTests(logErrorFn) {
   runStudentRemovalCharacterizationTests(assert);
   runDeleteStudentTests(assert);
   runAssistantGroupEnrolmentTests(assert);
+
+  // ── Specialist PDF import: card times measured from a time grid (v2.49.20) ──
+  runPdfGridTextTests(assert);
 
   const passed = results.filter(r => r.pass).length;
   const failed = results.filter(r => !r.pass);
