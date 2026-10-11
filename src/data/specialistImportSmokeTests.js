@@ -3,7 +3,7 @@
 // Called from runSmokeTests with its `assert`.
 // ============================================================
 
-import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY } from "../utils/specialistImport";
+import { classKey, knownClassNames, mapClassName, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions } from "../utils/specialistImport";
 
 const stu = (className, schoolId = "ebps", status = "active") => ({ id: className + schoolId + status, schoolId, className, status });
 
@@ -77,4 +77,18 @@ export function runReplaceSwapTests(assert) {
   assert("replace backup: key", REPLACED_BACKUP_KEY, "specialists_last_replaced");
   assert("replace backup: value", buildReplacedBackup({ schoolId: "ebps", schoolName: "East Bentleigh PS", rows: swap.removed, replacedAt: "2026-10-12T00:00:00.000Z" }),
     { schoolId: "ebps", schoolName: "East Bentleigh PS", replacedAt: "2026-10-12T00:00:00.000Z", count: 2, rows: swap.removed });
+}
+
+// Per-school Instructions (app_settings map), v2.49.22.
+export function runInstructionsMapTests(assert) {
+  assert("instructions: key", INSTRUCTIONS_KEY, "specialist_import_instructions");
+  assert("instructions: bad stored values ignored", normalizeInstructionsMap({ a: "Skip RR", b: "", c: 5, d: "  " }), { a: "Skip RR" });
+  assert("instructions: non-object → {}", [normalizeInstructionsMap(null), normalizeInstructionsMap("x"), normalizeInstructionsMap(["a"])], [{}, {}, {}]);
+  const start = { other: "Prep only" };
+  const set = mergeInstructions(start, "ebps", "Ignore Ready Room cards");
+  assert("instructions: set keeps other schools", set, { other: "Prep only", ebps: "Ignore Ready Room cards" });
+  assert("instructions: input not mutated", start, { other: "Prep only" });
+  assert("instructions: edit replaces", mergeInstructions(set, "ebps", "New text"), { other: "Prep only", ebps: "New text" });
+  assert("instructions: emptied clears", mergeInstructions(set, "ebps", "   "), { other: "Prep only" });
+  assert("instructions: no school → unchanged", mergeInstructions(set, "", "x"), set);
 }

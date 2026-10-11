@@ -10,8 +10,8 @@ import { uid, timeToMin, toTimeLabel, to12h, melbourneNow, toLocalDateStr, getCu
 import { defaultSlots } from "../utils/backup";
 import { anthropicFetch, getAnthropicHeaders, getXLSX } from "../utils/api";
 import { parseSpecialistReply, extractSpecialistRows } from "../utils/pdfGridText";
-import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY } from "../utils/specialistImport";
-import { loadSpecialistsFromSupabase, saveReplacedSpecialistsBackup } from "../utils/specialistsDB";
+import { knownClassNames, mapImportedClasses, isUnmatchedClass, toSpecialistEntry, swapSchoolEntries, buildReplacedBackup, REPLACED_BACKUP_KEY, INSTRUCTIONS_KEY, normalizeInstructionsMap, mergeInstructions } from "../utils/specialistImport";
+import { loadSpecialistsFromSupabase, saveReplacedSpecialistsBackup, loadSpecialistImportInstructions, saveSpecialistImportInstructions } from "../utils/specialistsDB";
 import { Card, PageTitle, NavButtons, Btn, Input, Tag, EmptyState, FileUpload, PAGE_COLORS } from "../components/ui/SharedUI";
 
 // Shown when the grid reader failed (not when the PDF simply isn't a grid).
@@ -36,6 +36,13 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
   const [preview, setPreview] = useState(null);
   const [importError, setImportError] = useState(null);
   const [replacing, setReplacing] = useState(false);
+  // Per-school Instructions text remembered from the last import (app_settings).
+  const [savedInstructions, setSavedInstructions] = useState({});
+  useEffect(() => {
+    let alive = true;
+    loadSpecialistImportInstructions(INSTRUCTIONS_KEY).then(v => { if (alive) setSavedInstructions(normalizeInstructionsMap(v)); });
+    return () => { alive = false; };
+  }, []);
   const [updateSchoolId, setUpdateSchoolId] = useState(null); // schoolId being updated
   const [schoolBannerOpen, setSchoolBannerOpen] = useState({}); // schoolId -> bool
   const [calendarStripOpen, setCalendarStripOpen] = useState(false); // hidden by default
@@ -121,10 +128,30 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
   }, []);
 
   const openImport = (mode) => {
+    const schoolId = filterSchool || (schools.length === 1 ? schools[0].id : "");
     setImportMode(mode);
-    setImportInstructions("");
-    setImportSchoolId(filterSchool || (schools.length === 1 ? schools[0].id : ""));
+    setImportInstructions(savedInstructions[schoolId] || "");
+    setImportSchoolId(schoolId);
     setImportError(null);
+  };
+
+  // Choosing the school on the import screen fills in its saved Instructions,
+  // unless the box already holds text the owner typed.
+  const chooseImportSchool = (schoolId) => {
+    const untouched = !importInstructions.trim() || importInstructions === (savedInstructions[importSchoolId] || "");
+    setImportSchoolId(schoolId);
+    if (untouched) setImportInstructions(savedInstructions[schoolId] || "");
+  };
+
+  // After a successful import, remember the Instructions for that school
+  // (an emptied box clears them).
+  const rememberInstructions = (schoolId) => {
+    if (!schoolId) return;
+    const text = importInstructions;
+    setSavedInstructions(prev => mergeInstructions(prev, schoolId, text));
+    saveSpecialistImportInstructions(INSTRUCTIONS_KEY, latest => mergeInstructions(latest, schoolId, text))
+      .then(v => setSavedInstructions(normalizeInstructionsMap(v)))
+      .catch(err => notify("Couldn't save the Instructions for next time: " + err.message, "warning"));
   };
 
   const clearAllEntries = () => {
@@ -299,6 +326,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
         const swap = swapSchoolEntries(fresh, preview.schoolId, valid, uid);
         await saveReplacedSpecialistsBackup(REPLACED_BACKUP_KEY, buildReplacedBackup({ schoolId: preview.schoolId, schoolName: school?.name, rows: swap.removed, replacedAt: new Date().toISOString() }));
         setSpecialists(swap.list);
+        rememberInstructions(preview.schoolId);
         notify(`Replaced ${school?.name || "this school"}'s specialist classes: removed ${swap.removed.length}, added ${swap.added.length}. Restart the app on any other computer before editing specialist classes there.`);
         setPreview(null);
       } catch (err) {
@@ -308,6 +336,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
       return;
     }
     setSpecialists(prev => [...prev, ...valid]);
+    rememberInstructions(preview.schoolId);
     notify(`Imported ${valid.length} specialist entries from ${preview.filename}`);
     setPreview(null);
   };
@@ -753,7 +782,7 @@ export function SpecialistManager({ specialists, setSpecialists, schools, studen
               color: importMode === "spreadsheet" ? colors.accentDark : colors.text, fontWeight: 600
             }}><span style={{display:"inline-flex",alignItems:"center",gap:6}}><ClipboardList size={14}/>Spreadsheet (CSV/XLSX)</span></button>
           </div>
-          <Input label="School" value={importSchoolId} onChange={setImportSchoolId}
+          <Input label="School" value={importSchoolId} onChange={chooseImportSchool}
             options={schools.map(s => ({ value: s.id, label: s.name }))} />
 
           <div style={{ marginBottom: 16 }}>

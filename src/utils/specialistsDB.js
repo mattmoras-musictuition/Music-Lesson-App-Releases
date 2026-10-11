@@ -102,3 +102,25 @@ export async function saveReplacedSpecialistsBackup(key, value) {
     .upsert({ key, value }, { onConflict: "key" });
   if (error) throw new Error(error.message || "Could not save the backup.");
 }
+
+// ---- PER-SCHOOL IMPORT INSTRUCTIONS ----
+// app_settings key holding { [schoolId]: text }. Load returns {} on any
+// error. Save re-reads the latest map, sets this school's text (empty
+// removes it) and writes it back, so other schools' text is kept.
+export async function loadSpecialistImportInstructions(key) {
+  try {
+    const { data, error } = await supabase.from("app_settings").select("value").eq("key", key);
+    if (error) return {};
+    return (data || [])[0]?.value || {};
+  } catch {
+    return {};
+  }
+}
+
+export async function saveSpecialistImportInstructions(key, merge) {
+  const latest = await loadSpecialistImportInstructions(key);
+  const value = merge(latest);
+  const { error } = await supabase.from("app_settings").upsert({ key, value }, { onConflict: "key" });
+  if (error) throw new Error(error.message || "Could not save the instructions.");
+  return value;
+}

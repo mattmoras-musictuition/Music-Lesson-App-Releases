@@ -53,7 +53,7 @@ import { runImportFrozenStampTests } from "./mttImportSmokeTests";
 import { runDayEmailAttachmentTests, runDayEmailLeftoverTests } from "./dayEmailAttachmentSmokeTests";
 import { runBandAbsenceCharacterizationTests, runBandAbsenceHelperTests, runBandAbsenceLockTests, runBandAbsenceRegenTests, runBandAbsenceRemovalTests } from "./bandAbsenceSmokeTests";
 import { runPolyfillTests } from "./polyfillsSmokeTests";
-import { runClassMappingTests, runReplaceSwapTests } from "./specialistImportSmokeTests";
+import { runClassMappingTests, runReplaceSwapTests, runInstructionsMapTests } from "./specialistImportSmokeTests";
 import { runPdfGridTextTests, runSpecialistPdfRequestTests, runSpecialistUpdateRequestTests, runSpecialistNonGridTests } from "./pdfGridTextSmokeTests";
 
 export function runSmokeTests(logErrorFn) {
@@ -536,6 +536,7 @@ export function runSmokeTests(logErrorFn) {
   // ── Specialist import: class names mapped to the school's students (v2.49.22) ──
   runClassMappingTests(assert);
   runReplaceSwapTests(assert);
+  runInstructionsMapTests(assert);
 
   if (pending.length > 0) Promise.all(pending).then(() => reportSmokeResults(results, logErrorFn));
   else reportSmokeResults(results, logErrorFn);

@@ -92,3 +92,24 @@ export const REPLACED_BACKUP_KEY = "specialists_last_replaced";
 export function buildReplacedBackup({ schoolId, schoolName, rows, replacedAt }) {
   return { schoolId, schoolName: schoolName || "", replacedAt, count: rows.length, rows };
 }
+
+// Per-school import Instructions, kept in app_settings as one key holding
+// { [schoolId]: text }. Pure read/merge helpers; specialistsDB does the I/O.
+export const INSTRUCTIONS_KEY = "specialist_import_instructions";
+
+export function normalizeInstructionsMap(value) {
+  const out = {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const [k, v] of Object.entries(value)) if (k && typeof v === "string" && v.trim()) out[k] = v;
+  }
+  return out;
+}
+
+// Set one school's text; an emptied box removes the school's entry.
+export function mergeInstructions(map, schoolId, text) {
+  const next = { ...normalizeInstructionsMap(map) };
+  if (!schoolId) return next;
+  if (text && text.trim()) next[schoolId] = text;
+  else delete next[schoolId];
+  return next;
+}
