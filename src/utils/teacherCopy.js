@@ -96,7 +96,20 @@ export function ghostBelongsToView(g, { viewedTeacherId, isMultiLane, teacherCov
 // (null = no line); pillAvailable = whether the Actuals pill can be switched
 // on for this view (false draws it off and ignores clicks). view is the same
 // object the ghost layer passes to ghostBelongsToView.
+//
+// On a 2+ lane day the drain replaces only the copying teacher's lane, so the
+// line and pill follow the viewed chip: a copy counts when any of its entries
+// on the day (lessons or missed) belongs to the view as a ghost would
+// (ghostTeacherId: lane, cover-aware, else the copy's writer / key teacher).
+// When another teacher has a copy and the viewed one does not: no line, pill
+// unavailable. Single-lane days, and days with no copy, are unchanged.
 export function dayCopyStateForView(teacherActuals, weekKey, schoolId, day, view) {
   const teacherIds = teacherCopyDays(teacherActuals, weekKey, schoolId)[day] || null;
-  return { teacherIds, pillAvailable: true };
+  if (!teacherIds || !view?.isMultiLane || !view.viewedTeacherId) return { teacherIds, pillAvailable: true };
+  const prefix = `${weekKey}|${schoolId}|`;
+  const viewedHasCopy = Object.entries(teacherActuals).some(([key, entry]) =>
+    key.startsWith(prefix) && entry &&
+    [...(entry.lessons || []), ...(entry.missed || [])].some(x =>
+      x && x.day === day && ghostBelongsToView({ ...x, _copyTeacherId: key.substring(prefix.length) }, view)));
+  return viewedHasCopy ? { teacherIds: [view.viewedTeacherId], pillAvailable: true } : { teacherIds: null, pillAvailable: false };
 }

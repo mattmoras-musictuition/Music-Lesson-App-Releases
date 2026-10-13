@@ -162,5 +162,27 @@ export function runDayCopyStateTests(assert) {
   assert("copyState: single-lane day with a copy shows line + pill", copyState(rhCopy, "Wednesday"), { teacherIds: ["tRH"], pillAvailable: true });
   assert("copyState: single-lane day without a copy has no line, pill as today", copyState({}, "Wednesday"), { teacherIds: null, pillAvailable: true });
   assert("copyState: multi-lane day, RH's copy, RH viewed", copyState(rhCopy, "Tuesday", "laneRH"), { teacherIds: ["tRH"], pillAvailable: true });
-  assert("copyState: multi-lane day, RH's copy, MM viewed (pre-fix: still shown)", copyState(rhCopy, "Tuesday", "laneMM"), { teacherIds: ["tRH"], pillAvailable: true });
+  assert("copyState: multi-lane day, RH's copy, MM viewed: no line, pill unavailable", copyState(rhCopy, "Tuesday", "laneMM"), { teacherIds: null, pillAvailable: false });
+  assert("copyState: multi-lane day with no copy at all, pill as today", copyState({}, "Tuesday", "laneMM"), { teacherIds: null, pillAvailable: true });
+
+  const both = { ...rhCopy, [`${GW}|sMPS|tMM`]: copyOf("tMM", [ghostSolo("Tuesday", "laneMM", { writerTeacherId: "tMM" })]) };
+  assert("copyState: both copied, RH viewed", copyState(both, "Tuesday", "laneRH"), { teacherIds: ["tRH"], pillAvailable: true });
+  assert("copyState: both copied, MM viewed", copyState(both, "Tuesday", "laneMM"), { teacherIds: ["tMM"], pillAvailable: true });
+  assert("copyState: both copied, single-lane day unchanged", copyState(both, "Wednesday"), { teacherIds: ["tRH"], pillAvailable: true });
+
+  // A copy holding only missed entries for the day still counts (the drain replaces those too).
+  const rhMissedOnly = { [`${GW}|sMPS|tRH`]: copyOf("tRH", [], [{ id: "mx", studentId: "sJon", day: "Tuesday", bucket_id: "laneRH" }]) };
+  assert("copyState: missed-only copy shows for RH", copyState(rhMissedOnly, "Tuesday", "laneRH"), { teacherIds: ["tRH"], pillAvailable: true });
+  assert("copyState: missed-only copy hidden for MM", copyState(rhMissedOnly, "Tuesday", "laneMM"), { teacherIds: null, pillAvailable: false });
+
+  // Entries with no lane or writer resolve to the stored copy's teacher key.
+  const keyOnly = { [`${GW}|sMPS|tMM`]: { lessons: [{ id: "gc", studentId: "sJon", day: "Tuesday", start: "10:00", isCatchup: true }], missed: [] } };
+  assert("copyState: key teacher fallback, MM viewed", copyState(keyOnly, "Tuesday", "laneMM"), { teacherIds: ["tMM"], pillAvailable: true });
+  assert("copyState: key teacher fallback, RH viewed", copyState(keyOnly, "Tuesday", "laneRH"), { teacherIds: null, pillAvailable: false });
+
+  // A cover on RH's lane this week: RH's copy of that lane follows the covering teacher (as ghosts do).
+  ghostOverrides = [{ weekKey: GW, bucketId: "laneRH", overrideTeacherId: "tMM" }];
+  const coveredView = ghostView("Tuesday", "laneRH");
+  ghostOverrides = [];
+  assert("copyState: lane cover follows the covering teacher", dayCopyStateForView(rhCopy, GW, "sMPS", "Tuesday", coveredView), { teacherIds: ["tMM"], pillAvailable: true });
 }
