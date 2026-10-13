@@ -2,7 +2,8 @@
 // teacherCopySmokeTests.js — v2.49.3 stale teacher-copy warning.
 // ============================================================
 
-import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines } from "../utils/teacherCopy";
+import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView } from "../utils/teacherCopy";
+import { getDayLanes, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
 export function runTeacherCopyTests(assert) {
   const W = "2026-10-05";
@@ -33,6 +34,7 @@ export function runTeacherCopyTests(assert) {
   assert("teacherCopy: unknown teacher labelled", teacherCopyTooltip(["x"], teachers).includes("Unknown teacher"), true);
 
   runGhostCardLineTests(assert);
+  runGhostViewTests(assert);
 }
 
 // Same body as WeeklyAdjustments' getPrefDisplayName (passed in as prefName).
@@ -68,4 +70,45 @@ export function runGhostCardLineTests(assert) {
   assert("ghostCard: group shows first names / instrument · teacher", lines(group, "Rauzah"), { line1: "Ivy, Libby", line2: "Ukulele · Rauzah" });
   assert("ghostCard: band shows its name only, no teacher", lines(band, "Rauzah"), { line1: "Riptide", line2: "" });
   assert("ghostCard: band with no name shows TBC", lines({ ...band, bandName: undefined }, "Rauzah"), { line1: "TBC", line2: "" });
+}
+
+// Which ghosts a WTT cell draws. Fixtures: Moorabbin PS Tuesday with two
+// lanes (RH, MM) and Wednesday with one (RH). view() builds the helper's
+// second argument exactly as WeeklyAdjustments' ghost layer does.
+const GW = "2026-10-12";
+const ghostTeachers = [{ id: "tRH", name: "Rauzah Ahmed" }, { id: "tMM", name: "Matt Moras" }];
+const ghostCoverage = [
+  { id: "laneRH", schoolId: "sMPS", day: "Tuesday", teacherId: "tRH", status: "active" },
+  { id: "laneMM", schoolId: "sMPS", day: "Tuesday", teacherId: "tMM", status: "active" },
+  { id: "laneRHw", schoolId: "sMPS", day: "Wednesday", teacherId: "tRH", status: "active" },
+];
+const ghostView = (day, viewedLaneId) => {
+  const viewedLanes = viewedLaneId ? { sMPS: { [day]: viewedLaneId } } : {};
+  const ghostMultiLane = getDayLanes(ghostCoverage, "sMPS", day, [], GW).length >= 2;
+  const ghostViewedTeacher = ghostMultiLane ? getDayLaneTeacher(ghostCoverage, ghostTeachers, "sMPS", day, [], GW, viewedLanes, [])?.teacher : null;
+  return { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane };
+};
+const rhStamps = (adminId) => ({ writerTeacherId: "tRH", sourceLessonId: adminId, importedAt: "2026-10-13T09:00:00.000Z" });
+const ghostSolo = (day, lane, extra = {}) => ({ id: `gs-${day}`, studentId: "sJon", studentName: "Jonathan Smith", instrument: "Guitar", schoolId: "sMPS", bucket_id: lane, day, start: "09:00", ...rhStamps("a1"), ...extra });
+const ghostGroup = (day, lane, extra = {}) => ({ id: `gg-${day}`, isGroup: true, groupId: "g1", groupName: "", studentNames: ["Ivy Chen", "Libby Gilby"], studentIds: ["sIvy", "sLib"], instrument: "Ukulele", schoolId: "sMPS", bucket_id: lane, day, start: "09:30", ...rhStamps("a2"), ...extra });
+const ghostBand = (day, lane) => ({
+  id: `gb-${day}`, isBandSession: true, bandId: "b1", bandName: "Riptide", schoolId: "sMPS", bucket_id: lane,
+  teacherName: "Rauzah Ahmed", day, start: "11:00", end: "11:00",
+  members: [{ id: "m1", studentId: "sIvy", instrument: "Vocals" }, { id: "m2", studentId: "sLib", instrument: "Drums" }],
+  memberStates: [{ memberId: "m1", studentId: "sIvy", state: "regular" }, { memberId: "m2", studentId: "sLib", state: "regular" }],
+  removedLessons: [], ...rhStamps("a3"), originBandLessonId: "a3",
+});
+
+export function runGhostViewTests(assert) {
+  assert("ghostView: multi-lane day hides solo lacking teacherId (pre-fix)", ghostBelongsToView(ghostSolo("Tuesday", "laneRH"), ghostView("Tuesday", "laneRH")), false);
+  const wedView = ghostView("Wednesday");
+  assert("ghostView: single-lane day shows solo without teacherId", ghostBelongsToView(ghostSolo("Wednesday", "laneRHw"), wedView), true);
+  assert("ghostView: single-lane day shows solo with teacherId", ghostBelongsToView(ghostSolo("Wednesday", "laneRHw", { teacherId: "tMM" }), wedView), true);
+  assert("ghostView: single-lane day shows group", ghostBelongsToView(ghostGroup("Wednesday", "laneRHw"), wedView), true);
+  assert("ghostView: single-lane day shows band", ghostBelongsToView(ghostBand("Wednesday", "laneRHw"), wedView), true);
+
+  const rhView = ghostView("Tuesday", "laneRH");
+  const mmView = ghostView("Tuesday", "laneMM");
+  assert("ghostView: multi-lane day shows ghost whose teacherId matches the chip", ghostBelongsToView(ghostSolo("Tuesday", "laneRH", { teacherId: "tRH" }), rhView), true);
+  assert("ghostView: multi-lane day hides ghost whose teacherId is another chip's", ghostBelongsToView(ghostSolo("Tuesday", "laneRH", { teacherId: "tRH" }), mmView), false);
 }

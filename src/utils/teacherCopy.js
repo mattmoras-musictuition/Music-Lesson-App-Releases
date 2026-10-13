@@ -64,3 +64,12 @@ export function ghostCardLines(g, { student, prefName, teacherFirst }) {
   const line2 = `${g.instrument || ""}${teacherFirst ? ` · ${teacherFirst}` : ""}`;
   return { line1, line2 };
 }
+
+// Whether a teacher-copy ghost shows in the WTT cell being drawn. On a day
+// with 2+ lanes (isMultiLane) only the viewed chip's teacher's ghosts show;
+// viewedTeacherId = that chip's effective teacher (null when unresolved, in
+// which case every ghost shows, as on single-lane days).
+export function ghostBelongsToView(g, { viewedTeacherId, isMultiLane }) {
+  if (!isMultiLane || !viewedTeacherId) return true;
+  return g.teacherId === viewedTeacherId;
+}
