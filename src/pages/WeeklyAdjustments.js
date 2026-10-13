@@ -860,7 +860,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
     const prefix = `${weekKey}|${selectedSchool}|`;
     return Object.entries(teacherActuals)
       .filter(([k]) => k.startsWith(prefix))
-      .flatMap(([, entry]) => entry.lessons || []);
+      // _copyTeacherId (display only, never saved): the stored copy's teacher,
+      // the ghost lane filter's last fallback (ghostTeacherId).
+      .flatMap(([k, entry]) => (entry.lessons || []).map(l => ({ ...l, _copyTeacherId: k.substring(prefix.length) })));
   }, [teacherActuals, weekKey, selectedSchool]);
 
   // v2.49.3 — days with a stored teacher copy (drain replaces them at 6pm).
@@ -6487,7 +6489,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                   // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
                                   const ghostMultiLane = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey).length >= 2;
                                   const ghostViewedTeacher = ghostMultiLane ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher : null;
-                                  const ghostView = { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane };
+                                  const ghostView = { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane, teacherCoverage, laneOverrides, weekKey, temporaryLanes };
                                   const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time && ghostBelongsToView(g, ghostView));
                                   return cellGhosts.map((g, gi) => {
                                     const color = getInstColor(g.instrument, g.isGroup);

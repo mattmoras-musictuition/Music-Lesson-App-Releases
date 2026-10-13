@@ -2,7 +2,7 @@
 // teacherCopySmokeTests.js — v2.49.3 stale teacher-copy warning.
 // ============================================================
 
-import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView } from "../utils/teacherCopy";
+import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView, ghostTeacherId } from "../utils/teacherCopy";
 import { getDayLanes, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
 export function runTeacherCopyTests(assert) {
@@ -82,12 +82,14 @@ const ghostCoverage = [
   { id: "laneMM", schoolId: "sMPS", day: "Tuesday", teacherId: "tMM", status: "active" },
   { id: "laneRHw", schoolId: "sMPS", day: "Wednesday", teacherId: "tRH", status: "active" },
 ];
+let ghostOverrides = [];
 const ghostView = (day, viewedLaneId) => {
   const viewedLanes = viewedLaneId ? { sMPS: { [day]: viewedLaneId } } : {};
   const ghostMultiLane = getDayLanes(ghostCoverage, "sMPS", day, [], GW).length >= 2;
-  const ghostViewedTeacher = ghostMultiLane ? getDayLaneTeacher(ghostCoverage, ghostTeachers, "sMPS", day, [], GW, viewedLanes, [])?.teacher : null;
-  return { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane };
+  const ghostViewedTeacher = ghostMultiLane ? getDayLaneTeacher(ghostCoverage, ghostTeachers, "sMPS", day, ghostOverrides, GW, viewedLanes, [])?.teacher : null;
+  return { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane, teacherCoverage: ghostCoverage, laneOverrides: ghostOverrides, weekKey: GW, temporaryLanes: [] };
 };
+const coverCtx = { teacherCoverage: ghostCoverage, laneOverrides: [], weekKey: GW, temporaryLanes: [] };
 const rhStamps = (adminId) => ({ writerTeacherId: "tRH", sourceLessonId: adminId, importedAt: "2026-10-13T09:00:00.000Z" });
 const ghostSolo = (day, lane, extra = {}) => ({ id: `gs-${day}`, studentId: "sJon", studentName: "Jonathan Smith", instrument: "Guitar", schoolId: "sMPS", bucket_id: lane, day, start: "09:00", ...rhStamps("a1"), ...extra });
 const ghostGroup = (day, lane, extra = {}) => ({ id: `gg-${day}`, isGroup: true, groupId: "g1", groupName: "", studentNames: ["Ivy Chen", "Libby Gilby"], studentIds: ["sIvy", "sLib"], instrument: "Ukulele", schoolId: "sMPS", bucket_id: lane, day, start: "09:30", ...rhStamps("a2"), ...extra });
@@ -100,7 +102,6 @@ const ghostBand = (day, lane) => ({
 });
 
 export function runGhostViewTests(assert) {
-  assert("ghostView: multi-lane day hides solo lacking teacherId (pre-fix)", ghostBelongsToView(ghostSolo("Tuesday", "laneRH"), ghostView("Tuesday", "laneRH")), false);
   const wedView = ghostView("Wednesday");
   assert("ghostView: single-lane day shows solo without teacherId", ghostBelongsToView(ghostSolo("Wednesday", "laneRHw"), wedView), true);
   assert("ghostView: single-lane day shows solo with teacherId", ghostBelongsToView(ghostSolo("Wednesday", "laneRHw", { teacherId: "tMM" }), wedView), true);
@@ -111,4 +112,40 @@ export function runGhostViewTests(assert) {
   const mmView = ghostView("Tuesday", "laneMM");
   assert("ghostView: multi-lane day shows ghost whose teacherId matches the chip", ghostBelongsToView(ghostSolo("Tuesday", "laneRH", { teacherId: "tRH" }), rhView), true);
   assert("ghostView: multi-lane day hides ghost whose teacherId is another chip's", ghostBelongsToView(ghostSolo("Tuesday", "laneRH", { teacherId: "tRH" }), mmView), false);
+
+  // Ghosts without teacherId resolve through their lane (all of today's copies).
+  const noWriter = (g) => { const { writerTeacherId: _w, ...rest } = g; return rest; };
+  for (const [kind, make] of [["solo", ghostSolo], ["group", ghostGroup], ["band", ghostBand]]) {
+    const g = noWriter(make("Tuesday", "laneRH"));
+    assert(`ghostView: multi-lane ${kind} in RH's lane shows under RH`, ghostBelongsToView(g, rhView), true);
+    assert(`ghostView: multi-lane ${kind} in RH's lane hidden under MM`, ghostBelongsToView(g, mmView), false);
+    assert(`ghostView: single-lane ${kind} still shows`, ghostBelongsToView(noWriter(make("Wednesday", "laneRHw")), wedView), true);
+  }
+  // Writer stamps never beat the lane: an MM-written copy of a card in RH's lane.
+  assert("ghostView: lane wins over writer", ghostBelongsToView(ghostSolo("Tuesday", "laneRH", { writerTeacherId: "tMM" }), rhView), true);
+  // A cover on RH's lane this week moves its ghosts to the covering teacher.
+  ghostOverrides = [{ weekKey: GW, bucketId: "laneRH", overrideTeacherId: "tMM" }];
+  const coverView = ghostView("Tuesday", "laneRH");
+  ghostOverrides = [];
+  assert("ghostView: lane cover resolves to the covering teacher", ghostBelongsToView(noWriter(ghostSolo("Tuesday", "laneRH")), coverView), true);
+
+  // Lane not resolvable → the copy's writer.
+  const lost = (extra) => ghostSolo("Tuesday", "laneGone", extra);
+  assert("ghostView: unknown lane falls back to writerTeacherId (shown)", ghostBelongsToView(lost(), rhView), true);
+  assert("ghostView: unknown lane falls back to writerTeacherId (hidden)", ghostBelongsToView(lost(), mmView), false);
+  assert("ghostView: no bucket_id falls back to writerTeacherId", ghostBelongsToView(ghostSolo("Tuesday", undefined), rhView), true);
+  const catchup = { id: "gc", studentId: "sJon", instrument: "Guitar", schoolId: "sMPS", day: "Tuesday", start: "10:00", isCatchup: true, _copyTeacherId: "tMM" };
+  assert("ghostView: copy key teacher fallback shows under its chip", ghostBelongsToView(catchup, mmView), true);
+  assert("ghostView: copy key teacher fallback hidden under other chip", ghostBelongsToView(catchup, rhView), false);
+  assert("ghostTeacherId: order teacherId > lane > writer > copy key", [
+    ghostTeacherId({ teacherId: "tX", bucket_id: "laneRH", writerTeacherId: "tMM" }, coverCtx),
+    ghostTeacherId({ bucket_id: "laneMM", writerTeacherId: "tRH", _copyTeacherId: "tRH" }, coverCtx),
+    ghostTeacherId({ bucket_id: "laneGone", writerTeacherId: "tRH", _copyTeacherId: "tMM" }, coverCtx),
+    ghostTeacherId({ _copyTeacherId: "tMM" }, coverCtx),
+  ], ["tX", "tMM", "tRH", "tMM"]);
+
+  // Nothing resolves → hidden on multi-lane days, shown on single-lane days.
+  const orphan = { id: "go", studentId: "sJon", instrument: "Guitar", schoolId: "sMPS", start: "12:00" };
+  assert("ghostView: unresolvable ghost hidden on multi-lane day", ghostBelongsToView({ ...orphan, day: "Tuesday" }, rhView), false);
+  assert("ghostView: unresolvable ghost shown on single-lane day", ghostBelongsToView({ ...orphan, day: "Wednesday" }, wedView), true);
 }

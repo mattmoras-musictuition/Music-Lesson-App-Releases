@@ -11,6 +11,7 @@
 // ============================================================
 
 import { groupDisplayName } from "./helpers";
+import { getCardTeacherId } from "./teacherCoverageDB";
 
 // { "<Day>": [teacherId, ...] } for teachers whose stored copy for this
 // week and school holds any lesson or missed entry on that day. Missed
@@ -65,11 +66,27 @@ export function ghostCardLines(g, { student, prefName, teacherFirst }) {
   return { line1, line2 };
 }
 
+// The teacher a teacher-copy ghost belongs to: (a) its own teacherId (old
+// data only); else (b) the teacher of its lane (bucket_id), resolved as
+// normal cards are by getCardTeacherId (override-aware) but without the
+// day-lane fallback, which would just pick the day's first lane; else (c)
+// the copy's writer (writerTeacherId on new copies, or _copyTeacherId = the
+// stored copy's teacher key, set when the screen combines copies).
+export function ghostTeacherId(g, { teacherCoverage, laneOverrides, weekKey, temporaryLanes } = {}) {
+  if (g.teacherId) return g.teacherId;
+  if (g.bucket_id) {
+    const laneTeacher = getCardTeacherId({ bucket_id: g.bucket_id }, teacherCoverage, laneOverrides, weekKey, temporaryLanes || []);
+    if (laneTeacher) return laneTeacher;
+  }
+  return g.writerTeacherId || g._copyTeacherId || null;
+}
+
 // Whether a teacher-copy ghost shows in the WTT cell being drawn. On a day
 // with 2+ lanes (isMultiLane) only the viewed chip's teacher's ghosts show;
 // viewedTeacherId = that chip's effective teacher (null when unresolved, in
-// which case every ghost shows, as on single-lane days).
-export function ghostBelongsToView(g, { viewedTeacherId, isMultiLane }) {
+// which case every ghost shows, as on single-lane days). A ghost whose
+// teacher cannot be resolved is hidden on multi-lane days.
+export function ghostBelongsToView(g, { viewedTeacherId, isMultiLane, teacherCoverage, laneOverrides, weekKey, temporaryLanes }) {
   if (!isMultiLane || !viewedTeacherId) return true;
-  return g.teacherId === viewedTeacherId;
+  return ghostTeacherId(g, { teacherCoverage, laneOverrides, weekKey, temporaryLanes }) === viewedTeacherId;
 }
