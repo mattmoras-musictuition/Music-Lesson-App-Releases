@@ -13,7 +13,7 @@ import { getMissedEntries } from "../utils/tallyDerive";
 import { getOfferableMisses, groupOfferableByEnrolment, parseInvoiceDrafts, nextTermInvoiceSentFor } from "../utils/catchupScope";
 import { getMissedReasonLabel, getMissedTrayLabel } from "../utils/missedReasonLabels";
 import { visibleLessons, visibleWeeklyTimetables, dayParentRows } from "../utils/hiddenCards";
-import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView } from "../utils/teacherCopy";
+import { showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView, dayCopyStateForView } from "../utils/teacherCopy";
 import { INTR_DISPLAY_TYPE } from "../utils/eventTypes";
 import { anthropicFetch, getAnthropicHeaders } from "../utils/api";
 import { getUserTemplates, applyMergeCtx, preferredFirstName, getEmailTemplates, resolveTemplate } from "../utils/emailTemplates";
@@ -865,11 +865,18 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
       .flatMap(([k, entry]) => (entry.lessons || []).map(l => ({ ...l, _copyTeacherId: k.substring(prefix.length) })));
   }, [teacherActuals, weekKey, selectedSchool]);
 
-  // v2.49.3 — days with a stored teacher copy (drain replaces them at 6pm).
-  const teacherCopyByDay = useMemo(
-    () => teacherCopyDays(teacherActuals, weekKey, selectedSchool),
-    [teacherActuals, weekKey, selectedSchool]
-  );
+  // The view a day column's ghosts and copy state are judged against: on a
+  // 2+ lane day, the selected chip's effective teacher (ghostBelongsToView).
+  const ghostViewFor = (day) => {
+    const isMultiLane = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey).length >= 2;
+    const viewedTeacher = isMultiLane ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher : null;
+    return { viewedTeacherId: viewedTeacher?.id || null, isMultiLane, teacherCoverage, laneOverrides, weekKey, temporaryLanes };
+  };
+  // v2.49.3 — per day: stored teacher copy (drain replaces it at 6pm) for the
+  // viewed chip. ghostsOn = the day's Actuals toggle as this view draws it.
+  const copyStateByDay = {};
+  for (const d of DAYS) copyStateByDay[d] = dayCopyStateForView(teacherActuals, weekKey, selectedSchool, d, ghostViewFor(d));
+  const ghostsOn = (day) => !!dayGhostsVisible[`${weekKey}|${selectedSchool}|${day}`] && !!copyStateByDay[day]?.pillAvailable;
 
   // Parallel flatten for teacher-actuals missed entries — used by the
   // missed zone when a day's Actuals toggle is ON.
@@ -6306,8 +6313,8 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                             </div>
                             {blocked && <div style={{ fontSize: 9, color: "#FCA5A5", marginTop: 2 }}>BLOCKED</div>}
                             {/* v2.49.3 — read-only warning: a stored teacher copy replaces this day at 6pm */}
-                            {teacherCopyByDay[d] && showTeacherCopyNote(dayDateStr, melbourneToday()) && (
-                              <div title={teacherCopyTooltip(teacherCopyByDay[d], teachers)}
+                            {copyStateByDay[d]?.teacherIds && showTeacherCopyNote(dayDateStr, melbourneToday()) && (
+                              <div title={teacherCopyTooltip(copyStateByDay[d].teacherIds, teachers)}
                                 style={{ fontSize: 9, fontWeight: 600, color: "#F59E0B", marginTop: 2, lineHeight: 1.25, cursor: "help" }}>
                                 Teacher copy stored: replaces this day at 6pm
                               </div>
@@ -6346,11 +6353,11 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                 const isDayDrained = actualsPillHidden(dayDateStr, melbourneToday(), melbourneNow().getHours());
                                 if (isDayDrained) return null;
                                 const ghostKey = `${weekKey}|${selectedSchool}|${d}`;
-                                const ghostsVisible = !!dayGhostsVisible[ghostKey];
+                                const ghostsVisible = ghostsOn(d);
                                 return (
                                   <button
                                     type="button"
-                                    onClick={e => { e.stopPropagation(); setDayGhostsVisible(prev => ({ ...prev, [ghostKey]: !prev[ghostKey] })); }}
+                                    onClick={e => { e.stopPropagation(); if (copyStateByDay[d]?.pillAvailable) setDayGhostsVisible(prev => ({ ...prev, [ghostKey]: !prev[ghostKey] })); }}
                                     title={ghostsVisible ? "Hide teacher actuals" : "Show teacher actuals"}
                                     style={{
                                       padding: "2px 8px",
@@ -6484,12 +6491,9 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                     toggle is ON these are the only lesson layer
                                     for that day (admin cards hidden below). */}
                                 {(() => {
-                                  const ghostKey = `${weekKey}|${selectedSchool}|${day}`;
-                                  if (!dayGhostsVisible[ghostKey]) return null;
+                                  if (!ghostsOn(day)) return null;
                                   // Cluster 8a: in multi-lane days, also filter ghosts to the viewed lane's effective teacher.
-                                  const ghostMultiLane = getDayLanes(teacherCoverage, selectedSchool, day, temporaryLanes, weekKey).length >= 2;
-                                  const ghostViewedTeacher = ghostMultiLane ? getDayLaneTeacher(teacherCoverage, teachers, selectedSchool, day, laneOverrides, weekKey, viewedLanes, temporaryLanes)?.teacher : null;
-                                  const ghostView = { viewedTeacherId: ghostViewedTeacher?.id || null, isMultiLane: ghostMultiLane, teacherCoverage, laneOverrides, weekKey, temporaryLanes };
+                                  const ghostView = ghostViewFor(day);
                                   const cellGhosts = currentTeacherActualsLessons.filter(g => g.day === day && g.start === time && ghostBelongsToView(g, ghostView));
                                   return cellGhosts.map((g, gi) => {
                                     const color = getInstColor(g.instrument, g.isGroup);
@@ -6554,7 +6558,7 @@ export function WeeklyAdjustments({ mainScrollRef, timetable, schools, students,
                                       title="Remove break" style={{ display: "inline-flex", alignItems: "center" }}><X size={10} /></span>
                                   </div>
                                 )}
-                                {!dayGhostsVisible[`${weekKey}|${selectedSchool}|${day}`] && cellLessons.map((l, li) => {
+                                {!ghostsOn(day) && cellLessons.map((l, li) => {
                                   // v2.9.12 past-dated display gate: read from the single gated
                                   // source of truth (visibleWarnings) so the card, the conflicts
                                   // banner, the sidebar badge and the Dashboard count all agree.

@@ -2,7 +2,7 @@
 // teacherCopySmokeTests.js — v2.49.3 stale teacher-copy warning.
 // ============================================================
 
-import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView, ghostTeacherId } from "../utils/teacherCopy";
+import { teacherCopyDays, showTeacherCopyNote, actualsPillHidden, teacherCopyTooltip, ghostCardLines, ghostBelongsToView, ghostTeacherId, dayCopyStateForView } from "../utils/teacherCopy";
 import { getDayLanes, getDayLaneTeacher } from "../utils/teacherCoverageDB";
 
 export function runTeacherCopyTests(assert) {
@@ -35,6 +35,7 @@ export function runTeacherCopyTests(assert) {
 
   runGhostCardLineTests(assert);
   runGhostViewTests(assert);
+  runDayCopyStateTests(assert);
 }
 
 // Same body as WeeklyAdjustments' getPrefDisplayName (passed in as prefName).
@@ -148,4 +149,18 @@ export function runGhostViewTests(assert) {
   const orphan = { id: "go", studentId: "sJon", instrument: "Guitar", schoolId: "sMPS", start: "12:00" };
   assert("ghostView: unresolvable ghost hidden on multi-lane day", ghostBelongsToView({ ...orphan, day: "Tuesday" }, rhView), false);
   assert("ghostView: unresolvable ghost shown on single-lane day", ghostBelongsToView({ ...orphan, day: "Wednesday" }, wedView), true);
+}
+
+// Day-header copy line + Actuals pill for the viewed chip. Copies keyed
+// like teacher_actuals (`${week}|${school}|${teacher}`); view from ghostView,
+// the object the screen builds for the column.
+const copyOf = (teacherId, lessons, missed = []) => ({ lessons, missed: missed.map(m => ({ ...m, writerTeacherId: teacherId })) });
+const rhCopy = { [`${GW}|sMPS|tRH`]: copyOf("tRH", [ghostSolo("Tuesday", "laneRH"), ghostSolo("Wednesday", "laneRHw")]) };
+const copyState = (actuals, day, laneId) => dayCopyStateForView(actuals, GW, "sMPS", day, ghostView(day, laneId));
+
+export function runDayCopyStateTests(assert) {
+  assert("copyState: single-lane day with a copy shows line + pill", copyState(rhCopy, "Wednesday"), { teacherIds: ["tRH"], pillAvailable: true });
+  assert("copyState: single-lane day without a copy has no line, pill as today", copyState({}, "Wednesday"), { teacherIds: null, pillAvailable: true });
+  assert("copyState: multi-lane day, RH's copy, RH viewed", copyState(rhCopy, "Tuesday", "laneRH"), { teacherIds: ["tRH"], pillAvailable: true });
+  assert("copyState: multi-lane day, RH's copy, MM viewed (pre-fix: still shown)", copyState(rhCopy, "Tuesday", "laneMM"), { teacherIds: ["tRH"], pillAvailable: true });
 }

@@ -90,3 +90,13 @@ export function ghostBelongsToView(g, { viewedTeacherId, isMultiLane, teacherCov
   if (!isMultiLane || !viewedTeacherId) return true;
   return ghostTeacherId(g, { teacherCoverage, laneOverrides, weekKey, temporaryLanes }) === viewedTeacherId;
 }
+
+// Day-header copy state for the WTT column being drawn. teacherIds = the
+// teachers whose stored copy the orange "Teacher copy stored" line names
+// (null = no line); pillAvailable = whether the Actuals pill can be switched
+// on for this view (false draws it off and ignores clicks). view is the same
+// object the ghost layer passes to ghostBelongsToView.
+export function dayCopyStateForView(teacherActuals, weekKey, schoolId, day, view) {
+  const teacherIds = teacherCopyDays(teacherActuals, weekKey, schoolId)[day] || null;
+  return { teacherIds, pillAvailable: true };
+}
